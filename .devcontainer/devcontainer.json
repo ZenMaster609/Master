@@ -1,0 +1,95 @@
+{
+    "name": "ROS2 Humble + Gazebo Fortress",
+    "build": {
+        "dockerfile": "Dockerfile",
+        "context": ".."
+    },
+
+    // NVIDIA GPU support
+    "runArgs": [
+        "--gpus", "all",
+        "--privileged",
+        "--network", "host",
+        "--ipc", "host",
+        "--runtime", "nvidia",
+        "--device", "/dev/dri:/dev/dri",
+        "--group-add", "video"
+    ],
+
+    // Environment variables for GPU and display
+    "containerEnv": {
+        "NVIDIA_VISIBLE_DEVICES": "all",
+        "NVIDIA_DRIVER_CAPABILITIES": "all",
+        "DISPLAY": "host.docker.internal:0",
+        "QT_X11_NO_MITSHM": "1",
+        "__NV_PRIME_RENDER_OFFLOAD": "1",
+        "__GLX_VENDOR_LIBRARY_NAME": "nvidia",
+        "MESA_GL_VERSION_OVERRIDE": "3.3",
+        "IGN_GAZEBO_RENDER_ENGINE_PATH": "/usr/lib/x86_64-linux-gnu/ign-rendering-6/engine-plugins"
+    },
+
+    // Mount the project and persist Claude config
+    "mounts": [
+        "source=claude-config,target=/home/developer/.claude,type=volume"
+    ],
+
+    // Mount the project into the workspace
+    "workspaceMount": "source=${localWorkspaceFolder},target=/home/developer/ros2_ws/src/sim_car,type=bind",
+    "workspaceFolder": "/home/developer/ros2_ws/src/sim_car",
+
+    // User configuration
+    "remoteUser": "developer",
+    "containerUser": "developer",
+
+    // VS Code extensions to install
+    "customizations": {
+        "vscode": {
+            "extensions": [
+                "ms-python.python",
+                "ms-python.vscode-pylance",
+                "ms-vscode.cpptools",
+                "ms-vscode.cmake-tools",
+                "ms-iot.vscode-ros",
+                "redhat.vscode-xml",
+                "redhat.vscode-yaml",
+                "streetsidesoftware.code-spell-checker",
+                "gruntfuggly.todo-tree",
+                "eamodio.gitlens"
+            ],
+            "settings": {
+                "terminal.integrated.defaultProfile.linux": "bash",
+                "python.defaultInterpreterPath": "/usr/bin/python3",
+                "python.analysis.extraPaths": [
+                    "/opt/ros/humble/lib/python3.10/site-packages",
+                    "/home/developer/ros2_ws/install/sim_car/lib/python3.10/site-packages"
+                ],
+                "ros.distro": "humble",
+                "files.associations": {
+                    "*.urdf": "xml",
+                    "*.xacro": "xml",
+                    "*.sdf": "xml",
+                    "*.world": "xml",
+                    "*.launch.py": "python"
+                },
+                "editor.formatOnSave": true,
+                "[python]": {
+                    "editor.defaultFormatter": "ms-python.python"
+                }
+            }
+        }
+    },
+
+    // Commands to run after container is created
+    "postCreateCommand": "bash .devcontainer/post-create.sh",
+
+    // Fix GPU device permissions on every start
+    "postStartCommand": "sudo chmod 666 /dev/dri/* 2>/dev/null || true",
+
+    // Features to add
+    "features": {
+        "ghcr.io/devcontainers/features/common-utils:2": {
+            "installZsh": true,
+            "configureZshAsDefaultShell": false
+        }
+    }
+}
