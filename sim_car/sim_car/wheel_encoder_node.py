@@ -26,10 +26,10 @@ class WheelEncoderNode(Node):
         self.wheel_radius = self.get_parameter('wheel_radius').value
         self.publish_rate = self.get_parameter('publish_rate').value
 
-        # Subscribe to joint states from the wheel encoder plugin
+        # Subscribe to joint states from Gazebo (via ros_gz_bridge)
         self.joint_state_sub = self.create_subscription(
             JointState,
-            'wheel_encoder/joint_states',
+            '/joint_states',
             self.joint_state_callback,
             10
         )

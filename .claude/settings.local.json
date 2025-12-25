@@ -12,7 +12,8 @@
       "Bash(wsl -d Ubuntu-22.04 -e bash -c \"source /opt/ros/humble/setup.bash && cd ~/ros2_ws && colcon build --symlink-install\")",
       "Bash(wsl -d Ubuntu-22.04 -e bash -c \"glxinfo | grep ''OpenGL renderer''\")",
       "Bash(wsl:*)",
-      "Bash(powershell.exe -Command \"cd ''E:\\\\master\\\\sim_car''; git remote add origin https://github.com/ZenMaster609/Master.git; git branch -M main; git push -u origin main\")"
+      "Bash(powershell.exe -Command \"cd ''E:\\\\master\\\\sim_car''; git remote add origin https://github.com/ZenMaster609/Master.git; git branch -M main; git push -u origin main\")",
+      "Bash(timeout 3 ros2 topic echo:*)"
     ],
     "deny": [],
     "ask": []
