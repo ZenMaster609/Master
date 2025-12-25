@@ -1,4 +1,9 @@
-# Colcon build artifacts
+# Logs and data
+logs/
+*.parquet
+*.bag
+
+# Build artifacts
 build/
 install/
 log/
@@ -6,10 +11,8 @@ log/
 # Python
 __pycache__/
 *.py[cod]
-*$py.class
 *.egg-info/
 .eggs/
-dist/
 
 # IDE
 .vscode/
@@ -20,7 +23,3 @@ dist/
 # OS
 .DS_Store
 Thumbs.db
-
-# ROS2
-*.bag
-*.db3

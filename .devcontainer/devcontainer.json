@@ -1,5 +1,5 @@
 {
-    "name": "ROS2 Humble + Gazebo Fortress",
+    "name": "ROS2 Humble + Gazebo Fortress + Vehicle Plotter",
     "build": {
         "dockerfile": "Dockerfile",
         "context": ".."
@@ -33,9 +33,9 @@
         "source=claude-config,target=/home/developer/.claude,type=volume"
     ],
 
-    // Mount the project into the workspace
-    "workspaceMount": "source=${localWorkspaceFolder},target=/home/developer/ros2_ws/src/sim_car,type=bind",
-    "workspaceFolder": "/home/developer/ros2_ws/src/sim_car",
+    // Mount the entire workspace (all packages) into ROS2 src folder
+    "workspaceMount": "source=${localWorkspaceFolder},target=/home/developer/ros2_ws/src,type=bind",
+    "workspaceFolder": "/home/developer/ros2_ws/src",
 
     // User configuration
     "remoteUser": "developer",
@@ -61,7 +61,9 @@
                 "python.defaultInterpreterPath": "/usr/bin/python3",
                 "python.analysis.extraPaths": [
                     "/opt/ros/humble/lib/python3.10/site-packages",
-                    "/home/developer/ros2_ws/install/sim_car/lib/python3.10/site-packages"
+                    "/home/developer/ros2_ws/install/sim_car/lib/python3.10/site-packages",
+                    "/home/developer/ros2_ws/install/vehicle_plotter/lib/python3.10/site-packages",
+                    "/home/developer/ros2_ws/install/vehicle_plotter_msgs/lib/python3.10/site-packages"
                 ],
                 "ros.distro": "humble",
                 "files.associations": {
@@ -69,7 +71,8 @@
                     "*.xacro": "xml",
                     "*.sdf": "xml",
                     "*.world": "xml",
-                    "*.launch.py": "python"
+                    "*.launch.py": "python",
+                    "*.msg": "ros-msg"
                 },
                 "editor.formatOnSave": true,
                 "[python]": {
@@ -80,7 +83,7 @@
     },
 
     // Commands to run after container is created
-    "postCreateCommand": "bash .devcontainer/post-create.sh",
+    "postCreateCommand": "bash /home/developer/ros2_ws/src/.devcontainer/post-create.sh",
 
     // Fix GPU device permissions on every start
     "postStartCommand": "sudo chmod 666 /dev/dri/* 2>/dev/null || true",

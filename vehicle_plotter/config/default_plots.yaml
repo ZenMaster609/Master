@@ -1,0 +1,104 @@
+# Default plot configuration for vehicle_plotter
+#
+# This file defines the default plot layout and series configuration.
+# Plots can be customized by modifying this file or loading a different config.
+
+# Window settings
+window:
+  title: "Vehicle Plotter"
+  width: 1200
+  height: 800
+  dark_mode: true
+  update_rate_hz: 30.0
+
+# Grid layout
+layout:
+  rows: 2
+  cols: 2
+
+# Plot definitions
+plots:
+  # Position trajectory (X vs Y)
+  - name: "Position Trajectory"
+    type: "xy"
+    row: 0
+    col: 0
+    x_axis:
+      variable: "x"
+      label: "X"
+      unit: "m"
+    y_axis:
+      variable: "y"
+      label: "Y"
+      unit: "m"
+    series:
+      - name: "Path"
+        variable: "y"
+        color: "#1f77b4"
+        line_width: 2.0
+    buffer_size: 2000
+    show_grid: true
+
+  # Velocity vs time
+  - name: "Velocity"
+    type: "timeseries"
+    row: 0
+    col: 1
+    x_axis_type: "time"
+    y_axis:
+      label: "Velocity"
+      unit: "m/s"
+    series:
+      - name: "Vx"
+        variable: "vx"
+        color: "#1f77b4"
+      - name: "Vy"
+        variable: "vy"
+        color: "#ff7f0e"
+      - name: "Speed"
+        variable: "speed"
+        color: "#2ca02c"
+        line_width: 2.0
+    buffer_size: 1000
+    show_legend: true
+
+  # Heading vs time
+  - name: "Heading"
+    type: "timeseries"
+    row: 1
+    col: 0
+    x_axis_type: "time"
+    y_axis:
+      label: "Yaw"
+      unit: "deg"
+    series:
+      - name: "Yaw"
+        variable: "yaw"
+        color: "#d62728"
+        # Convert radians to degrees: value * 180 / pi
+        scale: 57.2958
+    buffer_size: 1000
+
+  # Encoder ticks vs distance
+  - name: "Encoders"
+    type: "timeseries"
+    row: 1
+    col: 1
+    x_axis_type: "distance"
+    y_axis:
+      label: "Encoder Ticks"
+    series:
+      - name: "FL"
+        variable: "encoder_ticks[0]"
+        color: "#2ca02c"
+      - name: "FR"
+        variable: "encoder_ticks[1]"
+        color: "#d62728"
+      - name: "RL"
+        variable: "encoder_ticks[2]"
+        color: "#9467bd"
+      - name: "RR"
+        variable: "encoder_ticks[3]"
+        color: "#8c564b"
+    buffer_size: 1000
+    show_legend: true

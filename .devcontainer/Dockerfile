@@ -1,4 +1,4 @@
-# Dev Container for ROS2 Humble + Gazebo Fortress
+# Dev Container for ROS2 Humble + Gazebo Fortress + Vehicle Plotter
 # Supports NVIDIA GPUs (3060 Ti, 3080, and other NVIDIA cards)
 
 FROM nvidia/cuda:12.2.0-runtime-ubuntu22.04
@@ -96,7 +96,19 @@ RUN apt-get update && apt-get install -y \
     libegl1 \
     libglvnd0 \
     libglx0 \
+    # Qt5 for PyQtGraph GUI plotting
+    python3-pyqt5 \
+    python3-pyqt5.qtopengl \
+    libqt5opengl5 \
     && rm -rf /var/lib/apt/lists/*
+
+# ============================================
+# Install Python packages for vehicle_plotter
+# ============================================
+RUN pip3 install --no-cache-dir \
+    pyqtgraph \
+    pyarrow \
+    numpy
 
 # ============================================
 # Install Claude Code CLI globally
@@ -133,7 +145,8 @@ RUN rosdep update
 
 # Create ROS2 workspace and Claude config directory
 RUN mkdir -p /home/$USERNAME/ros2_ws/src \
-    && mkdir -p /home/$USERNAME/.claude
+    && mkdir -p /home/$USERNAME/.claude \
+    && mkdir -p /home/$USERNAME/.ros/vehicle_logs
 
 # Add ROS2 setup to bashrc
 RUN echo "source /opt/ros/humble/setup.bash" >> /home/$USERNAME/.bashrc \
@@ -142,7 +155,11 @@ RUN echo "source /opt/ros/humble/setup.bash" >> /home/$USERNAME/.bashrc \
     && echo "# Auto-source after build" >> /home/$USERNAME/.bashrc \
     && echo "cb() { cd ~/ros2_ws && colcon build --symlink-install \"\$@\" && source install/setup.bash; }" >> /home/$USERNAME/.bashrc \
     && echo "cbs() { cd ~/ros2_ws && colcon build --symlink-install --packages-select \"\$@\" && source install/setup.bash; }" >> /home/$USERNAME/.bashrc \
-    && echo "alias gs='ign gazebo'" >> /home/$USERNAME/.bashrc
+    && echo "alias gs='ign gazebo'" >> /home/$USERNAME/.bashrc \
+    && echo "" >> /home/$USERNAME/.bashrc \
+    && echo "# Vehicle plotter shortcuts" >> /home/$USERNAME/.bashrc \
+    && echo "alias plotter='ros2 launch vehicle_plotter plotter.launch.py'" >> /home/$USERNAME/.bashrc \
+    && echo "alias bringup='ros2 launch vehicle_plotter bringup.launch.py'" >> /home/$USERNAME/.bashrc
 
 # Set default shell
 ENV SHELL=/bin/bash

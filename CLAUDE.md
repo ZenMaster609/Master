@@ -4,208 +4,216 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-ROS2 Gazebo Fortress car simulation with virtual sensors. A 4-wheeled differential drive car with IMU, GPS, and wheel encoders running in Gazebo Fortress with ros_gz bridge.
+ROS2 multi-package workspace for vehicle simulation and state estimation:
 
-**Workspace**: `/home/developer/ros2_ws` (package at `src/sim_car`)
+| Package | Description |
+|---------|-------------|
+| **sim_car** | Gazebo Fortress car simulation with IMU, GPS, wheel encoders |
+| **vehicle_plotter** | Real-time plotting and logging for vehicle state data |
+| **vehicle_plotter_msgs** | Custom ROS2 message definitions (VehicleState.msg) |
+
+## Workspace Structure
+
+```
+master/                         # Workspace root
+├── .devcontainer/              # Docker dev container config
+├── sim_car/                    # Simulation package
+│   ├── sim_car/                # Python nodes
+│   ├── launch/                 # Launch files
+│   ├── urdf/                   # Robot model
+│   └── worlds/                 # Gazebo worlds
+├── vehicle_plotter/            # Plotting/logging package
+│   ├── vehicle_plotter/        # Python modules
+│   │   ├── core/               # Vehicle state, time sync, QoS
+│   │   ├── adapters/           # Sensor adapters (Gazebo, VectorNav)
+│   │   ├── nodes/              # ROS2 nodes
+│   │   ├── plotting/           # Plot config, manager, backends
+│   │   └── logging/            # Log writer, formats
+│   ├── launch/                 # Launch files
+│   └── config/                 # YAML configs
+└── vehicle_plotter_msgs/       # Message definitions
+    └── msg/VehicleState.msg
+```
+
+## Dev Container (Recommended)
+
+Use VS Code Dev Containers for a ready-to-go development environment:
+
+**Prerequisites:**
+- Docker with NVIDIA Container Toolkit
+- VS Code with "Dev Containers" extension
+
+**Setup:**
+1. Open `master/` folder in VS Code
+2. Click "Reopen in Container" when prompted
+3. Wait for build (~5 min first time)
+4. Start developing!
+
+**Inside container:**
+```bash
+# Build all packages
+cb
+
+# Build specific package
+cbs sim_car
+
+# Launch full system (simulation + plotter + logger)
+bringup
+
+# Or launch just the plotter
+plotter
+```
 
 ## Build Commands
 
 ```bash
-# Build (from workspace root ~/ros2_ws)
-colcon build --packages-select sim_car
+# Build all packages (from workspace root ~/ros2_ws)
+colcon build --symlink-install
+
+# Build in dependency order
+colcon build --symlink-install --packages-select vehicle_plotter_msgs
+colcon build --symlink-install --packages-select sim_car
+colcon build --symlink-install --packages-select vehicle_plotter
 
 # Source the workspace
 source install/setup.bash
-
-# Build with symlink for faster iteration
-colcon build --packages-select sim_car --symlink-install
 ```
 
-## Running the Simulation
+## Running the System
 
+### Full System (Recommended)
 ```bash
-# Terminal 1: Launch Gazebo with the car
+# Launch everything: Gazebo + sim_car nodes + plotter + logger
+ros2 launch vehicle_plotter bringup.launch.py
+
+# With auto control mode (car drives in circles)
+ros2 launch vehicle_plotter bringup.launch.py control_mode:=auto
+
+# Headless Gazebo (plotter still shows)
+ros2 launch vehicle_plotter bringup.launch.py headless:=true
+```
+
+### Components Separately
+```bash
+# Terminal 1: Gazebo simulation
 ros2 launch sim_car gazebo_sim.launch.py
 
-# Terminal 2: Launch control and sensor nodes
+# Terminal 2: Control and sensor nodes
 ros2 launch sim_car nodes.launch.py
 
-# Automated mode (car drives in circles)
-ros2 launch sim_car nodes.launch.py control_mode:=auto
+# Terminal 3: Plotter and logger
+ros2 launch vehicle_plotter plotter.launch.py
 ```
 
-## Testing and Debugging
-
+### Plotting/Logging Only
 ```bash
-# Run linting tests (flake8, pep257, copyright)
-colcon test --packages-select sim_car
-colcon test-result --verbose
+# Enable plotting, disable logging
+ros2 launch vehicle_plotter plotter.launch.py enable_log:=false
 
-# Run individual node for testing
-ros2 run sim_car control_node --ros-args -p mode:=auto
-ros2 run sim_car sensor_processor
-ros2 run sim_car wheel_encoder_node
+# Enable logging, disable plotting
+ros2 launch vehicle_plotter plotter.launch.py enable_plot:=false
 
-# List active topics
-ros2 topic list
+# Change log format
+ros2 launch vehicle_plotter plotter.launch.py log_format:=csv
+```
 
-# Monitor topic data
-ros2 topic echo /odom
-ros2 topic echo /imu
-ros2 topic echo /navsat
-
-# Check publish rates
-ros2 topic hz /odom
+### Offline Replay
+```bash
+# Replay from rosbag
+ros2 launch vehicle_plotter offline_replay.launch.py bag_path:=/path/to/bag
 ```
 
 ## Architecture
 
-### Gazebo Bridge Architecture
-- Gazebo Fortress publishes native sensor topics (`/imu`, `/navsat`, `/odom`)
-- `ros_gz_bridge` in `gazebo_sim.launch.py` converts Gazebo messages to ROS2 messages
-- Bridge mappings: `/cmd_vel`, `/odom`, `/imu`, `/navsat`, `/joint_states`, `/clock`
-- Python nodes subscribe using relative topic names (e.g., `imu/data`, `gps/fix`)
-
-### Key Components
-- **car.urdf**: Robot model with gz-sim-* plugins (DiffDrive, JointStatePublisher, IMU sensor, NavSat sensor)
-- **gazebo_sim.launch.py**: Starts Gazebo, spawns robot, configures ros_gz_bridge
-- **nodes.launch.py**: Starts control_node, sensor_processor, wheel_encoder_node
-
-### ROS2 Nodes
-| Node | Purpose |
-|------|---------|
-| control_node | Keyboard/auto control, publishes `/cmd_vel` |
-| sensor_processor | Subscribes to all sensors, logs status |
-| wheel_encoder_node | Converts joint states to encoder ticks |
+### Data Flow
+```
+Gazebo Sensors → ros_gz_bridge → sim_car nodes → vehicle_plotter
+     ↓                                              ↓
+  /imu/data                              DataCollectorNode
+  /gps/fix                                      ↓
+  /odom                              /vehicle_plotter/state
+  /wheel_encoder/*                         ↓        ↓
+                                    PlotterNode  LoggerNode
+                                         ↓           ↓
+                                    PyQtGraph   ~/.ros/vehicle_logs/
+```
 
 ### Key Topics
-| Topic | Message Type | Source |
-|-------|--------------|--------|
-| `/cmd_vel` | geometry_msgs/Twist | control_node |
-| `/odom` | nav_msgs/Odometry | Gazebo DiffDrive |
-| `/imu` | sensor_msgs/Imu | Gazebo via bridge |
-| `/navsat` | sensor_msgs/NavSatFix | Gazebo via bridge |
-| `/wheel_encoder/ticks` | std_msgs/Int32MultiArray | wheel_encoder_node |
+| Topic | Type | Source |
+|-------|------|--------|
+| `/cmd_vel` | Twist | control_node |
+| `/odom` | Odometry | Gazebo |
+| `/imu/data` | Imu | Gazebo |
+| `/gps/fix` | NavSatFix | Gazebo |
+| `/wheel_encoder/ticks` | Int32MultiArray | wheel_encoder_node |
+| `/vehicle_plotter/state` | VehicleState | data_collector_node |
 
-## File Structure
-
+### VehicleState Message
 ```
-sim_car/
-├── sim_car/           # Python nodes
-│   ├── control_node.py
-│   ├── sensor_processor.py
-│   └── wheel_encoder_node.py
-├── launch/            # Launch files
-├── urdf/car.urdf      # Robot model with Gazebo plugins
-└── worlds/            # SDF world files
-```
+# Position (local frame, meters)
+float64 x, y
 
-## Gazebo Plugins Used
+# Velocity (body frame, m/s)
+float64 vx, vy
 
-Uses **Ignition Gazebo 6 (Fortress)** naming convention:
-- `ignition-gazebo-diff-drive-system`: Differential drive controller
-- `ignition-gazebo-joint-state-publisher-system`: Wheel joint states
-- Native `imu` and `navsat` sensors (no separate plugin needed)
+# Orientation
+float64 yaw, yaw_rate
 
-**Important**: Use `ignition::gazebo::systems::*` namespace, NOT `gz::sim::systems::*` (that's for newer Gazebo Garden/Harmonic).
+# Derived
+float64 speed, distance_traveled, slip_longitudinal, slip_lateral
 
-## Development Environments
+# Encoders [FL, FR, RL, RR]
+int32[4] encoder_ticks
+float32[4] encoder_velocities
 
-Two options for development, each with different trade-offs:
+# GPS
+float64 gps_latitude, gps_longitude
+bool gps_valid
 
-### Option 1: Docker Dev Container (Headless)
-
-Best for: CI/testing, portable environments, headless simulation.
-
-**Limitation**: Gazebo/RViz2 GUI does not work due to OpenGL/X11 forwarding issues.
-
-```bash
-# 1. Open in VS Code → "Reopen in Container"
-# 2. Build
-cb
-
-# 3. Run headless simulation
-ros2 launch sim_car gazebo_sim.launch.py headless:=true
-
-# 4. Verify via topics
-ros2 topic list
-ros2 topic echo /odom --once
-ros2 topic pub /cmd_vel geometry_msgs/msg/Twist "{linear: {x: 1.0}}" --once
+# EKF-ready
+float64[36] covariance
+string estimation_status  # "raw", "filtered", "predicted"
 ```
 
-**Claude Code CLI** is pre-installed and authentication persists between rebuilds.
+## Configuration
 
-### Option 2: WSL2 or Native Linux (Full GUI)
+### Plot Configuration (config/default_plots.yaml)
+- Position trajectory (X vs Y)
+- Velocity vs time (Vx, Vy, Speed)
+- Heading vs time (Yaw in degrees)
+- Encoder ticks vs distance
 
-Best for: Interactive development with Gazebo + RViz2 GUI.
+### Topic Mappings
+- `config/gazebo_topics.yaml` - Gazebo simulation topics
+- `config/vectornav_topics.yaml` - VectorNav VN-200 hardware topics
 
-**For WSL2 on Windows** (run once on fresh Ubuntu 22.04):
-```bash
-# Copy script from Windows
-cp /mnt/e/master/sim_car/scripts/setup-wsl2.sh ~
-chmod +x ~/setup-wsl2.sh
-./setup-wsl2.sh
-
-# After setup, copy project
-cp -r /mnt/e/master/sim_car ~/ros2_ws/src/
-
-# Build and run
-cb
-ros2 launch sim_car gazebo_sim.launch.py
-```
-
-**For Native Linux** (run once on fresh Ubuntu 22.04):
-```bash
-# Clone/copy the project, then run setup script
-chmod +x scripts/setup-wsl2.sh
-./scripts/setup-wsl2.sh
-
-# Copy project to workspace
-cp -r . ~/ros2_ws/src/sim_car
-
-# Build and run
-cb
-ros2 launch sim_car gazebo_sim.launch.py
-```
-
-The script auto-detects WSL2 vs native Linux:
-- **WSL2**: Uses OGRE1 renderer (D3D12 compatible)
-- **Native Linux**: Uses OGRE2 renderer (full GPU acceleration)
-
-### Environment Portability
-
-To replicate your WSL2 environment on other machines:
-```powershell
-# Export from configured machine
-wsl --export Ubuntu-22.04 D:\ros2-env.tar
-
-# Import on new machine
-wsl --import ROS2Dev D:\WSL\ROS2Dev D:\ros2-env.tar
-```
-
-Or just run `setup-wsl2.sh` on each machine.
-
-**WARNING - Do NOT modify `.devcontainer/devcontainer.json` to add:**
-- X11 mounts (`/tmp/.X11-unix`, `/mnt/wslg`)
-- Linux-specific env vars (`XDG_RUNTIME_DIR`, `WAYLAND_DISPLAY`)
-
-These paths don't exist on Windows and will break the container.
+### Logging
+- Default format: Parquet (70-90% smaller than CSV)
+- Default path: `~/.ros/vehicle_logs/session_YYYYMMDD_HHMMSS/`
+- Override: `log_format:=csv`, `log_path:=/custom/path`
 
 ## Dependencies
 
-- ROS2 Humble or later
-- Gazebo Fortress (via ros_gz packages)
-- ros_gz_sim, ros_gz_bridge
+**System:**
+- ROS2 Humble
+- Gazebo Fortress (Ignition)
+- NVIDIA GPU (for Gazebo rendering)
 
-## Launch Parameters
+**Python:**
+- pyqtgraph, PyQt5 (real-time plotting)
+- pyarrow (Parquet logging)
+- numpy
 
-**gazebo_sim.launch.py:**
-- `use_sim_time`: Use simulation time (default: true)
-- `world`: Path to world file (default: test_world.sdf)
+## Testing
 
-**nodes.launch.py:**
-- `control_mode`: keyboard or auto (default: keyboard)
-- `linear_speed`: m/s (default: 0.5)
-- `angular_speed`: rad/s (default: 1.0)
-- `publish_rate`: Hz for sensor status (default: 1.0)
-- `ticks_per_revolution`: encoder resolution (default: 2048)
+```bash
+# Run tests
+colcon test --packages-select sim_car vehicle_plotter
+
+# Monitor topics
+ros2 topic list
+ros2 topic echo /vehicle_plotter/state
+
+# Check rates
+ros2 topic hz /vehicle_plotter/state
+```
