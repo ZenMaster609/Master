@@ -11,6 +11,7 @@ ROS2 multi-package workspace for vehicle simulation and state estimation:
 | **sim_car** | Gazebo Fortress car simulation with IMU, GPS, wheel encoders |
 | **vehicle_plotter** | Real-time plotting and logging for vehicle state data |
 | **vehicle_plotter_msgs** | Custom ROS2 message definitions (VehicleState.msg) |
+| **canbus_decoder** | CAN bus decoder for real hardware (wheel speeds, suspension) |
 
 ## Workspace Structure
 
@@ -25,14 +26,17 @@ master/                         # Workspace root
 ├── vehicle_plotter/            # Plotting/logging package
 │   ├── vehicle_plotter/        # Python modules
 │   │   ├── core/               # Vehicle state, time sync, QoS
-│   │   ├── adapters/           # Sensor adapters (Gazebo, VectorNav)
+│   │   ├── adapters/           # Sensor adapters (Gazebo, CAN, VectorNav)
 │   │   ├── nodes/              # ROS2 nodes
 │   │   ├── plotting/           # Plot config, manager, backends
 │   │   └── logging/            # Log writer, formats
 │   ├── launch/                 # Launch files
 │   └── config/                 # YAML configs
-└── vehicle_plotter_msgs/       # Message definitions
-    └── msg/VehicleState.msg
+├── vehicle_plotter_msgs/       # Message definitions
+│   └── msg/VehicleState.msg
+└── canbus_decoder/             # CAN bus decoder (real hardware only)
+    ├── canbus_decoder/         # Python nodes
+    └── launch/                 # Launch files
 ```
 
 ## Dev Container (Recommended)
@@ -121,6 +125,27 @@ ros2 launch vehicle_plotter plotter.launch.py log_format:=csv
 ```bash
 # Replay from rosbag
 ros2 launch vehicle_plotter offline_replay.launch.py bag_path:=/path/to/bag
+```
+
+### CAN Bus Monitoring (Jetson Only)
+```bash
+# First, setup the CAN interface
+sudo ip link set can0 type can bitrate 500000
+sudo ip link set up can0
+
+# Install ros2_socketcan (if not already installed)
+sudo apt install ros-humble-ros2-socketcan
+
+# Build canbus_decoder package
+colcon build --symlink-install --packages-select canbus_decoder
+source install/setup.bash
+
+# Run CAN monitor to see raw CAN traffic
+ros2 launch canbus_decoder can_monitor.launch.py
+
+# With options
+ros2 launch canbus_decoder can_monitor.launch.py can_device:=can0 verbose:=true
+ros2 launch canbus_decoder can_monitor.launch.py stats_interval:=10.0
 ```
 
 ## Architecture
