@@ -16,6 +16,7 @@ from ..core.vehicle_state import VehicleState
 from ..core.time_sync import TimeSynchronizer
 from ..core.qos_profiles import PLOTTER_QOS
 from ..adapters.gazebo_adapter import GazeboAdapter
+from ..adapters.can_adapter import CANAdapter
 
 
 class DataCollectorNode(Node):
@@ -29,7 +30,7 @@ class DataCollectorNode(Node):
     4. Publish synchronized state for plotting/logging
 
     Parameters:
-        adapter (str): Sensor adapter type ('gazebo' or 'vectornav')
+        adapter (str): Sensor adapter type ('gazebo', 'can', or 'vectornav')
         output_rate_hz (float): Output rate in Hz (default: 50.0)
         gps_origin_lat (float): GPS origin latitude (0.0 = auto)
         gps_origin_lon (float): GPS origin longitude (0.0 = auto)
@@ -75,6 +76,12 @@ class DataCollectorNode(Node):
                 node=self,
                 synchronizer=self.synchronizer,
                 auto_set_gps_origin=auto_set_gps_origin,
+            )
+        elif adapter_type == 'can':
+            # CAN bus adapter for real hardware wheel encoders
+            self.adapter = CANAdapter(
+                node=self,
+                synchronizer=self.synchronizer,
             )
         elif adapter_type == 'vectornav':
             # Placeholder for VectorNav adapter

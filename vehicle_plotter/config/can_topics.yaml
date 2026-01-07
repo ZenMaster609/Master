@@ -1,0 +1,16 @@
+# CAN Bus Topic Configuration
+#
+# Topic mappings for CAN adapter.
+# These override the default topics defined in CANAdapter.DEFAULT_TOPICS.
+#
+# Usage:
+#   ros2 launch vehicle_plotter plotter.launch.py adapter:=can topic_config:=can_topics.yaml
+
+# Wheel encoder velocities [FL, FR, RL, RR] in m/s
+wheel_velocities: /can/wheel_velocities
+
+# Suspension displacements [FL, FR, RL, RR] in meters
+suspension: /can/suspension
+
+# Steering angle in radians (front axle only)
+steering_angle: /can/steering_angle

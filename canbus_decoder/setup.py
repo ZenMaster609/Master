@@ -24,6 +24,7 @@ setup(
     entry_points={
         'console_scripts': [
             'can_monitor_node = canbus_decoder.can_monitor_node:main',
+            'can_decoder_node = canbus_decoder.can_decoder_node:main',
         ],
     },
 )
