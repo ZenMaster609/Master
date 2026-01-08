@@ -12,6 +12,7 @@ ROS2 multi-package workspace for vehicle simulation and state estimation:
 | **vehicle_plotter** | Real-time plotting and logging for vehicle state data |
 | **vehicle_plotter_msgs** | Custom ROS2 message definitions (VehicleState.msg) |
 | **canbus_decoder** | CAN bus decoder for real hardware (wheel speeds, suspension) |
+| **vectornav_decoder** | VectorNav VN-200 serial decoder for IMU/GPS/INS data |
 
 ## Workspace Structure
 
@@ -34,8 +35,16 @@ master/                         # Workspace root
 │   └── config/                 # YAML configs
 ├── vehicle_plotter_msgs/       # Message definitions
 │   └── msg/VehicleState.msg
-└── canbus_decoder/             # CAN bus decoder (real hardware only)
-    ├── canbus_decoder/         # Python nodes
+├── canbus_decoder/             # CAN bus decoder (real hardware only)
+│   ├── canbus_decoder/         # Python nodes
+│   └── launch/                 # Launch files
+└── vectornav_decoder/          # VectorNav VN-200 decoder
+    ├── vectornav_decoder/      # Python modules
+    │   ├── vn200_protocol.py   # Binary protocol parser (NO ROS)
+    │   ├── vn200_config.py     # YAML config handling (NO ROS)
+    │   ├── vn200_serial.py     # Serial communication (NO ROS)
+    │   └── vectornav_decoder_node.py  # ROS2 node
+    ├── config/                 # Output configs
     └── launch/                 # Launch files
 ```
 
@@ -299,6 +308,218 @@ Physical CAN Bus (500kbps)
 - can_decoder_node to be reused in other applications beyond vehicle_plotter
 - can_adapter.py to focus solely on vehicle_plotter integration
 
+### VectorNav VN-200 IMU/GPS/INS (Real Hardware)
+
+The vectornav_decoder package decodes binary serial data from the VectorNav VN-200 IMU/GPS/INS unit.
+
+#### Hardware Setup (Jetson/Linux)
+```bash
+# Check serial port
+ls /dev/ttyUSB*
+
+# Verify permissions (add user to dialout group if needed)
+sudo usermod -a -G dialout $USER
+
+# Build vectornav_decoder package
+colcon build --symlink-install --packages-select vectornav_decoder
+source install/setup.bash
+```
+
+#### VectorNav Decoder Usage
+
+**Option 1: Full System (Decoder + Plotter)**
+```bash
+# Terminal 1: VectorNav decoder (decodes serial to ROS topics)
+ros2 launch vectornav_decoder vectornav_decoder.launch.py serial_port:=/dev/ttyUSB0
+
+# Terminal 2: Vehicle plotter with VectorNav adapter
+ros2 launch vehicle_plotter plotter.launch.py adapter:=vectornav
+
+# Verify data flow
+ros2 topic echo /vectornav/imu
+ros2 topic echo /vectornav/gps
+ros2 topic echo /vectornav/ins
+ros2 topic echo /vehicle_plotter/state
+```
+
+**Option 2: VectorNav Monitor (Debugging Only)**
+```bash
+# Monitor raw VectorNav data (for debugging)
+ros2 launch vectornav_decoder vectornav_monitor.launch.py
+
+# With verbose output (shows all fields)
+ros2 launch vectornav_decoder vectornav_monitor.launch.py verbose:=true
+```
+
+**Option 3: Custom Configuration**
+```bash
+# Use high-rate IMU config (400 Hz)
+ros2 launch vectornav_decoder vectornav_decoder.launch.py \
+    config_file:=/path/to/high_rate_imu.yaml
+
+# Override serial settings
+ros2 launch vectornav_decoder vectornav_decoder.launch.py \
+    serial_port:=/dev/ttyACM0 baudrate:=115200
+```
+
+#### VectorNav Output Configuration
+
+The VN-200 binary output is configurable via YAML. Edit `config/default_output.yaml`:
+
+```yaml
+# Output rate: 800 Hz / rate_divisor
+output:
+  rate_divisor: 4           # 200 Hz
+
+binary_output_1:
+  # Group 1: Common (YPR, angular rate, accel)
+  group_common:
+    enabled: true
+    fields:
+      - TimeStartup
+      - YawPitchRoll
+      - AngularRate
+      - Accel
+
+  # Group 3: IMU (raw measurements)
+  group_imu:
+    enabled: true
+    fields:
+      - UncompAccel
+      - UncompGyro
+      - Temp
+
+  # Group 4: GPS
+  group_gps:
+    enabled: true
+    fields:
+      - NumSats
+      - Fix
+      - PosLla
+      - VelNed
+      - PosU
+      - VelU
+
+  # Group 6: INS (fused solution)
+  group_ins:
+    enabled: true
+    fields:
+      - InsStatus
+      - PosLla
+      - VelBody
+      - VelNed
+```
+
+To add or remove fields, simply edit the YAML - no code changes required.
+
+#### VectorNav Binary Protocol
+
+The VN-200 uses a binary streaming protocol:
+
+**Packet Structure:**
+```
+[Sync 0xFA][Groups 1B][Field1 2B]...[FieldN 2B][Payload][CRC 2B]
+```
+
+**Output Groups:**
+| Group | Bit | Description |
+|-------|-----|-------------|
+| Common | 0x01 | General purpose (YPR, velocity, accel) |
+| Time | 0x02 | Timestamps |
+| IMU | 0x04 | Raw IMU measurements |
+| GPS | 0x08 | GNSS receiver data |
+| Attitude | 0x10 | Attitude estimation |
+| INS | 0x20 | INS solution |
+
+**Key Fields:**
+- `YawPitchRoll`: Euler angles (degrees) - 3x float32
+- `AngularRate`: Gyro (rad/s) - 3x float32
+- `Accel`: Accelerometer (m/s^2) - 3x float32
+- `PosLla`: GPS position (lat, lon, alt) - 3x float64
+- `VelBody`: Body-frame velocity (m/s) - 3x float32
+
+#### VectorNav System Architecture
+
+```
+VN-200 Hardware (921600 baud)
+    │
+    └─ USB/Serial (/dev/ttyUSB0)
+           ↓
+    ┌──────────────────────────────────────────┐
+    │      vectornav_decoder_node              │
+    │  ┌────────────────────────────────┐     │
+    │  │  vn200_protocol.py             │     │  ← Binary parsing (NO ROS)
+    │  │  - VN200Parser class           │     │  ← CRC validation
+    │  │  - Dataclasses for each group  │     │  ← Unit conversions
+    │  └────────────────────────────────┘     │
+    │  ┌────────────────────────────────┐     │
+    │  │  vn200_serial.py               │     │  ← pyserial wrapper
+    │  │  - Connection management       │     │  ← Auto-reconnect
+    │  │  - ASCII config commands       │     │  ← Thread-safe
+    │  └────────────────────────────────┘     │
+    │  ┌────────────────────────────────┐     │
+    │  │  vn200_config.py               │     │  ← YAML config loader
+    │  │  - Field name → bit mapping    │     │  ← Register command builder
+    │  └────────────────────────────────┘     │
+    │                                          │
+    │  - Configures VN-200 on startup         │
+    │  - Parses binary packets at 200 Hz      │
+    │  - Publishes ROS2 messages              │
+    └──────────────────────────────────────────┘
+           ↓          ↓          ↓
+    /vectornav/imu    /vectornav/gps    /vectornav/ins
+    (sensor_msgs/Imu) (NavSatFix)       (nav_msgs/Odometry)
+     200 Hz           5 Hz              200 Hz
+           ↓
+    ┌──────────────────────────────────────────┐
+    │  VectorNavAdapter                        │  ← Adapter pattern
+    │  (vehicle_plotter/adapters)              │
+    │                                          │
+    │  - Subscribes to decoded topics         │
+    │  - Auto-sets GPS origin                 │
+    │  - Converts GPS to local coords         │
+    │  - Prefers INS for position             │
+    │  - Implements compute_state()           │
+    └──────────────────────────────────────────┘
+           ↓
+    DataCollectorNode
+           ↓
+    /vehicle_plotter/state (VehicleState)
+           ↓          ↓
+    PlotterNode   LoggerNode
+```
+
+**Component Responsibilities:**
+
+1. **vn200_protocol.py** (Pure Python, NO ROS)
+   - Binary packet parsing with CRC-16 validation
+   - Byte-level field extraction using `struct`
+   - Dataclasses for Common, IMU, GPS, INS data
+   - Unit conversion properties (deg→rad)
+   - Testable without ROS environment
+
+2. **vn200_serial.py** (Pure Python, NO ROS)
+   - pyserial wrapper with reconnection logic
+   - ASCII command interface for configuration
+   - Background thread for continuous reading
+   - Callback mechanism for parsed packets
+
+3. **vn200_config.py** (Pure Python, NO ROS)
+   - YAML configuration loading
+   - Field name to bit value mapping
+   - ASCII register command builder
+
+4. **vectornav_decoder_node.py** (ROS2 Node)
+   - Publishes Imu, NavSatFix, Odometry messages
+   - Configurable topics and frame IDs
+   - Periodic statistics logging
+
+5. **vectornav_adapter.py** (vehicle_plotter integration)
+   - Implements SensorAdapterInterface
+   - Auto-sets GPS origin from first fix
+   - Converts GPS to local coordinates
+   - Fuses INS/GPS/IMU into VehicleState
+
 ## Architecture
 
 ### Data Flow
@@ -326,6 +547,9 @@ Gazebo Sensors → ros_gz_bridge → sim_car nodes → vehicle_plotter
 | `/can/wheel_velocities` | Float32MultiArray | can_decoder_node |
 | `/can/suspension` | Float32MultiArray | can_decoder_node |
 | `/can/steering_angle` | Float32 | can_decoder_node |
+| `/vectornav/imu` | Imu | vectornav_decoder_node |
+| `/vectornav/gps` | NavSatFix | vectornav_decoder_node |
+| `/vectornav/ins` | Odometry | vectornav_decoder_node |
 | `/vehicle_plotter/state` | VehicleState | data_collector_node |
 
 ### VehicleState Message
@@ -389,22 +613,32 @@ string estimation_status  # "raw", "filtered", "predicted"
 
 ```bash
 # Run all tests
-colcon test --packages-select sim_car vehicle_plotter canbus_decoder
+colcon test --packages-select sim_car vehicle_plotter canbus_decoder vectornav_decoder
 
 # Run CAN protocol unit tests
 colcon test --packages-select canbus_decoder
 colcon test-result --verbose  # View test results
 
+# Run VectorNav protocol unit tests
+colcon test --packages-select vectornav_decoder
+colcon test-result --verbose
+
 # Or run directly with pytest
 cd canbus_decoder
 python3 -m pytest test/test_can_protocol.py -v
+
+cd vectornav_decoder
+python3 -m pytest test/test_vn200_protocol.py -v
 
 # Monitor topics
 ros2 topic list
 ros2 topic echo /vehicle_plotter/state
 ros2 topic echo /can/wheel_velocities
+ros2 topic echo /vectornav/imu
+ros2 topic echo /vectornav/gps
 
 # Check rates
 ros2 topic hz /vehicle_plotter/state
 ros2 topic hz /can/wheel_velocities
+ros2 topic hz /vectornav/imu
 ```

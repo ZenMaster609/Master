@@ -1,0 +1,88 @@
+# VectorNav VN-200 Binary Output Configuration
+# Reference: VN-200 User Manual, Section 7.2 - Binary Output Registers
+
+# Serial port settings
+serial:
+  port: /dev/ttyUSB0        # Serial port device
+  baudrate: 921600          # Baud rate (115200, 230400, 460800, 921600)
+  timeout_sec: 0.1          # Read timeout
+
+# Output rate configuration
+# VN-200 internal IMU rate is 800 Hz
+# Output rate = 800 / rate_divisor
+output:
+  rate_divisor: 4           # 800/4 = 200 Hz output rate
+  async_mode: 2             # 0=None, 1=Port1, 2=Port2, 3=Both
+
+# Binary output message configuration
+# Uses register 75 (Binary Output 1)
+# Each group has a 16-bit field selector
+binary_output_1:
+  enabled: true
+
+  # Group 1: Common Group
+  # General purpose data commonly used across applications
+  group_common:
+    enabled: true
+    fields:
+      - TimeStartup          # 0x0001 - Timestamp since startup (ns)
+      - YawPitchRoll         # 0x0008 - Euler angles (deg)
+      - AngularRate          # 0x0020 - Angular velocity (rad/s)
+      - Accel                # 0x0100 - Acceleration (m/s^2)
+
+  # Group 2: Time Group (optional)
+  group_time:
+    enabled: false
+    fields: []
+
+  # Group 3: IMU Group
+  # Raw and compensated inertial measurements
+  group_imu:
+    enabled: true
+    fields:
+      - UncompAccel          # 0x0004 - Uncompensated accel (m/s^2)
+      - UncompGyro           # 0x0008 - Uncompensated gyro (rad/s)
+      - Temp                 # 0x0010 - Temperature (C)
+
+  # Group 4: GPS Group
+  # GNSS receiver data
+  group_gps:
+    enabled: true
+    fields:
+      - NumSats              # 0x0008 - Number of satellites
+      - Fix                  # 0x0010 - GPS fix type
+      - PosLla               # 0x0020 - Lat/Lon/Alt (deg, deg, m)
+      - VelNed               # 0x0080 - NED velocity (m/s)
+      - PosU                 # 0x0200 - Position uncertainty (m)
+      - VelU                 # 0x0400 - Velocity uncertainty (m/s)
+
+  # Group 5: Attitude Group (optional)
+  # Attitude estimation outputs
+  group_attitude:
+    enabled: false
+    fields: []
+
+  # Group 6: INS Group
+  # Inertial Navigation System outputs
+  group_ins:
+    enabled: true
+    fields:
+      - InsStatus            # 0x0001 - INS solution status
+      - PosLla               # 0x0002 - INS position (deg, deg, m)
+      - VelBody              # 0x0008 - Body-frame velocity (m/s)
+      - VelNed               # 0x0010 - NED velocity (m/s)
+
+# Topic names
+topics:
+  imu: /vectornav/imu
+  gps: /vectornav/gps
+  ins: /vectornav/ins
+  raw: /vectornav/raw
+
+# Frame ID for TF
+frame_id: vectornav
+
+# Diagnostics
+diagnostics:
+  publish_rate_hz: 1.0      # Rate to publish diagnostics
+  stale_timeout_ms: 50      # Data staleness threshold

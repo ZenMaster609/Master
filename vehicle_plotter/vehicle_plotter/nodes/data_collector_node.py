@@ -17,6 +17,7 @@ from ..core.time_sync import TimeSynchronizer
 from ..core.qos_profiles import PLOTTER_QOS
 from ..adapters.gazebo_adapter import GazeboAdapter
 from ..adapters.can_adapter import CANAdapter
+from ..adapters.vectornav_adapter import VectorNavAdapter
 
 
 class DataCollectorNode(Node):
@@ -84,9 +85,8 @@ class DataCollectorNode(Node):
                 synchronizer=self.synchronizer,
             )
         elif adapter_type == 'vectornav':
-            # Placeholder for VectorNav adapter
-            self.get_logger().warn('VectorNav adapter not yet implemented, using Gazebo')
-            self.adapter = GazeboAdapter(
+            # VectorNav VN-200 adapter
+            self.adapter = VectorNavAdapter(
                 node=self,
                 synchronizer=self.synchronizer,
                 auto_set_gps_origin=auto_set_gps_origin,
