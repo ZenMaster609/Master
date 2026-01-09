@@ -14,7 +14,16 @@
       "Bash(wsl:*)",
       "Bash(powershell.exe -Command \"cd ''E:\\\\master\\\\sim_car''; git remote add origin https://github.com/ZenMaster609/Master.git; git branch -M main; git push -u origin main\")",
       "Bash(timeout 3 ros2 topic echo:*)",
-      "Bash(find:*)"
+      "Bash(find:*)",
+      "Bash(xargs:*)",
+      "Bash(sudo rm:*)",
+      "Bash(timeout 3 candump:*)",
+      "Bash(source:*)",
+      "Bash(ros2 node info:*)",
+      "Bash(ros2 lifecycle set:*)",
+      "Bash(ros2 lifecycle:*)",
+      "Bash(ros2 topic:*)",
+      "Bash(pkill:*)"
     ],
     "deny": [],
     "ask": []

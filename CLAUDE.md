@@ -48,7 +48,7 @@ master/                         # Workspace root
     └── launch/                 # Launch files
 ```
 
-## Dev Container (Recommended)
+## Dev Container (Windows/Desktop - Simulation)
 
 Use VS Code Dev Containers for a ready-to-go development environment:
 
@@ -76,6 +76,81 @@ bringup
 # Or launch just the plotter
 plotter
 ```
+
+## Jetson Setup (Real Hardware - Headless)
+
+For NVIDIA Jetson running real hardware (CAN bus + VectorNav), use the native setup script:
+
+**Prerequisites:**
+- NVIDIA Jetson with JetPack 6.x (Ubuntu 22.04)
+- CAN bus hardware connected
+- VectorNav VN-200 connected via USB serial
+
+**Setup:**
+```bash
+# Clone workspace
+mkdir -p ~/ros2_ws/src && cd ~/ros2_ws/src
+git clone <your-repo-url> Master
+
+# Run setup script
+cd Master/scripts
+chmod +x setup-jetson.sh
+./setup-jetson.sh
+
+# Reboot for group changes
+sudo reboot
+```
+
+**What the script installs:**
+- ROS2 Humble (ros-base - lightweight, no GUI)
+- ros2_socketcan (CAN to ROS bridge)
+- Python deps: pyserial, numpy, pyarrow
+- Systemd service for CAN auto-start on boot
+- Shell aliases (cb, cbs, cbh, canup, candown)
+
+**After reboot:**
+```bash
+# Verify CAN is up (auto-started by systemd)
+canstatus
+
+# Build hardware packages only (skip sim_car)
+cbh
+
+# Launch all hardware nodes
+ros2 launch vehicle_plotter jetson_bringup.launch.py
+```
+
+**Jetson launch options:**
+```bash
+# Full system (CAN + VectorNav + logging)
+ros2 launch vehicle_plotter jetson_bringup.launch.py
+
+# CAN only (no VectorNav)
+ros2 launch vehicle_plotter jetson_bringup.launch.py enable_vectornav:=false
+
+# VectorNav only (no CAN)
+ros2 launch vehicle_plotter jetson_bringup.launch.py enable_can:=false
+
+# Custom devices
+ros2 launch vehicle_plotter jetson_bringup.launch.py \
+    can_device:=can1 serial_port:=/dev/ttyUSB1
+
+# Disable logging
+ros2 launch vehicle_plotter jetson_bringup.launch.py enable_log:=false
+```
+
+**Quick commands (added to ~/.bashrc):**
+| Command | Description |
+|---------|-------------|
+| `cb` | Build entire workspace |
+| `cbs <pkg>` | Build specific package |
+| `cbh` | Build hardware packages only (skip sim_car) |
+| `sb` | Source workspace |
+| `canup` | Start CAN interface |
+| `candown` | Stop CAN interface |
+| `canstatus` | Show CAN interface details |
+
+**Log location:** `~/.ros/logs/`
 
 ## Build Commands
 

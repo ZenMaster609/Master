@@ -13,9 +13,13 @@ Usage:
 """
 
 from launch import LaunchDescription
-from launch.actions import DeclareLaunchArgument, LogInfo
+from launch.actions import DeclareLaunchArgument, LogInfo, EmitEvent, RegisterEventHandler
 from launch.substitutions import LaunchConfiguration
-from launch_ros.actions import Node
+from launch.events import matches_action
+from launch_ros.actions import LifecycleNode, Node
+from launch_ros.events.lifecycle import ChangeState
+from launch_ros.event_handlers import OnStateTransition
+import lifecycle_msgs.msg
 
 
 def generate_launch_description():
@@ -56,26 +60,51 @@ def generate_launch_description():
         description='Show periodic statistics'
     )
 
-    # ros2_socketcan bridge node
-    # This converts raw SocketCAN to ROS 2 can_msgs/Frame
-    socketcan_bridge = Node(
+    # ros2_socketcan receiver node (lifecycle node)
+    # This converts raw SocketCAN to ROS 2 can_msgs/Frame on /from_can_bus
+    socketcan_receiver = LifecycleNode(
         package='ros2_socketcan',
-        executable='socket_can_bridge',
-        name='socket_can_bridge',
+        executable='socket_can_receiver_node_exe',
+        name='socket_can_receiver',
+        namespace='',
         output='screen',
         parameters=[{
             'interface': LaunchConfiguration('can_device'),
         }],
     )
 
-    # CAN decoder node
+    # Auto-configure the lifecycle node
+    configure_event = EmitEvent(
+        event=ChangeState(
+            lifecycle_node_matcher=matches_action(socketcan_receiver),
+            transition_id=lifecycle_msgs.msg.Transition.TRANSITION_CONFIGURE,
+        )
+    )
+
+    # Auto-activate after configure succeeds
+    activate_event_handler = RegisterEventHandler(
+        OnStateTransition(
+            target_lifecycle_node=socketcan_receiver,
+            goal_state='inactive',
+            entities=[
+                EmitEvent(
+                    event=ChangeState(
+                        lifecycle_node_matcher=matches_action(socketcan_receiver),
+                        transition_id=lifecycle_msgs.msg.Transition.TRANSITION_ACTIVATE,
+                    )
+                )
+            ],
+        )
+    )
+
+    # CAN decoder node - subscribes to /from_can_bus
     can_decoder = Node(
         package='canbus_decoder',
         executable='can_decoder_node',
         name='can_decoder',
         output='screen',
         parameters=[{
-            'can_topic': '/can/rx',
+            'can_topic': '/from_can_bus',
             'stale_timeout_ms': LaunchConfiguration('stale_timeout_ms'),
             'publish_rate_hz': LaunchConfiguration('publish_rate_hz'),
             'show_stats': LaunchConfiguration('show_stats'),
@@ -96,7 +125,11 @@ def generate_launch_description():
         LogInfo(msg=['Starting CAN decoder on device: ', LaunchConfiguration('can_device')]),
         LogInfo(msg=['Publishing rate: ', LaunchConfiguration('publish_rate_hz'), ' Hz']),
 
-        # Nodes
-        socketcan_bridge,
+        # Lifecycle management for socketcan receiver
+        activate_event_handler,
+        socketcan_receiver,
+        configure_event,
+
+        # CAN decoder node
         can_decoder,
     ])
