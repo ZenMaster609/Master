@@ -1,9 +1,3 @@
-# Logs and data
-logs/
-multidata/
-*.parquet
-*.bag
-
 # Build artifacts
 build/
 install/

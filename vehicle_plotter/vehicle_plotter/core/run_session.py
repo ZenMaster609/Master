@@ -47,15 +47,19 @@ def get_default_base_path() -> Path:
     """Get the default base path for multidata storage."""
     # Try to find the Master folder (repo root)
     # Look for common markers
+    #
+    # NOTE: Use .resolve() on __file__ to follow symlinks from colcon build
+    # directory to the actual source location in Master/
     search_paths = [
-        Path.cwd(),
-        Path(__file__).parent.parent.parent.parent,  # From this file up to Master
+        Path(__file__).resolve().parent.parent.parent.parent,  # From this file up to Master
         Path.home() / 'ros2_ws' / 'src' / 'Master',
         Path('/home') / os.getenv('USER', 'user') / 'ros2_ws' / 'src' / 'Master',
+        Path.cwd(),  # Last resort: current working directory
     ]
 
     for p in search_paths:
-        if p.exists() and (p / 'vehicle_plotter').exists():
+        # Check for both vehicle_plotter and CLAUDE.md to confirm this is the Master folder
+        if p.exists() and (p / 'vehicle_plotter').exists() and (p / 'CLAUDE.md').exists():
             return p / 'multidata'
 
     # Fallback to current working directory
