@@ -1,5 +1,6 @@
 # Logs and data
 logs/
+multidata/
 *.parquet
 *.bag
 

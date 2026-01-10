@@ -25,6 +25,7 @@ setup(
         'console_scripts': [
             'can_monitor_node = canbus_decoder.can_monitor_node:main',
             'can_decoder_node = canbus_decoder.can_decoder_node:main',
+            'vcan_publisher_node = canbus_decoder.vcan_publisher_node:main',
         ],
     },
 )

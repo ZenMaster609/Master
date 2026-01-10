@@ -14,6 +14,7 @@ find_package(builtin_interfaces REQUIRED)
 # Generate messages
 rosidl_generate_interfaces(${PROJECT_NAME}
   "msg/VehicleState.msg"
+  "msg/RunSession.msg"
   DEPENDENCIES std_msgs builtin_interfaces
 )
 

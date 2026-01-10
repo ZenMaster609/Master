@@ -1,0 +1,54 @@
+# Rosbag recording topic configuration
+#
+# Defines which topics to record for different operational modes.
+# Used by rosbag_controller_node to select topics for recording.
+
+# Common topics recorded in all modes
+common:
+  - /vehicle_plotter/state
+  - /run_session
+
+# Jetson hardware topics (CAN + VectorNav)
+jetson_hardware:
+  - /vectornav/imu
+  - /vectornav/gps
+  - /vectornav/ins
+  - /can/wheel_velocities
+  - /can/suspension
+  - /can/steering_angle
+  - /can/rx  # Raw CAN frames for debugging
+
+# Simulation topics (Gazebo)
+simulation:
+  - /imu
+  - /navsat
+  - /odom
+  - /wheel_encoder/ticks
+  - /wheel_encoder/velocities
+  - /cmd_vel
+  - /joint_states
+  - /clock
+
+# Windows plotter topics (subscriber side)
+windows_plotter:
+  - /vehicle_plotter/state
+  - /run_session
+  # Remote sensor topics (received over network)
+  - /vectornav/imu
+  - /vectornav/gps
+  - /vectornav/ins
+  - /can/wheel_velocities
+
+# Virtual CAN testing
+vcan_test:
+  - /vehicle_plotter/state
+  - /run_session
+  - /can/wheel_velocities
+  - /can/suspension
+  - /can/steering_angle
+  - /can/rx
+  - /to_can_bus  # Outgoing fake frames
+
+# Minimal recording (state only)
+minimal:
+  - /vehicle_plotter/state

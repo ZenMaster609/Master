@@ -74,14 +74,24 @@ class LogWriter:
         self._write_metadata()
 
     def _create_session_directory(self) -> Path:
-        """Create timestamped session directory."""
-        if self.config.session_name:
-            session_name = self.config.session_name
+        """Create session directory.
+
+        If session_name is empty string, writes directly to base_path.
+        If session_name is None, generates a timestamped session name.
+        Otherwise uses the provided session_name.
+        """
+        if self.config.session_name == '':
+            # Empty string = use base_path directly (for RunSession integration)
+            session_path = self.config.base_path
+        elif self.config.session_name:
+            # Explicit session name provided
+            session_path = self.config.base_path / self.config.session_name
         else:
+            # None = auto-generate timestamped name
             timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
             session_name = f"session_{timestamp}"
+            session_path = self.config.base_path / session_name
 
-        session_path = self.config.base_path / session_name
         session_path.mkdir(parents=True, exist_ok=True)
 
         return session_path

@@ -5,10 +5,13 @@ Provides a high-level interface for:
 - Adding/removing plots dynamically
 - Pushing vehicle state data to plots
 - Handling different X-axis types
+- Exporting plot images and data
 """
 
 from typing import Dict, List, Optional, Any
+from pathlib import Path
 import threading
+import csv
 
 from .plot_config import PlotConfig, PlotLayoutConfig, XAxisType, get_default_plots
 from .backends.base_backend import PlotBackend, DummyBackend
@@ -218,6 +221,59 @@ class PlotManager:
     def export(self, path: str, dpi: int = 150) -> None:
         """Export current view to image file."""
         self._backend.export_figure(path, dpi)
+
+    def export_data(self, output_dir: Path) -> Dict[str, Path]:
+        """
+        Export plot buffer data to CSV files.
+
+        Creates one CSV file per plot containing all series data.
+
+        Args:
+            output_dir: Directory to save CSV files
+
+        Returns:
+            Dictionary mapping plot names to saved file paths
+        """
+        output_dir = Path(output_dir)
+        output_dir.mkdir(parents=True, exist_ok=True)
+
+        exported_files = {}
+
+        with self._lock:
+            for name, config in self._configs.items():
+                buffers = self._buffers[name]
+
+                # Get X and Y data
+                x_data = buffers['x'].to_list()
+                if not x_data:
+                    continue
+
+                # Build rows
+                rows = []
+                header = ['x'] + [s.name for s in config.series]
+
+                for i, x_val in enumerate(x_data):
+                    row = [x_val]
+                    for series in config.series:
+                        series_data = buffers[series.name].to_list()
+                        if i < len(series_data):
+                            row.append(series_data[i])
+                        else:
+                            row.append('')
+                    rows.append(row)
+
+                # Write CSV
+                safe_name = name.replace(' ', '_').replace('/', '_').lower()
+                csv_path = output_dir / f"{safe_name}.csv"
+
+                with open(csv_path, 'w', newline='') as f:
+                    writer = csv.writer(f)
+                    writer.writerow(header)
+                    writer.writerows(rows)
+
+                exported_files[name] = csv_path
+
+        return exported_files
 
     def get_plot_names(self) -> List[str]:
         """Get list of current plot names."""

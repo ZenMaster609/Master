@@ -1,0 +1,112 @@
+<?xml version="1.0" encoding="UTF-8" ?>
+<!--
+FastDDS configuration for multi-machine WiFi communication.
+
+Usage:
+  export FASTRTPS_DEFAULT_PROFILES_FILE=/path/to/fastdds_wifi.xml
+  export RMW_IMPLEMENTATION=rmw_fastrtps_cpp
+
+Before using, update the initialPeersList with actual IP addresses:
+  - Replace JETSON_IP with your Jetson's WiFi IP (e.g., 192.168.1.100)
+  - Replace WINDOWS_IP with your Windows machine's IP (e.g., 192.168.1.101)
+-->
+<profiles xmlns="http://www.eprosima.com/XMLSchemas/fastRTPS_Profiles">
+
+  <!-- Transport descriptor for UDP -->
+  <transport_descriptors>
+    <transport_descriptor>
+      <transport_id>udp_transport</transport_id>
+      <type>UDPv4</type>
+      <maxMessageSize>65000</maxMessageSize>
+      <sendBufferSize>8388608</sendBufferSize>
+      <receiveBufferSize>8388608</receiveBufferSize>
+    </transport_descriptor>
+  </transport_descriptors>
+
+  <!-- Default participant profile for WiFi communication -->
+  <participant profile_name="wifi_participant" is_default_profile="true">
+    <rtps>
+      <name>VehiclePlotterParticipant</name>
+
+      <!-- Use custom UDP transport -->
+      <userTransports>
+        <transport_id>udp_transport</transport_id>
+      </userTransports>
+      <useBuiltinTransports>false</useBuiltinTransports>
+
+      <builtin>
+        <discovery_config>
+          <!-- Lease duration (how long before node is considered dead) -->
+          <leaseDuration>
+            <sec>10</sec>
+          </leaseDuration>
+          <leaseAnnouncement>
+            <sec>3</sec>
+          </leaseAnnouncement>
+
+          <!--
+          Initial peer list for reliable discovery.
+          Update these IP addresses for your network setup.
+          -->
+          <initialPeersList>
+            <!-- Jetson IP - UPDATE THIS -->
+            <locator>
+              <udpv4>
+                <address>JETSON_IP</address>
+              </udpv4>
+            </locator>
+
+            <!-- Windows IP - UPDATE THIS -->
+            <locator>
+              <udpv4>
+                <address>WINDOWS_IP</address>
+              </udpv4>
+            </locator>
+          </initialPeersList>
+
+          <!-- Simple discovery protocol -->
+          <simpleEDP>
+            <PUBWRITER_SUBREADER>true</PUBWRITER_SUBREADER>
+            <PUBREADER_SUBWRITER>true</PUBREADER_SUBWRITER>
+          </simpleEDP>
+        </discovery_config>
+
+        <!-- Metatraffic settings -->
+        <metatrafficUnicastLocatorList>
+          <locator>
+            <udpv4>
+              <port>7400</port>
+            </udpv4>
+          </locator>
+        </metatrafficUnicastLocatorList>
+      </builtin>
+    </rtps>
+  </participant>
+
+  <!-- Data writer profile for reliable communication -->
+  <data_writer profile_name="reliable_writer">
+    <qos>
+      <reliability>
+        <kind>RELIABLE</kind>
+      </reliability>
+      <durability>
+        <kind>TRANSIENT_LOCAL</kind>
+      </durability>
+    </qos>
+    <historyMemoryPolicy>DYNAMIC</historyMemoryPolicy>
+  </data_writer>
+
+  <!-- Data reader profile for reliable communication -->
+  <data_reader profile_name="reliable_reader">
+    <qos>
+      <reliability>
+        <kind>RELIABLE</kind>
+      </reliability>
+      <durability>
+        <kind>TRANSIENT_LOCAL</kind>
+      </durability>
+    </qos>
+    <historyMemoryPolicy>DYNAMIC</historyMemoryPolicy>
+  </data_reader>
+
+</profiles>

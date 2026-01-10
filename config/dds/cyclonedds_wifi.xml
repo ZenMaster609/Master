@@ -1,0 +1,71 @@
+<?xml version="1.0" encoding="UTF-8" ?>
+<!--
+CycloneDDS configuration for multi-machine WiFi communication.
+
+Usage:
+  export CYCLONEDDS_URI=file:///path/to/cyclonedds_wifi.xml
+  export RMW_IMPLEMENTATION=rmw_cyclonedds_cpp
+
+Before using, update the Peers section with actual IP addresses:
+  - Replace JETSON_IP with your Jetson's WiFi IP (e.g., 192.168.1.100)
+  - Replace WINDOWS_IP with your Windows machine's IP (e.g., 192.168.1.101)
+-->
+<CycloneDDS xmlns="https://cdds.io/config">
+  <Domain id="any">
+    <General>
+      <!-- Use auto to let CycloneDDS find the right interface -->
+      <NetworkInterfaceAddress>auto</NetworkInterfaceAddress>
+
+      <!-- Enable multicast for discovery (may not work on all WiFi networks) -->
+      <AllowMulticast>true</AllowMulticast>
+
+      <!-- Increase max message size for large messages -->
+      <MaxMessageSize>65500</MaxMessageSize>
+
+      <!-- Fragment large messages -->
+      <FragmentSize>4096</FragmentSize>
+    </General>
+
+    <Discovery>
+      <!-- Use auto participant index -->
+      <ParticipantIndex>auto</ParticipantIndex>
+      <MaxAutoParticipantIndex>100</MaxAutoParticipantIndex>
+
+      <!--
+      Explicit peer list for reliable discovery over WiFi.
+      Update these IP addresses for your network setup.
+      -->
+      <Peers>
+        <!-- Jetson IP address - UPDATE THIS -->
+        <Peer address="JETSON_IP"/>
+
+        <!-- Windows IP address - UPDATE THIS -->
+        <Peer address="WINDOWS_IP"/>
+
+        <!-- Add more peers as needed -->
+        <!-- <Peer address="192.168.1.102"/> -->
+      </Peers>
+
+      <!-- Lease duration (how long before a node is considered dead) -->
+      <LeaseDuration>10s</LeaseDuration>
+    </Discovery>
+
+    <Internal>
+      <!-- Increase buffer sizes for better performance -->
+      <SocketReceiveBufferSize min="1MB" max="8MB"/>
+      <SocketSendBufferSize min="1MB" max="8MB"/>
+
+      <!-- Retransmit settings for reliability -->
+      <RetransmitMerging>never</RetransmitMerging>
+
+      <!-- Write batch for efficiency -->
+      <WriteBatch>true</WriteBatch>
+    </Internal>
+
+    <Tracing>
+      <!-- Set to 'warning' for minimal output, 'config' for startup info -->
+      <Category>warning</Category>
+      <OutputFile>stderr</OutputFile>
+    </Tracing>
+  </Domain>
+</CycloneDDS>

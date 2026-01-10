@@ -1,0 +1,10 @@
+# Requirements for standalone tools (no ROS needed)
+# Install with: pip install -r requirements_tools.txt
+
+# Data handling
+pyarrow>=10.0.0
+pandas>=1.5.0
+numpy>=1.21.0
+
+# Plotting
+matplotlib>=3.5.0
