@@ -6,6 +6,8 @@ Usage:
     ros2 launch vehicle_plotter replay.launch.py bag_path:=/path/to/bag
 """
 
+import os
+from ament_index_python.packages import get_package_share_directory
 from launch import LaunchDescription
 from launch.actions import DeclareLaunchArgument, ExecuteProcess
 from launch.conditions import IfCondition
@@ -14,15 +16,21 @@ from launch_ros.actions import Node
 
 
 def generate_launch_description():
+    pkg_share = get_package_share_directory('vehicle_plotter')
+    default_qos_override = os.path.join(pkg_share, 'config', 'replay_qos_override.yaml')
+
     bag_path_arg = DeclareLaunchArgument('bag_path', description='Path to rosbag')
     rate_arg = DeclareLaunchArgument('rate', default_value='1.0')
     enable_plot_arg = DeclareLaunchArgument('enable_plot', default_value='true')
     enable_log_arg = DeclareLaunchArgument('enable_log', default_value='false')
     adapter_arg = DeclareLaunchArgument('adapter', default_value='can')
+    qos_override_arg = DeclareLaunchArgument('qos_override', default_value=default_qos_override,
+                                              description='Path to QoS override YAML')
 
     bag_player = ExecuteProcess(
         cmd=['ros2', 'bag', 'play', LaunchConfiguration('bag_path'),
-             '--rate', LaunchConfiguration('rate'), '--clock'],
+             '--rate', LaunchConfiguration('rate'), '--clock',
+             '--qos-profile-overrides-path', LaunchConfiguration('qos_override')],
         output='screen',
     )
 
@@ -69,6 +77,6 @@ def generate_launch_description():
     )
 
     return LaunchDescription([
-        bag_path_arg, rate_arg, enable_plot_arg, enable_log_arg, adapter_arg,
+        bag_path_arg, rate_arg, enable_plot_arg, enable_log_arg, adapter_arg, qos_override_arg,
         session_manager, bag_player, data_collector, plotter, logger,
     ])

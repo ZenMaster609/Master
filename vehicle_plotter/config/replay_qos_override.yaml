@@ -1,0 +1,37 @@
+# QoS overrides for rosbag replay
+# Converts TRANSIENT_LOCAL to VOLATILE to avoid publish failures
+/can/steering_angle:
+  reliability: reliable
+  durability: volatile
+  history: keep_last
+  depth: 10
+
+/can/suspension:
+  reliability: reliable
+  durability: volatile
+  history: keep_last
+  depth: 10
+
+/can/wheel_velocities:
+  reliability: reliable
+  durability: volatile
+  history: keep_last
+  depth: 10
+
+/to_can_bus:
+  reliability: reliable
+  durability: volatile
+  history: keep_last
+  depth: 10
+
+/run_session:
+  reliability: reliable
+  durability: volatile
+  history: keep_last
+  depth: 10
+
+/vehicle_plotter/state:
+  reliability: reliable
+  durability: volatile
+  history: keep_last
+  depth: 10

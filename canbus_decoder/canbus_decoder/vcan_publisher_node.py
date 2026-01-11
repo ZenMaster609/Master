@@ -46,7 +46,7 @@ class VCANPublisherNode(Node):
         # Declare parameters
         self.declare_parameter('publish_rate_hz', 100.0)
         self.declare_parameter('mode', 'circle')
-        self.declare_parameter('base_velocity_mps', 1.0)
+        self.declare_parameter('base_velocity_mps', 5.0)  # 5 m/s (~18 km/h) for visible test data
 
         # Get parameters
         self.publish_rate = self.get_parameter('publish_rate_hz').value
@@ -65,6 +65,7 @@ class VCANPublisherNode(Node):
         # State for motion simulation
         self._start_time = time.time()
         self._steering_angle = 0.0  # radians
+        self._msg_count = 0
 
         # Publisher
         self.can_pub = self.create_publisher(
@@ -102,6 +103,13 @@ class VCANPublisherNode(Node):
             rl_vel, rr_vel,
         )
         self.can_pub.publish(rear_frame)
+
+        # Log periodically (every 2 seconds)
+        self._msg_count += 1
+        if self._msg_count % (int(self.publish_rate) * 2) == 0:
+            self.get_logger().info(
+                f'Wheel velocities (m/s): FL={fl_vel:.2f} FR={fr_vel:.2f} RL={rl_vel:.2f} RR={rr_vel:.2f} | Steer={steering:.2f} rad'
+            )
 
     def _get_velocities(self, elapsed: float):
         """Get wheel velocities based on mode."""

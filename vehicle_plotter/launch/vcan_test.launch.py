@@ -16,7 +16,7 @@ from launch_ros.actions import Node
 
 def generate_launch_description():
     mode_arg = DeclareLaunchArgument('mode', default_value='circle')
-    base_velocity_arg = DeclareLaunchArgument('base_velocity_mps', default_value='1.0')
+    base_velocity_arg = DeclareLaunchArgument('base_velocity_mps', default_value='5.0')
     enable_plot_arg = DeclareLaunchArgument('enable_plot', default_value='true')
     enable_log_arg = DeclareLaunchArgument('enable_log', default_value='true')
     enable_rosbag_arg = DeclareLaunchArgument('enable_rosbag', default_value='true')
