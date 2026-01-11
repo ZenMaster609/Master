@@ -1,0 +1,41 @@
+{
+  "session_name": "logs",
+  "created_at": "2026-01-12T00:51:16.276617",
+  "config": {
+    "format": "parquet",
+    "compression": "snappy",
+    "signals": [
+      "timestamp",
+      "x",
+      "y",
+      "vx",
+      "vy",
+      "yaw",
+      "yaw_rate",
+      "speed",
+      "distance_traveled",
+      "slip_longitudinal",
+      "slip_lateral",
+      "encoder_fl",
+      "encoder_fr",
+      "encoder_rl",
+      "encoder_rr",
+      "vel_fl",
+      "vel_fr",
+      "vel_rl",
+      "vel_rr",
+      "gps_latitude",
+      "gps_longitude",
+      "gps_valid",
+      "estimation_status"
+    ],
+    "flush_interval_sec": 5.0
+  },
+  "files": [
+    "vehicle_state_0000.parquet"
+  ],
+  "closed_at": "2026-01-12T00:52:00.935841",
+  "total_files": 1,
+  "total_records": 2234,
+  "duration_seconds": 44.659249
+}
