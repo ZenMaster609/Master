@@ -63,19 +63,19 @@ graph TB
 ```mermaid
 graph LR
     subgraph "Sensor Topics"
-        IMU[/vectornav/imu<br/>sensor_msgs/Imu]
-        GPS[/vectornav/gps<br/>sensor_msgs/NavSatFix]
-        INS[/vectornav/ins<br/>nav_msgs/Odometry]
-        WV[/can/wheel_velocities<br/>Float32MultiArray]
-        SUS[/can/suspension<br/>Float32MultiArray]
-        STR[/can/steering_angle<br/>Float32]
+        IMU["/vectornav/imu\nsensor_msgs/Imu"]
+        GPS["/vectornav/gps\nsensor_msgs/NavSatFix"]
+        INS["/vectornav/ins\nnav_msgs/Odometry"]
+        WV["/can/wheel_velocities\nstd_msgs/Float32MultiArray"]
+        SUS["/can/suspension\nstd_msgs/Float32MultiArray"]
+        STR["/can/steering_angle\nstd_msgs/Float32"]
     end
 
     subgraph "Simulation Topics"
-        SIMU[/imu<br/>sensor_msgs/Imu]
-        SIMGPS[/navsat<br/>sensor_msgs/NavSatFix]
-        ODOM[/odom<br/>nav_msgs/Odometry]
-        ENC[/wheel_encoder/*]
+        SIMU["/imu\nsensor_msgs/Imu"]
+        SIMGPS["/navsat\nsensor_msgs/NavSatFix"]
+        ODOM["/odom\nnav_msgs/Odometry"]
+        ENC["/wheel_encoder/*"]
     end
 
     subgraph "Processing"
@@ -83,8 +83,8 @@ graph LR
     end
 
     subgraph "Output Topics"
-        VS[/vehicle_plotter/state<br/>VehicleState]
-        RS[/run_session<br/>RunSession]
+        VS["/vehicle_plotter/state\nVehicleState"]
+        RS["/run_session\nRunSession"]
     end
 
     IMU --> DC
