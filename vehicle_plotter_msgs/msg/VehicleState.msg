@@ -31,9 +31,8 @@ float64 distance_traveled     # cumulative distance, meters
 float64 slip_longitudinal
 float64 slip_lateral
 
-# Wheel encoders [FL, FR, RL, RR]
-int32[4] encoder_ticks
-float32[4] encoder_velocities   # m/s at wheel circumference
+# Wheel encoder velocities [FL, FR, RL, RR] in m/s
+float32[4] encoder_velocities
 
 # GPS data (raw, for reference)
 float64 gps_latitude      # degrees

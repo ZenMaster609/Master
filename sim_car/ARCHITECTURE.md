@@ -98,19 +98,15 @@
   - `/imu/data` - IMU readings
   - `/gps/fix` - GPS position
   - `/odom` - Odometry
-  - `/wheel_encoder/ticks` - Encoder ticks
-  - `/wheel_encoder/velocities` - Wheel velocities
+  - `/wheel_encoder/velocities` - Wheel velocities in m/s
 - **Parameters**:
   - `publish_rate`: Status update frequency
 
 #### 3. wheel_encoder_node
-- **Purpose**: Convert wheel joint states to encoder ticks
-- **Subscribes**: `/wheel_encoder/joint_states` - Raw wheel joint data
-- **Publishes**:
-  - `/wheel_encoder/ticks` - Cumulative encoder ticks
-  - `/wheel_encoder/velocities` - Wheel velocities (m/s)
+- **Purpose**: Convert wheel joint states to wheel velocities
+- **Subscribes**: `/joint_states` - Raw wheel joint data from Gazebo
+- **Publishes**: `/wheel_encoder/velocities` - Wheel velocities in m/s [FL, FR, RL, RR]
 - **Parameters**:
-  - `ticks_per_revolution`: Encoder resolution (default: 2048)
   - `wheel_radius`: Wheel radius in meters (default: 0.1)
   - `publish_rate`: Update rate in Hz (default: 50)
 
@@ -141,8 +137,8 @@ URDF → robot_state_publisher → /tf → RViz/Other Nodes
 
 ### Encoder Flow
 ```
-Wheel Joints → joint_state_publisher → /wheel_encoder/joint_states
-→ wheel_encoder_node → /wheel_encoder/ticks & /wheel_encoder/velocities
+Wheel Joints → joint_state_publisher → /joint_states
+→ wheel_encoder_node → /wheel_encoder/velocities
 → sensor_processor → Terminal Output
 ```
 

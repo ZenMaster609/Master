@@ -48,8 +48,7 @@ class VehicleState:
     slip_longitudinal: float = 0.0   # (wheel_vel - body_vel) / body_vel
     slip_lateral: float = 0.0        # atan(vy / vx) - sideslip angle
 
-    # Wheel encoders (FL, FR, RL, RR)
-    encoder_ticks: List[int] = field(default_factory=lambda: [0, 0, 0, 0])
+    # Wheel encoder velocities [FL, FR, RL, RR] in m/s
     encoder_velocities: List[float] = field(default_factory=lambda: [0.0, 0.0, 0.0, 0.0])
 
     # Raw GPS (for reference, optional)
@@ -91,14 +90,10 @@ class VehicleState:
             'distance_traveled': self.distance_traveled,
             'slip_longitudinal': self.slip_longitudinal,
             'slip_lateral': self.slip_lateral,
-            'encoder_fl': self.encoder_ticks[0],
-            'encoder_fr': self.encoder_ticks[1],
-            'encoder_rl': self.encoder_ticks[2],
-            'encoder_rr': self.encoder_ticks[3],
-            'vel_fl': self.encoder_velocities[0],
-            'vel_fr': self.encoder_velocities[1],
-            'vel_rl': self.encoder_velocities[2],
-            'vel_rr': self.encoder_velocities[3],
+            'encoder_fl': self.encoder_velocities[0],
+            'encoder_fr': self.encoder_velocities[1],
+            'encoder_rl': self.encoder_velocities[2],
+            'encoder_rr': self.encoder_velocities[3],
             'gps_latitude': self.gps_latitude,
             'gps_longitude': self.gps_longitude,
             'gps_altitude': self.gps_altitude,
@@ -148,7 +143,6 @@ class VehicleState:
         msg.slip_lateral = self.slip_lateral
 
         # Encoders
-        msg.encoder_ticks = list(self.encoder_ticks)
         msg.encoder_velocities = [float(v) for v in self.encoder_velocities]
 
         # GPS
@@ -183,7 +177,6 @@ class VehicleState:
             distance_traveled=msg.distance_traveled,
             slip_longitudinal=msg.slip_longitudinal,
             slip_lateral=msg.slip_lateral,
-            encoder_ticks=list(msg.encoder_ticks),
             encoder_velocities=list(msg.encoder_velocities),
             gps_latitude=msg.gps_latitude,
             gps_longitude=msg.gps_longitude,
@@ -208,7 +201,6 @@ class VehicleState:
             distance_traveled=self.distance_traveled,
             slip_longitudinal=self.slip_longitudinal,
             slip_lateral=self.slip_lateral,
-            encoder_ticks=list(self.encoder_ticks),
             encoder_velocities=list(self.encoder_velocities),
             gps_latitude=self.gps_latitude,
             gps_longitude=self.gps_longitude,

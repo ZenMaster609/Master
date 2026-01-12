@@ -240,8 +240,7 @@ float64 x, y
 float64 vx, vy
 float64 yaw, yaw_rate
 float64 speed, distance_traveled
-int32[4] encoder_ticks
-float32[4] encoder_velocities
+float32[4] encoder_velocities  # wheel velocities in m/s [FL, FR, RL, RR]
 float64 gps_latitude, gps_longitude
 bool gps_valid
 string estimation_status

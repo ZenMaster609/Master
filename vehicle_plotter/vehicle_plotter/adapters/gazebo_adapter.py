@@ -11,7 +11,7 @@ import math
 from rclpy.node import Node
 from sensor_msgs.msg import Imu, NavSatFix
 from nav_msgs.msg import Odometry
-from std_msgs.msg import Int32MultiArray, Float32MultiArray
+from std_msgs.msg import Float32MultiArray
 
 from ..core.sensor_interfaces import SensorAdapterInterface
 from ..core.vehicle_state import VehicleState
@@ -33,8 +33,7 @@ class GazeboAdapter(SensorAdapterInterface):
     - /imu/data (sensor_msgs/Imu) - IMU data at ~100Hz
     - /gps/fix (sensor_msgs/NavSatFix) - GPS data at ~5Hz
     - /odom (nav_msgs/Odometry) - Odometry at ~50Hz
-    - /wheel_encoder/ticks (std_msgs/Int32MultiArray) - Encoder ticks
-    - /wheel_encoder/velocities (std_msgs/Float32MultiArray) - Wheel velocities
+    - /wheel_encoder/velocities (std_msgs/Float32MultiArray) - Wheel velocities in m/s
 
     Topic names are configurable via ROS parameters.
     """
@@ -45,8 +44,7 @@ class GazeboAdapter(SensorAdapterInterface):
         'imu': '/imu',                              # From ros_gz_bridge
         'gps': '/navsat',                           # From ros_gz_bridge
         'odom': '/odom',                            # From ros_gz_bridge
-        'encoder_ticks': '/wheel_encoder/ticks',   # From wheel_encoder_node
-        'encoder_velocities': '/wheel_encoder/velocities',
+        'encoder_velocities': '/wheel_encoder/velocities',  # From wheel_encoder_node
     }
 
     # Sensor rates (Hz) - used for time sync configuration
@@ -54,7 +52,6 @@ class GazeboAdapter(SensorAdapterInterface):
         'imu': 100.0,
         'gps': 5.0,
         'odom': 50.0,
-        'encoder_ticks': 50.0,
         'encoder_velocities': 50.0,
     }
 
@@ -84,7 +81,6 @@ class GazeboAdapter(SensorAdapterInterface):
         self._last_imu: Optional[Imu] = None
         self._last_gps: Optional[NavSatFix] = None
         self._last_odom: Optional[Odometry] = None
-        self._last_encoder_ticks: Optional[Int32MultiArray] = None
         self._last_encoder_velocities: Optional[Float32MultiArray] = None
 
         # Set up subscriptions
@@ -114,12 +110,6 @@ class GazeboAdapter(SensorAdapterInterface):
             max_age_sec=1.0,
         )
         self.synchronizer.add_sensor(
-            'encoder_ticks',
-            rate_hz=self.SENSOR_RATES['encoder_ticks'],
-            required=False,
-            interpolate=False,
-        )
-        self.synchronizer.add_sensor(
             'encoder_velocities',
             rate_hz=self.SENSOR_RATES['encoder_velocities'],
             required=False,
@@ -145,13 +135,6 @@ class GazeboAdapter(SensorAdapterInterface):
             Odometry,
             self.topics['odom'],
             self._odom_callback,
-            SENSOR_QOS,
-        )
-
-        self._encoder_ticks_sub = self.node.create_subscription(
-            Int32MultiArray,
-            self.topics['encoder_ticks'],
-            self._encoder_ticks_callback,
             SENSOR_QOS,
         )
 
@@ -199,18 +182,6 @@ class GazeboAdapter(SensorAdapterInterface):
         if not hasattr(self, '_first_odom_logged'):
             self._first_odom_logged = True
             self.log_info(f"First odom received: timestamp={timestamp:.2f}s, pos=({msg.pose.pose.position.x:.2f}, {msg.pose.pose.position.y:.2f})")
-
-    def _encoder_ticks_callback(self, msg: Int32MultiArray) -> None:
-        """Encoder ticks callback - add to synchronizer."""
-        # Int32MultiArray doesn't have header, use latest odom timestamp
-        # to stay synchronized with other sensor data
-        if self._last_odom is not None:
-            timestamp = self._get_timestamp(self._last_odom.header)
-        else:
-            # Fallback: use a small sim time value until odom arrives
-            timestamp = 0.0
-        self.synchronizer.add_sample('encoder_ticks', timestamp, msg)
-        self._last_encoder_ticks = msg
 
     def _encoder_velocities_callback(self, msg: Float32MultiArray) -> None:
         """Encoder velocities callback - add to synchronizer."""
@@ -274,11 +245,7 @@ class GazeboAdapter(SensorAdapterInterface):
             state.gps_altitude = gps.altitude
             state.gps_valid = gps.status.status >= 0
 
-        # Encoder data
-        encoder_ticks: Optional[Int32MultiArray] = synced_data.get('encoder_ticks')
-        if encoder_ticks is not None and len(encoder_ticks.data) >= 4:
-            state.encoder_ticks = list(encoder_ticks.data[:4])
-
+        # Encoder velocities
         encoder_velocities: Optional[Float32MultiArray] = synced_data.get('encoder_velocities')
         if encoder_velocities is not None and len(encoder_velocities.data) >= 4:
             state.encoder_velocities = list(encoder_velocities.data[:4])
@@ -304,6 +271,5 @@ class GazeboAdapter(SensorAdapterInterface):
             'imu': self._last_imu,
             'gps': self._last_gps,
             'odom': self._last_odom,
-            'encoder_ticks': self._last_encoder_ticks,
             'encoder_velocities': self._last_encoder_velocities,
         }

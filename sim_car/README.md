@@ -233,13 +233,6 @@ ros2 launch sim_car nodes.launch.py \
     publish_rate:=2.0
 ```
 
-#### Custom Encoder Resolution
-
-```bash
-ros2 launch sim_car nodes.launch.py \
-    ticks_per_revolution:=4096
-```
-
 #### Custom World File
 
 ```bash
@@ -261,8 +254,7 @@ The simulation publishes to the following topics:
 
 ### Published by Encoder Node
 
-- `/wheel_encoder/ticks` (std_msgs/Int32MultiArray) - Encoder ticks (FL, FR, RL, RR)
-- `/wheel_encoder/velocities` (std_msgs/Float32MultiArray) - Wheel velocities in m/s
+- `/wheel_encoder/velocities` (std_msgs/Float32MultiArray) - Wheel velocities in m/s [FL, FR, RL, RR]
 
 ### Inspect Topics
 
@@ -275,9 +267,6 @@ ros2 topic echo /gps/fix
 
 # View IMU data
 ros2 topic echo /imu/data
-
-# View wheel encoder ticks
-ros2 topic echo /wheel_encoder/ticks
 
 # View wheel velocities
 ros2 topic echo /wheel_encoder/velocities

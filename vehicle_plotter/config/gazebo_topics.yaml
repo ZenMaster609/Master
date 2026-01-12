@@ -17,10 +17,7 @@ topics:
   # Odometry from Gazebo differential drive plugin
   odom: /odom
 
-  # Wheel encoder ticks (from wheel_encoder_node)
-  encoder_ticks: /wheel_encoder/ticks
-
-  # Wheel encoder velocities (from wheel_encoder_node)
+  # Wheel encoder velocities in m/s (from wheel_encoder_node)
   encoder_velocities: /wheel_encoder/velocities
 
   # Command velocity (for reference)
@@ -31,7 +28,6 @@ sensor_rates:
   imu: 100.0
   gps: 5.0
   odom: 50.0
-  encoder_ticks: 50.0
   encoder_velocities: 50.0
 
 # GPS origin (set to 0,0 for auto-detection from first GPS message)

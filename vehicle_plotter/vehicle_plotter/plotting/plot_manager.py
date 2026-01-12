@@ -302,10 +302,10 @@ class PlotManager:
         return state.yaw
 
     def _get_encoder_total_value(self, state: VehicleState) -> float:
-        return float(sum(state.encoder_ticks))
+        return float(sum(state.encoder_velocities))
 
     def _get_encoder_fl_value(self, state: VehicleState) -> float:
-        return float(state.encoder_ticks[0]) if state.encoder_ticks else 0.0
+        return float(state.encoder_velocities[0]) if state.encoder_velocities else 0.0
 
     def _get_attribute(self, state: VehicleState, variable: str) -> Optional[float]:
         """
@@ -314,12 +314,12 @@ class PlotManager:
         Examples:
             "x" -> state.x
             "vx" -> state.vx
-            "encoder_ticks[0]" -> state.encoder_ticks[0]
+            "encoder_velocities[0]" -> state.encoder_velocities[0]
             "encoder_velocities[2]" -> state.encoder_velocities[2]
         """
         try:
             if '[' in variable:
-                # Indexed access: encoder_ticks[0]
+                # Indexed access: encoder_velocities[0]
                 attr_name, idx_str = variable.split('[')
                 idx = int(idx_str.rstrip(']'))
                 attr_value = getattr(state, attr_name, None)

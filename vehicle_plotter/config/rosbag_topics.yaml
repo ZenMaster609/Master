@@ -23,7 +23,6 @@ simulation:
   - /imu
   - /navsat
   - /odom
-  - /wheel_encoder/ticks
   - /wheel_encoder/velocities
   - /cmd_vel
   - /joint_states

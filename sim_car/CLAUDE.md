@@ -85,7 +85,7 @@ ros2 topic hz /odom
 | `/odom` | nav_msgs/Odometry | Gazebo DiffDrive |
 | `/imu` | sensor_msgs/Imu | Gazebo via bridge |
 | `/navsat` | sensor_msgs/NavSatFix | Gazebo via bridge |
-| `/wheel_encoder/ticks` | std_msgs/Int32MultiArray | wheel_encoder_node |
+| `/wheel_encoder/velocities` | std_msgs/Float32MultiArray | wheel_encoder_node |
 
 ## File Structure
 
@@ -208,4 +208,3 @@ These paths don't exist on Windows and will break the container.
 - `linear_speed`: m/s (default: 0.5)
 - `angular_speed`: rad/s (default: 1.0)
 - `publish_rate`: Hz for sensor status (default: 1.0)
-- `ticks_per_revolution`: encoder resolution (default: 2048)

@@ -15,10 +15,7 @@ topics:
   # VN-200 INS solution (fused IMU+GPS)
   ins: /vectornav/ins
 
-  # Wheel encoder ticks (from CAN interface)
-  encoder_ticks: /wheel_encoder/ticks
-
-  # Wheel encoder velocities
+  # Wheel encoder velocities in m/s (from CAN interface)
   encoder_velocities: /wheel_encoder/velocities
 
   # Command velocity
@@ -30,7 +27,6 @@ sensor_rates:
   imu: 200.0
   gps: 5.0
   ins: 200.0
-  encoder_ticks: 100.0
   encoder_velocities: 100.0
 
 # GPS origin for local coordinate conversion

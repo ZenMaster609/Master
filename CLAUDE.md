@@ -617,7 +617,7 @@ Gazebo Sensors → ros_gz_bridge → sim_car nodes → vehicle_plotter
 | `/odom` | Odometry | Gazebo |
 | `/imu/data` | Imu | Gazebo |
 | `/gps/fix` | NavSatFix | Gazebo |
-| `/wheel_encoder/ticks` | Int32MultiArray | wheel_encoder_node |
+| `/wheel_encoder/velocities` | Float32MultiArray | wheel_encoder_node |
 | `/can/rx` | Frame | ros2_socketcan |
 | `/can/wheel_velocities` | Float32MultiArray | can_decoder_node |
 | `/can/suspension` | Float32MultiArray | can_decoder_node |
@@ -641,8 +641,7 @@ float64 yaw, yaw_rate
 # Derived
 float64 speed, distance_traveled, slip_longitudinal, slip_lateral
 
-# Encoders [FL, FR, RL, RR]
-int32[4] encoder_ticks
+# Wheel encoder velocities [FL, FR, RL, RR] in m/s
 float32[4] encoder_velocities
 
 # GPS

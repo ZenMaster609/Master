@@ -37,18 +37,11 @@ def generate_launch_description():
         description='Sensor status publish rate (Hz)'
     )
 
-    ticks_per_rev_arg = DeclareLaunchArgument(
-        'ticks_per_revolution',
-        default_value='2048',
-        description='Wheel encoder ticks per revolution'
-    )
-
     # Get launch configurations
     control_mode = LaunchConfiguration('control_mode')
     linear_speed = LaunchConfiguration('linear_speed')
     angular_speed = LaunchConfiguration('angular_speed')
     publish_rate = LaunchConfiguration('publish_rate')
-    ticks_per_rev = LaunchConfiguration('ticks_per_revolution')
 
     # Control node
     control_node = Node(
@@ -81,7 +74,6 @@ def generate_launch_description():
         name='wheel_encoder_node',
         output='screen',
         parameters=[{
-            'ticks_per_revolution': ticks_per_rev,
             'wheel_radius': 0.1,
             'publish_rate': 50.0
         }]
@@ -92,7 +84,6 @@ def generate_launch_description():
         linear_speed_arg,
         angular_speed_arg,
         publish_rate_arg,
-        ticks_per_rev_arg,
         control_node,
         sensor_processor_node,
         wheel_encoder_node,

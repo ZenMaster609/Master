@@ -2,7 +2,7 @@
 #
 # Use this file when recording topics with rosbag2:
 #   ros2 bag record --qos-profile-overrides-path qos_overrides.yaml \
-#       /imu/data /gps/fix /odom /wheel_encoder/ticks /vehicle_plotter/state
+#       /imu/data /gps/fix /odom /wheel_encoder/velocities /vehicle_plotter/state
 
 # High-rate sensor topics - use best_effort to avoid backpressure
 /imu/data:
@@ -12,12 +12,6 @@
   depth: 10
 
 /odom:
-  reliability: best_effort
-  durability: volatile
-  history: keep_last
-  depth: 10
-
-/wheel_encoder/ticks:
   reliability: best_effort
   durability: volatile
   history: keep_last

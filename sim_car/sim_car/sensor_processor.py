@@ -9,7 +9,7 @@ import rclpy
 from rclpy.node import Node
 from sensor_msgs.msg import Imu, NavSatFix
 from nav_msgs.msg import Odometry
-from std_msgs.msg import Int32MultiArray, Float32MultiArray
+from std_msgs.msg import Float32MultiArray
 import math
 
 
@@ -43,13 +43,6 @@ class SensorProcessorNode(Node):
             10
         )
 
-        self.encoder_ticks_sub = self.create_subscription(
-            Int32MultiArray,
-            'wheel_encoder/ticks',
-            self.encoder_ticks_callback,
-            10
-        )
-
         self.encoder_velocity_sub = self.create_subscription(
             Float32MultiArray,
             'wheel_encoder/velocities',
@@ -61,15 +54,13 @@ class SensorProcessorNode(Node):
         self.last_imu_data = None
         self.last_gps_data = None
         self.last_odom_data = None
-        self.last_encoder_ticks = None
         self.last_encoder_velocities = None
 
         # Timer for periodic status updates
         self.timer = self.create_timer(1.0 / publish_rate, self.status_callback)
 
         self.get_logger().info('Sensor processor node started')
-        self.get_logger().info('Subscribing to: /imu/data, /gps/fix, /odom')
-        self.get_logger().info('Subscribing to: /wheel_encoder/ticks, /wheel_encoder/velocities')
+        self.get_logger().info('Subscribing to: /imu/data, /gps/fix, /odom, /wheel_encoder/velocities')
 
     def imu_callback(self, msg):
         """Process IMU data"""
@@ -104,13 +95,6 @@ class SensorProcessorNode(Node):
         #     f'Odom: pos=({pos.x:.2f}, {pos.y:.2f}), vel=({vel.x:.2f}, {vel.y:.2f})'
         # )
 
-    def encoder_ticks_callback(self, msg):
-        """Process wheel encoder tick data"""
-        self.last_encoder_ticks = msg.data
-        # self.get_logger().debug(
-        #     f'Encoder ticks: FL={msg.data[0]}, FR={msg.data[1]}, RL={msg.data[2]}, RR={msg.data[3]}'
-        # )
-
     def encoder_velocity_callback(self, msg):
         """Process wheel encoder velocity data"""
         self.last_encoder_velocities = msg.data
@@ -142,10 +126,10 @@ class SensorProcessorNode(Node):
             yaw = math.atan2(siny_cosp, cosy_cosp)
             status_parts.append(f'Heading: {math.degrees(yaw):.1f}°')
 
-        if self.last_encoder_ticks:
-            # Show average encoder ticks for brevity
-            avg_ticks = sum(self.last_encoder_ticks) / len(self.last_encoder_ticks)
-            status_parts.append(f'Avg Encoder: {avg_ticks:.0f} ticks')
+        if self.last_encoder_velocities:
+            # Show average wheel velocity
+            avg_vel = sum(self.last_encoder_velocities) / len(self.last_encoder_velocities)
+            status_parts.append(f'Avg Wheel Vel: {avg_vel:.2f} m/s')
 
         if status_parts:
             self.get_logger().info(' | '.join(status_parts))
