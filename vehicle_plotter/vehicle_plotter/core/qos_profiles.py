@@ -57,6 +57,15 @@ CLOCK_QOS = QoSProfile(
     durability=QoSDurabilityPolicy.VOLATILE,
 )
 
+# For replay from rosbags recorded with transient_local durability
+# Compatible with bags that used RELIABLE + TRANSIENT_LOCAL
+REPLAY_QOS = QoSProfile(
+    reliability=QoSReliabilityPolicy.RELIABLE,
+    history=QoSHistoryPolicy.KEEP_LAST,
+    depth=10,
+    durability=QoSDurabilityPolicy.TRANSIENT_LOCAL,
+)
+
 
 def get_qos_for_topic(topic_name: str) -> QoSProfile:
     """
