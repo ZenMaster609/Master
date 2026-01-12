@@ -178,13 +178,10 @@ class CANAdapter(SensorAdapterInterface):
             avg_wheel_speed = sum(state.encoder_velocities) / 4.0
             state.speed = abs(avg_wheel_speed)
 
-        # Suspension data (not part of standard VehicleState yet, but available)
-        # Could be added to future enhancements or stored in metadata
+        # Suspension data
         suspension: Optional[Float32MultiArray] = synced_data.get('suspension')
         if suspension is not None and len(suspension.data) >= 4:
-            # For now, suspension data is captured but not stored in VehicleState
-            # Future: Could extend VehicleState or add custom fields
-            pass
+            state.suspension = list(suspension.data[:4])  # [FL, FR, RL, RR]
 
         # Steering angle (not part of standard VehicleState, but available)
         steering_angle: Optional[Float32] = synced_data.get('steering_angle')

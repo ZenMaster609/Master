@@ -40,6 +40,21 @@ float64 gps_longitude     # degrees
 float64 gps_altitude      # meters above WGS84 ellipsoid
 bool gps_valid            # true if GPS fix is valid
 
+# GPS converted to local coordinates (same frame as x,y)
+float64 gps_local_x       # meters, local frame
+float64 gps_local_y       # meters, local frame
+
+# INS fused position (explicit naming, same as x,y when from INS)
+float64 ins_x             # meters, local frame
+float64 ins_y             # meters, local frame
+
+# Dead-reckoning position (IMU-only integration, no GPS corrections)
+float64 dr_x              # meters, local frame
+float64 dr_y              # meters, local frame
+
+# Suspension displacements [FL, FR, RL, RR] in meters
+float32[4] suspension
+
 # EKF/UKF readiness fields
 # covariance: 6x6 state covariance matrix (x, y, vx, vy, yaw, yaw_rate)
 # Stored as row-major: [P00, P01, ..., P05, P10, P11, ..., P55]

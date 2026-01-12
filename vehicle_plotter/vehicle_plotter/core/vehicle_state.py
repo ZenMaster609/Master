@@ -57,6 +57,21 @@ class VehicleState:
     gps_altitude: float = 0.0
     gps_valid: bool = False
 
+    # GPS converted to local coordinates
+    gps_local_x: float = 0.0
+    gps_local_y: float = 0.0
+
+    # INS fused position (explicit naming)
+    ins_x: float = 0.0
+    ins_y: float = 0.0
+
+    # Dead-reckoning position (IMU-only integration)
+    dr_x: float = 0.0
+    dr_y: float = 0.0
+
+    # Suspension displacements [FL, FR, RL, RR] in meters
+    suspension: List[float] = field(default_factory=lambda: [0.0, 0.0, 0.0, 0.0])
+
     # Source information (for debugging)
     source_adapter: str = "unknown"
 
@@ -76,7 +91,7 @@ class VehicleState:
         """
         Convert to dictionary for logging.
 
-        Flattens encoder arrays for easier DataFrame handling.
+        Flattens encoder and suspension arrays for easier DataFrame handling.
         """
         return {
             'timestamp': self.timestamp,
@@ -98,6 +113,16 @@ class VehicleState:
             'gps_longitude': self.gps_longitude,
             'gps_altitude': self.gps_altitude,
             'gps_valid': self.gps_valid,
+            'gps_local_x': self.gps_local_x,
+            'gps_local_y': self.gps_local_y,
+            'ins_x': self.ins_x,
+            'ins_y': self.ins_y,
+            'dr_x': self.dr_x,
+            'dr_y': self.dr_y,
+            'suspension_fl': self.suspension[0],
+            'suspension_fr': self.suspension[1],
+            'suspension_rl': self.suspension[2],
+            'suspension_rr': self.suspension[3],
             'estimation_status': self.estimation_status,
             'source_adapter': self.source_adapter,
         }
@@ -151,6 +176,21 @@ class VehicleState:
         msg.gps_altitude = self.gps_altitude
         msg.gps_valid = self.gps_valid
 
+        # GPS local coordinates
+        msg.gps_local_x = self.gps_local_x
+        msg.gps_local_y = self.gps_local_y
+
+        # INS position
+        msg.ins_x = self.ins_x
+        msg.ins_y = self.ins_y
+
+        # Dead-reckoning position
+        msg.dr_x = self.dr_x
+        msg.dr_y = self.dr_y
+
+        # Suspension
+        msg.suspension = [float(v) for v in self.suspension]
+
         # EKF fields
         msg.covariance = list(self.covariance)
         msg.estimation_status = self.estimation_status
@@ -182,6 +222,13 @@ class VehicleState:
             gps_longitude=msg.gps_longitude,
             gps_altitude=msg.gps_altitude,
             gps_valid=msg.gps_valid,
+            gps_local_x=msg.gps_local_x,
+            gps_local_y=msg.gps_local_y,
+            ins_x=msg.ins_x,
+            ins_y=msg.ins_y,
+            dr_x=msg.dr_x,
+            dr_y=msg.dr_y,
+            suspension=list(msg.suspension),
             covariance=list(msg.covariance),
             estimation_status=msg.estimation_status,
             source_adapter=msg.source_adapter,
@@ -206,6 +253,13 @@ class VehicleState:
             gps_longitude=self.gps_longitude,
             gps_altitude=self.gps_altitude,
             gps_valid=self.gps_valid,
+            gps_local_x=self.gps_local_x,
+            gps_local_y=self.gps_local_y,
+            ins_x=self.ins_x,
+            ins_y=self.ins_y,
+            dr_x=self.dr_x,
+            dr_y=self.dr_y,
+            suspension=list(self.suspension),
             covariance=list(self.covariance),
             estimation_status=self.estimation_status,
             source_adapter=self.source_adapter,

@@ -13,11 +13,15 @@ Before using, update the Peers section with actual IP addresses:
 <CycloneDDS xmlns="https://cdds.io/config">
   <Domain id="any">
     <General>
-      <!-- Use auto to let CycloneDDS find the right interface -->
+      <!--
+        For Docker Desktop on Windows, use the Docker gateway IP.
+        Run 'ip route | grep default' inside container to find it.
+        Typically 172.17.0.1 or similar.
+      -->
       <NetworkInterfaceAddress>auto</NetworkInterfaceAddress>
 
-      <!-- Enable multicast for discovery (may not work on all WiFi networks) -->
-      <AllowMulticast>true</AllowMulticast>
+      <!-- CRITICAL: Disable multicast - doesn't work through Docker NAT -->
+      <AllowMulticast>false</AllowMulticast>
 
       <!-- Increase max message size for large messages -->
       <MaxMessageSize>65500</MaxMessageSize>

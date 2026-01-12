@@ -7,9 +7,11 @@ Parquet or CSV files. Supports multi-machine run synchronization
 via /run_session topic.
 
 Storage Layout:
-    ./multidata/<run_id>/<os>/logs/
+    ./multidata/<prefix>_<timestamp>/logs/
         vehicle_state_0000.parquet
         metadata.json
+
+Where <prefix> is 'sim' for simulation or 'jetson' for real hardware.
 """
 
 import rclpy
@@ -47,6 +49,8 @@ class LoggerNode(Node):
         buffer_size (int): Max records to buffer before flush
         wait_for_session (bool): Wait for /run_session before logging
         session_timeout_sec (float): Timeout to wait for /run_session
+        adapter (str): Sensor adapter type ('gazebo', 'can', 'vectornav') - determines directory prefix
+        auto_plot_on_shutdown (bool): Generate offline plots when logger shuts down
     """
 
     def __init__(self):
@@ -63,6 +67,8 @@ class LoggerNode(Node):
         self.declare_parameter('enable_logging', True)
         self.declare_parameter('wait_for_session', True)
         self.declare_parameter('session_timeout_sec', 5.0)
+        self.declare_parameter('adapter', 'gazebo')  # Determines directory prefix
+        self.declare_parameter('auto_plot_on_shutdown', True)
 
         # Get parameters
         self._log_format = self.get_parameter('format').value
@@ -75,6 +81,8 @@ class LoggerNode(Node):
         enable_logging = self.get_parameter('enable_logging').value
         self._wait_for_session = self.get_parameter('wait_for_session').value
         self._session_timeout = self.get_parameter('session_timeout_sec').value
+        self._adapter_type = self.get_parameter('adapter').value
+        self._auto_plot = self.get_parameter('auto_plot_on_shutdown').value
 
         # Parse base path
         if base_path_str:
@@ -172,7 +180,7 @@ class LoggerNode(Node):
         if msg:
             self._run_session = RunSession.from_msg(msg, self._base_path)
         else:
-            self._run_session = RunSession.create_new(self._base_path)
+            self._run_session = RunSession.create_new(self._base_path, self._adapter_type)
 
         # Ensure directories exist
         self._run_session.ensure_directories()
@@ -240,13 +248,31 @@ class LoggerNode(Node):
         )
 
     def shutdown(self) -> None:
-        """Clean shutdown with final flush."""
+        """Clean shutdown with final flush and optional plot generation."""
         if self.log_writer is not None:
             self.log_writer.close()
             self.get_logger().info(
                 f"Logger closed, {self.log_writer.total_records} records written to "
                 f"{self.log_writer.session_path}"
             )
+
+            # Auto-generate plots if enabled
+            if self._auto_plot and self._run_session is not None:
+                self._generate_offline_plots()
+
+    def _generate_offline_plots(self) -> None:
+        """Generate offline plots from logged data."""
+        try:
+            from ..plotting.offline_plotter import OfflinePlotter
+
+            self.get_logger().info("Generating offline plots...")
+            plotter = OfflinePlotter(self._run_session.session_path)
+            generated = plotter.generate_plots()
+            self.get_logger().info(f"Generated {len(generated)} plots in {self._run_session.plots_path}")
+        except ImportError as e:
+            self.get_logger().warn(f"Could not import offline plotter: {e}")
+        except Exception as e:
+            self.get_logger().warn(f"Failed to generate plots: {e}")
 
     @property
     def run_session(self) -> Optional[RunSession]:

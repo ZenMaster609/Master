@@ -31,7 +31,7 @@ import os
 
 
 def detect_os_folder() -> str:
-    """Detect the appropriate OS folder name."""
+    """Detect the appropriate OS folder name (deprecated, kept for backward compatibility)."""
     system = platform.system().lower()
     if system == 'linux':
         return 'linux'
@@ -41,6 +41,21 @@ def detect_os_folder() -> str:
         return 'macos'
     else:
         return system
+
+
+def get_run_prefix(adapter_type: str) -> str:
+    """
+    Get the run directory prefix based on adapter type.
+
+    Args:
+        adapter_type: The sensor adapter being used ('gazebo', 'can', 'vectornav')
+
+    Returns:
+        'jetson' for real hardware adapters, 'sim' for simulation
+    """
+    if adapter_type in ('can', 'vectornav'):
+        return 'jetson'
+    return 'sim'
 
 
 def get_default_base_path() -> Path:
@@ -74,10 +89,20 @@ class RunSession:
     Handles run ID generation, directory creation, and path management
     for logs, rosbags, plots, and ground truth files.
 
+    Directory Structure:
+        ./multidata/<prefix>_<timestamp>/
+            logs/           # Parquet/CSV vehicle state data
+            rosbags/        # ros2 bag recordings
+            plots/          # PNG exports from plotter
+            plot_data/      # CSV of plotted data points
+            ground_truth/   # ros2 node/topic snapshots
+
+    Where <prefix> is 'sim' for simulation or 'jetson' for real hardware.
+
     Attributes:
-        run_id: Unique session identifier (format: YYYY-MM-DD_HH-MM-SS)
+        run_id: Unique session identifier (format: <prefix>_YYYY-MM-DD_HH-MM-SS)
         base_path: Root path for multidata storage
-        os_folder: OS-specific subfolder ('linux' or 'windows')
+        adapter_type: Sensor adapter type ('gazebo', 'can', 'vectornav')
         originator_hostname: Machine that generated the run_id
         ros_domain_id: ROS_DOMAIN_ID for verification
         start_time: Session start timestamp
@@ -85,25 +110,31 @@ class RunSession:
 
     run_id: str
     base_path: Path
-    os_folder: str = field(default_factory=detect_os_folder)
+    adapter_type: str = "gazebo"
     originator_hostname: str = field(default_factory=socket.gethostname)
     ros_domain_id: int = field(default_factory=lambda: int(os.getenv('ROS_DOMAIN_ID', '0')))
     start_time: datetime = field(default_factory=datetime.now)
 
     @classmethod
-    def create_new(cls, base_path: Optional[Path] = None) -> 'RunSession':
+    def create_new(cls, base_path: Optional[Path] = None, adapter_type: str = "gazebo") -> 'RunSession':
         """
         Create a new run session with a fresh run_id.
 
+        The run_id format is: <prefix>_YYYY-MM-DD_HH-MM-SS
+        where <prefix> is 'sim' for simulation or 'jetson' for real hardware.
+
         Args:
             base_path: Optional base path. Uses default if not specified.
+            adapter_type: Sensor adapter type ('gazebo', 'can', 'vectornav')
 
         Returns:
             New RunSession instance with generated run_id
         """
-        run_id = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+        prefix = get_run_prefix(adapter_type)
+        timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+        run_id = f"{prefix}_{timestamp}"
         base = Path(base_path) if base_path else get_default_base_path()
-        return cls(run_id=run_id, base_path=base)
+        return cls(run_id=run_id, base_path=base, adapter_type=adapter_type)
 
     @classmethod
     def from_run_id(cls, run_id: str, base_path: Optional[Path] = None) -> 'RunSession':
@@ -143,8 +174,8 @@ class RunSession:
 
     @property
     def session_path(self) -> Path:
-        """Full path to this machine's session folder."""
-        return self.base_path / self.run_id / self.os_folder
+        """Full path to this session's folder (no OS subfolder)."""
+        return self.base_path / self.run_id
 
     @property
     def logs_path(self) -> Path:
@@ -193,7 +224,7 @@ class RunSession:
 
         info = {
             'run_id': self.run_id,
-            'os_folder': self.os_folder,
+            'adapter_type': self.adapter_type,
             'originator_hostname': self.originator_hostname,
             'local_hostname': socket.gethostname(),
             'ros_domain_id': self.ros_domain_id,
@@ -226,7 +257,7 @@ class RunSession:
         return {
             'run_id': self.run_id,
             'base_path': str(self.base_path),
-            'os_folder': self.os_folder,
+            'adapter_type': self.adapter_type,
             'originator_hostname': self.originator_hostname,
             'ros_domain_id': self.ros_domain_id,
             'start_time': self.start_time.isoformat(),
@@ -262,4 +293,4 @@ class RunSession:
 
     def __repr__(self) -> str:
         return (f"RunSession(run_id='{self.run_id}', base_path='{self.base_path}', "
-                f"os_folder='{self.os_folder}', originator='{self.originator_hostname}')")
+                f"adapter_type='{self.adapter_type}', originator='{self.originator_hostname}')")

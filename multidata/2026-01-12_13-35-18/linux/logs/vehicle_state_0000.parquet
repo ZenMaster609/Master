@@ -1,0 +1,2 @@
+timestamp,x,y,vx,vy,yaw,yaw_rate,speed,distance_traveled,slip_longitudinal,slip_lateral,encoder_fl,encoder_fr,encoder_rl,encoder_rr,vel_fl,vel_fr,vel_rl,vel_rr,gps_latitude,gps_longitude,gps_valid,estimation_status
+455.935999999,-0.6885622620684209,0.21813564267638347,0.5000000000009663,0.0,-0.678078143974833,-1.7124709603073718e-09,0.5000000000009663,0.0,-0.08692412078557053,0.0,0.3875,0.6125,0.43864965,0.3875021,,,,,0.0,0.0,False,raw

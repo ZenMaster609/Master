@@ -24,7 +24,8 @@
       "Bash(ros2 lifecycle:*)",
       "Bash(ros2 topic:*)",
       "Bash(pkill:*)",
-      "Bash(chmod:*)"
+      "Bash(chmod:*)",
+      "Bash(dir:*)"
     ],
     "deny": [],
     "ask": []

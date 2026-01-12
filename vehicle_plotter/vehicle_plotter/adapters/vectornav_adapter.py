@@ -84,6 +84,13 @@ class VectorNavAdapter(SensorAdapterInterface):
         self._last_gps: Optional[NavSatFix] = None
         self._last_ins: Optional[Odometry] = None
 
+        # Dead-reckoning state (IMU integration)
+        self._dr_x: float = 0.0
+        self._dr_y: float = 0.0
+        self._dr_vx: float = 0.0
+        self._dr_vy: float = 0.0
+        self._last_imu_time: Optional[float] = None
+
         self.setup_subscriptions()
 
     def setup_subscriptions(self) -> None:
@@ -261,6 +268,48 @@ class VectorNavAdapter(SensorAdapterInterface):
 
         # Compute derived quantities
         state.speed = math.sqrt(state.vx ** 2 + state.vy ** 2)
+
+        # INS position (explicit copy for plotting)
+        state.ins_x = state.x
+        state.ins_y = state.y
+
+        # GPS to local coordinates
+        if gps is not None and gps.status.status >= 0 and self._gps_origin_set:
+            try:
+                gps_x, gps_y = gps_to_local(gps.latitude, gps.longitude)
+                state.gps_local_x = gps_x
+                state.gps_local_y = gps_y
+            except ValueError:
+                pass  # Origin not set yet
+
+        # Dead-reckoning from IMU (integrate acceleration)
+        if imu is not None:
+            current_time = state.timestamp
+            if self._last_imu_time is not None:
+                dt = current_time - self._last_imu_time
+                if 0 < dt < 0.1:  # Sanity check: reasonable time delta
+                    # Get linear acceleration in body frame
+                    ax = imu.linear_acceleration.x
+                    ay = imu.linear_acceleration.y
+
+                    # Integrate to velocity (body frame)
+                    self._dr_vx += ax * dt
+                    self._dr_vy += ay * dt
+
+                    # Rotate body-frame velocity to world-frame using current yaw
+                    cos_yaw = math.cos(state.yaw)
+                    sin_yaw = math.sin(state.yaw)
+                    world_vx = self._dr_vx * cos_yaw - self._dr_vy * sin_yaw
+                    world_vy = self._dr_vx * sin_yaw + self._dr_vy * cos_yaw
+
+                    # Integrate position (world frame)
+                    self._dr_x += world_vx * dt
+                    self._dr_y += world_vy * dt
+
+            self._last_imu_time = current_time
+
+        state.dr_x = self._dr_x
+        state.dr_y = self._dr_y
 
         # Distance traveled (accumulated)
         if prev_state is not None:

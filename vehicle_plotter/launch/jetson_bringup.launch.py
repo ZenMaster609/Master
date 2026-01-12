@@ -246,6 +246,7 @@ def generate_launch_description():
     )
 
     # Logger node - writes vehicle state to disk (no GUI plotter)
+    # Auto-generates plots on shutdown for headless operation
     logger_node = Node(
         package='vehicle_plotter',
         executable='logger_node',
@@ -257,6 +258,8 @@ def generate_launch_description():
             'base_path': LaunchConfiguration('log_path'),
             'flush_interval_sec': 5.0,
             'buffer_size': 1000,
+            'adapter': LaunchConfiguration('adapter'),  # For directory prefix (jetson_ for real hardware)
+            'auto_plot_on_shutdown': True,  # Generate plots when logger shuts down
             'use_sim_time': False,
         }],
     )

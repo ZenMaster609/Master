@@ -133,6 +133,8 @@ def generate_launch_description():
             'base_path': LaunchConfiguration('log_path'),
             'flush_interval_sec': 5.0,
             'buffer_size': 1000,
+            'adapter': LaunchConfiguration('adapter'),  # For directory prefix (sim_ or jetson_)
+            'auto_plot_on_shutdown': True,  # Generate plots when logger shuts down
             'use_sim_time': False,  # Use wall clock for timers
         }],
     )

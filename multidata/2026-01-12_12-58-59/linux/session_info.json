@@ -1,0 +1,23 @@
+{
+  "run_id": "2026-01-12_12-58-59",
+  "os_folder": "linux",
+  "originator_hostname": "MolleStation",
+  "local_hostname": "MolleStation",
+  "ros_domain_id": 0,
+  "start_time": "2026-01-12T12:58:59.885302",
+  "platform": {
+    "system": "Linux",
+    "release": "5.15.146.1-microsoft-standard-WSL2",
+    "machine": "x86_64",
+    "python_version": "3.10.12"
+  },
+  "paths": {
+    "base_path": "/mnt/e/master/multidata",
+    "session_path": "/mnt/e/master/multidata/2026-01-12_12-58-59/linux",
+    "logs_path": "/mnt/e/master/multidata/2026-01-12_12-58-59/linux/logs",
+    "rosbags_path": "/mnt/e/master/multidata/2026-01-12_12-58-59/linux/rosbags",
+    "plots_path": "/mnt/e/master/multidata/2026-01-12_12-58-59/linux/plots",
+    "plot_data_path": "/mnt/e/master/multidata/2026-01-12_12-58-59/linux/plot_data",
+    "ground_truth_path": "/mnt/e/master/multidata/2026-01-12_12-58-59/linux/ground_truth"
+  }
+}

@@ -59,6 +59,8 @@ RUN apt-get update && apt-get install -y \
     ros-humble-ros-gz-sim \
     ros-humble-ros-gz-bridge \
     ros-humble-ros-gz-image \
+    # CycloneDDS for better DDS performance
+    ros-humble-rmw-cyclonedds-cpp \
     # Additional ROS2 packages for this project
     ros-humble-robot-state-publisher \
     ros-humble-joint-state-publisher \
