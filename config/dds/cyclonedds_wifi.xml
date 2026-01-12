@@ -37,10 +37,10 @@ Before using, update the Peers section with actual IP addresses:
       -->
       <Peers>
         <!-- Jetson IP address - UPDATE THIS -->
-        <Peer address="JETSON_IP"/>
+        <Peer address="192.168.10.150"/>
 
         <!-- Windows IP address - UPDATE THIS -->
-        <Peer address="WINDOWS_IP"/>
+        <Peer address="192.168.10.117"/>
 
         <!-- Add more peers as needed -->
         <!-- <Peer address="192.168.1.102"/> -->
