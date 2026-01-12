@@ -166,18 +166,18 @@ def get_default_plots() -> PlotLayoutConfig:
                 buffer_size=1000,
             ),
 
-            # Bottom-right: Encoder ticks vs distance
+            # Bottom-right: Encoder velocities vs distance
             PlotConfig(
                 name="Encoders",
                 plot_type="timeseries",
                 x_axis_type=XAxisType.DISTANCE,
                 series=[
-                    SeriesConfig(name="FL", variable="encoder_ticks[0]", color="#2ca02c"),
-                    SeriesConfig(name="FR", variable="encoder_ticks[1]", color="#d62728"),
-                    SeriesConfig(name="RL", variable="encoder_ticks[2]", color="#9467bd"),
-                    SeriesConfig(name="RR", variable="encoder_ticks[3]", color="#8c564b"),
+                    SeriesConfig(name="FL", variable="encoder_velocities[0]", color="#2ca02c"),
+                    SeriesConfig(name="FR", variable="encoder_velocities[1]", color="#d62728"),
+                    SeriesConfig(name="RL", variable="encoder_velocities[2]", color="#9467bd"),
+                    SeriesConfig(name="RR", variable="encoder_velocities[3]", color="#8c564b"),
                 ],
-                y_axis=AxisConfig(label="Ticks"),
+                y_axis=AxisConfig(label="Velocity (m/s)"),
                 row=1, col=1,
                 buffer_size=1000,
             ),
