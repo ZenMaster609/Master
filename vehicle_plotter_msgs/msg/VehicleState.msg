@@ -55,6 +55,24 @@ float64 dr_y              # meters, local frame
 # Suspension displacements [FL, FR, RL, RR] in meters
 float32[4] suspension
 
+# Steering angle (degrees)
+float32 steering_angle
+bool steering_valid
+
+# Cooling system
+float32 water_pressure        # bar
+float32 water_flow            # L/min
+float32 water_temp_in         # celsius
+float32 water_temp_out        # celsius
+float32 water_temp_radiator   # celsius
+
+# Brake temperatures
+float32 brake_temp_fr         # celsius
+float32 brake_temp_rl         # celsius
+
+# Pitot tube
+float32 pitot_dynamic_pressure  # Pa
+
 # EKF/UKF readiness fields
 # covariance: 6x6 state covariance matrix (x, y, vx, vy, yaw, yaw_rate)
 # Stored as row-major: [P00, P01, ..., P05, P10, P11, ..., P55]

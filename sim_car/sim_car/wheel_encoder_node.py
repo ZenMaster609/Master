@@ -16,24 +16,25 @@ class WheelEncoderNode(Node):
         super().__init__('wheel_encoder_node')
 
         # Declare parameters
-        self.declare_parameter('wheel_radius', 0.1)  # meters
+        self.declare_parameter('wheel_radius', 0.23)  # meters (matches URDF)
         self.declare_parameter('publish_rate', 50.0)  # Hz
 
         self.wheel_radius = self.get_parameter('wheel_radius').value
         self.publish_rate = self.get_parameter('publish_rate').value
 
         # Subscribe to joint states from Gazebo (via ros_gz_bridge)
+        # Uses /sim/ namespace for all simulation topics
         self.joint_state_sub = self.create_subscription(
             JointState,
-            '/joint_states',
+            '/sim/joint_states',
             self.joint_state_callback,
             10
         )
 
-        # Publisher for wheel velocities
+        # Publisher for wheel velocities under /sim/ namespace
         self.encoder_velocity_pub = self.create_publisher(
             Float32MultiArray,
-            'wheel_encoder/velocities',
+            '/sim/wheel_encoder/velocities',
             10
         )
 

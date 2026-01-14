@@ -11,7 +11,7 @@ import math
 from rclpy.node import Node
 from sensor_msgs.msg import Imu, NavSatFix
 from nav_msgs.msg import Odometry
-from std_msgs.msg import Float32MultiArray
+from std_msgs.msg import Float32MultiArray, Float32
 
 from ..core.sensor_interfaces import SensorAdapterInterface
 from ..core.vehicle_state import VehicleState
@@ -39,12 +39,23 @@ class GazeboAdapter(SensorAdapterInterface):
     """
 
     # Default topic names (can be remapped via launch file)
-    # These match the ros_gz_bridge topic names from gazebo_sim.launch.py
+    # All simulation topics use /sim/ namespace
     DEFAULT_TOPICS = {
-        'imu': '/imu',                              # From ros_gz_bridge
-        'gps': '/navsat',                           # From ros_gz_bridge
-        'odom': '/odom',                            # From ros_gz_bridge
-        'encoder_velocities': '/wheel_encoder/velocities',  # From wheel_encoder_node
+        'imu': '/sim/imu',                              # From ros_gz_bridge
+        'gps': '/sim/navsat',                           # From ros_gz_bridge
+        'odom': '/sim/odom',                            # From ros_gz_bridge
+        'encoder_velocities': '/sim/wheel_encoder/velocities',  # From wheel_encoder_node
+        'suspension': '/sim/suspension',                # From suspension_sensor_node
+        'steering_angle': '/sim/steering_angle',        # From steering_sensor_node
+        # Virtual sensors from virtual_sensors_node
+        'water_pressure': '/sim/cooling/water_pressure',
+        'water_flow': '/sim/cooling/water_flow',
+        'water_temp_in': '/sim/cooling/water_temp_in',
+        'water_temp_out': '/sim/cooling/water_temp_out',
+        'water_temp_radiator': '/sim/cooling/water_temp_radiator',
+        'brake_temp_fr': '/sim/brakes/temp_fr',
+        'brake_temp_rl': '/sim/brakes/temp_rl',
+        'pitot_pressure': '/sim/pitot/dynamic_pressure',
     }
 
     # Sensor rates (Hz) - used for time sync configuration
@@ -53,6 +64,16 @@ class GazeboAdapter(SensorAdapterInterface):
         'gps': 5.0,
         'odom': 50.0,
         'encoder_velocities': 50.0,
+        'suspension': 100.0,
+        'steering_angle': 100.0,
+        'water_pressure': 10.0,
+        'water_flow': 10.0,
+        'water_temp_in': 10.0,
+        'water_temp_out': 10.0,
+        'water_temp_radiator': 10.0,
+        'brake_temp_fr': 10.0,
+        'brake_temp_rl': 10.0,
+        'pitot_pressure': 10.0,
     }
 
     def __init__(
@@ -82,6 +103,16 @@ class GazeboAdapter(SensorAdapterInterface):
         self._last_gps: Optional[NavSatFix] = None
         self._last_odom: Optional[Odometry] = None
         self._last_encoder_velocities: Optional[Float32MultiArray] = None
+        self._last_suspension: Optional[Float32MultiArray] = None
+        self._last_steering_angle: Optional[Float32] = None
+        self._last_water_pressure: Optional[Float32] = None
+        self._last_water_flow: Optional[Float32] = None
+        self._last_water_temp_in: Optional[Float32] = None
+        self._last_water_temp_out: Optional[Float32] = None
+        self._last_water_temp_radiator: Optional[Float32] = None
+        self._last_brake_temp_fr: Optional[Float32] = None
+        self._last_brake_temp_rl: Optional[Float32] = None
+        self._last_pitot_pressure: Optional[Float32] = None
 
         # Set up subscriptions
         self.setup_subscriptions()
@@ -145,6 +176,76 @@ class GazeboAdapter(SensorAdapterInterface):
             SENSOR_QOS,
         )
 
+        # Suspension sensor
+        self._suspension_sub = self.node.create_subscription(
+            Float32MultiArray,
+            self.topics['suspension'],
+            self._suspension_callback,
+            SENSOR_QOS,
+        )
+
+        # Steering angle sensor
+        self._steering_angle_sub = self.node.create_subscription(
+            Float32,
+            self.topics['steering_angle'],
+            self._steering_angle_callback,
+            SENSOR_QOS,
+        )
+
+        # Virtual sensors - Cooling
+        self._water_pressure_sub = self.node.create_subscription(
+            Float32,
+            self.topics['water_pressure'],
+            self._water_pressure_callback,
+            SENSOR_QOS,
+        )
+        self._water_flow_sub = self.node.create_subscription(
+            Float32,
+            self.topics['water_flow'],
+            self._water_flow_callback,
+            SENSOR_QOS,
+        )
+        self._water_temp_in_sub = self.node.create_subscription(
+            Float32,
+            self.topics['water_temp_in'],
+            self._water_temp_in_callback,
+            SENSOR_QOS,
+        )
+        self._water_temp_out_sub = self.node.create_subscription(
+            Float32,
+            self.topics['water_temp_out'],
+            self._water_temp_out_callback,
+            SENSOR_QOS,
+        )
+        self._water_temp_radiator_sub = self.node.create_subscription(
+            Float32,
+            self.topics['water_temp_radiator'],
+            self._water_temp_radiator_callback,
+            SENSOR_QOS,
+        )
+
+        # Virtual sensors - Brakes
+        self._brake_temp_fr_sub = self.node.create_subscription(
+            Float32,
+            self.topics['brake_temp_fr'],
+            self._brake_temp_fr_callback,
+            SENSOR_QOS,
+        )
+        self._brake_temp_rl_sub = self.node.create_subscription(
+            Float32,
+            self.topics['brake_temp_rl'],
+            self._brake_temp_rl_callback,
+            SENSOR_QOS,
+        )
+
+        # Virtual sensors - Pitot
+        self._pitot_pressure_sub = self.node.create_subscription(
+            Float32,
+            self.topics['pitot_pressure'],
+            self._pitot_pressure_callback,
+            SENSOR_QOS,
+        )
+
         self.log_info(f"Subscribed to Gazebo topics:")
         for name, topic in self.topics.items():
             self.log_info(f"  {name}: {topic}")
@@ -192,6 +293,46 @@ class GazeboAdapter(SensorAdapterInterface):
             timestamp = 0.0
         self.synchronizer.add_sample('encoder_velocities', timestamp, msg)
         self._last_encoder_velocities = msg
+
+    def _suspension_callback(self, msg: Float32MultiArray) -> None:
+        """Suspension displacement callback."""
+        self._last_suspension = msg
+
+    def _steering_angle_callback(self, msg: Float32) -> None:
+        """Steering angle callback."""
+        self._last_steering_angle = msg
+
+    def _water_pressure_callback(self, msg: Float32) -> None:
+        """Water pressure callback."""
+        self._last_water_pressure = msg
+
+    def _water_flow_callback(self, msg: Float32) -> None:
+        """Water flow callback."""
+        self._last_water_flow = msg
+
+    def _water_temp_in_callback(self, msg: Float32) -> None:
+        """Water temp in callback."""
+        self._last_water_temp_in = msg
+
+    def _water_temp_out_callback(self, msg: Float32) -> None:
+        """Water temp out callback."""
+        self._last_water_temp_out = msg
+
+    def _water_temp_radiator_callback(self, msg: Float32) -> None:
+        """Water temp radiator callback."""
+        self._last_water_temp_radiator = msg
+
+    def _brake_temp_fr_callback(self, msg: Float32) -> None:
+        """Brake temp FR callback."""
+        self._last_brake_temp_fr = msg
+
+    def _brake_temp_rl_callback(self, msg: Float32) -> None:
+        """Brake temp RL callback."""
+        self._last_brake_temp_rl = msg
+
+    def _pitot_pressure_callback(self, msg: Float32) -> None:
+        """Pitot pressure callback."""
+        self._last_pitot_pressure = msg
 
     def compute_state(
         self,
@@ -263,6 +404,38 @@ class GazeboAdapter(SensorAdapterInterface):
             if abs(state.vx) > 0.01:
                 state.slip_lateral = math.atan2(state.vy, state.vx)
 
+        # Suspension displacements (convert from mm to meters)
+        if self._last_suspension is not None and len(self._last_suspension.data) >= 4:
+            # Suspension node publishes in mm, convert to meters for VehicleState
+            state.suspension = [v / 1000.0 for v in self._last_suspension.data[:4]]
+
+        # Steering angle (already in degrees from steering_sensor_node)
+        if self._last_steering_angle is not None:
+            state.steering_angle = self._last_steering_angle.data
+            state.steering_valid = True
+
+        # Cooling system
+        if self._last_water_pressure is not None:
+            state.water_pressure = self._last_water_pressure.data
+        if self._last_water_flow is not None:
+            state.water_flow = self._last_water_flow.data
+        if self._last_water_temp_in is not None:
+            state.water_temp_in = self._last_water_temp_in.data
+        if self._last_water_temp_out is not None:
+            state.water_temp_out = self._last_water_temp_out.data
+        if self._last_water_temp_radiator is not None:
+            state.water_temp_radiator = self._last_water_temp_radiator.data
+
+        # Brake temperatures
+        if self._last_brake_temp_fr is not None:
+            state.brake_temp_fr = self._last_brake_temp_fr.data
+        if self._last_brake_temp_rl is not None:
+            state.brake_temp_rl = self._last_brake_temp_rl.data
+
+        # Pitot tube
+        if self._last_pitot_pressure is not None:
+            state.pitot_dynamic_pressure = self._last_pitot_pressure.data
+
         return state
 
     def get_last_raw_data(self) -> Dict[str, Any]:
@@ -272,4 +445,14 @@ class GazeboAdapter(SensorAdapterInterface):
             'gps': self._last_gps,
             'odom': self._last_odom,
             'encoder_velocities': self._last_encoder_velocities,
+            'suspension': self._last_suspension,
+            'steering_angle': self._last_steering_angle,
+            'water_pressure': self._last_water_pressure,
+            'water_flow': self._last_water_flow,
+            'water_temp_in': self._last_water_temp_in,
+            'water_temp_out': self._last_water_temp_out,
+            'water_temp_radiator': self._last_water_temp_radiator,
+            'brake_temp_fr': self._last_brake_temp_fr,
+            'brake_temp_rl': self._last_brake_temp_rl,
+            'pitot_pressure': self._last_pitot_pressure,
         }

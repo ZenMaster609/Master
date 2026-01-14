@@ -2,22 +2,25 @@
 #
 # This file defines the default plot layout and series configuration.
 # Plots can be customized by modifying this file or loading a different config.
+# Extended to 3x3 grid to include new sensors: suspension, steering, thermal
 
 # Window settings
 window:
   title: "Vehicle Plotter"
-  width: 1200
-  height: 800
+  width: 1600
+  height: 1000
   dark_mode: true
   update_rate_hz: 30.0
 
-# Grid layout
+# Grid layout (3x3 for all sensors)
 layout:
-  rows: 2
-  cols: 2
+  rows: 3
+  cols: 3
 
 # Plot definitions
 plots:
+  # Row 0: Position, Velocity, Suspension
+
   # Position trajectory (X vs Y)
   - name: "Position Trajectory"
     type: "xy"
@@ -62,6 +65,37 @@ plots:
     buffer_size: 1000
     show_legend: true
 
+  # Suspension displacements
+  - name: "Suspension"
+    type: "timeseries"
+    row: 0
+    col: 2
+    x_axis_type: "time"
+    y_axis:
+      label: "Displacement"
+      unit: "mm"
+    series:
+      - name: "FL"
+        variable: "suspension[0]"
+        color: "#2ca02c"
+        scale: 1000.0  # m to mm
+      - name: "FR"
+        variable: "suspension[1]"
+        color: "#d62728"
+        scale: 1000.0
+      - name: "RL"
+        variable: "suspension[2]"
+        color: "#9467bd"
+        scale: 1000.0
+      - name: "RR"
+        variable: "suspension[3]"
+        color: "#8c564b"
+        scale: 1000.0
+    buffer_size: 1000
+    show_legend: true
+
+  # Row 1: Heading, Wheel Velocities, Steering
+
   # Heading vs time
   - name: "Heading"
     type: "timeseries"
@@ -103,3 +137,78 @@ plots:
         color: "#8c564b"
     buffer_size: 1000
     show_legend: true
+
+  # Steering angle vs time
+  - name: "Steering"
+    type: "timeseries"
+    row: 1
+    col: 2
+    x_axis_type: "time"
+    y_axis:
+      label: "Angle"
+      unit: "deg"
+    series:
+      - name: "Steering"
+        variable: "steering_angle"
+        color: "#1f77b4"
+        line_width: 2.0
+    buffer_size: 1000
+
+  # Row 2: Brake Temps, Cooling Temps, Pitot
+
+  # Brake temperatures
+  - name: "Brake Temps"
+    type: "timeseries"
+    row: 2
+    col: 0
+    x_axis_type: "time"
+    y_axis:
+      label: "Temperature"
+      unit: "C"
+    series:
+      - name: "FR"
+        variable: "brake_temp_fr"
+        color: "#d62728"
+      - name: "RL"
+        variable: "brake_temp_rl"
+        color: "#9467bd"
+    buffer_size: 500
+    show_legend: true
+
+  # Cooling system temperatures
+  - name: "Cooling Temps"
+    type: "timeseries"
+    row: 2
+    col: 1
+    x_axis_type: "time"
+    y_axis:
+      label: "Temperature"
+      unit: "C"
+    series:
+      - name: "In"
+        variable: "water_temp_in"
+        color: "#1f77b4"
+      - name: "Out"
+        variable: "water_temp_out"
+        color: "#ff7f0e"
+      - name: "Radiator"
+        variable: "water_temp_radiator"
+        color: "#2ca02c"
+    buffer_size: 500
+    show_legend: true
+
+  # Pitot tube dynamic pressure
+  - name: "Pitot Pressure"
+    type: "timeseries"
+    row: 2
+    col: 2
+    x_axis_type: "time"
+    y_axis:
+      label: "Dynamic Pressure"
+      unit: "Pa"
+    series:
+      - name: "q"
+        variable: "pitot_dynamic_pressure"
+        color: "#17becf"
+        line_width: 2.0
+    buffer_size: 500

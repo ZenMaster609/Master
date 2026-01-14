@@ -51,6 +51,7 @@ def generate_launch_description():
     )
 
     # Spawn the robot using ros_gz_sim
+    # Spawn height increased for new suspension model
     spawn_entity = Node(
         package='ros_gz_sim',
         executable='create',
@@ -59,7 +60,7 @@ def generate_launch_description():
             '-topic', 'robot_description',
             '-x', '0.0',
             '-y', '0.0',
-            '-z', '0.2'
+            '-z', '0.5'
         ],
         output='screen'
     )
@@ -85,15 +86,22 @@ def generate_launch_description():
     )
 
     # ros_gz_bridge: connects Gazebo topics to ROS2 topics
+    # All simulation topics use /sim/ namespace
     bridge = Node(
         package='ros_gz_bridge',
         executable='parameter_bridge',
         arguments=[
-            '/cmd_vel@geometry_msgs/msg/Twist@gz.msgs.Twist',
-            '/odom@nav_msgs/msg/Odometry@gz.msgs.Odometry',
-            '/imu@sensor_msgs/msg/Imu@gz.msgs.IMU',
-            '/navsat@sensor_msgs/msg/NavSatFix@gz.msgs.NavSat',
-            '/joint_states@sensor_msgs/msg/JointState@gz.msgs.Model',
+            # Sensors (Gazebo -> ROS2)
+            '/sim/odom@nav_msgs/msg/Odometry@gz.msgs.Odometry',
+            '/sim/imu@sensor_msgs/msg/Imu@gz.msgs.IMU',
+            '/sim/navsat@sensor_msgs/msg/NavSatFix@gz.msgs.NavSat',
+            '/sim/joint_states@sensor_msgs/msg/JointState@gz.msgs.Model',
+            # Control commands (ROS2 -> Gazebo)
+            '/sim/rear_left_wheel_cmd@std_msgs/msg/Float64@gz.msgs.Double',
+            '/sim/rear_right_wheel_cmd@std_msgs/msg/Float64@gz.msgs.Double',
+            '/sim/steering_fl_cmd@std_msgs/msg/Float64@gz.msgs.Double',
+            '/sim/steering_fr_cmd@std_msgs/msg/Float64@gz.msgs.Double',
+            # Clock
             '/clock@rosgraph_msgs/msg/Clock@gz.msgs.Clock',
         ],
         output='screen',

@@ -601,31 +601,49 @@ VN-200 Hardware (921600 baud)
 ```
 Gazebo Sensors → ros_gz_bridge → sim_car nodes → vehicle_plotter
      ↓                                              ↓
-  /imu/data                              DataCollectorNode
-  /gps/fix                                      ↓
-  /odom                              /vehicle_plotter/state
-  /wheel_encoder/*                         ↓        ↓
-                                    PlotterNode  LoggerNode
-                                         ↓           ↓
-                                    PyQtGraph   ~/.ros/vehicle_logs/
+  /sim/imu                              DataCollectorNode
+  /sim/navsat                                  ↓
+  /sim/odom                          /vehicle_plotter/state
+  /sim/joint_states                        ↓        ↓
+  /sim/wheel_encoder/*              PlotterNode  LoggerNode
+  /sim/suspension                        ↓           ↓
+  /sim/steering_angle               PyQtGraph   ~/.ros/vehicle_logs/
+  /sim/cooling/*
+  /sim/brakes/*
+  /sim/pitot/*
 ```
 
-### Key Topics
-| Topic | Type | Source |
-|-------|------|--------|
-| `/cmd_vel` | Twist | control_node |
-| `/odom` | Odometry | Gazebo |
-| `/imu/data` | Imu | Gazebo |
-| `/gps/fix` | NavSatFix | Gazebo |
-| `/wheel_encoder/velocities` | Float32MultiArray | wheel_encoder_node |
-| `/can/rx` | Frame | ros2_socketcan |
-| `/can/wheel_velocities` | Float32MultiArray | can_decoder_node |
-| `/can/suspension` | Float32MultiArray | can_decoder_node |
-| `/can/steering_angle` | Float32 | can_decoder_node |
-| `/vectornav/imu` | Imu | vectornav_decoder_node |
-| `/vectornav/gps` | NavSatFix | vectornav_decoder_node |
-| `/vectornav/ins` | Odometry | vectornav_decoder_node |
-| `/vehicle_plotter/state` | VehicleState | data_collector_node |
+### Simulation Topics (Gazebo)
+| Topic | Type | Rate | Unit | Source |
+|-------|------|------|------|--------|
+| `/sim/cmd_vel` | Twist | - | m/s, rad/s | ackermann_control_node |
+| `/sim/odom` | Odometry | 50 Hz | m, m/s | Gazebo |
+| `/sim/imu` | Imu | 100 Hz | m/s², rad/s | Gazebo |
+| `/sim/navsat` | NavSatFix | 5 Hz | deg, m | Gazebo |
+| `/sim/joint_states` | JointState | 50 Hz | rad, rad/s | Gazebo |
+| `/sim/wheel_encoder/velocities` | Float32MultiArray | 50 Hz | m/s | wheel_encoder_node |
+| `/sim/suspension` | Float32MultiArray | 100 Hz | mm | suspension_sensor_node |
+| `/sim/steering_angle` | Float32 | 100 Hz | deg | steering_sensor_node |
+| `/sim/cooling/water_pressure` | Float32 | 10 Hz | bar | virtual_sensors_node |
+| `/sim/cooling/water_flow` | Float32 | 10 Hz | L/min | virtual_sensors_node |
+| `/sim/cooling/water_temp_in` | Float32 | 10 Hz | °C | virtual_sensors_node |
+| `/sim/cooling/water_temp_out` | Float32 | 10 Hz | °C | virtual_sensors_node |
+| `/sim/cooling/water_temp_radiator` | Float32 | 10 Hz | °C | virtual_sensors_node |
+| `/sim/brakes/temp_fr` | Float32 | 10 Hz | °C | virtual_sensors_node |
+| `/sim/brakes/temp_rl` | Float32 | 10 Hz | °C | virtual_sensors_node |
+| `/sim/pitot/dynamic_pressure` | Float32 | 10 Hz | Pa | virtual_sensors_node |
+
+### Hardware Topics (CAN / VectorNav)
+| Topic | Type | Rate | Unit | Source |
+|-------|------|------|------|--------|
+| `/can/rx` | Frame | - | - | ros2_socketcan |
+| `/can/wheel_velocities` | Float32MultiArray | 100 Hz | m/s | can_decoder_node |
+| `/can/suspension` | Float32MultiArray | 100 Hz | mm | can_decoder_node |
+| `/can/steering_angle` | Float32 | 100 Hz | rad | can_decoder_node |
+| `/vectornav/imu` | Imu | 200 Hz | m/s², rad/s | vectornav_decoder_node |
+| `/vectornav/gps` | NavSatFix | 5 Hz | deg, m | vectornav_decoder_node |
+| `/vectornav/ins` | Odometry | 200 Hz | m, m/s | vectornav_decoder_node |
+| `/vehicle_plotter/state` | VehicleState | 50 Hz | various | data_collector_node |
 
 ### VehicleState Message
 ```
@@ -644,6 +662,27 @@ float64 speed, distance_traveled, slip_longitudinal, slip_lateral
 # Wheel encoder velocities [FL, FR, RL, RR] in m/s
 float32[4] encoder_velocities
 
+# Suspension displacements [FL, FR, RL, RR] in meters
+float32[4] suspension
+
+# Steering
+float32 steering_angle          # degrees
+bool steering_valid
+
+# Cooling system
+float32 water_pressure          # bar
+float32 water_flow              # L/min
+float32 water_temp_in           # celsius
+float32 water_temp_out          # celsius
+float32 water_temp_radiator     # celsius
+
+# Brake temperatures
+float32 brake_temp_fr           # celsius
+float32 brake_temp_rl           # celsius
+
+# Pitot tube
+float32 pitot_dynamic_pressure  # Pa
+
 # GPS
 float64 gps_latitude, gps_longitude
 bool gps_valid
@@ -653,13 +692,180 @@ float64[36] covariance
 string estimation_status  # "raw", "filtered", "predicted"
 ```
 
+---
+
+## Simulation Model (RWD + Ackermann + Suspension)
+
+The sim_car package implements a realistic Formula Student car with:
+- **RWD drivetrain**: Rear wheels provide drive torque
+- **Ackermann steering**: Front wheels with proper inner/outer angle geometry
+- **Per-wheel suspension**: Prismatic joints with spring/damper dynamics
+- **Virtual sensors**: Cooling, brakes, and pitot tube simulation
+
+### Joint Hierarchy
+
+```
+base_link
+├── suspension_fl_joint (prismatic, Z-axis)
+│   └── suspension_fl_link
+│       └── steering_fl_joint (revolute, Z-axis)
+│           └── steering_fl_link
+│               └── front_left_wheel_joint (continuous, Y-axis)
+│                   └── front_left_wheel
+├── suspension_fr_joint (prismatic, Z-axis)
+│   └── suspension_fr_link
+│       └── steering_fr_joint (revolute, Z-axis)
+│           └── steering_fr_link
+│               └── front_right_wheel_joint (continuous, Y-axis)
+│                   └── front_right_wheel
+├── suspension_rl_joint (prismatic, Z-axis)
+│   └── suspension_rl_link
+│       └── rear_left_wheel_joint (continuous, Y-axis)
+│           └── rear_left_wheel
+└── suspension_rr_joint (prismatic, Z-axis)
+    └── suspension_rr_link
+        └── rear_right_wheel_joint (continuous, Y-axis)
+            └── rear_right_wheel
+```
+
+### Joint-to-Wheel Mapping
+
+| Joint Name | Type | Axis | Limits | Description |
+|------------|------|------|--------|-------------|
+| `suspension_fl_joint` | prismatic | Z | ±50 mm | Front-left suspension travel |
+| `suspension_fr_joint` | prismatic | Z | ±50 mm | Front-right suspension travel |
+| `suspension_rl_joint` | prismatic | Z | ±50 mm | Rear-left suspension travel |
+| `suspension_rr_joint` | prismatic | Z | ±50 mm | Rear-right suspension travel |
+| `steering_fl_joint` | revolute | Z | ±30° | Front-left steering angle |
+| `steering_fr_joint` | revolute | Z | ±30° | Front-right steering angle |
+| `front_left_wheel_joint` | continuous | Y | - | FL wheel rotation (passive) |
+| `front_right_wheel_joint` | continuous | Y | - | FR wheel rotation (passive) |
+| `rear_left_wheel_joint` | continuous | Y | - | RL wheel rotation (driven) |
+| `rear_right_wheel_joint` | continuous | Y | - | RR wheel rotation (driven) |
+
+### Ackermann Steering Geometry
+
+The `ackermann_control_node` converts `/cmd_vel` (Twist) to proper steering angles:
+
+```
+                  wheelbase (L)
+    ┌──────────────────────────────────┐
+    │                                  │
+  ──┼── δ_inner ──────────────── δ_outer ──┼──
+    │              turning              │
+    │               radius              │
+    └──────────────────────────────────┘
+              track_width (W)
+
+tan(δ_inner) = L / (R - W/2)
+tan(δ_outer) = L / (R + W/2)
+```
+
+**Parameters** (in `ackermann_control_node`):
+| Parameter | Default | Unit | Description |
+|-----------|---------|------|-------------|
+| `wheelbase` | 1.6 | m | Distance between front and rear axles |
+| `track_width` | 1.1 | m | Distance between left and right wheels |
+| `wheel_radius` | 0.23 | m | Wheel radius for velocity calculation |
+| `max_steering_angle` | 0.52 | rad | Maximum steering angle (~30°) |
+| `max_speed` | 15.0 | m/s | Maximum vehicle speed |
+
+### Suspension Parameters
+
+Suspension joints use Gazebo's built-in spring/damper dynamics:
+
+| Parameter | Value | Unit | Description |
+|-----------|-------|------|-------------|
+| Travel | ±50 | mm | Suspension stroke |
+| Damping | 1000.0 | Ns/m | Damping coefficient |
+| Spring stiffness | (implicit) | N/m | Set via Gazebo physics |
+
+**To modify suspension parameters**, edit `sim_car/urdf/car.urdf`:
+```xml
+<joint name="suspension_fl_joint" type="prismatic">
+  <limit lower="-0.05" upper="0.05" effort="1000" velocity="1"/>
+  <dynamics damping="1000.0"/>
+</joint>
+```
+
+### Sensor Noise/Bias Configuration
+
+All sensor nodes support configurable noise injection via ROS parameters:
+
+**Suspension Sensor** (`suspension_sensor_node`):
+| Parameter | Default | Unit | Description |
+|-----------|---------|------|-------------|
+| `noise_stddev` | 0.5 | mm | Gaussian noise standard deviation |
+| `bias_fl` | 0.0 | mm | Per-wheel static bias |
+| `bias_fr` | 0.0 | mm | Per-wheel static bias |
+| `bias_rl` | 0.0 | mm | Per-wheel static bias |
+| `bias_rr` | 0.0 | mm | Per-wheel static bias |
+| `dropout_probability` | 0.0 | 0-1 | Probability of missed reading |
+| `publish_rate` | 100.0 | Hz | Output rate |
+
+**Steering Sensor** (`steering_sensor_node`):
+| Parameter | Default | Unit | Description |
+|-----------|---------|------|-------------|
+| `noise_stddev` | 0.1 | deg | Gaussian noise standard deviation |
+| `latency_ms` | 5.0 | ms | Simulated sensor latency |
+| `bias` | 0.0 | deg | Static steering bias |
+| `dropout_probability` | 0.0 | 0-1 | Probability of missed reading |
+| `publish_rate` | 100.0 | Hz | Output rate |
+
+**Virtual Sensors** (`virtual_sensors_node`):
+| Parameter | Default | Unit | Description |
+|-----------|---------|------|-------------|
+| `ambient_temp` | 25.0 | °C | Baseline ambient temperature |
+| `noise_pressure` | 0.02 | bar | Water pressure noise |
+| `noise_flow` | 0.5 | L/min | Water flow noise |
+| `noise_temp` | 0.3 | °C | Cooling temp noise |
+| `noise_brake_temp` | 1.0 | °C | Brake temp noise |
+| `noise_pitot` | 2.0 | Pa | Pitot pressure noise |
+| `publish_rate` | 10.0 | Hz | Output rate |
+
+### Modifying Vehicle Dimensions
+
+**Wheel radius/width** - Edit `sim_car/urdf/car.urdf`:
+```xml
+<link name="front_left_wheel">
+  <visual>
+    <geometry>
+      <cylinder radius="0.23" length="0.18"/>  <!-- radius, width -->
+    </geometry>
+  </visual>
+</link>
+```
+Also update the `wheel_radius` parameter in `nodes.launch.py`.
+
+**Wheelbase/track width** - Edit `sim_car/urdf/car.urdf` (link positions) and update `ackermann_control_node` parameters in `nodes.launch.py`.
+
+### Virtual Sensor Models
+
+**Cooling System:**
+- Water pressure: Base 2.0 bar + speed factor
+- Water flow: Base 5.0 L/min + throttle response
+- Temperatures: Thermal model with time constant τ ≈ 30s
+
+**Brake Temperatures:**
+- Heat input: Proportional to deceleration²
+- Cooling: Proportional to speed + passive convection
+- Range: Ambient to ~400°C under heavy braking
+
+**Pitot Tube:**
+- Dynamic pressure: q = ½ρv² (ρ = 1.225 kg/m³)
+- Range: 0-1200 Pa at 15 m/s
+
 ## Configuration
 
 ### Plot Configuration (config/default_plots.yaml)
-- Position trajectory (X vs Y)
-- Velocity vs time (Vx, Vy, Speed)
-- Heading vs time (Yaw in degrees)
-- Encoder ticks vs distance
+
+3x3 grid layout with all sensor data:
+
+| Row | Col 0 | Col 1 | Col 2 |
+|-----|-------|-------|-------|
+| 0 | Position Trajectory (X vs Y) | Velocity (Vx, Vy, Speed) | Suspension (FL, FR, RL, RR) |
+| 1 | Heading (Yaw in degrees) | Wheel Velocities (4 wheels) | Steering Angle |
+| 2 | Brake Temps (FR, RL) | Cooling Temps (In, Out, Radiator) | Pitot Pressure |
 
 ### Topic Mappings
 - `config/gazebo_topics.yaml` - Gazebo simulation topics

@@ -72,6 +72,24 @@ class VehicleState:
     # Suspension displacements [FL, FR, RL, RR] in meters
     suspension: List[float] = field(default_factory=lambda: [0.0, 0.0, 0.0, 0.0])
 
+    # Steering angle (degrees)
+    steering_angle: float = 0.0
+    steering_valid: bool = False
+
+    # Cooling system
+    water_pressure: float = 0.0        # bar
+    water_flow: float = 0.0            # L/min
+    water_temp_in: float = 0.0         # celsius
+    water_temp_out: float = 0.0        # celsius
+    water_temp_radiator: float = 0.0   # celsius
+
+    # Brake temperatures
+    brake_temp_fr: float = 0.0         # celsius
+    brake_temp_rl: float = 0.0         # celsius
+
+    # Pitot tube
+    pitot_dynamic_pressure: float = 0.0  # Pa
+
     # Source information (for debugging)
     source_adapter: str = "unknown"
 
@@ -123,6 +141,16 @@ class VehicleState:
             'suspension_fr': self.suspension[1],
             'suspension_rl': self.suspension[2],
             'suspension_rr': self.suspension[3],
+            'steering_angle': self.steering_angle,
+            'steering_valid': self.steering_valid,
+            'water_pressure': self.water_pressure,
+            'water_flow': self.water_flow,
+            'water_temp_in': self.water_temp_in,
+            'water_temp_out': self.water_temp_out,
+            'water_temp_radiator': self.water_temp_radiator,
+            'brake_temp_fr': self.brake_temp_fr,
+            'brake_temp_rl': self.brake_temp_rl,
+            'pitot_dynamic_pressure': self.pitot_dynamic_pressure,
             'estimation_status': self.estimation_status,
             'source_adapter': self.source_adapter,
         }
@@ -191,6 +219,24 @@ class VehicleState:
         # Suspension
         msg.suspension = [float(v) for v in self.suspension]
 
+        # Steering
+        msg.steering_angle = float(self.steering_angle)
+        msg.steering_valid = self.steering_valid
+
+        # Cooling system
+        msg.water_pressure = float(self.water_pressure)
+        msg.water_flow = float(self.water_flow)
+        msg.water_temp_in = float(self.water_temp_in)
+        msg.water_temp_out = float(self.water_temp_out)
+        msg.water_temp_radiator = float(self.water_temp_radiator)
+
+        # Brake temperatures
+        msg.brake_temp_fr = float(self.brake_temp_fr)
+        msg.brake_temp_rl = float(self.brake_temp_rl)
+
+        # Pitot
+        msg.pitot_dynamic_pressure = float(self.pitot_dynamic_pressure)
+
         # EKF fields
         msg.covariance = list(self.covariance)
         msg.estimation_status = self.estimation_status
@@ -229,6 +275,16 @@ class VehicleState:
             dr_x=msg.dr_x,
             dr_y=msg.dr_y,
             suspension=list(msg.suspension),
+            steering_angle=msg.steering_angle,
+            steering_valid=msg.steering_valid,
+            water_pressure=msg.water_pressure,
+            water_flow=msg.water_flow,
+            water_temp_in=msg.water_temp_in,
+            water_temp_out=msg.water_temp_out,
+            water_temp_radiator=msg.water_temp_radiator,
+            brake_temp_fr=msg.brake_temp_fr,
+            brake_temp_rl=msg.brake_temp_rl,
+            pitot_dynamic_pressure=msg.pitot_dynamic_pressure,
             covariance=list(msg.covariance),
             estimation_status=msg.estimation_status,
             source_adapter=msg.source_adapter,
@@ -260,6 +316,16 @@ class VehicleState:
             dr_x=self.dr_x,
             dr_y=self.dr_y,
             suspension=list(self.suspension),
+            steering_angle=self.steering_angle,
+            steering_valid=self.steering_valid,
+            water_pressure=self.water_pressure,
+            water_flow=self.water_flow,
+            water_temp_in=self.water_temp_in,
+            water_temp_out=self.water_temp_out,
+            water_temp_radiator=self.water_temp_radiator,
+            brake_temp_fr=self.brake_temp_fr,
+            brake_temp_rl=self.brake_temp_rl,
+            pitot_dynamic_pressure=self.pitot_dynamic_pressure,
             covariance=list(self.covariance),
             estimation_status=self.estimation_status,
             source_adapter=self.source_adapter,
