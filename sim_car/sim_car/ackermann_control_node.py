@@ -5,6 +5,9 @@ Converts /cmd_vel Twist messages to:
 - Ackermann steering angles for front wheels
 - Velocity commands for rear drive wheels
 
+Also manages suspension spring-damper initialization by publishing
+neutral position targets to the suspension controller topics.
+
 Implements proper Ackermann geometry where inner wheel turns
 more than outer wheel for correct turn radius.
 """
@@ -19,6 +22,9 @@ from std_msgs.msg import Float64
 class AckermannControlNode(Node):
     """
     Converts Twist commands to Ackermann steering + RWD drive commands.
+
+    Also initializes and maintains suspension spring-damper controllers
+    by publishing neutral position targets (0.0) continuously.
 
     Parameters:
         wheelbase (float): Distance between front and rear axles (m)
@@ -36,6 +42,7 @@ class AckermannControlNode(Node):
         /sim/steering_fr_cmd (std_msgs/Float64): Front right steering position (rad)
         /sim/rear_left_wheel_cmd (std_msgs/Float64): Rear left wheel velocity (rad/s)
         /sim/rear_right_wheel_cmd (std_msgs/Float64): Rear right wheel velocity (rad/s)
+        /sim/suspension_*_cmd (std_msgs/Float64): Suspension neutral targets (m)
     """
 
     def __init__(self):
@@ -73,9 +80,24 @@ class AckermannControlNode(Node):
         self.rear_right_pub = self.create_publisher(
             Float64, '/sim/rear_right_wheel_cmd', 10)
 
+        # Publishers for suspension spring-damper controllers
+        # These receive neutral target position (0.0) to enable spring behavior
+        self.suspension_fl_pub = self.create_publisher(
+            Float64, '/sim/suspension_fl_cmd', 10)
+        self.suspension_fr_pub = self.create_publisher(
+            Float64, '/sim/suspension_fr_cmd', 10)
+        self.suspension_rl_pub = self.create_publisher(
+            Float64, '/sim/suspension_rl_cmd', 10)
+        self.suspension_rr_pub = self.create_publisher(
+            Float64, '/sim/suspension_rr_cmd', 10)
+
         # Subscriber for velocity commands
         self.cmd_vel_sub = self.create_subscription(
             Twist, '/cmd_vel', self.cmd_vel_callback, 10)
+
+        # Suspension spring-damper initialization timer
+        # Publishes neutral position (0.0) at 50 Hz to enable spring behavior
+        self.suspension_timer = self.create_timer(0.02, self.suspension_callback)
 
         # Auto mode timer
         if self.mode == 'auto':
@@ -89,6 +111,7 @@ class AckermannControlNode(Node):
             f'wheelbase={self.wheelbase}m, track={self.track_width}m, '
             f'wheel_r={self.wheel_radius}m, max_steer={math.degrees(self.max_steering_angle):.1f}deg'
         )
+        self.get_logger().info('Suspension spring-damper controllers enabled')
 
     def cmd_vel_callback(self, msg: Twist):
         """
@@ -222,6 +245,26 @@ class AckermannControlNode(Node):
         right_angular_vel = right_linear_vel / self.wheel_radius
 
         return left_angular_vel, right_angular_vel
+
+    def suspension_callback(self):
+        """
+        Publish neutral position targets (0.0) to all suspension controllers.
+
+        This enables the spring-damper behavior by giving the JointController
+        plugins a target position to seek. The controllers use:
+        - P-gain (20000 N/m) as spring stiffness
+        - D-gain (1000 Ns/m) as damping coefficient
+
+        With target = 0, the suspension naturally compresses under vehicle
+        weight until equilibrium: x = F/k = (m*g/4)/k ≈ 24mm per wheel.
+        """
+        neutral_cmd = Float64()
+        neutral_cmd.data = 0.0
+
+        self.suspension_fl_pub.publish(neutral_cmd)
+        self.suspension_fr_pub.publish(neutral_cmd)
+        self.suspension_rl_pub.publish(neutral_cmd)
+        self.suspension_rr_pub.publish(neutral_cmd)
 
     def auto_mode_callback(self):
         """

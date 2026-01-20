@@ -100,6 +100,7 @@ class LoggerNode(Node):
         self.log_writer: Optional[LogWriter] = None
         self._session_initialized = False
         self._buffered_states = []  # Buffer states until session is ready
+        self._shutdown_called = False
 
         if enable_logging:
             # Subscribe to run session for multi-machine sync
@@ -138,6 +139,9 @@ class LoggerNode(Node):
         self.status_timer = self.create_timer(10.0, self.status_callback)
 
         self.get_logger().info(f'LoggerNode started, subscribed to {state_topic}')
+
+        # Ensure shutdown handler runs on ROS shutdown as well
+        rclpy.on_shutdown(self.shutdown)
 
     def session_callback(self, msg: RunSessionMsg) -> None:
         """Handle incoming run session message."""
@@ -249,6 +253,10 @@ class LoggerNode(Node):
 
     def shutdown(self) -> None:
         """Clean shutdown with final flush and optional plot generation."""
+        if self._shutdown_called:
+            return
+        self._shutdown_called = True
+
         if self.log_writer is not None:
             self.log_writer.close()
             self.get_logger().info(

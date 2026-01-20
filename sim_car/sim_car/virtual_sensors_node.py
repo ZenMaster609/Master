@@ -53,6 +53,16 @@ class VirtualSensorsNode(Node):
         self.declare_parameter('publish_rate', 10.0)  # Hz
         self.declare_parameter('ambient_temp', 25.0)  # Celsius
 
+        # Per-sensor publish rates (Hz)
+        self.declare_parameter('publish_rate_water_pressure', self.get_parameter('publish_rate').value)
+        self.declare_parameter('publish_rate_water_flow', self.get_parameter('publish_rate').value)
+        self.declare_parameter('publish_rate_water_temp_in', self.get_parameter('publish_rate').value)
+        self.declare_parameter('publish_rate_water_temp_out', self.get_parameter('publish_rate').value)
+        self.declare_parameter('publish_rate_water_temp_radiator', self.get_parameter('publish_rate').value)
+        self.declare_parameter('publish_rate_brake_temp_fr', self.get_parameter('publish_rate').value)
+        self.declare_parameter('publish_rate_brake_temp_rl', self.get_parameter('publish_rate').value)
+        self.declare_parameter('publish_rate_pitot_dynamic_pressure', self.get_parameter('publish_rate').value)
+
         # Noise parameters
         self.declare_parameter('noise_pressure', 0.02)  # bar
         self.declare_parameter('noise_flow', 0.5)  # L/min
@@ -69,6 +79,20 @@ class VirtualSensorsNode(Node):
         self.noise_brake_temp = self.get_parameter('noise_brake_temp').value
         self.noise_pitot = self.get_parameter('noise_pitot').value
 
+        self.publish_rates = {
+            'water_pressure': self.get_parameter('publish_rate_water_pressure').value,
+            'water_flow': self.get_parameter('publish_rate_water_flow').value,
+            'water_temp_in': self.get_parameter('publish_rate_water_temp_in').value,
+            'water_temp_out': self.get_parameter('publish_rate_water_temp_out').value,
+            'water_temp_radiator': self.get_parameter('publish_rate_water_temp_radiator').value,
+            'brake_temp_fr': self.get_parameter('publish_rate_brake_temp_fr').value,
+            'brake_temp_rl': self.get_parameter('publish_rate_brake_temp_rl').value,
+            'pitot_dynamic_pressure': self.get_parameter('publish_rate_pitot_dynamic_pressure').value,
+        }
+        self.update_rate_hz = max(self.publish_rates.values()) if self.publish_rates else self.publish_rate
+        if self.update_rate_hz <= 0:
+            self.update_rate_hz = self.publish_rate
+
         # State variables
         self.vehicle_speed = 0.0  # m/s
         self.throttle = 0.0  # 0-1 proxy
@@ -84,6 +108,7 @@ class VirtualSensorsNode(Node):
 
         # Time tracking
         self.last_update_time = None
+        self.last_publish_times = {}
 
         # Publishers - Cooling
         self.pressure_pub = self.create_publisher(
@@ -114,12 +139,12 @@ class VirtualSensorsNode(Node):
             Twist, '/cmd_vel', self.cmd_vel_callback, 10)
 
         # Timer for publishing
-        timer_period = 1.0 / self.publish_rate
+        timer_period = 1.0 / self.update_rate_hz
         self.timer = self.create_timer(timer_period, self.update_and_publish)
 
         self.get_logger().info(
             f'Virtual sensors initialized: '
-            f'rate={self.publish_rate}Hz, ambient={self.ambient_temp}C'
+            f'update_rate={self.update_rate_hz}Hz, ambient={self.ambient_temp}C'
         )
 
     def odom_callback(self, msg: Odometry):
@@ -143,7 +168,7 @@ class VirtualSensorsNode(Node):
         # Get time delta
         now = self.get_clock().now().nanoseconds / 1e9
         if self.last_update_time is None:
-            dt = 1.0 / self.publish_rate
+            dt = 1.0 / self.update_rate_hz
         else:
             dt = now - self.last_update_time
         self.last_update_time = now
@@ -156,21 +181,29 @@ class VirtualSensorsNode(Node):
         self._update_brake_temps(dt)
 
         # Publish cooling sensors
-        self._publish_float(self.pressure_pub, self._compute_water_pressure(),
-                            self.noise_pressure)
-        self._publish_float(self.flow_pub, self._compute_water_flow(),
-                            self.noise_flow)
-        self._publish_float(self.temp_in_pub, self.water_temp_in, self.noise_temp)
-        self._publish_float(self.temp_out_pub, self.water_temp_out, self.noise_temp)
-        self._publish_float(self.temp_rad_pub, self.water_temp_radiator, self.noise_temp)
+        if self._should_publish('water_pressure', now):
+            self._publish_float(self.pressure_pub, self._compute_water_pressure(),
+                                self.noise_pressure)
+        if self._should_publish('water_flow', now):
+            self._publish_float(self.flow_pub, self._compute_water_flow(),
+                                self.noise_flow)
+        if self._should_publish('water_temp_in', now):
+            self._publish_float(self.temp_in_pub, self.water_temp_in, self.noise_temp)
+        if self._should_publish('water_temp_out', now):
+            self._publish_float(self.temp_out_pub, self.water_temp_out, self.noise_temp)
+        if self._should_publish('water_temp_radiator', now):
+            self._publish_float(self.temp_rad_pub, self.water_temp_radiator, self.noise_temp)
 
         # Publish brake temps
-        self._publish_float(self.brake_fr_pub, self.brake_temp_fr, self.noise_brake_temp)
-        self._publish_float(self.brake_rl_pub, self.brake_temp_rl, self.noise_brake_temp)
+        if self._should_publish('brake_temp_fr', now):
+            self._publish_float(self.brake_fr_pub, self.brake_temp_fr, self.noise_brake_temp)
+        if self._should_publish('brake_temp_rl', now):
+            self._publish_float(self.brake_rl_pub, self.brake_temp_rl, self.noise_brake_temp)
 
         # Publish pitot
-        self._publish_float(self.pitot_pub, self._compute_pitot_pressure(),
-                            self.noise_pitot)
+        if self._should_publish('pitot_dynamic_pressure', now):
+            self._publish_float(self.pitot_pub, self._compute_pitot_pressure(),
+                                self.noise_pitot)
 
         # Store for deceleration calculation
         self.prev_speed = self.vehicle_speed
@@ -182,6 +215,16 @@ class VirtualSensorsNode(Node):
         msg = Float32()
         msg.data = float(value)
         publisher.publish(msg)
+
+    def _should_publish(self, sensor_name: str, now: float) -> bool:
+        rate = self.publish_rates.get(sensor_name, 0.0)
+        if rate <= 0:
+            return False
+        last_time = self.last_publish_times.get(sensor_name)
+        if last_time is None or (now - last_time) >= (1.0 / rate):
+            self.last_publish_times[sensor_name] = now
+            return True
+        return False
 
     def _compute_water_pressure(self) -> float:
         """

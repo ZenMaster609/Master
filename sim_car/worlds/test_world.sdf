@@ -12,9 +12,9 @@
     <plugin filename="ignition-gazebo-imu-system" name="ignition::gazebo::systems::Imu"/>
     <plugin filename="ignition-gazebo-navsat-system" name="ignition::gazebo::systems::NavSat"/>
 
-    <!-- Physics settings (250Hz instead of 1000Hz to reduce CPU) -->
-    <physics name="4ms" type="ignored">
-      <max_step_size>0.004</max_step_size>
+    <!-- Physics settings (50Hz) -->
+    <physics name="20ms" type="ignored">
+      <max_step_size>0.02</max_step_size>
       <real_time_factor>1.0</real_time_factor>
     </physics>
 
@@ -56,84 +56,6 @@
             <ambient>0.8 0.8 0.8 1</ambient>
             <diffuse>0.8 0.8 0.8 1</diffuse>
             <specular>0.8 0.8 0.8 1</specular>
-          </material>
-        </visual>
-      </link>
-    </model>
-
-    <!-- Obstacles for testing sensors -->
-    <model name="box_obstacle_1">
-      <pose>3 2 0.5 0 0 0</pose>
-      <static>true</static>
-      <link name="link">
-        <collision name="collision">
-          <geometry>
-            <box>
-              <size>1 1 1</size>
-            </box>
-          </geometry>
-        </collision>
-        <visual name="visual">
-          <geometry>
-            <box>
-              <size>1 1 1</size>
-            </box>
-          </geometry>
-          <material>
-            <ambient>0.8 0.2 0.2 1</ambient>
-            <diffuse>0.8 0.2 0.2 1</diffuse>
-          </material>
-        </visual>
-      </link>
-    </model>
-
-    <model name="box_obstacle_2">
-      <pose>-2 -3 0.5 0 0 0</pose>
-      <static>true</static>
-      <link name="link">
-        <collision name="collision">
-          <geometry>
-            <box>
-              <size>1 1 1</size>
-            </box>
-          </geometry>
-        </collision>
-        <visual name="visual">
-          <geometry>
-            <box>
-              <size>1 1 1</size>
-            </box>
-          </geometry>
-          <material>
-            <ambient>0.2 0.8 0.2 1</ambient>
-            <diffuse>0.2 0.8 0.2 1</diffuse>
-          </material>
-        </visual>
-      </link>
-    </model>
-
-    <model name="cylinder_obstacle">
-      <pose>-3 2 0.5 0 0 0</pose>
-      <static>true</static>
-      <link name="link">
-        <collision name="collision">
-          <geometry>
-            <cylinder>
-              <radius>0.5</radius>
-              <length>1</length>
-            </cylinder>
-          </geometry>
-        </collision>
-        <visual name="visual">
-          <geometry>
-            <cylinder>
-              <radius>0.5</radius>
-              <length>1</length>
-            </cylinder>
-          </geometry>
-          <material>
-            <ambient>0.2 0.2 0.8 1</ambient>
-            <diffuse>0.2 0.2 0.8 1</diffuse>
           </material>
         </visual>
       </link>

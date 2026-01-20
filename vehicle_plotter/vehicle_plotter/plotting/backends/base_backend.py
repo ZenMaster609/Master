@@ -110,7 +110,9 @@ class DummyBackend(PlotBackend):
     """
     Dummy backend for headless operation.
 
-    Does nothing but satisfies the interface.
+    Does nothing but satisfies the interface. Reports as NOT available
+    so that code can correctly detect that GUI features (like PNG export)
+    won't work.
     """
 
     def __init__(self):
@@ -140,7 +142,10 @@ class DummyBackend(PlotBackend):
         self._initialized = False
 
     def export_figure(self, path: str, dpi: int = 150) -> None:
-        pass
+        # DummyBackend cannot export images - this is a no-op
+        print(f"WARNING: DummyBackend cannot export figure to {path} (no GUI)")
 
     def is_available(self) -> bool:
-        return True
+        # DummyBackend cannot render plots, report as unavailable
+        # This ensures _gui_available is False in plotter_node
+        return False

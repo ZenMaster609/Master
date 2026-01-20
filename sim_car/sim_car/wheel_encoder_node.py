@@ -48,6 +48,14 @@ class WheelEncoderNode(Node):
 
         # Store last velocities for status updates
         self._last_velocities = [0.0, 0.0, 0.0, 0.0]
+        self._last_joint_velocities = [0.0, 0.0, 0.0, 0.0]
+        self._joint_state_received = False
+
+        # Publish at configured rate
+        self.publish_timer = self.create_timer(
+            1.0 / self.publish_rate,
+            self.publish_wheel_velocities,
+        )
 
         # Timer for status updates
         self.status_timer = self.create_timer(2.0, self.status_callback)
@@ -57,7 +65,7 @@ class WheelEncoderNode(Node):
         self.get_logger().info(f'Publishing at {self.publish_rate} Hz')
 
     def joint_state_callback(self, msg):
-        """Process joint state data and publish wheel velocities."""
+        """Process joint state data and store wheel velocities."""
 
         # Create a mapping of joint names to velocities
         joint_data = {}
@@ -74,8 +82,15 @@ class WheelEncoderNode(Node):
             else:
                 velocities.append(0.0)
 
-        # Convert rad/s to m/s and publish
-        wheel_velocities = [v * self.wheel_radius for v in velocities]
+        self._last_joint_velocities = velocities
+        self._joint_state_received = True
+
+    def publish_wheel_velocities(self):
+        """Publish wheel velocities at the configured rate."""
+        if not self._joint_state_received:
+            return
+
+        wheel_velocities = [v * self.wheel_radius for v in self._last_joint_velocities]
         self._last_velocities = wheel_velocities
 
         velocity_msg = Float32MultiArray()

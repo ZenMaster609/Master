@@ -1,0 +1,87 @@
+simulation:
+  step_rate_hz: 50.0
+
+sensors:
+  real:
+    imu:
+      unit:
+        angular_velocity: rad/s
+        linear_acceleration: m/s^2
+      frequency_hz: 50.0
+      scale:
+        angular_velocity: 1.0
+        linear_acceleration: 1.0
+      range:
+        angular_velocity: [-20.0, 20.0]
+        linear_acceleration: [-50.0, 50.0]
+    gnss:
+      unit:
+        latitude: deg
+        longitude: deg
+        altitude: m
+      frequency_hz: 50.0
+      scale:
+        latitude: 1.0
+        longitude: 1.0
+        altitude: 1.0
+      range:
+        latitude: [-90.0, 90.0]
+        longitude: [-180.0, 180.0]
+        altitude: [-1000.0, 10000.0]
+    encoders:
+      unit: m/s
+      frequency_hz: 50.0
+      scale: 1.0
+      range: [-100.0, 100.0]
+    suspension:
+      unit: mm
+      frequency_hz: 50.0
+      scale: 1.0
+      range: [-50.0, 50.0]
+
+  virtual:
+    steering_angle:
+      unit: deg
+      frequency_hz: 50.0
+      scale: 1.0
+      range: [-30.0, 30.0]
+    water_pressure:
+      unit: bar
+      frequency_hz: 50.0
+      scale: 1.0
+      range: [0.0, 10.0]
+    water_flow:
+      unit: L/min
+      frequency_hz: 50.0
+      scale: 1.0
+      range: [0.0, 50.0]
+    water_temp_in:
+      unit: C
+      frequency_hz: 50.0
+      scale: 1.0
+      range: [-40.0, 150.0]
+    water_temp_out:
+      unit: C
+      frequency_hz: 50.0
+      scale: 1.0
+      range: [-40.0, 150.0]
+    water_temp_radiator:
+      unit: C
+      frequency_hz: 50.0
+      scale: 1.0
+      range: [-40.0, 150.0]
+    brake_temp_fr:
+      unit: C
+      frequency_hz: 50.0
+      scale: 1.0
+      range: [-40.0, 800.0]
+    brake_temp_rl:
+      unit: C
+      frequency_hz: 50.0
+      scale: 1.0
+      range: [-40.0, 800.0]
+    pitot_dynamic_pressure:
+      unit: Pa
+      frequency_hz: 50.0
+      scale: 1.0
+      range: [0.0, 5000.0]

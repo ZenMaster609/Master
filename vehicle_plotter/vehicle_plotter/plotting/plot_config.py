@@ -118,8 +118,9 @@ def get_default_plots() -> PlotLayoutConfig:
     import math
 
     return PlotLayoutConfig(
-        rows=2,
+        rows=3,
         cols=2,
+        window_size=(1200, 1000),
         plots=[
             # Top-left: Position trajectory
             PlotConfig(
@@ -166,18 +167,94 @@ def get_default_plots() -> PlotLayoutConfig:
                 buffer_size=1000,
             ),
 
-            # Bottom-right: Encoder velocities vs distance
+            # Bottom-right: Encoder velocities vs time
             PlotConfig(
                 name="Encoders",
                 plot_type="timeseries",
-                x_axis_type=XAxisType.DISTANCE,
+                x_axis_type=XAxisType.TIME,
                 series=[
                     SeriesConfig(name="FL", variable="encoder_velocities[0]", color="#2ca02c"),
                     SeriesConfig(name="FR", variable="encoder_velocities[1]", color="#d62728"),
                     SeriesConfig(name="RL", variable="encoder_velocities[2]", color="#9467bd"),
                     SeriesConfig(name="RR", variable="encoder_velocities[3]", color="#8c564b"),
                 ],
-                y_axis=AxisConfig(label="Velocity (m/s)"),
+                y_axis=AxisConfig(label="Wheel Velocity", unit="m/s"),
+                row=1, col=1,
+                buffer_size=1000,
+            ),
+
+            # Bottom row: Suspension travel vs time
+            PlotConfig(
+                name="Suspension",
+                plot_type="timeseries",
+                x_axis_type=XAxisType.TIME,
+                series=[
+                    SeriesConfig(name="FL", variable="suspension[0]", color="#2ca02c"),
+                    SeriesConfig(name="FR", variable="suspension[1]", color="#d62728"),
+                    SeriesConfig(name="RL", variable="suspension[2]", color="#9467bd"),
+                    SeriesConfig(name="RR", variable="suspension[3]", color="#8c564b"),
+                ],
+                y_axis=AxisConfig(label="Suspension", unit="m"),
+                row=2, col=0, col_span=2,
+                buffer_size=1000,
+            ),
+        ],
+    )
+
+
+def get_virtual_sensor_plots() -> PlotLayoutConfig:
+    """Get a plot layout for virtual sensor channels."""
+    return PlotLayoutConfig(
+        rows=2,
+        cols=2,
+        window_title="Virtual Sensors",
+        window_size=(1200, 900),
+        plots=[
+            PlotConfig(
+                name="Cooling Pressure/Flow",
+                plot_type="timeseries",
+                x_axis_type=XAxisType.TIME,
+                series=[
+                    SeriesConfig(name="Pressure", variable="water_pressure", color="#1f77b4"),
+                    SeriesConfig(name="Flow", variable="water_flow", color="#2ca02c"),
+                ],
+                y_axis=AxisConfig(label="Cooling", unit="bar / L/min"),
+                row=0, col=0,
+                buffer_size=1000,
+            ),
+            PlotConfig(
+                name="Cooling Temperatures",
+                plot_type="timeseries",
+                x_axis_type=XAxisType.TIME,
+                series=[
+                    SeriesConfig(name="In", variable="water_temp_in", color="#ff7f0e"),
+                    SeriesConfig(name="Out", variable="water_temp_out", color="#d62728"),
+                    SeriesConfig(name="Radiator", variable="water_temp_radiator", color="#9467bd"),
+                ],
+                y_axis=AxisConfig(label="Temperature", unit="C"),
+                row=0, col=1,
+                buffer_size=1000,
+            ),
+            PlotConfig(
+                name="Brake Temps",
+                plot_type="timeseries",
+                x_axis_type=XAxisType.TIME,
+                series=[
+                    SeriesConfig(name="Front Right", variable="brake_temp_fr", color="#d62728"),
+                    SeriesConfig(name="Rear Left", variable="brake_temp_rl", color="#8c564b"),
+                ],
+                y_axis=AxisConfig(label="Temperature", unit="C"),
+                row=1, col=0,
+                buffer_size=1000,
+            ),
+            PlotConfig(
+                name="Pitot Dynamic Pressure",
+                plot_type="timeseries",
+                x_axis_type=XAxisType.TIME,
+                series=[
+                    SeriesConfig(name="Pitot", variable="pitot_dynamic_pressure", color="#17becf"),
+                ],
+                y_axis=AxisConfig(label="Pressure", unit="Pa"),
                 row=1, col=1,
                 buffer_size=1000,
             ),

@@ -19,7 +19,7 @@ from ..core.vehicle_state import VehicleState
 from ..core.run_session import RunSession
 from ..core.qos_profiles import PLOTTER_QOS, RELIABLE_SENSOR_QOS
 from ..plotting.plot_manager import PlotManager
-from ..plotting.plot_config import get_default_plots, PlotLayoutConfig
+from ..plotting.plot_config import get_default_plots, get_virtual_sensor_plots, PlotLayoutConfig
 
 
 class PlotterNode(Node):
@@ -52,6 +52,7 @@ class PlotterNode(Node):
         self.declare_parameter('backend', 'pyqtgraph')
         self.declare_parameter('update_rate_hz', 30.0)
         self.declare_parameter('window_title', 'Vehicle Plotter')
+        self.declare_parameter('plot_layout', 'default')
         self.declare_parameter('dark_mode', True)
         self.declare_parameter('enable_gui', True)
         self.declare_parameter('state_topic', 'vehicle_plotter/state')
@@ -65,6 +66,7 @@ class PlotterNode(Node):
         backend = self.get_parameter('backend').value
         update_rate = self.get_parameter('update_rate_hz').value
         window_title = self.get_parameter('window_title').value
+        plot_layout = self.get_parameter('plot_layout').value
         dark_mode = self.get_parameter('dark_mode').value
         enable_gui = self.get_parameter('enable_gui').value
         state_topic = self.get_parameter('state_topic').value
@@ -88,7 +90,14 @@ class PlotterNode(Node):
         self.get_logger().info(f'  Save plot data on exit: {self._save_plot_data}')
 
         # Create plot configuration
-        layout_config = get_default_plots()
+        if plot_layout == 'virtual_sensors':
+            layout_config = get_virtual_sensor_plots()
+        else:
+            if plot_layout != 'default':
+                self.get_logger().warn(
+                    f"Unknown plot_layout '{plot_layout}', using default"
+                )
+            layout_config = get_default_plots()
         layout_config.window_title = window_title
         layout_config.dark_mode = dark_mode
         layout_config.update_rate_hz = update_rate

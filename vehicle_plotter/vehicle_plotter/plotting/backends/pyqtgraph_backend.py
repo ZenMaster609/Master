@@ -68,17 +68,25 @@ class PyQtGraphBackend(PlotBackend):
     def _test_x11_connection(self, display: str) -> bool:
         """Test if we can actually connect to the X11 display."""
         import socket
+        from pathlib import Path
 
         try:
             # Parse display string (e.g., "host.docker.internal:0" or ":0")
             if ':' in display:
                 host_part, display_num = display.rsplit(':', 1)
                 host = host_part if host_part else 'localhost'
-                port = 6000 + int(display_num.split('.')[0])
+                display_idx = int(display_num.split('.')[0])
             else:
                 return False
 
-            # Try to connect to X11 port
+            # Prefer UNIX socket when local; Xorg often disables TCP.
+            if host in ('localhost', '127.0.0.1', '::1'):
+                socket_path = Path('/tmp/.X11-unix') / f"X{display_idx}"
+                if socket_path.exists():
+                    return True
+
+            # Try to connect to X11 TCP port
+            port = 6000 + display_idx
             sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
             sock.settimeout(1.0)
             result = sock.connect_ex((host, port))
@@ -288,15 +296,27 @@ class PyQtGraphBackend(PlotBackend):
     def export_figure(self, path: str, dpi: int = 150) -> None:
         """Export current view to image file."""
         if self._win is None:
+            print(f"WARNING: Cannot export - window is None")
             return
 
-        import pyqtgraph.exporters as exporters
+        if self._is_closed:
+            print(f"WARNING: Window is closed, export may fail")
 
-        # Use ImageExporter for raster formats
-        if path.endswith('.png') or path.endswith('.jpg'):
-            exporter = exporters.ImageExporter(self._win.scene())
-            exporter.parameters()['width'] = int(self._layout.window_size[0] * dpi / 96)
-            exporter.export(path)
-        elif path.endswith('.svg'):
-            exporter = exporters.SVGExporter(self._win.scene())
-            exporter.export(path)
+        try:
+            import pyqtgraph.exporters as exporters
+
+            scene = self._win.scene()
+            if scene is None:
+                print(f"WARNING: Cannot export - scene is None")
+                return
+
+            # Use ImageExporter for raster formats
+            if path.endswith('.png') or path.endswith('.jpg'):
+                exporter = exporters.ImageExporter(scene)
+                exporter.parameters()['width'] = int(self._layout.window_size[0] * dpi / 96)
+                exporter.export(path)
+            elif path.endswith('.svg'):
+                exporter = exporters.SVGExporter(scene)
+                exporter.export(path)
+        except Exception as e:
+            print(f"WARNING: Failed to export figure to {path}: {e}")

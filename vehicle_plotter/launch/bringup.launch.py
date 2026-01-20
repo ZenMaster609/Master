@@ -8,10 +8,12 @@ Launches:
 3. Vehicle plotter nodes (data collector, plotter, logger)
 
 Usage:
+    # Auto mode (car drives in circles) - default
     ros2 launch vehicle_plotter bringup.launch.py
 
-    # With auto control mode:
-    ros2 launch vehicle_plotter bringup.launch.py control_mode:=auto
+    # For KEYBOARD control, run bringup WITHOUT control_node, then run control separately:
+    ros2 launch vehicle_plotter bringup.launch.py control_mode:=none
+    ros2 run sim_car control_node --ros-args -p mode:=keyboard  # in separate terminal
 
     # Headless (no Gazebo GUI, but plotter still shows):
     ros2 launch vehicle_plotter bringup.launch.py headless:=true
@@ -22,10 +24,8 @@ Usage:
 
 from launch import LaunchDescription
 from launch.actions import DeclareLaunchArgument, IncludeLaunchDescription
-from launch.substitutions import LaunchConfiguration, PathJoinSubstitution
+from launch.substitutions import LaunchConfiguration, PathJoinSubstitution, PythonExpression
 from launch.launch_description_sources import PythonLaunchDescriptionSource
-from launch.conditions import IfCondition
-from launch_ros.actions import Node
 from launch_ros.substitutions import FindPackageShare
 
 
@@ -34,22 +34,24 @@ def generate_launch_description():
     sim_car_share = FindPackageShare('sim_car')
     vehicle_plotter_share = FindPackageShare('vehicle_plotter')
 
+    # Note: session_manager is included via plotter.launch.py
+
     # Declare arguments
 
     # Gazebo options
     # Default to headless in Docker (set headless:=false if you have X11 working)
     headless_arg = DeclareLaunchArgument(
         'headless',
-        default_value='true',
+        default_value='false',
         description='Run Gazebo headless (no GUI)'
     )
 
     # Control options
-    # Default to auto mode (keyboard requires interactive TTY)
+    # Use 'auto' for autonomous driving, 'none' to run keyboard control separately
     control_mode_arg = DeclareLaunchArgument(
         'control_mode',
         default_value='auto',
-        description='Control mode: keyboard or auto'
+        description='Control mode: auto (default), or none (for keyboard control in separate terminal)'
     )
 
     linear_speed_arg = DeclareLaunchArgument(
@@ -64,11 +66,23 @@ def generate_launch_description():
         description='Angular speed in rad/s (for auto mode)'
     )
 
+    enable_ackermann_arg = DeclareLaunchArgument(
+        'enable_ackermann',
+        default_value='true',
+        description='Enable Ackermann steering control node'
+    )
+
+    sensor_mode_arg = DeclareLaunchArgument(
+        'sensor_mode',
+        default_value='real',
+        description='Sensor mode: real, virtual, or both'
+    )
+
     # Plotter options
     enable_plot_arg = DeclareLaunchArgument(
         'enable_plot',
         default_value='true',
-        description='Enable real-time plotting'
+        description='Enable live plotting'
     )
 
     enable_log_arg = DeclareLaunchArgument(
@@ -99,6 +113,14 @@ def generate_launch_description():
         }.items(),
     )
 
+    sensor_mode = LaunchConfiguration('sensor_mode')
+    enable_real_sensors = PythonExpression([
+        "'true' if '", sensor_mode, "' in ['real', 'both'] else 'false'"
+    ])
+    enable_virtual_sensors = PythonExpression([
+        "'true' if '", sensor_mode, "' in ['virtual', 'both'] else 'false'"
+    ])
+
     # Include sim_car nodes launch
     sim_nodes_launch = IncludeLaunchDescription(
         PythonLaunchDescriptionSource(
@@ -108,6 +130,9 @@ def generate_launch_description():
             'control_mode': LaunchConfiguration('control_mode'),
             'linear_speed': LaunchConfiguration('linear_speed'),
             'angular_speed': LaunchConfiguration('angular_speed'),
+            'enable_ackermann': LaunchConfiguration('enable_ackermann'),
+            'enable_real_sensors': enable_real_sensors,
+            'enable_virtual_sensors': enable_virtual_sensors,
         }.items(),
     )
 
@@ -119,6 +144,8 @@ def generate_launch_description():
         launch_arguments={
             'adapter': 'gazebo',
             'enable_plot': LaunchConfiguration('enable_plot'),
+            'enable_real_plot': enable_real_sensors,
+            'enable_virtual_plot': enable_virtual_sensors,
             'enable_log': LaunchConfiguration('enable_log'),
             'log_format': LaunchConfiguration('log_format'),
             'use_sim_time': LaunchConfiguration('use_sim_time'),
@@ -131,12 +158,14 @@ def generate_launch_description():
         control_mode_arg,
         linear_speed_arg,
         angular_speed_arg,
+        enable_ackermann_arg,
+        sensor_mode_arg,
         enable_plot_arg,
         enable_log_arg,
         log_format_arg,
         use_sim_time_arg,
 
-        # Included launches
+        # Included launches (plotter.launch.py includes session_manager)
         gazebo_launch,
         sim_nodes_launch,
         plotter_launch,

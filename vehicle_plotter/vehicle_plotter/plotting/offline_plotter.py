@@ -93,14 +93,24 @@ class OfflinePlotter:
                         break
 
         parquet_files = sorted(logs_path.glob('vehicle_state_*.parquet'))
-        if not parquet_files:
-            raise FileNotFoundError(f"No parquet files found in {logs_path}")
+        csv_files = sorted(logs_path.glob('vehicle_state_*.csv'))
 
-        # Load and concatenate all parquet files
-        dfs = []
-        for f in parquet_files:
-            df = pd.read_parquet(f)
-            dfs.append(df)
+        if parquet_files:
+            # Load and concatenate all parquet files
+            dfs = []
+            for f in parquet_files:
+                df = pd.read_parquet(f)
+                dfs.append(df)
+        elif csv_files:
+            # Fallback to CSV logs when parquet/pyarrow is unavailable
+            dfs = []
+            for f in csv_files:
+                df = pd.read_csv(f)
+                dfs.append(df)
+        else:
+            raise FileNotFoundError(
+                f"No parquet or csv files found in {logs_path}"
+            )
 
         self.data = pd.concat(dfs, ignore_index=True)
 

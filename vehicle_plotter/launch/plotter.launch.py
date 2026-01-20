@@ -7,12 +7,21 @@ Launches data collector, plotter, and logger nodes with configurable options.
 
 from launch import LaunchDescription
 from launch.actions import DeclareLaunchArgument
-from launch.substitutions import LaunchConfiguration
+from launch.substitutions import LaunchConfiguration, PythonExpression
 from launch.conditions import IfCondition
 from launch_ros.actions import Node
 
 
 def generate_launch_description():
+    # Session manager node - creates unified session for plotter and logger
+    session_manager_node = Node(
+        package='vehicle_plotter',
+        executable='session_manager_node',
+        name='session_manager',
+        output='screen',
+        parameters=[{'broadcast_rate_hz': 1.0}],
+    )
+
     # Declare arguments
 
     # Adapter configuration
@@ -33,7 +42,19 @@ def generate_launch_description():
     enable_plot_arg = DeclareLaunchArgument(
         'enable_plot',
         default_value='true',
-        description='Enable real-time plotting GUI'
+        description='Enable live plotting'
+    )
+
+    enable_real_plot_arg = DeclareLaunchArgument(
+        'enable_real_plot',
+        default_value='true',
+        description='Enable real sensor plot window'
+    )
+
+    enable_virtual_plot_arg = DeclareLaunchArgument(
+        'enable_virtual_plot',
+        default_value='true',
+        description='Enable virtual sensor plot window'
     )
 
     plot_rate_arg = DeclareLaunchArgument(
@@ -63,8 +84,8 @@ def generate_launch_description():
 
     log_path_arg = DeclareLaunchArgument(
         'log_path',
-        default_value='/home/developer/ros2_ws/src/logs',
-        description='Base path for log files (maps to E:/master/logs on Windows)'
+        default_value='',
+        description='Base path for log files (empty = auto-detect ./multidata)'
     )
 
     # GPS origin (0,0 = auto-detect from first GPS message)
@@ -86,6 +107,13 @@ def generate_launch_description():
         description='Use simulation time from /clock topic'
     )
 
+    # Rosbag options
+    enable_rosbag_arg = DeclareLaunchArgument(
+        'enable_rosbag',
+        default_value='true',
+        description='Enable rosbag recording'
+    )
+
     # Data collector node (always runs)
     # Note: We use wall clock for timers but sensor timestamps for sync,
     # so use_sim_time is set to false to ensure timers fire reliably
@@ -103,19 +131,44 @@ def generate_launch_description():
         }],
     )
 
-    # Plotter node (conditional)
+    # Plotter nodes (conditional)
     # Use wall clock for refresh timer
-    plotter_node = Node(
+    real_plotter_node = Node(
         package='vehicle_plotter',
         executable='plotter_node',
         name='plotter',
         output='screen',
-        condition=IfCondition(LaunchConfiguration('enable_plot')),
+        condition=IfCondition(PythonExpression([
+            "'", LaunchConfiguration('enable_plot'), "'.lower() == 'true' and '",
+            LaunchConfiguration('enable_real_plot'), "'.lower() == 'true'"
+        ])),
         parameters=[{
             'backend': 'pyqtgraph',
             'update_rate_hz': LaunchConfiguration('plot_rate_hz'),
             'dark_mode': LaunchConfiguration('dark_mode'),
             'enable_gui': True,
+            'plot_layout': 'default',
+            'window_title': 'Vehicle Plotter',
+            'use_sim_time': False,  # Use wall clock for timers
+        }],
+    )
+
+    virtual_plotter_node = Node(
+        package='vehicle_plotter',
+        executable='plotter_node',
+        name='virtual_plotter',
+        output='screen',
+        condition=IfCondition(PythonExpression([
+            "'", LaunchConfiguration('enable_plot'), "'.lower() == 'true' and '",
+            LaunchConfiguration('enable_virtual_plot'), "'.lower() == 'true'"
+        ])),
+        parameters=[{
+            'backend': 'pyqtgraph',
+            'update_rate_hz': LaunchConfiguration('plot_rate_hz'),
+            'dark_mode': LaunchConfiguration('dark_mode'),
+            'enable_gui': True,
+            'plot_layout': 'virtual_sensors',
+            'window_title': 'Virtual Sensors',
             'use_sim_time': False,  # Use wall clock for timers
         }],
     )
@@ -139,11 +192,28 @@ def generate_launch_description():
         }],
     )
 
+    # Rosbag controller node (conditional)
+    rosbag_controller_node = Node(
+        package='vehicle_plotter',
+        executable='rosbag_controller_node',
+        name='rosbag_controller',
+        output='screen',
+        condition=IfCondition(LaunchConfiguration('enable_rosbag')),
+        parameters=[{
+            'mode': 'simulation',
+            'compression': 'zstd',
+            'wait_for_session': True,
+            'session_timeout_sec': 5.0,
+        }],
+    )
+
     return LaunchDescription([
         # Arguments
         adapter_arg,
         output_rate_arg,
         enable_plot_arg,
+        enable_real_plot_arg,
+        enable_virtual_plot_arg,
         plot_rate_arg,
         dark_mode_arg,
         enable_log_arg,
@@ -152,9 +222,13 @@ def generate_launch_description():
         gps_origin_lat_arg,
         gps_origin_lon_arg,
         use_sim_time_arg,
+        enable_rosbag_arg,
 
-        # Nodes
+        # Nodes (session_manager must start first)
+        session_manager_node,
         data_collector_node,
-        plotter_node,
+        real_plotter_node,
+        virtual_plotter_node,
         logger_node,
+        rosbag_controller_node,
     ])
