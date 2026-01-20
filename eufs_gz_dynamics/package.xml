@@ -1,0 +1,24 @@
+<?xml version="1.0"?>
+<?xml-model href="http://download.ros.org/schema/package_format3.xsd" schematypens="http://www.w3.org/2001/XMLSchema"?>
+<package format="3">
+  <name>eufs_gz_dynamics</name>
+  <version>0.1.0</version>
+  <description>EUFS vehicle dynamics wrapped as an Ignition Gazebo system plugin.</description>
+
+  <maintainer email="you@example.com">EUFS Port</maintainer>
+  <license>MIT</license>
+
+  <buildtool_depend>ament_cmake</buildtool_depend>
+
+  <depend>rclcpp</depend>
+  <depend>geometry_msgs</depend>
+  <depend>eufs_models</depend>
+
+  <exec_depend>ignition-gazebo6</exec_depend>
+  <exec_depend>ignition-math6</exec_depend>
+  <exec_depend>ignition-plugin1</exec_depend>
+
+  <export>
+    <build_type>ament_cmake</build_type>
+  </export>
+</package>

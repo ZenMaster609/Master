@@ -21,31 +21,42 @@ class SensorProcessorNode(Node):
         self.declare_parameter('publish_rate', 1.0)  # Hz
         publish_rate = self.get_parameter('publish_rate').value
 
+        # Topic parameters (default to /sim namespace for EUFS Gazebo sim)
+        self.declare_parameter('imu_topic', '/sim/imu')
+        self.declare_parameter('gps_topic', '/sim/navsat')
+        self.declare_parameter('odom_topic', '/sim/odom')
+        self.declare_parameter('encoder_topic', '/sim/wheel_encoder/velocities')
+
+        imu_topic = self.get_parameter('imu_topic').value
+        gps_topic = self.get_parameter('gps_topic').value
+        odom_topic = self.get_parameter('odom_topic').value
+        encoder_topic = self.get_parameter('encoder_topic').value
+
         # Create subscriptions for all sensors
         self.imu_sub = self.create_subscription(
             Imu,
-            'imu/data',
+            imu_topic,
             self.imu_callback,
             10
         )
 
         self.gps_sub = self.create_subscription(
             NavSatFix,
-            'gps/fix',
+            gps_topic,
             self.gps_callback,
             10
         )
 
         self.odom_sub = self.create_subscription(
             Odometry,
-            'odom',
+            odom_topic,
             self.odom_callback,
             10
         )
 
         self.encoder_velocity_sub = self.create_subscription(
             Float32MultiArray,
-            'wheel_encoder/velocities',
+            encoder_topic,
             self.encoder_velocity_callback,
             10
         )
@@ -60,7 +71,9 @@ class SensorProcessorNode(Node):
         self.timer = self.create_timer(1.0 / publish_rate, self.status_callback)
 
         self.get_logger().info('Sensor processor node started')
-        self.get_logger().info('Subscribing to: /imu/data, /gps/fix, /odom, /wheel_encoder/velocities')
+        self.get_logger().info(
+            f'Subscribing to: {imu_topic}, {gps_topic}, {odom_topic}, {encoder_topic}'
+        )
 
     def imu_callback(self, msg):
         """Process IMU data"""

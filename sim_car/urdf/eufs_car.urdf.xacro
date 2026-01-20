@@ -1,0 +1,187 @@
+<?xml version="1.0"?>
+<robot name="eufs" xmlns:xacro="http://www.ros.org/wiki/xacro">
+  <xacro:arg name="config_file" default=""/>
+  <xacro:arg name="chassis_mesh" default="file://$(find sim_car)/meshes/sisu-20d.dae"/>
+
+  <xacro:property name="config" value="${load_yaml('$(arg config_file)')}"/>
+
+  <material name="tire_mat">
+    <color rgba="0.05 0.05 0.05 1"/>
+  </material>
+  <material name="silver">
+    <color rgba="0.7 0.7 0.7 1"/>
+  </material>
+  <material name="red">
+    <color rgba="0.8 0.1 0.1 1"/>
+  </material>
+
+  <xacro:include filename="$(find sim_car)/urdf/eufs_base.urdf.xacro"/>
+  <xacro:include filename="$(find sim_car)/urdf/eufs_wheels.urdf.xacro"/>
+
+  <xacro:eufs_base chassis_mesh="$(arg chassis_mesh)"/>
+  <xacro:wheels chassis_width="${config['kinematics']['axle_width']}" wheelbase="${config['kinematics']['l']}"/>
+
+  <!-- IMU Sensor Link -->
+  <link name="imu_link">
+    <visual>
+      <geometry>
+        <box size="0.05 0.03 0.02"/>
+      </geometry>
+      <material name="silver"/>
+    </visual>
+    <inertial>
+      <mass value="0.05"/>
+      <inertia ixx="0.00001" ixy="0.0" ixz="0.0" iyy="0.00001" iyz="0.0" izz="0.00001"/>
+    </inertial>
+  </link>
+
+  <joint name="imu_joint" type="fixed">
+    <parent link="chassis"/>
+    <child link="imu_link"/>
+    <origin xyz="0 0 0.1" rpy="0 0 0"/>
+  </joint>
+
+  <!-- GPS Sensor Link -->
+  <link name="gps_link">
+    <visual>
+      <geometry>
+        <cylinder radius="0.03" length="0.02"/>
+      </geometry>
+      <material name="red"/>
+    </visual>
+    <inertial>
+      <mass value="0.02"/>
+      <inertia ixx="0.00001" ixy="0.0" ixz="0.0" iyy="0.00001" iyz="0.0" izz="0.00001"/>
+    </inertial>
+  </link>
+
+  <joint name="gps_joint" type="fixed">
+    <parent link="chassis"/>
+    <child link="gps_link"/>
+    <origin xyz="-0.5 0 0.15" rpy="0 0 0"/>
+  </joint>
+
+  <!-- EUFS dynamics plugin (gz-sim) -->
+  <gazebo>
+    <plugin filename="libeufs_gz_dynamics.so" name="eufs_gz_dynamics::EufsRaceCarModel">
+      <vehicle_model>DynamicBicycle</vehicle_model>
+      <yaml_config>$(arg config_file)</yaml_config>
+      <update_rate>1000.0</update_rate>
+      <control_delay>0.0</control_delay>
+      <steering_lock_time>1.0</steering_lock_time>
+      <command_mode>velocity</command_mode>
+      <use_cmd_vel>true</use_cmd_vel>
+      <cmd_vel_topic>/cmd_vel</cmd_vel_topic>
+      <front_left_wheel_steering>left_steering_hinge_joint</front_left_wheel_steering>
+      <front_right_wheel_steering>right_steering_hinge_joint</front_right_wheel_steering>
+      <front_left_wheel>front_left_wheel_joint</front_left_wheel>
+      <front_right_wheel>front_right_wheel_joint</front_right_wheel>
+      <rear_left_wheel>rear_left_wheel_joint</rear_left_wheel>
+      <rear_right_wheel>rear_right_wheel_joint</rear_right_wheel>
+    </plugin>
+  </gazebo>
+
+  <!-- Joint State Publisher -->
+  <gazebo>
+    <plugin filename="ignition-gazebo-joint-state-publisher-system"
+            name="ignition::gazebo::systems::JointStatePublisher">
+      <joint_name>left_steering_hinge_joint</joint_name>
+      <joint_name>right_steering_hinge_joint</joint_name>
+      <joint_name>front_left_wheel_joint</joint_name>
+      <joint_name>front_right_wheel_joint</joint_name>
+      <joint_name>rear_left_wheel_joint</joint_name>
+      <joint_name>rear_right_wheel_joint</joint_name>
+      <topic>/sim/joint_states</topic>
+      <update_rate>100</update_rate>
+    </plugin>
+  </gazebo>
+
+  <!-- Odometry Publisher -->
+  <gazebo>
+    <plugin filename="ignition-gazebo-odometry-publisher-system"
+            name="ignition::gazebo::systems::OdometryPublisher">
+      <odom_topic>/sim/odom</odom_topic>
+      <odom_frame>odom</odom_frame>
+      <robot_base_frame>base_footprint</robot_base_frame>
+      <odom_publish_frequency>50</odom_publish_frequency>
+      <dimensions>3</dimensions>
+    </plugin>
+  </gazebo>
+
+  <!-- IMU Sensor -->
+  <gazebo reference="imu_link">
+    <sensor name="imu" type="imu">
+      <topic>/sim/imu</topic>
+      <update_rate>50</update_rate>
+      <always_on>true</always_on>
+      <visualize>false</visualize>
+      <imu>
+        <angular_velocity>
+          <x>
+            <noise type="gaussian">
+              <mean>0.0</mean>
+              <stddev>0.001</stddev>
+            </noise>
+          </x>
+          <y>
+            <noise type="gaussian">
+              <mean>0.0</mean>
+              <stddev>0.001</stddev>
+            </noise>
+          </y>
+          <z>
+            <noise type="gaussian">
+              <mean>0.0</mean>
+              <stddev>0.001</stddev>
+            </noise>
+          </z>
+        </angular_velocity>
+        <linear_acceleration>
+          <x>
+            <noise type="gaussian">
+              <mean>0.0</mean>
+              <stddev>0.01</stddev>
+            </noise>
+          </x>
+          <y>
+            <noise type="gaussian">
+              <mean>0.0</mean>
+              <stddev>0.01</stddev>
+            </noise>
+          </y>
+          <z>
+            <noise type="gaussian">
+              <mean>0.0</mean>
+              <stddev>0.01</stddev>
+            </noise>
+          </z>
+        </linear_acceleration>
+      </imu>
+    </sensor>
+  </gazebo>
+
+  <!-- NavSat/GPS Sensor -->
+  <gazebo reference="gps_link">
+    <sensor name="navsat" type="navsat">
+      <topic>/sim/navsat</topic>
+      <update_rate>50</update_rate>
+      <always_on>true</always_on>
+      <navsat>
+        <position_sensing>
+          <horizontal>
+            <noise type="gaussian">
+              <mean>0.0</mean>
+              <stddev>0.5</stddev>
+            </noise>
+          </horizontal>
+          <vertical>
+            <noise type="gaussian">
+              <mean>0.0</mean>
+              <stddev>1.0</stddev>
+            </noise>
+          </vertical>
+        </position_sensing>
+      </navsat>
+    </sensor>
+  </gazebo>
+</robot>

@@ -7,10 +7,11 @@ Updated from Gazebo Classic to modern Gazebo (Fortress).
 import os
 import tempfile
 import xml.etree.ElementTree as ET
+import subprocess
 import yaml
 from ament_index_python.packages import get_package_share_directory
 from launch import LaunchDescription
-from launch.actions import DeclareLaunchArgument, IncludeLaunchDescription, OpaqueFunction
+from launch.actions import DeclareLaunchArgument, IncludeLaunchDescription, OpaqueFunction, SetEnvironmentVariable
 from launch.conditions import IfCondition, UnlessCondition
 from launch.launch_description_sources import PythonLaunchDescriptionSource
 from launch.substitutions import LaunchConfiguration
@@ -19,14 +20,25 @@ from launch_ros.actions import Node
 
 def generate_launch_description():
     pkg_sim_car = get_package_share_directory('sim_car')
-    world_file = os.path.join(pkg_sim_car, 'worlds', 'test_world.sdf')
+    world_file = os.path.join(pkg_sim_car, 'worlds', 'small_track.world')
 
     # Declare launch arguments
     use_sim_time = LaunchConfiguration('use_sim_time', default='true')
     world = LaunchConfiguration('world', default=world_file)
     headless = LaunchConfiguration('headless', default='false')
 
+    resource_path = os.path.join(pkg_sim_car)
+    resource_paths = [
+        resource_path,
+        os.path.join(resource_path, 'models'),
+        os.path.join(resource_path, 'meshes'),
+        os.path.join(resource_path, 'materials'),
+    ]
+    resource_path_value = ':'.join(resource_paths)
+
     return LaunchDescription([
+        SetEnvironmentVariable('GZ_SIM_RESOURCE_PATH', resource_path_value),
+        SetEnvironmentVariable('IGN_GAZEBO_RESOURCE_PATH', resource_path_value),
         DeclareLaunchArgument(
             'use_sim_time',
             default_value='true',
@@ -59,10 +71,11 @@ def _launch_simulation(context, *args, **kwargs):
     gnss_rate = _get_config_value(sensor_config, ['sensors', 'real', 'gnss', 'frequency_hz'], 50.0)
 
     world_path = LaunchConfiguration('world').perform(context)
-    urdf_path = os.path.join(pkg_sim_car, 'urdf', 'car.urdf')
+    urdf_path = os.path.join(pkg_sim_car, 'urdf', 'eufs_car.urdf.xacro')
 
     updated_world = _write_updated_world(world_path, max_step_size)
-    robot_desc = _build_robot_description(urdf_path, imu_rate, gnss_rate)
+    eufs_config_path = os.path.join(pkg_sim_car, 'config', 'eufs_config.yaml')
+    robot_desc = _build_robot_description(urdf_path, imu_rate, gnss_rate, eufs_config_path)
 
     use_sim_time = LaunchConfiguration('use_sim_time')
     headless = LaunchConfiguration('headless')
@@ -118,19 +131,11 @@ def _launch_simulation(context, *args, **kwargs):
         package='ros_gz_bridge',
         executable='parameter_bridge',
         arguments=[
-            '/sim/odom@nav_msgs/msg/Odometry@gz.msgs.Odometry',
-            '/sim/imu@sensor_msgs/msg/Imu@gz.msgs.IMU',
-            '/sim/navsat@sensor_msgs/msg/NavSatFix@gz.msgs.NavSat',
-            '/sim/joint_states@sensor_msgs/msg/JointState@gz.msgs.Model',
-            '/sim/rear_left_wheel_cmd@std_msgs/msg/Float64@gz.msgs.Double',
-            '/sim/rear_right_wheel_cmd@std_msgs/msg/Float64@gz.msgs.Double',
-            '/sim/steering_fl_cmd@std_msgs/msg/Float64@gz.msgs.Double',
-            '/sim/steering_fr_cmd@std_msgs/msg/Float64@gz.msgs.Double',
-            '/sim/suspension_fl_cmd@std_msgs/msg/Float64@gz.msgs.Double',
-            '/sim/suspension_fr_cmd@std_msgs/msg/Float64@gz.msgs.Double',
-            '/sim/suspension_rl_cmd@std_msgs/msg/Float64@gz.msgs.Double',
-            '/sim/suspension_rr_cmd@std_msgs/msg/Float64@gz.msgs.Double',
-            '/clock@rosgraph_msgs/msg/Clock@gz.msgs.Clock',
+            '/sim/odom@nav_msgs/msg/Odometry[gz.msgs.Odometry',
+            '/sim/imu@sensor_msgs/msg/Imu[gz.msgs.IMU',
+            '/sim/navsat@sensor_msgs/msg/NavSatFix[gz.msgs.NavSat',
+            '/sim/joint_states@sensor_msgs/msg/JointState[gz.msgs.Model',
+            '/clock@rosgraph_msgs/msg/Clock[gz.msgs.Clock',
         ],
         output='screen',
         parameters=[{'use_sim_time': use_sim_time}]
@@ -186,13 +191,12 @@ def _write_updated_world(world_path, max_step_size):
     return tmp.name
 
 
-def _build_robot_description(urdf_path, imu_rate, gnss_rate):
+def _build_robot_description(urdf_path, imu_rate, gnss_rate, eufs_config_path):
+    robot_xml = _load_robot_xml(urdf_path, eufs_config_path)
     try:
-        tree = ET.parse(urdf_path)
-        root = tree.getroot()
+        root = ET.fromstring(robot_xml)
     except ET.ParseError:
-        with open(urdf_path, 'r') as urdf_file:
-            return urdf_file.read()
+        return robot_xml
 
     for sensor in root.findall(".//gazebo/sensor[@name='imu']"):
         rate = sensor.find('update_rate')
@@ -206,4 +210,26 @@ def _build_robot_description(urdf_path, imu_rate, gnss_rate):
             rate = ET.SubElement(sensor, 'update_rate')
         rate.text = str(gnss_rate)
 
+    for plugin in root.findall(".//gazebo/plugin"):
+        if plugin.get('filename') == 'libeufs_gz_dynamics.so':
+            yaml_elem = plugin.find('yaml_config')
+            if yaml_elem is None:
+                yaml_elem = ET.SubElement(plugin, 'yaml_config')
+            yaml_elem.text = eufs_config_path
+
     return ET.tostring(root, encoding='unicode')
+
+
+def _load_robot_xml(urdf_path, eufs_config_path):
+    if urdf_path.endswith('.xacro'):
+        return _run_xacro(urdf_path, eufs_config_path)
+    with open(urdf_path, 'r') as urdf_file:
+        return urdf_file.read()
+
+
+def _run_xacro(urdf_path, eufs_config_path):
+    cmd = ['xacro', urdf_path, f'config_file:={eufs_config_path}']
+    result = subprocess.run(cmd, capture_output=True, text=True, check=False)
+    if result.returncode != 0:
+        raise RuntimeError(result.stderr.strip())
+    return result.stdout

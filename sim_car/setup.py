@@ -2,6 +2,17 @@ from setuptools import setup
 from glob import glob
 import os
 
+
+def walk_data_files(source_dir, install_dir):
+    data = []
+    for root, _, files in os.walk(source_dir):
+        if not files:
+            continue
+        rel_dir = os.path.relpath(root, source_dir)
+        dest_dir = install_dir if rel_dir == '.' else os.path.join(install_dir, rel_dir)
+        data.append((dest_dir, [os.path.join(root, f) for f in files]))
+    return data
+
 package_name = 'sim_car'
 
 setup(
@@ -15,7 +26,11 @@ setup(
         (os.path.join('share', package_name, 'launch'), glob('launch/*.py')),
         (os.path.join('share', package_name, 'urdf'), glob('urdf/*')),
         (os.path.join('share', package_name, 'worlds'), glob('worlds/*')),
-    ],
+    ]
+    + walk_data_files('config', os.path.join('share', package_name, 'config'))
+    + walk_data_files('meshes', os.path.join('share', package_name, 'meshes'))
+    + walk_data_files('materials', os.path.join('share', package_name, 'materials'))
+    + walk_data_files('models', os.path.join('share', package_name, 'models')),
     install_requires=['setuptools'],
     zip_safe=True,
     maintainer='user',

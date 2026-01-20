@@ -3,7 +3,7 @@
 """
 Launch file for control and sensor processing nodes.
 
-Includes Ackermann control, wheel encoder, suspension sensor,
+Includes cmd_vel control, wheel encoder, suspension sensor,
 steering sensor, and virtual sensors nodes.
 """
 
@@ -75,12 +75,6 @@ def generate_launch_description():
         description='Sensor status publish rate (Hz)'
     )
 
-    enable_ackermann_arg = DeclareLaunchArgument(
-        'enable_ackermann',
-        default_value='true',
-        description='Enable Ackermann steering control node'
-    )
-
     enable_real_sensors_arg = DeclareLaunchArgument(
         'enable_real_sensors',
         default_value='true',
@@ -98,29 +92,8 @@ def generate_launch_description():
     linear_speed = LaunchConfiguration('linear_speed')
     angular_speed = LaunchConfiguration('angular_speed')
     publish_rate = LaunchConfiguration('publish_rate')
-    enable_ackermann = LaunchConfiguration('enable_ackermann')
     enable_real_sensors = LaunchConfiguration('enable_real_sensors')
     enable_virtual_sensors = LaunchConfiguration('enable_virtual_sensors')
-
-    # Ackermann control node (RWD + steering)
-    # Converts /cmd_vel to steering angles and wheel velocities
-    ackermann_control_node = Node(
-        package='sim_car',
-        executable='ackermann_control_node',
-        name='ackermann_control_node',
-        output='screen',
-        parameters=[{
-            'mode': control_mode,
-            'auto_linear_speed': linear_speed,
-            'auto_angular_speed': angular_speed,
-            'wheelbase': 1.6,       # meters
-            'track_width': 1.1,     # meters
-            'wheel_radius': 0.23,   # meters
-            'max_steering_angle': 0.52,  # radians (~30 deg)
-            'max_speed': 15.0,      # m/s
-        }],
-        condition=IfCondition(enable_ackermann)
-    )
 
     # Control node (handles both keyboard and auto modes)
     # Publishes /cmd_vel based on configured mode
@@ -228,10 +201,8 @@ def generate_launch_description():
         linear_speed_arg,
         angular_speed_arg,
         publish_rate_arg,
-        enable_ackermann_arg,
         enable_real_sensors_arg,
         enable_virtual_sensors_arg,
-        ackermann_control_node,
         control_node,
         sensor_processor_node,
         wheel_encoder_node,

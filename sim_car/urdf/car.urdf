@@ -127,13 +127,13 @@
   <link name="base_link">
     <visual>
       <geometry>
-        <box size="2.0 0.8 0.15"/>
+        <mesh filename="package://sim_car/meshes/sisu-20d.dae"/>
       </geometry>
       <material name="blue"/>
     </visual>
     <collision>
       <geometry>
-        <box size="2.0 0.8 0.15"/>
+        <mesh filename="package://sim_car/meshes/sisu-20d.dae"/>
       </geometry>
     </collision>
     <inertial>
@@ -235,17 +235,15 @@
   <link name="front_left_wheel">
     <visual>
       <geometry>
-        <!-- Cylinder: radius=0.23m (9" tire), width=0.18m (7" front tire) -->
-        <cylinder radius="0.23" length="0.18"/>
+        <mesh filename="package://sim_car/meshes/wheel_left.dae"/>
       </geometry>
       <material name="black"/>
       <!-- Rotate cylinder so Y-axis becomes rotation axis -->
       <origin xyz="0 0 0" rpy="1.5707963 0 0"/>
     </visual>
     <collision>
-      <!-- Simple cylinder collision for numerical stability -->
       <geometry>
-        <cylinder radius="0.23" length="0.18"/>
+        <mesh filename="package://sim_car/meshes/wheel_left.dae"/>
       </geometry>
       <origin xyz="0 0 0" rpy="1.5707963 0 0"/>
     </collision>
@@ -337,14 +335,14 @@
   <link name="front_right_wheel">
     <visual>
       <geometry>
-        <cylinder radius="0.23" length="0.18"/>
+        <mesh filename="package://sim_car/meshes/wheel_right.dae"/>
       </geometry>
       <material name="black"/>
       <origin xyz="0 0 0" rpy="1.5707963 0 0"/>
     </visual>
     <collision>
       <geometry>
-        <cylinder radius="0.23" length="0.18"/>
+        <mesh filename="package://sim_car/meshes/wheel_right.dae"/>
       </geometry>
       <origin xyz="0 0 0" rpy="1.5707963 0 0"/>
     </collision>
@@ -409,15 +407,14 @@
   <link name="rear_left_wheel">
     <visual>
       <geometry>
-        <!-- Wider rear tire for RWD traction: 0.20m (8" width) -->
-        <cylinder radius="0.23" length="0.20"/>
+        <mesh filename="package://sim_car/meshes/wheel_left.dae"/>
       </geometry>
       <material name="black"/>
       <origin xyz="0 0 0" rpy="1.5707963 0 0"/>
     </visual>
     <collision>
       <geometry>
-        <cylinder radius="0.23" length="0.20"/>
+        <mesh filename="package://sim_car/meshes/wheel_left.dae"/>
       </geometry>
       <origin xyz="0 0 0" rpy="1.5707963 0 0"/>
     </collision>
@@ -480,14 +477,14 @@
   <link name="rear_right_wheel">
     <visual>
       <geometry>
-        <cylinder radius="0.23" length="0.20"/>
+        <mesh filename="package://sim_car/meshes/wheel_right.dae"/>
       </geometry>
       <material name="black"/>
       <origin xyz="0 0 0" rpy="1.5707963 0 0"/>
     </visual>
     <collision>
       <geometry>
-        <cylinder radius="0.23" length="0.20"/>
+        <mesh filename="package://sim_car/meshes/wheel_right.dae"/>
       </geometry>
       <origin xyz="0 0 0" rpy="1.5707963 0 0"/>
     </collision>
@@ -557,10 +554,8 @@
   <!-- ============================================== -->
   <!--
     Plugin Summary:
-    - JointStatePublisher: Reports all joint positions/velocities at 100Hz
-    - JointController (suspension): Spring-damper behavior (k=20kN/m, c=1kNs/m)
-    - JointController (drive): Rear wheel velocity commands (RWD)
-    - JointController (steering): Front wheel position commands (Ackermann)
+    - EUFS dynamics system: Kinematic vehicle model (DynamicBicycle/PointMass)
+    - JointStatePublisher: Reports joint positions/velocities at 100Hz
     - OdometryPublisher: Base link pose/twist at 50Hz
     - IMU sensor: 50Hz with Gaussian noise
     - NavSat sensor: 50Hz GPS with position noise
@@ -594,6 +589,27 @@
     <slip2>0.001</slip2>
   </gazebo>
 
+  <!-- EUFS dynamics plugin (kinematic vehicle model) -->
+  <gazebo>
+    <plugin filename="libeufs_gz_dynamics.so"
+            name="eufs_gz_dynamics::EufsRaceCarModel">
+      <vehicle_model>DynamicBicycle</vehicle_model>
+      <yaml_config>__EUFS_CONFIG_PATH__</yaml_config>
+      <update_rate>1000.0</update_rate>
+      <control_delay>0.0</control_delay>
+      <steering_lock_time>1.0</steering_lock_time>
+      <command_mode>velocity</command_mode>
+      <use_cmd_vel>true</use_cmd_vel>
+      <cmd_vel_topic>/cmd_vel</cmd_vel_topic>
+      <front_left_wheel_steering>steering_fl_joint</front_left_wheel_steering>
+      <front_right_wheel_steering>steering_fr_joint</front_right_wheel_steering>
+      <front_left_wheel>front_left_wheel_joint</front_left_wheel>
+      <front_right_wheel>front_right_wheel_joint</front_right_wheel>
+      <rear_left_wheel>rear_left_wheel_joint</rear_left_wheel>
+      <rear_right_wheel>rear_right_wheel_joint</rear_right_wheel>
+    </plugin>
+  </gazebo>
+
   <!-- Joint State Publisher - publishes all joint positions/velocities -->
   <gazebo>
     <plugin filename="ignition-gazebo-joint-state-publisher-system"
@@ -613,151 +629,6 @@
       <joint_name>suspension_rr_joint</joint_name>
       <topic>/sim/joint_states</topic>
       <update_rate>100</update_rate>
-    </plugin>
-  </gazebo>
-
-  <!-- ============================================== -->
-  <!-- SUSPENSION SPRING-DAMPER CONTROLLERS          -->
-  <!-- ============================================== -->
-  <!--
-    These JointController plugins implement spring-damper behavior:
-      F = -k*(z - z_ref) - c*dz/dt
-
-    Where:
-      k = P-gain = 20000 N/m (spring stiffness)
-      c = D-gain = 1000 Ns/m (damping coefficient)
-      z_ref = 0 (neutral position, implicit from target command)
-
-    The target position is 0 (neutral), which each suspension will
-    naturally seek. External forces (gravity, bumps) displace the
-    suspension, and the controller provides restoring force.
-
-    Note: I-gain is 0 to avoid integral windup during sustained loads.
-  -->
-
-  <!-- FL Suspension Spring-Damper Controller
-       Commands neutral position (0), acts as passive spring-damper -->
-  <gazebo>
-    <plugin filename="ignition-gazebo-joint-controller-system"
-            name="ignition::gazebo::systems::JointController">
-      <joint_name>suspension_fl_joint</joint_name>
-      <use_velocity_commands>false</use_velocity_commands>
-      <topic>/sim/suspension_fl_cmd</topic>
-      <!-- Spring stiffness: k = 20000 N/m -->
-      <p_gain>20000.0</p_gain>
-      <!-- No integral term to prevent windup under load -->
-      <i_gain>0.0</i_gain>
-      <!-- Damping coefficient: c = 1000 Ns/m -->
-      <d_gain>1000.0</d_gain>
-    </plugin>
-  </gazebo>
-
-  <!-- FR Suspension Spring-Damper Controller -->
-  <gazebo>
-    <plugin filename="ignition-gazebo-joint-controller-system"
-            name="ignition::gazebo::systems::JointController">
-      <joint_name>suspension_fr_joint</joint_name>
-      <use_velocity_commands>false</use_velocity_commands>
-      <topic>/sim/suspension_fr_cmd</topic>
-      <p_gain>20000.0</p_gain>
-      <i_gain>0.0</i_gain>
-      <d_gain>1000.0</d_gain>
-    </plugin>
-  </gazebo>
-
-  <!-- RL Suspension Spring-Damper Controller -->
-  <gazebo>
-    <plugin filename="ignition-gazebo-joint-controller-system"
-            name="ignition::gazebo::systems::JointController">
-      <joint_name>suspension_rl_joint</joint_name>
-      <use_velocity_commands>false</use_velocity_commands>
-      <topic>/sim/suspension_rl_cmd</topic>
-      <p_gain>20000.0</p_gain>
-      <i_gain>0.0</i_gain>
-      <d_gain>1000.0</d_gain>
-    </plugin>
-  </gazebo>
-
-  <!-- RR Suspension Spring-Damper Controller -->
-  <gazebo>
-    <plugin filename="ignition-gazebo-joint-controller-system"
-            name="ignition::gazebo::systems::JointController">
-      <joint_name>suspension_rr_joint</joint_name>
-      <use_velocity_commands>false</use_velocity_commands>
-      <topic>/sim/suspension_rr_cmd</topic>
-      <p_gain>20000.0</p_gain>
-      <i_gain>0.0</i_gain>
-      <d_gain>1000.0</d_gain>
-    </plugin>
-  </gazebo>
-
-  <!-- ============================================== -->
-  <!-- DRIVE WHEEL VELOCITY CONTROLLERS (RWD)        -->
-  <!-- ============================================== -->
-  <!--
-    Rear wheels are velocity-controlled for RWD architecture.
-    Commands come from ackermann_control_node via /sim/rear_*_wheel_cmd topics.
-    Differential velocity enables turning even without steering input.
-  -->
-
-  <!-- RL Wheel Velocity Controller (DRIVE) -->
-  <gazebo>
-    <plugin filename="ignition-gazebo-joint-controller-system"
-            name="ignition::gazebo::systems::JointController">
-      <joint_name>rear_left_wheel_joint</joint_name>
-      <use_velocity_commands>true</use_velocity_commands>
-      <topic>/sim/rear_left_wheel_cmd</topic>
-      <p_gain>50.0</p_gain>
-      <i_gain>0.1</i_gain>
-      <d_gain>0.5</d_gain>
-    </plugin>
-  </gazebo>
-
-  <!-- RR Wheel Velocity Controller (DRIVE) -->
-  <gazebo>
-    <plugin filename="ignition-gazebo-joint-controller-system"
-            name="ignition::gazebo::systems::JointController">
-      <joint_name>rear_right_wheel_joint</joint_name>
-      <use_velocity_commands>true</use_velocity_commands>
-      <topic>/sim/rear_right_wheel_cmd</topic>
-      <p_gain>50.0</p_gain>
-      <i_gain>0.1</i_gain>
-      <d_gain>0.5</d_gain>
-    </plugin>
-  </gazebo>
-
-  <!-- ============================================== -->
-  <!-- STEERING POSITION CONTROLLERS (ACKERMANN)     -->
-  <!-- ============================================== -->
-  <!--
-    Front wheels are position-controlled for Ackermann steering.
-    Commands come from ackermann_control_node via /sim/steering_*_cmd topics.
-    Inner wheel turns more than outer (Ackermann geometry).
-  -->
-
-  <!-- FL Steering Position Controller -->
-  <gazebo>
-    <plugin filename="ignition-gazebo-joint-controller-system"
-            name="ignition::gazebo::systems::JointController">
-      <joint_name>steering_fl_joint</joint_name>
-      <use_velocity_commands>false</use_velocity_commands>
-      <topic>/sim/steering_fl_cmd</topic>
-      <p_gain>100.0</p_gain>
-      <i_gain>0.1</i_gain>
-      <d_gain>10.0</d_gain>
-    </plugin>
-  </gazebo>
-
-  <!-- FR Steering Position Controller -->
-  <gazebo>
-    <plugin filename="ignition-gazebo-joint-controller-system"
-            name="ignition::gazebo::systems::JointController">
-      <joint_name>steering_fr_joint</joint_name>
-      <use_velocity_commands>false</use_velocity_commands>
-      <topic>/sim/steering_fr_cmd</topic>
-      <p_gain>100.0</p_gain>
-      <i_gain>0.1</i_gain>
-      <d_gain>10.0</d_gain>
     </plugin>
   </gazebo>
 
