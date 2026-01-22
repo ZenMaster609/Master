@@ -2,6 +2,10 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
+## User Interaction Preferences
+
+Always include a copyable command prefixed with `cd ~/ros2_ws` in responses that involve commands. When a rebuild is relevant, also include the appropriate `colcon` rebuild command. When sourcing is needed, also include the appropriate `source` command (often `source install/setup.bash`).
+
 ## Project Overview
 
 ROS2 multi-package workspace for vehicle simulation and state estimation:

@@ -1,4 +1,4 @@
-# sim_car Documentation
+# sim_car Sensors + Plots
 
 This document describes how to run the full sim launch, how the sensor pipeline is wired, and how to add or modify sensors and plots for the EUFS sim stack.
 
@@ -7,7 +7,7 @@ This document describes how to run the full sim launch, how the sensor pipeline 
 Build and source:
 
 ```bash
-cd /home/aleks/ros2_ws
+cd ~/ros2_ws
 colcon build --packages-select sim_car
 source install/setup.bash
 ```
@@ -57,7 +57,7 @@ Key topic flow:
 
 EUFS dynamics parameters live in:
 
-- `Master/sim_car/config/eufs_config.yaml`
+- `sim_car/config/eufs_config.yaml`
 
 This file is passed to the EUFS dynamics plugin via `eufs_car.urdf.xacro` and used at spawn time.
 
@@ -65,11 +65,11 @@ This file is passed to the EUFS dynamics plugin via `eufs_car.urdf.xacro` and us
 
 Typical locations:
 
-- Sensor rate/limits: `Master/sim_car/config/sensor_config.yaml`
-- Gazebo sensor definitions: `Master/sim_car/urdf/eufs_car.urdf.xacro`
-- Sensor node implementation: `Master/sim_car/sim_car/*.py`
-- Plotter adapter/topics: `Master/vehicle_plotter/vehicle_plotter/adapters/gazebo_adapter.py`
-- Plot layout: `Master/vehicle_plotter/vehicle_plotter/plotting/plot_config.py`
+- Sensor rate/limits: `sim_car/config/sensor_config.yaml`
+- Gazebo sensor definitions: `sim_car/urdf/eufs_car.urdf.xacro`
+- Sensor node implementation: `sim_car/sim_car/*.py`
+- Plotter adapter/topics: `vehicle_plotter/vehicle_plotter/adapters/gazebo_adapter.py`
+- Plot layout: `vehicle_plotter/vehicle_plotter/plotting/plot_config.py`
 
 Steps:
 
@@ -89,28 +89,28 @@ Steps:
 ### 2) Add the sensor topic
 
 - If Gazebo sensor: define the topic inside the `<sensor>` block in `eufs_car.urdf.xacro`.
-- If derived: create a new node that publishes under `/sim/...` and add it to `Master/sim_car/launch/nodes.launch.py`.
+- If derived: create a new node that publishes under `/sim/...` and add it to `sim_car/launch/nodes.launch.py`.
 
 ### 3) Add config (optional)
 
-- Add rates/limits to `Master/sim_car/config/sensor_config.yaml`.
+- Add rates/limits to `sim_car/config/sensor_config.yaml`.
 - Read the value in `nodes.launch.py` and pass as a parameter to the node.
 
 ### 4) Wire into the plotter
 
-- Register the topic in `Master/vehicle_plotter/vehicle_plotter/adapters/gazebo_adapter.py`:
+- Register the topic in `vehicle_plotter/vehicle_plotter/adapters/gazebo_adapter.py`:
   - Add to `DEFAULT_TOPICS`
   - Add to `SENSOR_RATES` if it should be time-synchronized
   - Create a subscription in `setup_subscriptions`
   - Store data and map to a `VehicleState` field in `compute_state`
 - If a new VehicleState field is needed, add it to:
-  - `Master/vehicle_plotter_msgs/msg/VehicleState.msg`
-  - `Master/vehicle_plotter/vehicle_plotter/core/vehicle_state.py`
+  - `vehicle_plotter_msgs/msg/VehicleState.msg`
+  - `vehicle_plotter/vehicle_plotter/core/vehicle_state.py`
   - Any serialization/deserialization logic
 
 ### 5) Add plots
 
-- Add a plot definition in `Master/vehicle_plotter/vehicle_plotter/plotting/plot_config.py`.
+- Add a plot definition in `vehicle_plotter/vehicle_plotter/plotting/plot_config.py`.
 - Use `XAxisType.TIME` for normal time series or `plot_type="xy"` for trajectories.
 - Reference the new `VehicleState` field by name.
 
@@ -125,7 +125,7 @@ source install/setup.bash
 
 Modify:
 
-- `Master/vehicle_plotter/vehicle_plotter/plotting/plot_config.py`
+- `vehicle_plotter/vehicle_plotter/plotting/plot_config.py`
 
 Then rebuild:
 

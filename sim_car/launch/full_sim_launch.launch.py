@@ -51,7 +51,7 @@ def generate_launch_description():
 
     sensor_mode_arg = DeclareLaunchArgument(
         'sensor_mode',
-        default_value='both',
+        default_value='real',
         description='Sensor mode: real, virtual, or both'
     )
 
