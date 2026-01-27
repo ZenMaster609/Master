@@ -29,10 +29,10 @@ sensors:
         longitude: [-180.0, 180.0]
         altitude: [-1000.0, 10000.0]
     encoders:
-      unit: m/s
+      unit: rpm
       frequency_hz: 50.0
       scale: 1.0
-      range: [-100.0, 100.0]
+      range: [-5000.0, 5000.0]
     suspension:
       unit: mm
       frequency_hz: 50.0

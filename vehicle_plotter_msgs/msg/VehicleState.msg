@@ -31,8 +31,11 @@ float64 distance_traveled     # cumulative distance, meters
 float64 slip_longitudinal
 float64 slip_lateral
 
-# Wheel encoder velocities [FL, FR, RL, RR] in m/s
+# Wheel encoder speeds [FL, FR, RL, RR] in RPM
 float32[4] encoder_velocities
+
+# Wheel encoder angle accumulation [FL, FR, RL, RR] in radians (per RPM window)
+float32[4] encoder_angle_accum
 
 # GPS data (raw, for reference)
 float64 gps_latitude      # degrees

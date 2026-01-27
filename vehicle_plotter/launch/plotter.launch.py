@@ -57,6 +57,12 @@ def generate_launch_description():
         description='Enable virtual sensor plot window'
     )
 
+    enable_virtual_sensors_arg = DeclareLaunchArgument(
+        'enable_virtual_sensors',
+        default_value='true',
+        description='Enable virtual sensor subscriptions (gazebo adapter)'
+    )
+
     plot_rate_arg = DeclareLaunchArgument(
         'plot_rate_hz',
         default_value='30.0',
@@ -67,6 +73,18 @@ def generate_launch_description():
         'dark_mode',
         default_value='true',
         description='Use dark theme for plots'
+    )
+
+    save_plots_on_exit_arg = DeclareLaunchArgument(
+        'save_plots_on_exit',
+        default_value='true',
+        description='Save plot window images on shutdown'
+    )
+
+    save_plot_data_on_exit_arg = DeclareLaunchArgument(
+        'save_plot_data_on_exit',
+        default_value='true',
+        description='Save plotted data CSVs on shutdown'
     )
 
     # Logging options
@@ -127,6 +145,7 @@ def generate_launch_description():
             'output_rate_hz': LaunchConfiguration('output_rate_hz'),
             'gps_origin_lat': LaunchConfiguration('gps_origin_lat'),
             'gps_origin_lon': LaunchConfiguration('gps_origin_lon'),
+            'enable_virtual_sensors': LaunchConfiguration('enable_virtual_sensors'),
             'use_sim_time': False,  # Use wall clock for timers
         }],
     )
@@ -149,6 +168,8 @@ def generate_launch_description():
             'enable_gui': True,
             'plot_layout': 'default',
             'window_title': 'Vehicle Plotter',
+            'save_plots_on_exit': LaunchConfiguration('save_plots_on_exit'),
+            'save_plot_data_on_exit': LaunchConfiguration('save_plot_data_on_exit'),
             'use_sim_time': False,  # Use wall clock for timers
         }],
     )
@@ -169,6 +190,8 @@ def generate_launch_description():
             'enable_gui': True,
             'plot_layout': 'virtual_sensors',
             'window_title': 'Virtual Sensors',
+            'save_plots_on_exit': LaunchConfiguration('save_plots_on_exit'),
+            'save_plot_data_on_exit': LaunchConfiguration('save_plot_data_on_exit'),
             'use_sim_time': False,  # Use wall clock for timers
         }],
     )
@@ -214,8 +237,11 @@ def generate_launch_description():
         enable_plot_arg,
         enable_real_plot_arg,
         enable_virtual_plot_arg,
+        enable_virtual_sensors_arg,
         plot_rate_arg,
         dark_mode_arg,
+        save_plots_on_exit_arg,
+        save_plot_data_on_exit_arg,
         enable_log_arg,
         log_format_arg,
         log_path_arg,

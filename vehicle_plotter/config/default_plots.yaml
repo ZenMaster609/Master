@@ -94,7 +94,7 @@ plots:
     buffer_size: 1000
     show_legend: true
 
-  # Row 1: Heading, Wheel Velocities, Steering
+  # Row 1: Heading, Wheel RPM, Steering
 
   # Heading vs time
   - name: "Heading"
@@ -113,15 +113,15 @@ plots:
         scale: 57.2958
     buffer_size: 1000
 
-  # Wheel velocities vs time
-  - name: "Wheel Velocities"
+  # Wheel RPM vs time
+  - name: "Wheel RPM"
     type: "timeseries"
     row: 1
     col: 1
     x_axis_type: "time"
     y_axis:
-      label: "Wheel Velocity"
-      unit: "m/s"
+      label: "Wheel RPM"
+      unit: "RPM"
     series:
       - name: "FL"
         variable: "encoder_velocities[0]"

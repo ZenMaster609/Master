@@ -18,7 +18,6 @@ sim_car/
 ├── sim_car/                       # Python source code
 │   ├── __init__.py                # Package initializer (empty)
 │   ├── control_node.py            # Car control node (keyboard + auto modes)
-│   ├── sensor_processor.py        # Sensor data processing and monitoring
 │   └── wheel_encoder_node.py      # Wheel encoder processing
 │
 ├── launch/                        # Launch files
@@ -56,13 +55,9 @@ control_node.py    - Publishes /cmd_vel for car movement
                    - Supports keyboard and automated control
                    - Configurable speeds
 
-sensor_processor.py - Subscribes to all sensor topics
-                    - Processes and displays sensor data
-                    - Configurable update rate
-
-wheel_encoder_node.py - Converts joint states to encoder ticks
-                      - Publishes encoder ticks and velocities
-                      - Configurable resolution (ticks/revolution)
+wheel_encoder_node.py - Converts joint states to wheel RPM
+                      - Publishes wheel RPM
+                      - Configurable publish rate
 
 Launch Files:
 -------------
@@ -72,7 +67,6 @@ gazebo_sim.launch.py - Starts Gazebo simulation
                      - Configurable world file
 
 nodes.launch.py      - Starts control node
-                     - Starts sensor processor
                      - Starts wheel encoder node
                      - Configurable parameters
 

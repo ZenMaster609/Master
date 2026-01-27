@@ -66,7 +66,7 @@ graph LR
         IMU["/vectornav/imu\nsensor_msgs/Imu"]
         GPS["/vectornav/gps\nsensor_msgs/NavSatFix"]
         INS["/vectornav/ins\nnav_msgs/Odometry"]
-        WV["/can/wheel_velocities\nstd_msgs/Float32MultiArray"]
+        WV["/can/wheel_rpm\nstd_msgs/Float32MultiArray"]
         SUS["/can/suspension\nstd_msgs/Float32MultiArray"]
         STR["/can/steering_angle\nstd_msgs/Float32"]
     end
@@ -180,7 +180,7 @@ sequenceDiagram
 
     VP->>VP: generate fake frames
     VP->>CD: /to_can_bus
-    CD->>DC: /can/wheel_velocities
+    CD->>DC: /can/wheel_rpm
     DC->>PN: /vehicle_plotter/state
     PN->>PN: display plots
 ```

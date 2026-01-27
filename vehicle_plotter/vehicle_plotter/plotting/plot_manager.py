@@ -27,7 +27,7 @@ class PlotManager:
     Features:
     - Configurable plot layout (grid of subplots)
     - Dynamic add/remove plots
-    - Multiple X-axis types (time, distance, yaw, encoder ticks)
+    - Multiple X-axis types (time, distance, yaw, encoder RPM)
     - Thread-safe data updates
     - Backend abstraction (PyQtGraph primary, matplotlib fallback)
 

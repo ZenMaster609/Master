@@ -20,6 +20,7 @@
 
   <depend>rqt_gui</depend>
   <depend>python3-qt5-bindings</depend>
+  <depend>ackermann_msgs</depend>
 
   <depend>eufs_msgs</depend>
 

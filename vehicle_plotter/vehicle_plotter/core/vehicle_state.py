@@ -48,8 +48,11 @@ class VehicleState:
     slip_longitudinal: float = 0.0   # (wheel_vel - body_vel) / body_vel
     slip_lateral: float = 0.0        # atan(vy / vx) - sideslip angle
 
-    # Wheel encoder velocities [FL, FR, RL, RR] in m/s
+    # Wheel encoder speeds [FL, FR, RL, RR] in RPM
     encoder_velocities: List[float] = field(default_factory=lambda: [0.0, 0.0, 0.0, 0.0])
+
+    # Wheel encoder angle accumulation [FL, FR, RL, RR] in radians (per RPM window)
+    encoder_angle_accum: List[float] = field(default_factory=lambda: [0.0, 0.0, 0.0, 0.0])
 
     # Raw GPS (for reference, optional)
     gps_latitude: float = 0.0
@@ -127,6 +130,10 @@ class VehicleState:
             'encoder_fr': self.encoder_velocities[1],
             'encoder_rl': self.encoder_velocities[2],
             'encoder_rr': self.encoder_velocities[3],
+            'encoder_angle_fl': self.encoder_angle_accum[0],
+            'encoder_angle_fr': self.encoder_angle_accum[1],
+            'encoder_angle_rl': self.encoder_angle_accum[2],
+            'encoder_angle_rr': self.encoder_angle_accum[3],
             'gps_latitude': self.gps_latitude,
             'gps_longitude': self.gps_longitude,
             'gps_altitude': self.gps_altitude,
@@ -197,6 +204,7 @@ class VehicleState:
 
         # Encoders
         msg.encoder_velocities = [float(v) for v in self.encoder_velocities]
+        msg.encoder_angle_accum = [float(v) for v in self.encoder_angle_accum]
 
         # GPS
         msg.gps_latitude = self.gps_latitude
@@ -264,6 +272,7 @@ class VehicleState:
             slip_longitudinal=msg.slip_longitudinal,
             slip_lateral=msg.slip_lateral,
             encoder_velocities=list(msg.encoder_velocities),
+            encoder_angle_accum=list(msg.encoder_angle_accum),
             gps_latitude=msg.gps_latitude,
             gps_longitude=msg.gps_longitude,
             gps_altitude=msg.gps_altitude,
@@ -305,6 +314,7 @@ class VehicleState:
             slip_longitudinal=self.slip_longitudinal,
             slip_lateral=self.slip_lateral,
             encoder_velocities=list(self.encoder_velocities),
+            encoder_angle_accum=list(self.encoder_angle_accum),
             gps_latitude=self.gps_latitude,
             gps_longitude=self.gps_longitude,
             gps_altitude=self.gps_altitude,

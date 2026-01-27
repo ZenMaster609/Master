@@ -3,7 +3,7 @@
 CAN Decoder Node - Decodes wheel encoder CAN messages and publishes structured data.
 
 Subscribes to /can/rx (from ros2_socketcan) and decodes CAN frames with IDs 185/186
-(front/rear axle wheel encoders). Publishes structured topics for wheel velocities,
+(front/rear axle wheel encoders). Publishes structured topics for wheel RPM,
 suspension displacements, and steering angle.
 """
 
@@ -14,6 +14,7 @@ from std_msgs.msg import Float32, Float32MultiArray
 from collections import defaultdict
 from typing import Optional
 import time
+import math
 
 from .can_protocol import (
     decode_wheel_pair,
@@ -35,6 +36,7 @@ class CanDecoderNode(Node):
         can_topic (str): Input CAN topic (default: /can/rx)
         stale_timeout_ms (int): Timeout for stale data in ms (default: 100)
         publish_rate_hz (float): Publishing rate in Hz (default: 50.0)
+        wheel_radius (float): Wheel radius in meters for RPM conversion (default: 0.23)
         show_stats (bool): Show periodic statistics (default: True)
         stats_interval (float): Statistics interval in seconds (default: 5.0)
     """
@@ -46,6 +48,7 @@ class CanDecoderNode(Node):
         self.declare_parameter('can_topic', '/can/rx')
         self.declare_parameter('stale_timeout_ms', 100)
         self.declare_parameter('publish_rate_hz', 50.0)
+        self.declare_parameter('wheel_radius', 0.23)
         self.declare_parameter('show_stats', True)
         self.declare_parameter('stats_interval', 5.0)
 
@@ -55,6 +58,7 @@ class CanDecoderNode(Node):
         self.publish_rate = self.get_parameter('publish_rate_hz').value
         self.show_stats = self.get_parameter('show_stats').value
         self.stats_interval = self.get_parameter('stats_interval').value
+        self.wheel_radius = self.get_parameter('wheel_radius').value
 
         # Latest decoded data for each axle
         self._front_data: Optional[WheelPairData] = None
@@ -77,9 +81,9 @@ class CanDecoderNode(Node):
         )
 
         # Create publishers
-        self._wheel_vel_pub = self.create_publisher(
+        self._wheel_rpm_pub = self.create_publisher(
             Float32MultiArray,
-            '/can/wheel_velocities',
+            '/can/wheel_rpm',
             10,
         )
 
@@ -185,10 +189,16 @@ class CanDecoderNode(Node):
         # Combine axle data
         vehicle_data = combine_axle_data(front_to_use, rear_to_use)
 
-        # Publish wheel velocities
-        wheel_vel_msg = Float32MultiArray()
-        wheel_vel_msg.data = vehicle_data.wheel_velocities
-        self._wheel_vel_pub.publish(wheel_vel_msg)
+        # Publish wheel RPM
+        wheel_rpm_msg = Float32MultiArray()
+        if self.wheel_radius > 0.0:
+            wheel_rpm_msg.data = [
+                (v / self.wheel_radius) * 60.0 / (2.0 * math.pi)
+                for v in vehicle_data.wheel_velocities
+            ]
+        else:
+            wheel_rpm_msg.data = [0.0, 0.0, 0.0, 0.0]
+        self._wheel_rpm_pub.publish(wheel_rpm_msg)
 
         # Publish suspension displacements
         suspension_msg = Float32MultiArray()

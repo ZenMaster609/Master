@@ -66,8 +66,8 @@
     <plugin filename="libeufs_gz_dynamics.so" name="eufs_gz_dynamics::EufsRaceCarModel">
       <vehicle_model>DynamicBicycle</vehicle_model>
       <yaml_config>$(arg config_file)</yaml_config>
-      <update_rate>1000.0</update_rate>
-      <control_delay>0.0</control_delay>
+      <update_rate>${config['dynamics']['update_rate_hz']}</update_rate>
+      <control_delay>${config['dynamics']['control_delay_sec']}</control_delay>
       <steering_lock_time>1.0</steering_lock_time>
       <command_mode>velocity</command_mode>
       <use_cmd_vel>true</use_cmd_vel>
@@ -92,7 +92,7 @@
       <joint_name>rear_left_wheel_joint</joint_name>
       <joint_name>rear_right_wheel_joint</joint_name>
       <topic>/sim/joint_states</topic>
-      <update_rate>100</update_rate>
+      <update_rate>${config['dynamics']['update_rate_hz']}</update_rate>
     </plugin>
   </gazebo>
 

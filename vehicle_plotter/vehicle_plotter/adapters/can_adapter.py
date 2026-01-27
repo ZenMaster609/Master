@@ -6,6 +6,7 @@ and converts them to unified VehicleState messages.
 """
 
 from typing import Optional, Dict, Any
+import math
 
 from rclpy.node import Node
 from std_msgs.msg import Float32, Float32MultiArray
@@ -21,19 +22,20 @@ class CANAdapter(SensorAdapterInterface):
     Sensor adapter for CAN bus wheel encoders.
 
     Subscribes to:
-    - /can/wheel_velocities (std_msgs/Float32MultiArray) - [FL, FR, RL, RR] wheel velocities in m/s
+    - /can/wheel_rpm (std_msgs/Float32MultiArray) - [FL, FR, RL, RR] wheel RPM
     - /can/suspension (std_msgs/Float32MultiArray) - [FL, FR, RL, RR] suspension displacements in m
     - /can/steering_angle (std_msgs/Float32) - Steering angle in radians
 
     Topic names are configurable via ROS parameters.
 
-    Note: CAN encoder data provides wheel velocities and steering but not
+    Note: CAN encoder data provides wheel RPM and steering but not
     position or orientation (no IMU/GPS). Those fields remain at zero.
+    Wheel RPM is used directly for VehicleState.
     """
 
     # Default topic names (can be remapped via launch file)
     DEFAULT_TOPICS = {
-        'wheel_velocities': '/can/wheel_velocities',
+        'wheel_velocities': '/can/wheel_rpm',
         'suspension': '/can/suspension',
         'steering_angle': '/can/steering_angle',
     }
@@ -62,6 +64,7 @@ class CANAdapter(SensorAdapterInterface):
         super().__init__(node, synchronizer, adapter_name="can")
 
         self.topics = {**self.DEFAULT_TOPICS, **(topics or {})}
+        self.wheel_radius = self.node.declare_parameter('wheel_radius', 0.23).value
 
         # Latest raw sensor data (for debugging)
         self._last_wheel_velocities: Optional[Float32MultiArray] = None
@@ -77,7 +80,7 @@ class CANAdapter(SensorAdapterInterface):
         self.synchronizer.add_sensor(
             'wheel_velocities',
             rate_hz=self.SENSOR_RATES['wheel_velocities'],
-            required=True,  # Need wheel velocities at minimum
+            required=True,  # Need wheel RPM at minimum
             interpolate=False,  # Discrete encoder data, no interpolation
         )
         self.synchronizer.add_sensor(
@@ -129,7 +132,7 @@ class CANAdapter(SensorAdapterInterface):
         return self.node.get_clock().now().nanoseconds * 1e-9
 
     def _wheel_velocities_callback(self, msg: Float32MultiArray) -> None:
-        """Wheel velocities callback - add to synchronizer."""
+        """Wheel RPM callback - add to synchronizer."""
         timestamp = self._get_timestamp()
         self.synchronizer.add_sample('wheel_velocities', timestamp, msg)
         self._last_wheel_velocities = msg
@@ -137,7 +140,7 @@ class CANAdapter(SensorAdapterInterface):
         # Log first message for debugging
         if not hasattr(self, '_first_wheel_vel_logged'):
             self._first_wheel_vel_logged = True
-            self.log_info(f"First wheel velocities received: {msg.data}")
+            self.log_info(f"First wheel RPM received: {msg.data}")
 
     def _suspension_callback(self, msg: Float32MultiArray) -> None:
         """Suspension callback - add to synchronizer."""
@@ -159,7 +162,7 @@ class CANAdapter(SensorAdapterInterface):
         """
         Convert synchronized CAN data to VehicleState.
 
-        Primary source: Wheel velocities (encoder_velocities)
+        Primary source: Wheel RPM (encoder_velocities)
         Secondary: Suspension, steering angle
         Missing: Position, orientation, GPS (CAN has no IMU/GPS)
         """
@@ -169,14 +172,16 @@ class CANAdapter(SensorAdapterInterface):
         # Get current time
         state.timestamp = self._get_timestamp()
 
-        # Wheel velocities (primary CAN data)
+        # Wheel RPM (primary CAN data)
         wheel_velocities: Optional[Float32MultiArray] = synced_data.get('wheel_velocities')
         if wheel_velocities is not None and len(wheel_velocities.data) >= 4:
-            state.encoder_velocities = list(wheel_velocities.data[:4])  # [FL, FR, RL, RR]
+            state.encoder_velocities = list(wheel_velocities.data[:4])  # [FL, FR, RL, RR] RPM
 
-            # Compute average speed from wheel velocities
-            avg_wheel_speed = sum(state.encoder_velocities) / 4.0
-            state.speed = abs(avg_wheel_speed)
+            # Compute average speed from wheel RPM
+            if self.wheel_radius > 0.0:
+                avg_rpm = sum(state.encoder_velocities) / 4.0
+                avg_wheel_speed = (avg_rpm * 2.0 * math.pi / 60.0) * self.wheel_radius
+                state.speed = abs(avg_wheel_speed)
 
         # Suspension data
         suspension: Optional[Float32MultiArray] = synced_data.get('suspension')

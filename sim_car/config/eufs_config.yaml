@@ -1,14 +1,14 @@
 inertia:
-  m:        225     # Weight of the Vehicle [kg]
+  m:        321.5   # Weight of the Vehicle [kg] (with driver)
   g:        9.81    # Gravity force         [m/s^2]
-  I_z:      31.27   # Inertial force I_zz   [kg/m^2]
+  I_z:      47.5    # Yaw inertia I_zz      [kg*m^2] (scaled by mass and wheelbase)
 
 kinematics:
-  l: 1.6            # Wheelbase              [m]
-  b_F: 0.88         # From COG to front axle [m]
-  b_R: 0.72         # From COG to rear axle  [m]
-  w_front: 0.45     # Percentage of weight front
-  axle_width: 1.1
+  l: 1.65           # Wheelbase              [m]
+  b_F: 0.73552      # From COG to front axle [m] (with driver)
+  b_R: 0.91448      # From COG to rear axle  [m] (with driver)
+  w_front: 0.55423  # Percentage of weight front (with driver)
+  axle_width: 1.069 # Track width            [m]
 
 tire:
   tire_coefficient: 1.0
@@ -22,13 +22,17 @@ aero:
   C_Down: 1.9 # F_Downforce = C_Downforce*v_x^2
   C_drag: 1   # F_Drag = C_Drag*v_x^2
 
+dynamics:
+  update_rate_hz: 100.0
+  control_delay_sec: 0.0
+
 input_ranges:
   acceleration:
-    max: 3
+    max: 9.26   # m/s^2 (0-100 km/h in 3.0 s)
     min: -10
   velocity:
-    max: 30
+    max: 41.67  # m/s (150 km/h)
     min: 0
   steering:
-    max: 0.52
-    min: -0.52
+    max: 0.52   # radians (≈30 deg, matches steering joint limit)
+    min: -0.52  # radians (≈-30 deg)

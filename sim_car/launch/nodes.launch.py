@@ -111,18 +111,6 @@ def generate_launch_description():
         condition=IfCondition(PythonExpression(["'", control_mode, "' != 'none'"]))
     )
 
-    # Sensor processor node
-    sensor_processor_node = Node(
-        package='sim_car',
-        executable='sensor_processor',
-        name='sensor_processor',
-        output='screen',
-        parameters=[{
-            'publish_rate': publish_rate
-        }],
-        condition=IfCondition(enable_real_sensors)
-    )
-
     # Wheel encoder node
     wheel_encoder_node = Node(
         package='sim_car',
@@ -130,8 +118,8 @@ def generate_launch_description():
         name='wheel_encoder_node',
         output='screen',
         parameters=[{
-            'wheel_radius': 0.23,   # Match URDF
             'publish_rate': wheel_rate,
+            'wheel_radius': 0.23,
         }],
         condition=IfCondition(enable_real_sensors)
     )
@@ -204,7 +192,6 @@ def generate_launch_description():
         enable_real_sensors_arg,
         enable_virtual_sensors_arg,
         control_node,
-        sensor_processor_node,
         wheel_encoder_node,
         suspension_sensor_node,
         steering_sensor_node,
@@ -223,6 +210,7 @@ def _load_sensor_config():
             return yaml.safe_load(config_file) or {}
     except (OSError, yaml.YAMLError):
         return {}
+
 
 
 def _get_config_value(config, keys, default):

@@ -11,7 +11,9 @@
 
   <depend>rclpy</depend>
   <depend>std_msgs</depend>
+  <depend>std_srvs</depend>
   <depend>geometry_msgs</depend>
+  <depend>ackermann_msgs</depend>
   <depend>sensor_msgs</depend>
   <depend>nav_msgs</depend>
   <depend>tf2_ros</depend>
@@ -23,6 +25,7 @@
   <depend>ros_gz_sim</depend>
   <depend>ros_gz_bridge</depend>
   <exec_depend>python3-yaml</exec_depend>
+  <exec_depend>eufs_rqt</exec_depend>
 
   <exec_depend>ros2launch</exec_depend>
 

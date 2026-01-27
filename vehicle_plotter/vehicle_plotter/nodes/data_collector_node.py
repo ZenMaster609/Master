@@ -35,6 +35,7 @@ class DataCollectorNode(Node):
         output_rate_hz (float): Output rate in Hz (default: 50.0)
         gps_origin_lat (float): GPS origin latitude (0.0 = auto)
         gps_origin_lon (float): GPS origin longitude (0.0 = auto)
+        enable_virtual_sensors (bool): Enable virtual sensor subscriptions (gazebo only)
     """
 
     def __init__(self):
@@ -46,6 +47,7 @@ class DataCollectorNode(Node):
         self.declare_parameter('gps_origin_lat', 0.0)
         self.declare_parameter('gps_origin_lon', 0.0)
         self.declare_parameter('sync_buffer_sec', 0.2)
+        self.declare_parameter('enable_virtual_sensors', True)
 
         # Get parameters
         adapter_type = self.get_parameter('adapter').value
@@ -53,10 +55,15 @@ class DataCollectorNode(Node):
         gps_origin_lat = self.get_parameter('gps_origin_lat').value
         gps_origin_lon = self.get_parameter('gps_origin_lon').value
         sync_buffer_sec = self.get_parameter('sync_buffer_sec').value
+        enable_virtual_sensors = self.get_parameter('enable_virtual_sensors').value
 
         self.get_logger().info(f'DataCollectorNode starting...')
         self.get_logger().info(f'  Adapter: {adapter_type}')
         self.get_logger().info(f'  Output rate: {output_rate} Hz')
+        if adapter_type == 'gazebo':
+            self.get_logger().info(
+                f'  Virtual sensors enabled: {str(enable_virtual_sensors).lower()}'
+            )
 
         # Initialize time synchronizer
         self.synchronizer = TimeSynchronizer(
@@ -77,6 +84,7 @@ class DataCollectorNode(Node):
                 node=self,
                 synchronizer=self.synchronizer,
                 auto_set_gps_origin=auto_set_gps_origin,
+                enable_virtual_sensors=enable_virtual_sensors,
             )
         elif adapter_type == 'can':
             # CAN bus adapter for real hardware wheel encoders

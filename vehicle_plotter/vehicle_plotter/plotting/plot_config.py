@@ -15,8 +15,8 @@ class XAxisType(Enum):
     TIME = "time"                    # Elapsed time in seconds
     DISTANCE = "distance"            # Cumulative distance traveled
     YAW = "yaw"                      # Yaw angle (radians)
-    ENCODER_TOTAL = "encoder_total"  # Sum of all encoder ticks
-    ENCODER_FL = "encoder_fl"        # Front-left encoder ticks
+    ENCODER_TOTAL = "encoder_total"  # Sum of all encoder RPM values
+    ENCODER_FL = "encoder_fl"        # Front-left encoder RPM
     CUSTOM = "custom"                # User-defined via x_axis
 
 
@@ -167,9 +167,9 @@ def get_default_plots() -> PlotLayoutConfig:
                 buffer_size=1000,
             ),
 
-            # Bottom-right: Encoder velocities vs time
+            # Bottom-right: Encoder RPM vs time
             PlotConfig(
-                name="Encoders",
+                name="Encoder RPM",
                 plot_type="timeseries",
                 x_axis_type=XAxisType.TIME,
                 series=[
@@ -178,7 +178,7 @@ def get_default_plots() -> PlotLayoutConfig:
                     SeriesConfig(name="RL", variable="encoder_velocities[2]", color="#9467bd"),
                     SeriesConfig(name="RR", variable="encoder_velocities[3]", color="#8c564b"),
                 ],
-                y_axis=AxisConfig(label="Wheel Velocity", unit="m/s"),
+                y_axis=AxisConfig(label="Wheel RPM", unit="RPM"),
                 row=1, col=1,
                 buffer_size=1000,
             ),
@@ -195,7 +195,22 @@ def get_default_plots() -> PlotLayoutConfig:
                     SeriesConfig(name="RR", variable="suspension[3]", color="#8c564b"),
                 ],
                 y_axis=AxisConfig(label="Suspension", unit="m"),
-                row=2, col=0, col_span=2,
+                row=2, col=0,
+                buffer_size=1000,
+            ),
+
+            PlotConfig(
+                name="Encoder Angle Accum",
+                plot_type="timeseries",
+                x_axis_type=XAxisType.TIME,
+                series=[
+                    SeriesConfig(name="FL", variable="encoder_angle_accum[0]", color="#2ca02c"),
+                    SeriesConfig(name="FR", variable="encoder_angle_accum[1]", color="#d62728"),
+                    SeriesConfig(name="RL", variable="encoder_angle_accum[2]", color="#9467bd"),
+                    SeriesConfig(name="RR", variable="encoder_angle_accum[3]", color="#8c564b"),
+                ],
+                y_axis=AxisConfig(label="Angle Accum", unit="rad"),
+                row=2, col=1,
                 buffer_size=1000,
             ),
         ],
@@ -290,7 +305,7 @@ def get_slip_plots() -> PlotLayoutConfig:
                 row=0, col=1,
             ),
             PlotConfig(
-                name="Wheel Velocities",
+                name="Wheel RPM",
                 plot_type="timeseries",
                 x_axis_type=XAxisType.TIME,
                 series=[
@@ -299,7 +314,7 @@ def get_slip_plots() -> PlotLayoutConfig:
                     SeriesConfig(name="RL", variable="encoder_velocities[2]", color="#9467bd"),
                     SeriesConfig(name="RR", variable="encoder_velocities[3]", color="#8c564b"),
                 ],
-                y_axis=AxisConfig(label="Wheel Vel (m/s)"),
+                y_axis=AxisConfig(label="Wheel RPM"),
                 row=1, col=0,
             ),
             PlotConfig(

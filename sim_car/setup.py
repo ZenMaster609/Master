@@ -41,9 +41,9 @@ setup(
     entry_points={
         'console_scripts': [
             'control_node = sim_car.control_node:main',
-            'sensor_processor = sim_car.sensor_processor:main',
             'wheel_encoder_node = sim_car.wheel_encoder_node:main',
             'ackermann_control_node = sim_car.ackermann_control_node:main',
+            'ackermann_cmd_bridge = sim_car.ackermann_cmd_bridge:main',
             'suspension_sensor_node = sim_car.suspension_sensor_node:main',
             'steering_sensor_node = sim_car.steering_sensor_node:main',
             'virtual_sensors_node = sim_car.virtual_sensors_node:main',

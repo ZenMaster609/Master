@@ -15,8 +15,8 @@ topics:
   # VN-200 INS solution (fused IMU+GPS)
   ins: /vectornav/ins
 
-  # Wheel encoder velocities in m/s (from CAN interface)
-  encoder_velocities: /wheel_encoder/velocities
+  # Wheel encoder speeds in RPM (from CAN interface)
+  encoder_velocities: /wheel_encoder/rpm
 
   # Command velocity
   cmd_vel: /cmd_vel

@@ -48,6 +48,12 @@ def generate_launch_description():
         description='Publishing rate in Hz'
     )
 
+    wheel_radius_arg = DeclareLaunchArgument(
+        'wheel_radius',
+        default_value='0.23',
+        description='Wheel radius in meters (used for RPM conversion)'
+    )
+
     stats_interval_arg = DeclareLaunchArgument(
         'stats_interval',
         default_value='5.0',
@@ -107,6 +113,7 @@ def generate_launch_description():
             'can_topic': '/from_can_bus',
             'stale_timeout_ms': LaunchConfiguration('stale_timeout_ms'),
             'publish_rate_hz': LaunchConfiguration('publish_rate_hz'),
+            'wheel_radius': LaunchConfiguration('wheel_radius'),
             'show_stats': LaunchConfiguration('show_stats'),
             'stats_interval': LaunchConfiguration('stats_interval'),
         }],
@@ -118,6 +125,7 @@ def generate_launch_description():
         bitrate_arg,
         stale_timeout_arg,
         publish_rate_arg,
+        wheel_radius_arg,
         stats_interval_arg,
         show_stats_arg,
 

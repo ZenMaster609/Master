@@ -33,7 +33,8 @@ class GazeboAdapter(SensorAdapterInterface):
     - /imu/data (sensor_msgs/Imu) - IMU data at ~100Hz
     - /gps/fix (sensor_msgs/NavSatFix) - GPS data at ~5Hz
     - /odom (nav_msgs/Odometry) - Odometry at ~50Hz
-    - /wheel_encoder/velocities (std_msgs/Float32MultiArray) - Wheel velocities in m/s
+    - /wheel_encoder/rpm (std_msgs/Float32MultiArray) - Wheel speeds in RPM
+    - /wheel_encoder/angle_accum (std_msgs/Float32MultiArray) - Angle accumulation per wheel (rad)
 
     Topic names are configurable via ROS parameters.
     """
@@ -44,7 +45,8 @@ class GazeboAdapter(SensorAdapterInterface):
         'imu': '/sim/imu',                              # From ros_gz_bridge
         'gps': '/sim/navsat',                           # From ros_gz_bridge
         'odom': '/sim/odom',                            # From ros_gz_bridge
-        'encoder_velocities': '/sim/wheel_encoder/velocities',  # From wheel_encoder_node
+        'encoder_velocities': '/sim/wheel_encoder/rpm',  # From wheel_encoder_node
+        'encoder_angle_accum': '/sim/wheel_encoder/angle_accum',  # From wheel_encoder_node
         'suspension': '/sim/suspension',                # From suspension_sensor_node
         'steering_angle': '/sim/steering_angle',        # From steering_sensor_node
         # Virtual sensors from virtual_sensors_node
@@ -58,12 +60,24 @@ class GazeboAdapter(SensorAdapterInterface):
         'pitot_pressure': '/sim/pitot/dynamic_pressure',
     }
 
+    VIRTUAL_TOPIC_KEYS = {
+        'water_pressure',
+        'water_flow',
+        'water_temp_in',
+        'water_temp_out',
+        'water_temp_radiator',
+        'brake_temp_fr',
+        'brake_temp_rl',
+        'pitot_pressure',
+    }
+
     # Sensor rates (Hz) - used for time sync configuration
     SENSOR_RATES = {
         'imu': 100.0,
         'gps': 5.0,
         'odom': 50.0,
         'encoder_velocities': 50.0,
+        'encoder_angle_accum': 50.0,
         'suspension': 100.0,
         'steering_angle': 100.0,
         'water_pressure': 10.0,
@@ -82,6 +96,7 @@ class GazeboAdapter(SensorAdapterInterface):
         synchronizer: TimeSynchronizer,
         topics: Optional[Dict[str, str]] = None,
         auto_set_gps_origin: bool = True,
+        enable_virtual_sensors: bool = True,
     ):
         """
         Initialize the Gazebo adapter.
@@ -96,13 +111,16 @@ class GazeboAdapter(SensorAdapterInterface):
 
         self.topics = {**self.DEFAULT_TOPICS, **(topics or {})}
         self.auto_set_gps_origin = auto_set_gps_origin
+        self.enable_virtual_sensors = enable_virtual_sensors
         self._gps_origin_set = False
+        self.wheel_radius = self.node.declare_parameter('wheel_radius', 0.23).value
 
         # Latest raw sensor data (for debugging)
         self._last_imu: Optional[Imu] = None
         self._last_gps: Optional[NavSatFix] = None
         self._last_odom: Optional[Odometry] = None
         self._last_encoder_velocities: Optional[Float32MultiArray] = None
+        self._last_encoder_angle_accum: Optional[Float32MultiArray] = None
         self._last_suspension: Optional[Float32MultiArray] = None
         self._last_steering_angle: Optional[Float32] = None
         self._last_water_pressure: Optional[Float32] = None
@@ -176,6 +194,13 @@ class GazeboAdapter(SensorAdapterInterface):
             SENSOR_QOS,
         )
 
+        self._encoder_angle_accum_sub = self.node.create_subscription(
+            Float32MultiArray,
+            self.topics['encoder_angle_accum'],
+            self._encoder_angle_accum_callback,
+            SENSOR_QOS,
+        )
+
         # Suspension sensor
         self._suspension_sub = self.node.create_subscription(
             Float32MultiArray,
@@ -192,62 +217,65 @@ class GazeboAdapter(SensorAdapterInterface):
             SENSOR_QOS,
         )
 
-        # Virtual sensors - Cooling
-        self._water_pressure_sub = self.node.create_subscription(
-            Float32,
-            self.topics['water_pressure'],
-            self._water_pressure_callback,
-            SENSOR_QOS,
-        )
-        self._water_flow_sub = self.node.create_subscription(
-            Float32,
-            self.topics['water_flow'],
-            self._water_flow_callback,
-            SENSOR_QOS,
-        )
-        self._water_temp_in_sub = self.node.create_subscription(
-            Float32,
-            self.topics['water_temp_in'],
-            self._water_temp_in_callback,
-            SENSOR_QOS,
-        )
-        self._water_temp_out_sub = self.node.create_subscription(
-            Float32,
-            self.topics['water_temp_out'],
-            self._water_temp_out_callback,
-            SENSOR_QOS,
-        )
-        self._water_temp_radiator_sub = self.node.create_subscription(
-            Float32,
-            self.topics['water_temp_radiator'],
-            self._water_temp_radiator_callback,
-            SENSOR_QOS,
-        )
+        if self.enable_virtual_sensors:
+            # Virtual sensors - Cooling
+            self._water_pressure_sub = self.node.create_subscription(
+                Float32,
+                self.topics['water_pressure'],
+                self._water_pressure_callback,
+                SENSOR_QOS,
+            )
+            self._water_flow_sub = self.node.create_subscription(
+                Float32,
+                self.topics['water_flow'],
+                self._water_flow_callback,
+                SENSOR_QOS,
+            )
+            self._water_temp_in_sub = self.node.create_subscription(
+                Float32,
+                self.topics['water_temp_in'],
+                self._water_temp_in_callback,
+                SENSOR_QOS,
+            )
+            self._water_temp_out_sub = self.node.create_subscription(
+                Float32,
+                self.topics['water_temp_out'],
+                self._water_temp_out_callback,
+                SENSOR_QOS,
+            )
+            self._water_temp_radiator_sub = self.node.create_subscription(
+                Float32,
+                self.topics['water_temp_radiator'],
+                self._water_temp_radiator_callback,
+                SENSOR_QOS,
+            )
 
-        # Virtual sensors - Brakes
-        self._brake_temp_fr_sub = self.node.create_subscription(
-            Float32,
-            self.topics['brake_temp_fr'],
-            self._brake_temp_fr_callback,
-            SENSOR_QOS,
-        )
-        self._brake_temp_rl_sub = self.node.create_subscription(
-            Float32,
-            self.topics['brake_temp_rl'],
-            self._brake_temp_rl_callback,
-            SENSOR_QOS,
-        )
+            # Virtual sensors - Brakes
+            self._brake_temp_fr_sub = self.node.create_subscription(
+                Float32,
+                self.topics['brake_temp_fr'],
+                self._brake_temp_fr_callback,
+                SENSOR_QOS,
+            )
+            self._brake_temp_rl_sub = self.node.create_subscription(
+                Float32,
+                self.topics['brake_temp_rl'],
+                self._brake_temp_rl_callback,
+                SENSOR_QOS,
+            )
 
-        # Virtual sensors - Pitot
-        self._pitot_pressure_sub = self.node.create_subscription(
-            Float32,
-            self.topics['pitot_pressure'],
-            self._pitot_pressure_callback,
-            SENSOR_QOS,
-        )
+            # Virtual sensors - Pitot
+            self._pitot_pressure_sub = self.node.create_subscription(
+                Float32,
+                self.topics['pitot_pressure'],
+                self._pitot_pressure_callback,
+                SENSOR_QOS,
+            )
 
-        self.log_info(f"Subscribed to Gazebo topics:")
+        self.log_info("Subscribed to Gazebo topics:")
         for name, topic in self.topics.items():
+            if not self.enable_virtual_sensors and name in self.VIRTUAL_TOPIC_KEYS:
+                continue
             self.log_info(f"  {name}: {topic}")
 
     def _get_timestamp(self, header) -> float:
@@ -285,7 +313,7 @@ class GazeboAdapter(SensorAdapterInterface):
             self.log_info(f"First odom received: timestamp={timestamp:.2f}s, pos=({msg.pose.pose.position.x:.2f}, {msg.pose.pose.position.y:.2f})")
 
     def _encoder_velocities_callback(self, msg: Float32MultiArray) -> None:
-        """Encoder velocities callback - add to synchronizer."""
+        """Encoder RPM callback - add to synchronizer."""
         # Use latest odom timestamp to stay synchronized
         if self._last_odom is not None:
             timestamp = self._get_timestamp(self._last_odom.header)
@@ -293,6 +321,10 @@ class GazeboAdapter(SensorAdapterInterface):
             timestamp = 0.0
         self.synchronizer.add_sample('encoder_velocities', timestamp, msg)
         self._last_encoder_velocities = msg
+
+    def _encoder_angle_accum_callback(self, msg: Float32MultiArray) -> None:
+        """Encoder angle accumulation callback."""
+        self._last_encoder_angle_accum = msg
 
     def _suspension_callback(self, msg: Float32MultiArray) -> None:
         """Suspension displacement callback."""
@@ -386,20 +418,24 @@ class GazeboAdapter(SensorAdapterInterface):
             state.gps_altitude = gps.altitude
             state.gps_valid = gps.status.status >= 0
 
-        # Encoder velocities
+        # Encoder RPM
         encoder_velocities: Optional[Float32MultiArray] = synced_data.get('encoder_velocities')
         if encoder_velocities is not None and len(encoder_velocities.data) >= 4:
             state.encoder_velocities = list(encoder_velocities.data[:4])
 
+        if self._last_encoder_angle_accum is not None and len(self._last_encoder_angle_accum.data) >= 4:
+            state.encoder_angle_accum = list(self._last_encoder_angle_accum.data[:4])
+
         # Compute derived quantities
         state.update_speed()
 
-        # Compute slip if we have wheel velocities
-        if state.encoder_velocities and state.speed > 0.01:
-            avg_wheel_vel = sum(state.encoder_velocities) / 4.0
-            max_vel = max(abs(avg_wheel_vel), state.speed)
+        # Compute slip if we have wheel RPM (convert to m/s for slip calc)
+        if state.encoder_velocities and state.speed > 0.01 and self.wheel_radius > 0.0:
+            avg_wheel_rpm = sum(state.encoder_velocities) / 4.0
+            avg_wheel_mps = (avg_wheel_rpm * 2.0 * math.pi / 60.0) * self.wheel_radius
+            max_vel = max(abs(avg_wheel_mps), state.speed)
             if max_vel > 0.01:
-                state.slip_longitudinal = (avg_wheel_vel - state.speed) / max_vel
+                state.slip_longitudinal = (avg_wheel_mps - state.speed) / max_vel
 
             if abs(state.vx) > 0.01:
                 state.slip_lateral = math.atan2(state.vy, state.vx)
@@ -445,6 +481,7 @@ class GazeboAdapter(SensorAdapterInterface):
             'gps': self._last_gps,
             'odom': self._last_odom,
             'encoder_velocities': self._last_encoder_velocities,
+            'encoder_angle_accum': self._last_encoder_angle_accum,
             'suspension': self._last_suspension,
             'steering_angle': self._last_steering_angle,
             'water_pressure': self._last_water_pressure,

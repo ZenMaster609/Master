@@ -49,7 +49,7 @@ Key topic flow:
 
 - `/sim/odom`, `/sim/imu`, `/sim/navsat` from Gazebo sensors/plugins
 - `/sim/joint_states` from Gazebo joint state plugin
-- `/sim/wheel_encoder/velocities`, `/sim/suspension`, `/sim/steering_angle` from `sim_car` nodes
+- `/sim/wheel_encoder/rpm`, `/sim/suspension`, `/sim/steering_angle` from `sim_car` nodes
 - Virtual sensors: `/sim/cooling/*`, `/sim/brakes/*`, `/sim/pitot/*`
 - Plotter output: `/vehicle_plotter/state`
 

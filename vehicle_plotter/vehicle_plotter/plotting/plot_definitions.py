@@ -8,7 +8,7 @@ and adding it to get_all_plot_definitions().
 Plot Types:
 - XYPlotDefinition: X-Y scatter/line plots (position trajectories)
 - TimeSeriesPlotDefinition: Single-panel time series
-- MultiPanelPlotDefinition: Multi-panel grid (wheel velocities, suspension)
+- MultiPanelPlotDefinition: Multi-panel grid (wheel RPM, suspension)
 """
 
 from abc import ABC, abstractmethod
@@ -140,7 +140,7 @@ class TimeSeriesPlotDefinition(PlotDefinition):
 
 @dataclass
 class MultiPanelPlotDefinition(PlotDefinition):
-    """Multiple subplots (e.g., 4 wheel velocities)."""
+    """Multiple subplots (e.g., 4 wheel RPM traces)."""
 
     subplots: List[Tuple[str, str, str]] = field(default_factory=list)  # [(column, title, color), ...]
     y_label: str = "Value"
@@ -241,11 +241,11 @@ def get_all_plot_definitions() -> List[PlotDefinition]:
             color='#9467bd',  # Purple
         ),
 
-        # Wheel Velocities (CAN data)
+        # Wheel RPM (CAN data)
         MultiPanelPlotDefinition(
-            name="Wheel Velocities",
-            filename="wheel_velocities",
-            title_template="Wheel Velocities ({source})",
+            name="Wheel RPM",
+            filename="wheel_rpm",
+            title_template="Wheel RPM ({source})",
             required_columns=['encoder_fl', 'encoder_fr', 'encoder_rl', 'encoder_rr'],
             subplots=[
                 ('encoder_fl', 'Front Left', '#2ca02c'),
@@ -253,7 +253,7 @@ def get_all_plot_definitions() -> List[PlotDefinition]:
                 ('encoder_rl', 'Rear Left', '#9467bd'),
                 ('encoder_rr', 'Rear Right', '#8c564b'),
             ],
-            y_label='Velocity (m/s)',
+            y_label='RPM',
         ),
 
         # Suspension (CAN data)

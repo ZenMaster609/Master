@@ -6,8 +6,8 @@
 # Usage:
 #   ros2 launch vehicle_plotter plotter.launch.py adapter:=can topic_config:=can_topics.yaml
 
-# Wheel encoder velocities [FL, FR, RL, RR] in m/s
-wheel_velocities: /can/wheel_velocities
+# Wheel encoder speeds [FL, FR, RL, RR] in RPM
+wheel_velocities: /can/wheel_rpm
 
 # Suspension displacements [FL, FR, RL, RR] in meters
 suspension: /can/suspension

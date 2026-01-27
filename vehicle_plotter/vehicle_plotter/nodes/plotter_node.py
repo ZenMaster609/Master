@@ -246,9 +246,14 @@ class PlotterNode(Node):
             plot_path = self._run_session.plots_path / f"plots_{timestamp}.png"
             try:
                 self.plot_manager.export(str(plot_path))
-                self.get_logger().info(f'Plots saved to: {plot_path}')
+                if plot_path.exists():
+                    self.get_logger().info(f'Plots saved to: {plot_path}')
+                else:
+                    self.get_logger().error(f'Plot export did not create file: {plot_path}')
             except Exception as e:
                 self.get_logger().error(f'Failed to save plots: {e}')
+        elif self._save_plots and not self._gui_available:
+            self.get_logger().warn('Plot export skipped: GUI not available')
 
         # Save plot data
         if self._save_plot_data:

@@ -59,8 +59,8 @@ ros2 topic echo /gps/fix
 # View IMU
 ros2 topic echo /imu/data
 
-# View wheel velocities
-ros2 topic echo /wheel_encoder/velocities
+# View wheel RPM
+ros2 topic echo /sim/wheel_encoder/rpm
 
 # Visualize in RViz2
 rviz2
@@ -72,7 +72,7 @@ rviz2
 - `/imu/data` - IMU readings
 - `/gps/fix` - GPS position
 - `/odom` - Odometry
-- `/wheel_encoder/velocities` - Wheel velocities in m/s
+- `/sim/wheel_encoder/rpm` - Wheel speeds in RPM
 
 ## Troubleshooting
 

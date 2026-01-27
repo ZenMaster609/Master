@@ -26,6 +26,7 @@ def generate_launch_description():
     use_sim_time = LaunchConfiguration('use_sim_time', default='true')
     world = LaunchConfiguration('world', default=world_file)
     headless = LaunchConfiguration('headless', default='false')
+    update_rate_hz = LaunchConfiguration('update_rate_hz', default='100.0')
 
     resource_path = os.path.join(pkg_sim_car)
     resource_paths = [
@@ -54,6 +55,11 @@ def generate_launch_description():
             default_value='false',
             description='Run simulation without GUI (server only)'
         ),
+        DeclareLaunchArgument(
+            'update_rate_hz',
+            default_value='100.0',
+            description='Dynamics + joint state update rate (Hz)'
+        ),
         OpaqueFunction(function=_launch_simulation),
     ])
 
@@ -75,7 +81,9 @@ def _launch_simulation(context, *args, **kwargs):
 
     updated_world = _write_updated_world(world_path, max_step_size)
     eufs_config_path = os.path.join(pkg_sim_car, 'config', 'eufs_config.yaml')
-    robot_desc = _build_robot_description(urdf_path, imu_rate, gnss_rate, eufs_config_path)
+    update_rate_value = float(LaunchConfiguration('update_rate_hz').perform(context))
+    updated_eufs_config = _write_updated_eufs_config(eufs_config_path, update_rate_value)
+    robot_desc = _build_robot_description(urdf_path, imu_rate, gnss_rate, updated_eufs_config)
 
     use_sim_time = LaunchConfiguration('use_sim_time')
     headless = LaunchConfiguration('headless')
@@ -189,6 +197,24 @@ def _write_updated_world(world_path, max_step_size):
     tmp = tempfile.NamedTemporaryFile(delete=False, suffix='.sdf')
     tree.write(tmp.name, encoding='utf-8', xml_declaration=True)
     return tmp.name
+
+
+def _write_updated_eufs_config(config_path, update_rate_hz):
+    try:
+        with open(config_path, 'r') as config_file:
+            config = yaml.safe_load(config_file) or {}
+    except (OSError, yaml.YAMLError):
+        return config_path
+
+    dynamics = config.get('dynamics')
+    if not isinstance(dynamics, dict):
+        dynamics = {}
+        config['dynamics'] = dynamics
+    dynamics['update_rate_hz'] = float(update_rate_hz)
+
+    with tempfile.NamedTemporaryFile(mode='w', delete=False, suffix='.yaml') as tmp:
+        yaml.safe_dump(config, tmp, default_flow_style=False, sort_keys=False)
+        return tmp.name
 
 
 def _build_robot_description(urdf_path, imu_rate, gnss_rate, eufs_config_path):

@@ -4,7 +4,11 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## User Interaction Preferences
 
-Always include a copyable command prefixed with `cd ~/ros2_ws` in responses that involve commands. When a rebuild is relevant, also include the appropriate `colcon` rebuild command. When sourcing is needed, also include the appropriate `source` command (often `source install/setup.bash`).
+Always include copyable command lines prefixed with `cd ~/ros2_ws &&` whenever you mention build, run, launch, source, or test steps. When a rebuild is relevant, also include the appropriate `colcon` rebuild command. When sourcing is needed, also include the appropriate `source` command (often `source install/setup.bash`). If you provide multiple commands, each line must start with `cd ~/ros2_ws &&` (do not rely on a prior line).
+
+## ROS2/Gazebo Process Policy
+
+You are authorized to build and run ROS2 projects in this workspace. After collecting whatever data you need, shut down any ROS2 and Gazebo processes you started.
 
 ## Project Overview
 
@@ -247,7 +251,7 @@ ros2 launch canbus_decoder can_decoder.launch.py can_device:=can0
 ros2 launch vehicle_plotter plotter.launch.py adapter:=can
 
 # Verify data flow
-ros2 topic echo /can/wheel_velocities  # [FL, FR, RL, RR] in m/s
+ros2 topic echo /can/wheel_rpm  # [FL, FR, RL, RR] in RPM
 ros2 topic echo /vehicle_plotter/state
 ```
 
@@ -279,7 +283,7 @@ cansend vcan0 0BA#1E00280032320000
 ros2 launch canbus_decoder can_decoder.launch.py can_device:=vcan0
 
 # Verify output
-ros2 topic echo /can/wheel_velocities
+ros2 topic echo /can/wheel_rpm
 ```
 
 #### CAN Message Protocol
@@ -313,8 +317,8 @@ Byte 6-7: Steering angle (16-bit signed, 0.1 deg units, little-endian)
 
 Physical CAN Bus (500kbps)
     │
-    ├─ ID 185 (Front): FL, FR wheel velocities + steering
-    └─ ID 186 (Rear):  RL, RR wheel velocities
+    ├─ ID 185 (Front): FL, FR wheel speeds + steering
+    └─ ID 186 (Rear):  RL, RR wheel speeds
            ↓
     SocketCAN (Linux kernel driver)
            ↓
@@ -332,13 +336,13 @@ Physical CAN Bus (500kbps)
     │                                          │
     │  - Filters IDs 185/186                  │
     │  - Synchronizes front/rear axles        │
-    │  - Converts mm/s → m/s                  │
+    │  - Converts mm/s → RPM                  │
     │  - Publishes structured topics          │
     └──────────────────────────────────────────┘
            ↓          ↓          ↓
-    /can/wheel_velocities    /can/suspension    /can/steering_angle
+    /can/wheel_rpm    /can/suspension    /can/steering_angle
     (Float32MultiArray)      (Float32MultiArray) (Float32)
-     [FL,FR,RL,RR] m/s       [FL,FR,RL,RR] m    radians
+     [FL,FR,RL,RR] RPM       [FL,FR,RL,RR] m    radians
            ↓
     ┌──────────────────────────────────────────┐
     │  CANAdapter                              │  ← Adapter pattern
@@ -362,7 +366,7 @@ Physical CAN Bus (500kbps)
    - Pure Python module for CAN message decoding
    - Defines CAN IDs (0xB9, 0xBA) and byte layouts
    - Implements `decode_wheel_pair()` function using `struct.unpack()`
-   - Provides dataclasses with unit conversion properties (mm/s → m/s, decideg → rad)
+   - Provides dataclasses with unit conversion properties (mm/s → linear speed, decideg → rad)
    - **No ROS dependencies** - can be used in non-ROS applications
 
 2. **can_decoder_node.py** (ROS2 Node)
@@ -370,7 +374,8 @@ Physical CAN Bus (500kbps)
    - Subscribes to `/can/rx` (raw CAN frames from ros2_socketcan)
    - Uses can_protocol.py to decode byte data
    - Synchronizes front/rear axle messages
-   - Publishes human-readable topics (wheel_velocities, suspension, steering)
+   - Converts linear speed to RPM
+   - Publishes human-readable topics (wheel_rpm, suspension, steering)
    - Handles timeouts and stale data detection
    - Lives in **canbus_decoder** package
 
@@ -625,7 +630,7 @@ Gazebo Sensors → ros_gz_bridge → sim_car nodes → vehicle_plotter
 | `/sim/imu` | Imu | 100 Hz | m/s², rad/s | Gazebo |
 | `/sim/navsat` | NavSatFix | 5 Hz | deg, m | Gazebo |
 | `/sim/joint_states` | JointState | 50 Hz | rad, rad/s | Gazebo |
-| `/sim/wheel_encoder/velocities` | Float32MultiArray | 50 Hz | m/s | wheel_encoder_node |
+| `/sim/wheel_encoder/rpm` | Float32MultiArray | 50 Hz | RPM | wheel_encoder_node |
 | `/sim/suspension` | Float32MultiArray | 100 Hz | mm | suspension_sensor_node |
 | `/sim/steering_angle` | Float32 | 100 Hz | deg | steering_sensor_node |
 | `/sim/cooling/water_pressure` | Float32 | 10 Hz | bar | virtual_sensors_node |
@@ -641,7 +646,7 @@ Gazebo Sensors → ros_gz_bridge → sim_car nodes → vehicle_plotter
 | Topic | Type | Rate | Unit | Source |
 |-------|------|------|------|--------|
 | `/can/rx` | Frame | - | - | ros2_socketcan |
-| `/can/wheel_velocities` | Float32MultiArray | 100 Hz | m/s | can_decoder_node |
+| `/can/wheel_rpm` | Float32MultiArray | 100 Hz | RPM | can_decoder_node |
 | `/can/suspension` | Float32MultiArray | 100 Hz | mm | can_decoder_node |
 | `/can/steering_angle` | Float32 | 100 Hz | rad | can_decoder_node |
 | `/vectornav/imu` | Imu | 200 Hz | m/s², rad/s | vectornav_decoder_node |
@@ -663,7 +668,7 @@ float64 yaw, yaw_rate
 # Derived
 float64 speed, distance_traveled, slip_longitudinal, slip_lateral
 
-# Wheel encoder velocities [FL, FR, RL, RR] in m/s
+# Wheel encoder speeds [FL, FR, RL, RR] in RPM
 float32[4] encoder_velocities
 
 # Suspension displacements [FL, FR, RL, RR] in meters
@@ -868,7 +873,7 @@ Also update the `wheel_radius` parameter in `nodes.launch.py`.
 | Row | Col 0 | Col 1 | Col 2 |
 |-----|-------|-------|-------|
 | 0 | Position Trajectory (X vs Y) | Velocity (Vx, Vy, Speed) | Suspension (FL, FR, RL, RR) |
-| 1 | Heading (Yaw in degrees) | Wheel Velocities (4 wheels) | Steering Angle |
+| 1 | Heading (Yaw in degrees) | Wheel RPM (4 wheels) | Steering Angle |
 | 2 | Brake Temps (FR, RL) | Cooling Temps (In, Out, Radiator) | Pitot Pressure |
 
 ### Topic Mappings
@@ -917,12 +922,12 @@ python3 -m pytest test/test_vn200_protocol.py -v
 # Monitor topics
 ros2 topic list
 ros2 topic echo /vehicle_plotter/state
-ros2 topic echo /can/wheel_velocities
+ros2 topic echo /can/wheel_rpm
 ros2 topic echo /vectornav/imu
 ros2 topic echo /vectornav/gps
 
 # Check rates
 ros2 topic hz /vehicle_plotter/state
-ros2 topic hz /can/wheel_velocities
+ros2 topic hz /can/wheel_rpm
 ros2 topic hz /vectornav/imu
 ```

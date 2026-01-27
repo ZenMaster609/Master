@@ -12,7 +12,7 @@
   history: keep_last
   depth: 10
 
-/can/wheel_velocities:
+/can/wheel_rpm:
   reliability: reliable
   durability: transient_local
   history: keep_last

@@ -2,9 +2,10 @@
 
 """
 Wheel encoder node for the simulated car.
-Subscribes to wheel joint states and publishes wheel velocities in m/s.
+Subscribes to wheel joint states and publishes wheel RPM.
 """
 
+import math
 import rclpy
 from rclpy.node import Node
 from sensor_msgs.msg import JointState
@@ -16,11 +17,21 @@ class WheelEncoderNode(Node):
         super().__init__('wheel_encoder_node')
 
         # Declare parameters
-        self.declare_parameter('wheel_radius', 0.23)  # meters (matches URDF)
         self.declare_parameter('publish_rate', 50.0)  # Hz
+        self.declare_parameter('publish_rpm', True)
+        self.declare_parameter('publish_angle_accum', True)
+        self.declare_parameter('wheel_radius', 0.23)  # meters
+        self.declare_parameter('min_dt', 1e-4)  # seconds
+        self.declare_parameter('min_window_sec', 0.04)  # seconds
+        self.declare_parameter('min_delta', 1e-4)  # radians
 
-        self.wheel_radius = self.get_parameter('wheel_radius').value
         self.publish_rate = self.get_parameter('publish_rate').value
+        self.publish_rpm = self.get_parameter('publish_rpm').value
+        self.publish_angle_accum = self.get_parameter('publish_angle_accum').value
+        self.wheel_radius = self.get_parameter('wheel_radius').value
+        self.min_dt = self.get_parameter('min_dt').value
+        self.min_window_sec = self.get_parameter('min_window_sec').value
+        self.min_delta = self.get_parameter('min_delta').value
 
         # Subscribe to joint states from Gazebo (via ros_gz_bridge)
         # Uses /sim/ namespace for all simulation topics
@@ -31,12 +42,21 @@ class WheelEncoderNode(Node):
             10
         )
 
-        # Publisher for wheel velocities under /sim/ namespace
-        self.encoder_velocity_pub = self.create_publisher(
-            Float32MultiArray,
-            '/sim/wheel_encoder/velocities',
-            10
-        )
+        # Publisher for wheel RPM under /sim/ namespace
+        self.encoder_rpm_pub = None
+        if self.publish_rpm:
+            self.encoder_rpm_pub = self.create_publisher(
+                Float32MultiArray,
+                '/sim/wheel_encoder/rpm',
+                10
+            )
+        self.encoder_angle_pub = None
+        if self.publish_angle_accum:
+            self.encoder_angle_pub = self.create_publisher(
+                Float32MultiArray,
+                '/sim/wheel_encoder/angle_accum',
+                10
+            )
 
         # Wheel names (for reference)
         self.wheel_names = [
@@ -46,10 +66,13 @@ class WheelEncoderNode(Node):
             'rear_right_wheel_joint'
         ]
 
-        # Store last velocities for status updates
-        self._last_velocities = [0.0, 0.0, 0.0, 0.0]
-        self._last_joint_velocities = [0.0, 0.0, 0.0, 0.0]
+        # Store last RPM for status updates
+        self._last_rpm = [0.0, 0.0, 0.0, 0.0]
         self._joint_state_received = False
+        self._last_positions = {}
+        self._last_stamp = {}
+        self._angle_accum = {name: 0.0 for name in self.wheel_names}
+        self._time_accum = {name: 0.0 for name in self.wheel_names}
 
         # Publish at configured rate
         self.publish_timer = self.create_timer(
@@ -61,50 +84,88 @@ class WheelEncoderNode(Node):
         self.status_timer = self.create_timer(2.0, self.status_callback)
 
         self.get_logger().info('Wheel encoder node started')
-        self.get_logger().info(f'Wheel radius: {self.wheel_radius} m')
         self.get_logger().info(f'Publishing at {self.publish_rate} Hz')
+        if self.publish_rpm:
+            self.get_logger().info('Publishing wheel RPM on /sim/wheel_encoder/rpm')
+        if self.publish_angle_accum:
+            self.get_logger().info('Publishing wheel angle accum on /sim/wheel_encoder/angle_accum')
+
+    def _get_msg_time(self, msg: JointState) -> float:
+        if msg.header.stamp.sec != 0 or msg.header.stamp.nanosec != 0:
+            return msg.header.stamp.sec + msg.header.stamp.nanosec * 1e-9
+        return self.get_clock().now().nanoseconds * 1e-9
 
     def joint_state_callback(self, msg):
-        """Process joint state data and store wheel velocities."""
+        """Process joint state data and accumulate wheel rotation."""
+        msg_time = self._get_msg_time(msg)
 
-        # Create a mapping of joint names to velocities
-        joint_data = {}
-        for i, name in enumerate(msg.name):
-            joint_data[name] = {
-                'velocity': msg.velocity[i] if i < len(msg.velocity) else 0.0
-            }
+        name_to_index = {name: i for i, name in enumerate(msg.name)}
 
-        # Extract velocities for our wheels in order [FL, FR, RL, RR]
-        velocities = []
-        for wheel_name in self.wheel_names:
-            if wheel_name in joint_data:
-                velocities.append(joint_data[wheel_name]['velocity'])
-            else:
-                velocities.append(0.0)
+        for idx_name, wheel_name in enumerate(self.wheel_names):
+            idx = name_to_index.get(wheel_name)
+            if idx is None:
+                continue
 
-        self._last_joint_velocities = velocities
+            if idx < len(msg.position):
+                pos = msg.position[idx]
+                last_pos = self._last_positions.get(wheel_name)
+                last_time = self._last_stamp.get(wheel_name)
+                if last_pos is not None and last_time is not None:
+                    dt = msg_time - last_time
+                    if dt >= self.min_dt:
+                        delta = pos - last_pos
+                        # Unwrap assuming per-sample delta stays within [-pi, pi]
+                        while delta > math.pi:
+                            delta -= 2.0 * math.pi
+                        while delta < -math.pi:
+                            delta += 2.0 * math.pi
+                        if abs(delta) >= self.min_delta:
+                            self._angle_accum[wheel_name] += abs(delta)
+                            self._time_accum[wheel_name] += dt
+                self._last_positions[wheel_name] = pos
+                self._last_stamp[wheel_name] = msg_time
+
         self._joint_state_received = True
 
     def publish_wheel_velocities(self):
-        """Publish wheel velocities at the configured rate."""
-        if not self._joint_state_received:
+        """Publish wheel RPM at the configured rate."""
+        if not self._joint_state_received or self.wheel_radius <= 0.0:
             return
 
-        wheel_velocities = [v * self.wheel_radius for v in self._last_joint_velocities]
-        self._last_velocities = wheel_velocities
+        wheel_rpm = []
+        wheel_angle_accum = []
+        for idx_name, wheel_name in enumerate(self.wheel_names):
+            accum_time = self._time_accum[wheel_name]
+            angle_accum = self._angle_accum[wheel_name]
+            if accum_time >= self.min_window_sec and accum_time > 0.0:
+                omega_avg = angle_accum / accum_time
+                rpm = omega_avg * 60.0 / (2.0 * math.pi)
+                self._angle_accum[wheel_name] = 0.0
+                self._time_accum[wheel_name] = 0.0
+            else:
+                rpm = self._last_rpm[idx_name]
+            wheel_rpm.append(rpm)
+            wheel_angle_accum.append(angle_accum)
+        self._last_rpm = wheel_rpm
 
-        velocity_msg = Float32MultiArray()
-        velocity_msg.data = wheel_velocities
-        self.encoder_velocity_pub.publish(velocity_msg)
+        if self.encoder_rpm_pub is not None:
+            rpm_msg = Float32MultiArray()
+            rpm_msg.data = wheel_rpm
+            self.encoder_rpm_pub.publish(rpm_msg)
+        if self.encoder_angle_pub is not None:
+            angle_msg = Float32MultiArray()
+            angle_msg.data = wheel_angle_accum
+            self.encoder_angle_pub.publish(angle_msg)
 
     def status_callback(self):
         """Periodic status update"""
-        self.get_logger().info(
-            f'Wheel Velocities (m/s) - FL: {self._last_velocities[0]:.2f}, '
-            f'FR: {self._last_velocities[1]:.2f}, '
-            f'RL: {self._last_velocities[2]:.2f}, '
-            f'RR: {self._last_velocities[3]:.2f}'
-        )
+        if self.publish_rpm:
+            self.get_logger().info(
+                f'Wheel RPM - FL: {self._last_rpm[0]:.2f}, '
+                f'FR: {self._last_rpm[1]:.2f}, '
+                f'RL: {self._last_rpm[2]:.2f}, '
+                f'RR: {self._last_rpm[3]:.2f}'
+            )
 
 
 def main(args=None):
