@@ -30,6 +30,7 @@
 
 import os
 import time
+import yaml
 
 # qt
 from qt_gui.plugin import Plugin
@@ -43,6 +44,7 @@ from ament_index_python.packages import get_package_share_directory
 import rclpy
 from std_srvs.srv import Trigger
 from ackermann_msgs.msg import AckermannDriveStamped
+from std_msgs.msg import Float32
 
 
 class EUFSRobotSteeringGUI(Plugin):
@@ -79,6 +81,12 @@ class EUFSRobotSteeringGUI(Plugin):
         context.add_widget(self._widget)
 
         self._publisher = None
+        self._brake_publisher = None
+        if not self.node.has_parameter('brake_cmd_topic'):
+            self.node.declare_parameter('brake_cmd_topic', '/sim/brake_cmd')
+        self._brake_topic = self.node.get_parameter('brake_cmd_topic').value
+        self._brake_publisher = self.node.create_publisher(
+            Float32, self._brake_topic, 10)
 
         self._widget.topic_line_edit.textChanged.connect(
             self._on_topic_changed)
@@ -90,6 +98,10 @@ class EUFSRobotSteeringGUI(Plugin):
             self._on_linear_slider_changed)
         self._widget.angular_slider.valueChanged.connect(
             self._on_angular_slider_changed)
+        self._widget.brake_slider.valueChanged.connect(
+            self._on_brake_slider_changed)
+        self._widget.reset_brake_push_button.pressed.connect(
+            self._on_reset_brake_pressed)
 
         self._widget.increase_linear_push_button.pressed.connect(
             self._on_strong_increase_linear_pressed)
@@ -202,13 +214,12 @@ class EUFSRobotSteeringGUI(Plugin):
         self.command_mode = self.request_command_mode()
 
         # Configure default maximum slider value
-        default_vel_range = 5.00
-        default_acc_range = 1.00
+        default_vel_range = 25.00
+        default_acc_min, default_acc_max = self._load_accel_limits()
 
         if self.command_mode == "acceleration":
-            self._widget.max_linear_double_spin_box.setValue(default_acc_range)
-            self._widget.min_linear_double_spin_box.setValue(
-                -default_acc_range)
+            self._widget.max_linear_double_spin_box.setValue(default_acc_max)
+            self._widget.min_linear_double_spin_box.setValue(default_acc_min)
             self.slider_units = "m/s^2"
         elif self.command_mode == "velocity":
             self._widget.max_linear_double_spin_box.setValue(default_vel_range)
@@ -225,6 +236,10 @@ class EUFSRobotSteeringGUI(Plugin):
         self._widget.current_linear_label.setText(
             ('%0.2f ' + self.slider_units) % (
                 self._widget.linear_slider.value()
+                / EUFSRobotSteeringGUI.slider_factor))
+        self._widget.current_brake_label.setText(
+            '%0.2f' % (
+                self._widget.brake_slider.value()
                 / EUFSRobotSteeringGUI.slider_factor))
 
         self._widget.max_linear_double_spin_box.setToolTip(
@@ -262,6 +277,30 @@ class EUFSRobotSteeringGUI(Plugin):
         self.logger.debug("command mode request completed.")
         result = future.result()
         return result.message
+
+    def _load_accel_limits(self):
+        try:
+            sim_car_share = get_package_share_directory('sim_car')
+        except Exception:
+            return -1.0, 1.0
+        config_path = os.path.join(sim_car_share, 'config', 'eufs_config.yaml')
+        try:
+            with open(config_path, 'r') as config_file:
+                config = yaml.safe_load(config_file) or {}
+        except (OSError, yaml.YAMLError):
+            return -1.0, 1.0
+        input_ranges = config.get('input_ranges')
+        if not isinstance(input_ranges, dict):
+            return -1.0, 1.0
+        accel = input_ranges.get('acceleration')
+        if not isinstance(accel, dict):
+            return -1.0, 1.0
+        try:
+            acc_min = float(accel.get('min', -1.0))
+            acc_max = float(accel.get('max', 1.0))
+        except (TypeError, ValueError):
+            return -1.0, 1.0
+        return acc_min, acc_max
 
     def _on_topic_changed(self, topic):
         self._unregister_publisher()
@@ -302,12 +341,14 @@ class EUFSRobotSteeringGUI(Plugin):
         # If the current value of sliders is zero directly send stop
         # AckermannDriveStamped msg
         if self._widget.linear_slider.value() == 0 and \
-                self._widget.angular_slider.value() == 0:
+                self._widget.angular_slider.value() == 0 and \
+                self._widget.brake_slider.value() == 0:
             self.zero_cmd_sent = False
             self._on_parameter_changed()
         else:
             self._widget.linear_slider.setValue(0)
             self._widget.angular_slider.setValue(0)
+            self._widget.brake_slider.setValue(0)
 
     def _on_linear_slider_changed(self):
         self._widget.current_linear_label.setText(
@@ -322,6 +363,13 @@ class EUFSRobotSteeringGUI(Plugin):
                 self._widget.angular_slider.value()
                 / EUFSRobotSteeringGUI.slider_factor))
         self._on_parameter_changed()
+
+    def _on_brake_slider_changed(self):
+        self._widget.current_brake_label.setText(
+            '%0.2f' % (
+                self._widget.brake_slider.value()
+                / EUFSRobotSteeringGUI.slider_factor))
+        self._publish_brake_cmd()
 
     def _on_increase_linear_pressed(self):
         self._widget.linear_slider.setValue(
@@ -343,6 +391,9 @@ class EUFSRobotSteeringGUI(Plugin):
 
     def _on_reset_angular_pressed(self):
         self._widget.angular_slider.setValue(0)
+
+    def _on_reset_brake_pressed(self):
+        self._widget.brake_slider.setValue(0)
 
     def _on_decrease_angular_pressed(self):
         self._widget.angular_slider.setValue(
@@ -391,6 +442,16 @@ class EUFSRobotSteeringGUI(Plugin):
             / EUFSRobotSteeringGUI.slider_factor,
             self._widget.angular_slider.value()
             / EUFSRobotSteeringGUI.slider_factor)
+        self._publish_brake_cmd()
+
+    def _publish_brake_cmd(self):
+        if self._brake_publisher is None:
+            return
+        msg = Float32()
+        msg.data = float(
+            self._widget.brake_slider.value()
+            / EUFSRobotSteeringGUI.slider_factor)
+        self._brake_publisher.publish(msg)
 
     def _send_ackermann_drive_stamped(self, linear, angular):
         if self._publisher is None:

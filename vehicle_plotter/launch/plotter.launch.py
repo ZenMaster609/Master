@@ -77,7 +77,7 @@ def generate_launch_description():
 
     save_plots_on_exit_arg = DeclareLaunchArgument(
         'save_plots_on_exit',
-        default_value='true',
+        default_value='false',
         description='Save plot window images on shutdown'
     )
 
@@ -85,6 +85,12 @@ def generate_launch_description():
         'save_plot_data_on_exit',
         default_value='true',
         description='Save plotted data CSVs on shutdown'
+    )
+
+    close_plots_on_shutdown_arg = DeclareLaunchArgument(
+        'close_plots',
+        default_value='true',
+        description='Close plot windows when the plotter node shuts down'
     )
 
     # Logging options
@@ -170,6 +176,7 @@ def generate_launch_description():
             'window_title': 'Vehicle Plotter',
             'save_plots_on_exit': LaunchConfiguration('save_plots_on_exit'),
             'save_plot_data_on_exit': LaunchConfiguration('save_plot_data_on_exit'),
+            'close_plots_on_shutdown': LaunchConfiguration('close_plots'),
             'use_sim_time': False,  # Use wall clock for timers
         }],
     )
@@ -192,6 +199,7 @@ def generate_launch_description():
             'window_title': 'Virtual Sensors',
             'save_plots_on_exit': LaunchConfiguration('save_plots_on_exit'),
             'save_plot_data_on_exit': LaunchConfiguration('save_plot_data_on_exit'),
+            'close_plots_on_shutdown': LaunchConfiguration('close_plots'),
             'use_sim_time': False,  # Use wall clock for timers
         }],
     )
@@ -242,6 +250,7 @@ def generate_launch_description():
         dark_mode_arg,
         save_plots_on_exit_arg,
         save_plot_data_on_exit_arg,
+        close_plots_on_shutdown_arg,
         enable_log_arg,
         log_format_arg,
         log_path_arg,

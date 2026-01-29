@@ -11,6 +11,7 @@ from rclpy.node import Node
 from pathlib import Path
 from typing import Optional
 from datetime import datetime
+import time
 
 from vehicle_plotter_msgs.msg import VehicleState as VehicleStateMsg
 from vehicle_plotter_msgs.msg import RunSession as RunSessionMsg
@@ -56,8 +57,9 @@ class PlotterNode(Node):
         self.declare_parameter('dark_mode', True)
         self.declare_parameter('enable_gui', True)
         self.declare_parameter('state_topic', 'vehicle_plotter/state')
-        self.declare_parameter('save_plots_on_exit', True)
+        self.declare_parameter('save_plots_on_exit', False)
         self.declare_parameter('save_plot_data_on_exit', True)
+        self.declare_parameter('close_plots_on_shutdown', True)
         self.declare_parameter('wait_for_session', True)
         self.declare_parameter('session_timeout_sec', 5.0)
         self.declare_parameter('base_path', '')
@@ -72,6 +74,7 @@ class PlotterNode(Node):
         state_topic = self.get_parameter('state_topic').value
         self._save_plots = self.get_parameter('save_plots_on_exit').value
         self._save_plot_data = self.get_parameter('save_plot_data_on_exit').value
+        self._close_plots_on_shutdown = self.get_parameter('close_plots_on_shutdown').value
         self._wait_for_session = self.get_parameter('wait_for_session').value
         self._session_timeout = self.get_parameter('session_timeout_sec').value
         base_path_str = self.get_parameter('base_path').value
@@ -88,6 +91,7 @@ class PlotterNode(Node):
         self.get_logger().info(f'  GUI enabled: {enable_gui}')
         self.get_logger().info(f'  Save plots on exit: {self._save_plots}')
         self.get_logger().info(f'  Save plot data on exit: {self._save_plot_data}')
+        self.get_logger().info(f'  Close plots on shutdown: {self._close_plots_on_shutdown}')
 
         # Create plot configuration
         if plot_layout == 'virtual_sensors':
@@ -157,6 +161,7 @@ class PlotterNode(Node):
         # Statistics
         self._state_count = 0
         self._window_open = True
+        self._shutdown_from_window_close = False
 
         self.get_logger().info(f'PlotterNode started, subscribed to {state_topic}')
 
@@ -220,14 +225,26 @@ class PlotterNode(Node):
         self._window_open = self.plot_manager.refresh()
 
         if not self._window_open:
+            self._shutdown_from_window_close = True
             self.get_logger().info('Plot window closed, shutting down')
             self.shutdown()
 
     def shutdown(self) -> None:
         """Clean shutdown with optional plot/data export."""
         self._save_on_exit()
-        self.plot_manager.close()
+        if self._close_plots_on_shutdown or self._shutdown_from_window_close:
+            self.plot_manager.close()
         rclpy.shutdown()
+
+    def _linger_until_window_closed(self) -> None:
+        """Keep GUI alive after ROS shutdown until user closes the window."""
+        if not self._gui_available:
+            return
+        if self._shutdown_from_window_close:
+            return
+        self.get_logger().info('ROS shutdown complete. Close the plot window to exit.')
+        while self.plot_manager._backend.process_events():
+            time.sleep(0.05)
 
     def _save_on_exit(self) -> None:
         """Save plots and data if configured."""
@@ -286,7 +303,10 @@ def main(args=None):
     finally:
         node.get_logger().info(f'PlotterNode shutting down, received {node._state_count} states')
         node._save_on_exit()
-        node.plot_manager.close()
+        if node._close_plots_on_shutdown or node._shutdown_from_window_close:
+            node.plot_manager.close()
+        else:
+            node._linger_until_window_closed()
         node.destroy_node()
         if rclpy.ok():
             rclpy.shutdown()

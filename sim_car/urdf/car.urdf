@@ -213,7 +213,7 @@
        Purpose: Front wheel steering about vertical kingpin axis
        Axis: +Z (vertical steering axis)
        Range: ±30° (±0.52 rad) for Ackermann geometry
-       Controlled via position commands from ackermann_control_node
+       Controlled via EUFS dynamics plugin steering commands
   -->
   <joint name="steering_fl_joint" type="revolute">
     <parent link="suspension_fl_link"/>
@@ -399,7 +399,7 @@
   </joint>
 
   <!-- RL Wheel (DRIVE)
-       Driven wheel - receives velocity commands from ackermann_control_node.
+       Driven wheel - receives velocity commands from EUFS dynamics plugin.
        Wider than front wheels (0.20m vs 0.18m) for better traction.
        Heavier (10kg vs 8kg) to account for drive components.
        NOTE: No steering joint - rear axle has no steering DOF.

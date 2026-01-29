@@ -1,0 +1,6 @@
+numpy>=2.0
+matplotlib>=3.8
+pandas>=2.0
+pyarrow>=12.0
+pyqtgraph>=0.13.7
+PyQt5>=5.15

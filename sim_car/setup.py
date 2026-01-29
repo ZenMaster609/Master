@@ -40,9 +40,7 @@ setup(
     tests_require=['pytest'],
     entry_points={
         'console_scripts': [
-            'control_node = sim_car.control_node:main',
             'wheel_encoder_node = sim_car.wheel_encoder_node:main',
-            'ackermann_control_node = sim_car.ackermann_control_node:main',
             'ackermann_cmd_bridge = sim_car.ackermann_cmd_bridge:main',
             'suspension_sensor_node = sim_car.suspension_sensor_node:main',
             'steering_sensor_node = sim_car.steering_sensor_node:main',

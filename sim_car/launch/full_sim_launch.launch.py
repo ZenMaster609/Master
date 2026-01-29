@@ -15,6 +15,8 @@ from launch.launch_description_sources import PythonLaunchDescriptionSource
 from launch.substitutions import LaunchConfiguration, PathJoinSubstitution, PythonExpression
 from launch_ros.actions import Node
 from launch_ros.substitutions import FindPackageShare
+from ament_index_python.packages import get_package_share_directory
+import yaml
 
 
 def generate_launch_description():
@@ -39,18 +41,6 @@ def generate_launch_description():
         description='Full path to world file to load'
     )
 
-    linear_speed_arg = DeclareLaunchArgument(
-        'linear_speed',
-        default_value='0.5',
-        description='Linear speed in m/s (for auto mode)'
-    )
-
-    angular_speed_arg = DeclareLaunchArgument(
-        'angular_speed',
-        default_value='1.0',
-        description='Angular speed in rad/s (for auto mode)'
-    )
-
     sensor_mode_arg = DeclareLaunchArgument(
         'sensor_mode',
         default_value='real',
@@ -67,6 +57,12 @@ def generate_launch_description():
         'logging',
         default_value='true',
         description='Enable data logging'
+    )
+
+    close_plots_on_shutdown_arg = DeclareLaunchArgument(
+        'close_plots',
+        default_value='true',
+        description='Close live plot windows when the plotter node shuts down'
     )
 
     rosbagging_arg = DeclareLaunchArgument(
@@ -101,9 +97,6 @@ def generate_launch_description():
 
     sensor_mode = LaunchConfiguration('sensor_mode')
     enable_steering_gui = LaunchConfiguration('steering')
-    control_mode = PythonExpression([
-        "'none' if '", enable_steering_gui, "' == 'true' else 'auto'"
-    ])
     enable_real_sensors = PythonExpression([
         "'true' if '", sensor_mode, "' in ['real', 'both'] else 'false'"
     ])
@@ -116,9 +109,6 @@ def generate_launch_description():
             PathJoinSubstitution([sim_car_share, 'launch', 'nodes.launch.py'])
         ),
         launch_arguments={
-            'control_mode': control_mode,
-            'linear_speed': LaunchConfiguration('linear_speed'),
-            'angular_speed': LaunchConfiguration('angular_speed'),
             'enable_real_sensors': enable_real_sensors,
             'enable_virtual_sensors': enable_virtual_sensors,
         }.items(),
@@ -137,6 +127,7 @@ def generate_launch_description():
             'enable_log': LaunchConfiguration('logging'),
             'enable_rosbag': LaunchConfiguration('rosbagging'),
             'use_sim_time': LaunchConfiguration('use_sim_time'),
+            'close_plots_on_shutdown': LaunchConfiguration('close_plots'),
         }.items(),
     )
 
@@ -148,6 +139,8 @@ def generate_launch_description():
         condition=IfCondition(LaunchConfiguration('steering'))
     )
 
+    control_config = _load_control_config()
+
     steering_bridge_node = Node(
         name='ackermann_cmd_bridge',
         package='sim_car',
@@ -157,7 +150,10 @@ def generate_launch_description():
             'input_topic': '/cmd',
             'output_topic': '/cmd_vel',
             'wheelbase': 1.6,
-            'command_mode': 'velocity',
+            'command_mode': 'acceleration',
+            'max_speed': control_config['max_speed'],
+            'accel_limit': control_config['accel_limit'],
+            'brake_decel_limit': control_config['brake_decel_limit'],
         }],
         condition=IfCondition(LaunchConfiguration('steering'))
     )
@@ -166,11 +162,10 @@ def generate_launch_description():
         headless_arg,
         update_rate_arg,
         world_arg,
-        linear_speed_arg,
-        angular_speed_arg,
         sensor_mode_arg,
         plotting_arg,
         logging_arg,
+        close_plots_on_shutdown_arg,
         rosbagging_arg,
         steering_arg,
         use_sim_time_arg,
@@ -180,3 +175,33 @@ def generate_launch_description():
         steering_bridge_node,
         steering_gui_node,
     ])
+
+
+def _load_control_config():
+    try:
+        config_path = get_package_share_directory('sim_car')
+    except Exception:
+        return _default_control_config()
+    eufs_config = f"{config_path}/config/eufs_config.yaml"
+    try:
+        with open(eufs_config, 'r') as config_file:
+            config = yaml.safe_load(config_file) or {}
+    except (OSError, yaml.YAMLError):
+        return _default_control_config()
+
+    control = config.get('control')
+    if not isinstance(control, dict):
+        return _default_control_config()
+    return {
+        'max_speed': float(control.get('max_speed', 75.0)),
+        'accel_limit': float(control.get('accel_limit', 12.5)),
+        'brake_decel_limit': float(control.get('brake_decel_limit', 25.0)),
+    }
+
+
+def _default_control_config():
+    return {
+        'max_speed': 75.0,
+        'accel_limit': 12.5,
+        'brake_decel_limit': 25.0,
+    }

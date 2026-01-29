@@ -72,10 +72,12 @@ def get_default_base_path() -> Path:
         Path.cwd(),  # Last resort: current working directory
     ]
 
+    marker_files = ('AGENTS.md', 'CLAUDE.md')
     for p in search_paths:
-        # Check for both vehicle_plotter and CLAUDE.md to confirm this is the Master folder
-        if p.exists() and (p / 'vehicle_plotter').exists() and (p / 'CLAUDE.md').exists():
-            return p / 'multidata'
+        # Check for vehicle_plotter and a repo marker to confirm this is the Master folder
+        if p.exists() and (p / 'vehicle_plotter').exists():
+            if any((p / marker).exists() for marker in marker_files):
+                return p / 'multidata'
 
     # Fallback to current working directory
     return Path.cwd() / 'multidata'

@@ -26,10 +26,15 @@ dynamics:
   update_rate_hz: 100.0
   control_delay_sec: 0.0
 
+control:
+  max_speed: 75.0           # m/s
+  accel_limit: 12.5         # m/s^2
+  brake_decel_limit: 25.0   # m/s^2
+
 input_ranges:
   acceleration:
     max: 9.26   # m/s^2 (0-100 km/h in 3.0 s)
-    min: -10
+    min: -5
   velocity:
     max: 41.67  # m/s (150 km/h)
     min: 0

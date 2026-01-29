@@ -30,7 +30,8 @@ class VirtualSensorsNode(Node):
 
     Subscribes:
         /sim/odom (nav_msgs/Odometry): For vehicle speed
-        /cmd_vel (geometry_msgs/Twist): For throttle/brake proxy
+        /cmd_vel (geometry_msgs/Twist): For throttle proxy (and brake fallback)
+        /sim/brake_cmd (std_msgs/Float32): For explicit braking command (0..1)
 
     Publishes:
         /sim/cooling/water_pressure (Float32) - bar
@@ -62,6 +63,7 @@ class VirtualSensorsNode(Node):
         self.declare_parameter('publish_rate_brake_temp_fr', self.get_parameter('publish_rate').value)
         self.declare_parameter('publish_rate_brake_temp_rl', self.get_parameter('publish_rate').value)
         self.declare_parameter('publish_rate_pitot_dynamic_pressure', self.get_parameter('publish_rate').value)
+        self.declare_parameter('brake_cmd_topic', '/sim/brake_cmd')
 
         # Noise parameters
         self.declare_parameter('noise_pressure', 0.02)  # bar
@@ -97,6 +99,7 @@ class VirtualSensorsNode(Node):
         self.vehicle_speed = 0.0  # m/s
         self.throttle = 0.0  # 0-1 proxy
         self.braking = 0.0  # 0-1 proxy (negative cmd_vel.linear.x)
+        self.brake_cmd = 0.0  # 0-1 explicit brake command
         self.prev_speed = 0.0
 
         # Thermal state (temperatures)
@@ -137,6 +140,9 @@ class VirtualSensorsNode(Node):
             Odometry, '/sim/odom', self.odom_callback, 10)
         self.cmd_vel_sub = self.create_subscription(
             Twist, '/cmd_vel', self.cmd_vel_callback, 10)
+        brake_topic = self.get_parameter('brake_cmd_topic').value
+        self.brake_cmd_sub = self.create_subscription(
+            Float32, brake_topic, self.brake_cmd_callback, 10)
 
         # Timer for publishing
         timer_period = 1.0 / self.update_rate_hz
@@ -162,6 +168,10 @@ class VirtualSensorsNode(Node):
         else:
             self.throttle = 0.0
             self.braking = min(abs(msg.linear.x) / 5.0, 1.0)  # Normalize to 0-1
+
+    def brake_cmd_callback(self, msg: Float32):
+        """Explicit braking command (0..1)."""
+        self.brake_cmd = max(0.0, min(1.0, float(msg.data)))
 
     def update_and_publish(self):
         """Update thermal models and publish all sensor values."""
@@ -318,17 +328,22 @@ class VirtualSensorsNode(Node):
         - Airflow (proportional to speed)
         - Ambient (slow convection)
         """
+        # Use explicit brake command when available, fallback to cmd_vel proxy
+        brake_input = max(self.brake_cmd, self.braking)
+
         # Compute deceleration proxy
         decel = max(0, (self.prev_speed - self.vehicle_speed) / max(dt, 0.001))
+        speed_for_heating = max(self.vehicle_speed, self.prev_speed)
+        effective_brake = brake_input if (decel > 0.0 and speed_for_heating > 0.2) else 0.0
 
         # Heat generation from braking (kinetic energy dissipation)
         # Q ~ v * decel (simplified power dissipation)
-        heat_fr = self.vehicle_speed * decel * 0.5  # Front takes more braking
-        heat_rl = self.vehicle_speed * decel * 0.3  # Rear takes less
+        heat_fr = speed_for_heating * decel * 0.5 * effective_brake  # Front takes more braking
+        heat_rl = speed_for_heating * decel * 0.3 * effective_brake  # Rear takes less
 
-        # Add explicit braking input
-        heat_fr += self.braking * 30.0
-        heat_rl += self.braking * 20.0
+        # Add explicit braking input only when decelerating
+        heat_fr += effective_brake * 30.0
+        heat_rl += effective_brake * 20.0
 
         # Cooling from airflow
         airflow_cooling = 0.02 * self.vehicle_speed

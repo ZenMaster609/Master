@@ -13,7 +13,7 @@ from ament_index_python.packages import get_package_share_directory
 from launch import LaunchDescription
 from launch.actions import DeclareLaunchArgument
 from launch.conditions import IfCondition
-from launch.substitutions import LaunchConfiguration, PythonExpression
+from launch.substitutions import LaunchConfiguration
 from launch_ros.actions import Node
 
 
@@ -51,30 +51,6 @@ def generate_launch_description():
     virtual_update_rate = max(virtual_rates.values()) if virtual_rates else 50.0
 
     # Declare launch arguments
-    control_mode_arg = DeclareLaunchArgument(
-        'control_mode',
-        default_value='auto',
-        description='Control mode: auto, keyboard, or none (skip control_node for manual keyboard in separate terminal)'
-    )
-
-    linear_speed_arg = DeclareLaunchArgument(
-        'linear_speed',
-        default_value='3.0',
-        description='Default linear speed for auto mode (m/s)'
-    )
-
-    angular_speed_arg = DeclareLaunchArgument(
-        'angular_speed',
-        default_value='0.5',
-        description='Default angular speed for auto mode (rad/s)'
-    )
-
-    publish_rate_arg = DeclareLaunchArgument(
-        'publish_rate',
-        default_value='1.0',
-        description='Sensor status publish rate (Hz)'
-    )
-
     enable_real_sensors_arg = DeclareLaunchArgument(
         'enable_real_sensors',
         default_value='true',
@@ -88,28 +64,8 @@ def generate_launch_description():
     )
 
     # Get launch configurations
-    control_mode = LaunchConfiguration('control_mode')
-    linear_speed = LaunchConfiguration('linear_speed')
-    angular_speed = LaunchConfiguration('angular_speed')
-    publish_rate = LaunchConfiguration('publish_rate')
     enable_real_sensors = LaunchConfiguration('enable_real_sensors')
     enable_virtual_sensors = LaunchConfiguration('enable_virtual_sensors')
-
-    # Control node (handles both keyboard and auto modes)
-    # Publishes /cmd_vel based on configured mode
-    # Skipped when control_mode='none' to allow manual keyboard control in separate terminal
-    control_node = Node(
-        package='sim_car',
-        executable='control_node',
-        name='control_node',
-        output='screen',
-        parameters=[{
-            'mode': control_mode,
-            'linear_speed': linear_speed,
-            'angular_speed': angular_speed,
-        }],
-        condition=IfCondition(PythonExpression(["'", control_mode, "' != 'none'"]))
-    )
 
     # Wheel encoder node
     wheel_encoder_node = Node(
@@ -131,6 +87,7 @@ def generate_launch_description():
         name='suspension_sensor_node',
         output='screen',
         parameters=[{
+            'mode': 'synthetic',
             'noise_stddev': 0.5,     # mm
             'bias_fl': 0.0,
             'bias_fr': 0.0,
@@ -138,6 +95,10 @@ def generate_launch_description():
             'bias_rr': 0.0,
             'publish_rate': suspension_rate,
             'dropout_probability': 0.0,
+            'static_mm': 20.0,
+            'pitch_gain': 4.0,       # mm per m/s^2
+            'roll_gain': 3.0,        # mm per m/s^2
+            'filter_tau_sec': 0.0,   # 0 disables low-pass filter
         }],
         condition=IfCondition(enable_real_sensors)
     )
@@ -185,13 +146,8 @@ def generate_launch_description():
     )
 
     return LaunchDescription([
-        control_mode_arg,
-        linear_speed_arg,
-        angular_speed_arg,
-        publish_rate_arg,
         enable_real_sensors_arg,
         enable_virtual_sensors_arg,
-        control_node,
         wheel_encoder_node,
         suspension_sensor_node,
         steering_sensor_node,

@@ -8,12 +8,8 @@ Launches:
 3. Vehicle plotter nodes (data collector, plotter, logger)
 
 Usage:
-    # Auto mode (car drives in circles) - default
+    # Launch sim + sensors + plotter
     ros2 launch vehicle_plotter bringup.launch.py
-
-    # For KEYBOARD control, run bringup WITHOUT control_node, then run control separately:
-    ros2 launch vehicle_plotter bringup.launch.py control_mode:=none
-    ros2 run sim_car control_node --ros-args -p mode:=keyboard  # in separate terminal
 
     # Headless (no Gazebo GUI, but plotter still shows):
     ros2 launch vehicle_plotter bringup.launch.py headless:=true
@@ -44,32 +40,6 @@ def generate_launch_description():
         'headless',
         default_value='false',
         description='Run Gazebo headless (no GUI)'
-    )
-
-    # Control options
-    # Use 'auto' for autonomous driving, 'none' to run keyboard control separately
-    control_mode_arg = DeclareLaunchArgument(
-        'control_mode',
-        default_value='auto',
-        description='Control mode: auto (default), or none (for keyboard control in separate terminal)'
-    )
-
-    linear_speed_arg = DeclareLaunchArgument(
-        'linear_speed',
-        default_value='0.5',
-        description='Linear speed in m/s (for auto mode)'
-    )
-
-    angular_speed_arg = DeclareLaunchArgument(
-        'angular_speed',
-        default_value='1.0',
-        description='Angular speed in rad/s (for auto mode)'
-    )
-
-    enable_ackermann_arg = DeclareLaunchArgument(
-        'enable_ackermann',
-        default_value='true',
-        description='Enable Ackermann steering control node'
     )
 
     sensor_mode_arg = DeclareLaunchArgument(
@@ -127,10 +97,6 @@ def generate_launch_description():
             PathJoinSubstitution([sim_car_share, 'launch', 'nodes.launch.py'])
         ),
         launch_arguments={
-            'control_mode': LaunchConfiguration('control_mode'),
-            'linear_speed': LaunchConfiguration('linear_speed'),
-            'angular_speed': LaunchConfiguration('angular_speed'),
-            'enable_ackermann': LaunchConfiguration('enable_ackermann'),
             'enable_real_sensors': enable_real_sensors,
             'enable_virtual_sensors': enable_virtual_sensors,
         }.items(),
@@ -155,10 +121,6 @@ def generate_launch_description():
     return LaunchDescription([
         # Arguments
         headless_arg,
-        control_mode_arg,
-        linear_speed_arg,
-        angular_speed_arg,
-        enable_ackermann_arg,
         sensor_mode_arg,
         enable_plot_arg,
         enable_log_arg,

@@ -419,6 +419,65 @@
           </item>
         </layout>
       </item>
+      <item>
+        <layout class="QHBoxLayout" name="horizontalLayout_brake" stretch="0,1,0,0">
+          <item>
+            <widget class="QLabel" name="brake_label">
+              <property name="toolTip">
+                <string>Brake command (0.0 - 1.0)</string>
+              </property>
+              <property name="text">
+                <string>Brake</string>
+              </property>
+            </widget>
+          </item>
+          <item>
+            <widget class="QSlider" name="brake_slider">
+              <property name="toolTip">
+                <string>Brake command (0.0 - 1.0)</string>
+              </property>
+              <property name="minimum">
+                <number>0</number>
+              </property>
+              <property name="maximum">
+                <number>1000</number>
+              </property>
+              <property name="singleStep">
+                <number>10</number>
+              </property>
+              <property name="pageStep">
+                <number>100</number>
+              </property>
+              <property name="orientation">
+                <enum>Qt::Horizontal</enum>
+              </property>
+              <property name="tickPosition">
+                <enum>QSlider::TicksBelow</enum>
+              </property>
+            </widget>
+          </item>
+          <item>
+            <widget class="QLabel" name="current_brake_label">
+              <property name="toolTip">
+                <string>Current brake command</string>
+              </property>
+              <property name="text">
+                <string>0.00</string>
+              </property>
+            </widget>
+          </item>
+          <item>
+            <widget class="QPushButton" name="reset_brake_push_button">
+              <property name="toolTip">
+                <string>Reset brake command to zero</string>
+              </property>
+              <property name="text">
+                <string>0</string>
+              </property>
+            </widget>
+          </item>
+        </layout>
+      </item>
     </layout>
   </widget>
   <resources/>

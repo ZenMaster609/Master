@@ -241,11 +241,11 @@ def get_all_plot_definitions() -> List[PlotDefinition]:
             color='#9467bd',  # Purple
         ),
 
-        # Wheel RPM (CAN data)
+        # Encoder RPM (matches live plot naming)
         MultiPanelPlotDefinition(
-            name="Wheel RPM",
-            filename="wheel_rpm",
-            title_template="Wheel RPM ({source})",
+            name="Encoder RPM",
+            filename="encoder_rpm",
+            title_template="Encoder RPM ({source})",
             required_columns=['encoder_fl', 'encoder_fr', 'encoder_rl', 'encoder_rr'],
             subplots=[
                 ('encoder_fl', 'Front Left', '#2ca02c'),
@@ -295,6 +295,58 @@ def get_all_plot_definitions() -> List[PlotDefinition]:
                 ('yaw', 'Yaw', '#1f77b4'),
             ],
             y_label='Yaw (rad)',
+        ),
+
+        # Virtual sensors: cooling pressure/flow
+        TimeSeriesPlotDefinition(
+            name="Cooling Pressure/Flow",
+            filename="cooling_pressure_flow",
+            title_template="Cooling Pressure/Flow ({source})",
+            required_columns=['water_pressure', 'water_flow'],
+            series=[
+                ('water_pressure', 'Pressure', '#1f77b4'),
+                ('water_flow', 'Flow', '#2ca02c'),
+            ],
+            y_label='Cooling (bar / L/min)',
+        ),
+
+        # Virtual sensors: cooling temperatures
+        TimeSeriesPlotDefinition(
+            name="Cooling Temperatures",
+            filename="cooling_temperatures",
+            title_template="Cooling Temperatures ({source})",
+            required_columns=['water_temp_in', 'water_temp_out', 'water_temp_radiator'],
+            series=[
+                ('water_temp_in', 'In', '#ff7f0e'),
+                ('water_temp_out', 'Out', '#d62728'),
+                ('water_temp_radiator', 'Radiator', '#9467bd'),
+            ],
+            y_label='Temperature (C)',
+        ),
+
+        # Virtual sensors: brake temps
+        TimeSeriesPlotDefinition(
+            name="Brake Temps",
+            filename="brake_temps",
+            title_template="Brake Temperatures ({source})",
+            required_columns=['brake_temp_fr', 'brake_temp_rl'],
+            series=[
+                ('brake_temp_fr', 'Front Right', '#d62728'),
+                ('brake_temp_rl', 'Rear Left', '#8c564b'),
+            ],
+            y_label='Temperature (C)',
+        ),
+
+        # Virtual sensors: pitot dynamic pressure
+        TimeSeriesPlotDefinition(
+            name="Pitot Dynamic Pressure",
+            filename="pitot_dynamic_pressure",
+            title_template="Pitot Dynamic Pressure ({source})",
+            required_columns=['pitot_dynamic_pressure'],
+            series=[
+                ('pitot_dynamic_pressure', 'Pitot', '#17becf'),
+            ],
+            y_label='Pressure (Pa)',
         ),
     ]
 

@@ -237,7 +237,18 @@ class EufsRaceCarModel final : public gz_sim::System,
 
   void ApplyPendingCommands(double now_sec) {
     std::lock_guard<std::mutex> lock(cmd_mutex_);
-    if (!cmd_queue_.empty() && (now_sec - cmd_queue_.front().stamp_sec) >= control_delay_sec_) {
+    if (cmd_queue_.empty()) {
+      return;
+    }
+
+    if (control_delay_sec_ <= 0.0) {
+      desired_input_ = cmd_queue_.back().input;
+      cmd_queue_.clear();
+      last_cmd_time_sec_ = now_sec;
+      return;
+    }
+
+    if ((now_sec - cmd_queue_.front().stamp_sec) >= control_delay_sec_) {
       desired_input_ = cmd_queue_.front().input;
       cmd_queue_.pop_front();
       last_cmd_time_sec_ = now_sec;

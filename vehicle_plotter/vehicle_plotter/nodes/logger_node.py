@@ -141,7 +141,8 @@ class LoggerNode(Node):
         self.get_logger().info(f'LoggerNode started, subscribed to {state_topic}')
 
         # Ensure shutdown handler runs on ROS shutdown as well
-        rclpy.on_shutdown(self.shutdown)
+        # NOTE: rclpy.on_shutdown / Node.add_on_shutdown are not available in Humble
+        rclpy.get_default_context().on_shutdown(self.shutdown)
 
     def session_callback(self, msg: RunSessionMsg) -> None:
         """Handle incoming run session message."""

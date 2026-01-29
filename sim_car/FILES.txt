@@ -17,7 +17,6 @@ sim_car/
 │
 ├── sim_car/                       # Python source code
 │   ├── __init__.py                # Package initializer (empty)
-│   ├── control_node.py            # Car control node (keyboard + auto modes)
 │   └── wheel_encoder_node.py      # Wheel encoder processing
 │
 ├── launch/                        # Launch files
@@ -51,10 +50,6 @@ setup.cfg          - Installation directories configuration
 
 Source Code:
 ------------
-control_node.py    - Publishes /cmd_vel for car movement
-                   - Supports keyboard and automated control
-                   - Configurable speeds
-
 wheel_encoder_node.py - Converts joint states to wheel RPM
                       - Publishes wheel RPM
                       - Configurable publish rate
@@ -66,7 +61,7 @@ gazebo_sim.launch.py - Starts Gazebo simulation
                      - Starts robot_state_publisher
                      - Configurable world file
 
-nodes.launch.py      - Starts control node
+nodes.launch.py      - Starts sensor nodes
                      - Starts wheel encoder node
                      - Configurable parameters
 
