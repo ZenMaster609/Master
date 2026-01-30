@@ -144,3 +144,38 @@ These topics are consumed by `vehicle_plotter` via the Gazebo adapter to build
 - Gazebo sensors and plugins: `sim_car/urdf/eufs_car.urdf.xacro`
 - Derived sensor nodes: `sim_car/sim_car/*.py`
 - Plotter adapter (topic mapping): `vehicle_plotter/vehicle_plotter/adapters/gazebo_adapter.py`
+
+---
+
+## Adding a New Sensor
+
+### 1) Decide the sensor type
+- **Gazebo-native**: add a `<sensor>` in `sim_car/urdf/eufs_car.urdf.xacro`.
+- **Derived**: create a Python node in `sim_car/sim_car/` that subscribes to existing topics and publishes a new `/sim/*` topic.
+
+### 2) Add the topic
+- **Gazebo-native**: set the sensor topic in the URDF.
+- **Derived**: publish under `/sim/...` and add the node to `sim_car/launch/nodes.launch.py`.
+
+### 3) Add config (optional)
+- Add rates/limits to `sim_car/config/sensor_config.yaml`.
+- Read them in `sim_car/launch/nodes.launch.py` and pass as node parameters.
+
+### 4) Wire into the plotter
+- Register the new topic in `vehicle_plotter/vehicle_plotter/adapters/gazebo_adapter.py`:
+  - Add to `DEFAULT_TOPICS`
+  - Add to `SENSOR_RATES` if it should be time-synchronized
+  - Create a subscription and store the last message
+  - Map the value into `VehicleState` in `compute_state()`
+- If you need a new field, add it to:
+  - `vehicle_plotter_msgs/msg/VehicleState.msg`
+  - `vehicle_plotter/vehicle_plotter/core/vehicle_state.py`
+
+### 5) Add plots (optional)
+- Add a plot in `vehicle_plotter/vehicle_plotter/plotting/plot_config.py` (`get_all_plots()`).
+
+### 6) Rebuild
+```
+cd ~/ros2_ws && colcon build --symlink-install --packages-select sim_car vehicle_plotter vehicle_plotter_msgs
+cd ~/ros2_ws && source install/setup.bash
+```
