@@ -45,24 +45,6 @@ def generate_launch_description():
         description='Enable live plotting'
     )
 
-    enable_real_plot_arg = DeclareLaunchArgument(
-        'enable_real_plot',
-        default_value='true',
-        description='Enable real sensor plot window'
-    )
-
-    enable_virtual_plot_arg = DeclareLaunchArgument(
-        'enable_virtual_plot',
-        default_value='true',
-        description='Enable virtual sensor plot window'
-    )
-
-    enable_virtual_sensors_arg = DeclareLaunchArgument(
-        'enable_virtual_sensors',
-        default_value='true',
-        description='Enable virtual sensor subscriptions (gazebo adapter)'
-    )
-
     plot_rate_arg = DeclareLaunchArgument(
         'plot_rate_hz',
         default_value='30.0',
@@ -151,52 +133,27 @@ def generate_launch_description():
             'output_rate_hz': LaunchConfiguration('output_rate_hz'),
             'gps_origin_lat': LaunchConfiguration('gps_origin_lat'),
             'gps_origin_lon': LaunchConfiguration('gps_origin_lon'),
-            'enable_virtual_sensors': LaunchConfiguration('enable_virtual_sensors'),
             'use_sim_time': False,  # Use wall clock for timers
         }],
     )
 
-    # Plotter nodes (conditional)
+    # Plotter node (conditional)
     # Use wall clock for refresh timer
-    real_plotter_node = Node(
+    plotter_node = Node(
         package='vehicle_plotter',
         executable='plotter_node',
         name='plotter',
         output='screen',
         condition=IfCondition(PythonExpression([
-            "'", LaunchConfiguration('enable_plot'), "'.lower() == 'true' and '",
-            LaunchConfiguration('enable_real_plot'), "'.lower() == 'true'"
+            "'", LaunchConfiguration('enable_plot'), "'.lower() == 'true'"
         ])),
         parameters=[{
             'backend': 'pyqtgraph',
             'update_rate_hz': LaunchConfiguration('plot_rate_hz'),
             'dark_mode': LaunchConfiguration('dark_mode'),
             'enable_gui': True,
-            'plot_layout': 'default',
+            'plot_layout': 'all',
             'window_title': 'Vehicle Plotter',
-            'save_plots_on_exit': LaunchConfiguration('save_plots_on_exit'),
-            'save_plot_data_on_exit': LaunchConfiguration('save_plot_data_on_exit'),
-            'close_plots_on_shutdown': LaunchConfiguration('close_plots'),
-            'use_sim_time': False,  # Use wall clock for timers
-        }],
-    )
-
-    virtual_plotter_node = Node(
-        package='vehicle_plotter',
-        executable='plotter_node',
-        name='virtual_plotter',
-        output='screen',
-        condition=IfCondition(PythonExpression([
-            "'", LaunchConfiguration('enable_plot'), "'.lower() == 'true' and '",
-            LaunchConfiguration('enable_virtual_plot'), "'.lower() == 'true'"
-        ])),
-        parameters=[{
-            'backend': 'pyqtgraph',
-            'update_rate_hz': LaunchConfiguration('plot_rate_hz'),
-            'dark_mode': LaunchConfiguration('dark_mode'),
-            'enable_gui': True,
-            'plot_layout': 'virtual_sensors',
-            'window_title': 'Virtual Sensors',
             'save_plots_on_exit': LaunchConfiguration('save_plots_on_exit'),
             'save_plot_data_on_exit': LaunchConfiguration('save_plot_data_on_exit'),
             'close_plots_on_shutdown': LaunchConfiguration('close_plots'),
@@ -243,9 +200,6 @@ def generate_launch_description():
         adapter_arg,
         output_rate_arg,
         enable_plot_arg,
-        enable_real_plot_arg,
-        enable_virtual_plot_arg,
-        enable_virtual_sensors_arg,
         plot_rate_arg,
         dark_mode_arg,
         save_plots_on_exit_arg,
@@ -262,8 +216,7 @@ def generate_launch_description():
         # Nodes (session_manager must start first)
         session_manager_node,
         data_collector_node,
-        real_plotter_node,
-        virtual_plotter_node,
+        plotter_node,
         logger_node,
         rosbag_controller_node,
     ])

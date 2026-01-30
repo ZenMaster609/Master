@@ -1,0 +1,23 @@
+{
+  "run_id": "sim_2026-01-29_19-59-39",
+  "adapter_type": "gazebo",
+  "originator_hostname": "alekspc",
+  "local_hostname": "alekspc",
+  "ros_domain_id": 0,
+  "start_time": "2026-01-29T19:59:40.750421",
+  "platform": {
+    "system": "Linux",
+    "release": "6.8.0-90-generic",
+    "machine": "x86_64",
+    "python_version": "3.10.12"
+  },
+  "paths": {
+    "base_path": "/home/aleks/ros2_ws/src/Master/multidata",
+    "session_path": "/home/aleks/ros2_ws/src/Master/multidata/sim_2026-01-29_19-59-39",
+    "logs_path": "/home/aleks/ros2_ws/src/Master/multidata/sim_2026-01-29_19-59-39/logs",
+    "rosbags_path": "/home/aleks/ros2_ws/src/Master/multidata/sim_2026-01-29_19-59-39/rosbags",
+    "plots_path": "/home/aleks/ros2_ws/src/Master/multidata/sim_2026-01-29_19-59-39/plots",
+    "plot_data_path": "/home/aleks/ros2_ws/src/Master/multidata/sim_2026-01-29_19-59-39/plot_data",
+    "ground_truth_path": "/home/aleks/ros2_ws/src/Master/multidata/sim_2026-01-29_19-59-39/ground_truth"
+  }
+}

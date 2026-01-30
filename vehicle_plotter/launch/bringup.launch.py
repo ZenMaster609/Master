@@ -20,7 +20,7 @@ Usage:
 
 from launch import LaunchDescription
 from launch.actions import DeclareLaunchArgument, IncludeLaunchDescription
-from launch.substitutions import LaunchConfiguration, PathJoinSubstitution, PythonExpression
+from launch.substitutions import LaunchConfiguration, PathJoinSubstitution
 from launch.launch_description_sources import PythonLaunchDescriptionSource
 from launch_ros.substitutions import FindPackageShare
 
@@ -40,12 +40,6 @@ def generate_launch_description():
         'headless',
         default_value='false',
         description='Run Gazebo headless (no GUI)'
-    )
-
-    sensor_mode_arg = DeclareLaunchArgument(
-        'sensor_mode',
-        default_value='real',
-        description='Sensor mode: real, virtual, or both'
     )
 
     # Plotter options
@@ -83,23 +77,11 @@ def generate_launch_description():
         }.items(),
     )
 
-    sensor_mode = LaunchConfiguration('sensor_mode')
-    enable_real_sensors = PythonExpression([
-        "'true' if '", sensor_mode, "' in ['real', 'both'] else 'false'"
-    ])
-    enable_virtual_sensors = PythonExpression([
-        "'true' if '", sensor_mode, "' in ['virtual', 'both'] else 'false'"
-    ])
-
     # Include sim_car nodes launch
     sim_nodes_launch = IncludeLaunchDescription(
         PythonLaunchDescriptionSource(
             PathJoinSubstitution([sim_car_share, 'launch', 'nodes.launch.py'])
         ),
-        launch_arguments={
-            'enable_real_sensors': enable_real_sensors,
-            'enable_virtual_sensors': enable_virtual_sensors,
-        }.items(),
     )
 
     # Include vehicle_plotter launch
@@ -110,8 +92,6 @@ def generate_launch_description():
         launch_arguments={
             'adapter': 'gazebo',
             'enable_plot': LaunchConfiguration('enable_plot'),
-            'enable_real_plot': enable_real_sensors,
-            'enable_virtual_plot': enable_virtual_sensors,
             'enable_log': LaunchConfiguration('enable_log'),
             'log_format': LaunchConfiguration('log_format'),
             'use_sim_time': LaunchConfiguration('use_sim_time'),
@@ -121,7 +101,6 @@ def generate_launch_description():
     return LaunchDescription([
         # Arguments
         headless_arg,
-        sensor_mode_arg,
         enable_plot_arg,
         enable_log_arg,
         log_format_arg,

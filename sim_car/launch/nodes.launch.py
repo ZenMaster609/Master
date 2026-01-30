@@ -4,16 +4,13 @@
 Launch file for control and sensor processing nodes.
 
 Includes cmd_vel control, wheel encoder, suspension sensor,
-steering sensor, and virtual sensors nodes.
+steering sensor, and virtual sensor nodes.
 """
 
 import os
 import yaml
 from ament_index_python.packages import get_package_share_directory
 from launch import LaunchDescription
-from launch.actions import DeclareLaunchArgument
-from launch.conditions import IfCondition
-from launch.substitutions import LaunchConfiguration
 from launch_ros.actions import Node
 
 
@@ -48,24 +45,6 @@ def generate_launch_description():
             sensor_config, ['sensors', 'virtual', 'pitot_dynamic_pressure', 'frequency_hz'], 50.0
         ),
     }
-    virtual_update_rate = max(virtual_rates.values()) if virtual_rates else 50.0
-
-    # Declare launch arguments
-    enable_real_sensors_arg = DeclareLaunchArgument(
-        'enable_real_sensors',
-        default_value='true',
-        description='Enable real sensor nodes (wheel/suspension/steering)'
-    )
-
-    enable_virtual_sensors_arg = DeclareLaunchArgument(
-        'enable_virtual_sensors',
-        default_value='true',
-        description='Enable virtual sensor nodes (cooling/brakes/pitot)'
-    )
-
-    # Get launch configurations
-    enable_real_sensors = LaunchConfiguration('enable_real_sensors')
-    enable_virtual_sensors = LaunchConfiguration('enable_virtual_sensors')
 
     # Wheel encoder node
     wheel_encoder_node = Node(
@@ -77,7 +56,6 @@ def generate_launch_description():
             'publish_rate': wheel_rate,
             'wheel_radius': 0.23,
         }],
-        condition=IfCondition(enable_real_sensors)
     )
 
     # Suspension sensor node
@@ -100,7 +78,6 @@ def generate_launch_description():
             'roll_gain': 3.0,        # mm per m/s^2
             'filter_tau_sec': 0.0,   # 0 disables low-pass filter
         }],
-        condition=IfCondition(enable_real_sensors)
     )
 
     # Steering angle sensor node
@@ -116,42 +93,117 @@ def generate_launch_description():
             'publish_rate': steering_rate,
             'dropout_probability': 0.0,
         }],
-        condition=IfCondition(enable_real_sensors)
     )
 
-    # Virtual sensors node (cooling, brakes, pitot)
-    virtual_sensors_node = Node(
+    # Virtual sensors nodes (cooling, brakes, pitot)
+    water_pressure_node = Node(
         package='sim_car',
-        executable='virtual_sensors_node',
-        name='virtual_sensors_node',
+        executable='water_pressure_node',
+        name='water_pressure_node',
         output='screen',
         parameters=[{
-            'publish_rate': virtual_update_rate,
-            'publish_rate_water_pressure': virtual_rates['water_pressure'],
-            'publish_rate_water_flow': virtual_rates['water_flow'],
-            'publish_rate_water_temp_in': virtual_rates['water_temp_in'],
-            'publish_rate_water_temp_out': virtual_rates['water_temp_out'],
-            'publish_rate_water_temp_radiator': virtual_rates['water_temp_radiator'],
-            'publish_rate_brake_temp_fr': virtual_rates['brake_temp_fr'],
-            'publish_rate_brake_temp_rl': virtual_rates['brake_temp_rl'],
-            'publish_rate_pitot_dynamic_pressure': virtual_rates['pitot_dynamic_pressure'],
+            'publish_rate': virtual_rates['water_pressure'],
             'ambient_temp': 25.0,
             'noise_pressure': 0.02,  # bar
+        }],
+    )
+
+    water_flow_node = Node(
+        package='sim_car',
+        executable='water_flow_node',
+        name='water_flow_node',
+        output='screen',
+        parameters=[{
+            'publish_rate': virtual_rates['water_flow'],
+            'ambient_temp': 25.0,
             'noise_flow': 0.5,       # L/min
+        }],
+    )
+
+    water_temp_in_node = Node(
+        package='sim_car',
+        executable='water_temp_in_node',
+        name='water_temp_in_node',
+        output='screen',
+        parameters=[{
+            'publish_rate': virtual_rates['water_temp_in'],
+            'ambient_temp': 25.0,
             'noise_temp': 0.3,       # Celsius
+        }],
+    )
+
+    water_temp_out_node = Node(
+        package='sim_car',
+        executable='water_temp_out_node',
+        name='water_temp_out_node',
+        output='screen',
+        parameters=[{
+            'publish_rate': virtual_rates['water_temp_out'],
+            'ambient_temp': 25.0,
+            'noise_temp': 0.3,       # Celsius
+        }],
+    )
+
+    water_temp_radiator_node = Node(
+        package='sim_car',
+        executable='water_temp_radiator_node',
+        name='water_temp_radiator_node',
+        output='screen',
+        parameters=[{
+            'publish_rate': virtual_rates['water_temp_radiator'],
+            'ambient_temp': 25.0,
+            'noise_temp': 0.3,       # Celsius
+        }],
+    )
+
+    brake_temp_fr_node = Node(
+        package='sim_car',
+        executable='brake_temp_fr_node',
+        name='brake_temp_fr_node',
+        output='screen',
+        parameters=[{
+            'publish_rate': virtual_rates['brake_temp_fr'],
+            'ambient_temp': 25.0,
             'noise_brake_temp': 1.0, # Celsius
+        }],
+    )
+
+    brake_temp_rl_node = Node(
+        package='sim_car',
+        executable='brake_temp_rl_node',
+        name='brake_temp_rl_node',
+        output='screen',
+        parameters=[{
+            'publish_rate': virtual_rates['brake_temp_rl'],
+            'ambient_temp': 25.0,
+            'noise_brake_temp': 1.0, # Celsius
+        }],
+    )
+
+    pitot_dynamic_pressure_node = Node(
+        package='sim_car',
+        executable='pitot_dynamic_pressure_node',
+        name='pitot_dynamic_pressure_node',
+        output='screen',
+        parameters=[{
+            'publish_rate': virtual_rates['pitot_dynamic_pressure'],
+            'ambient_temp': 25.0,
             'noise_pitot': 2.0,      # Pa
         }],
-        condition=IfCondition(enable_virtual_sensors)
     )
 
     return LaunchDescription([
-        enable_real_sensors_arg,
-        enable_virtual_sensors_arg,
         wheel_encoder_node,
         suspension_sensor_node,
         steering_sensor_node,
-        virtual_sensors_node,
+        water_pressure_node,
+        water_flow_node,
+        water_temp_in_node,
+        water_temp_out_node,
+        water_temp_radiator_node,
+        brake_temp_fr_node,
+        brake_temp_rl_node,
+        pitot_dynamic_pressure_node,
     ])
 
 

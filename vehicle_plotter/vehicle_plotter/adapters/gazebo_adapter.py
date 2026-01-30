@@ -60,17 +60,6 @@ class GazeboAdapter(SensorAdapterInterface):
         'pitot_pressure': '/sim/pitot/dynamic_pressure',
     }
 
-    VIRTUAL_TOPIC_KEYS = {
-        'water_pressure',
-        'water_flow',
-        'water_temp_in',
-        'water_temp_out',
-        'water_temp_radiator',
-        'brake_temp_fr',
-        'brake_temp_rl',
-        'pitot_pressure',
-    }
-
     # Sensor rates (Hz) - used for time sync configuration
     SENSOR_RATES = {
         'imu': 100.0,
@@ -96,7 +85,6 @@ class GazeboAdapter(SensorAdapterInterface):
         synchronizer: TimeSynchronizer,
         topics: Optional[Dict[str, str]] = None,
         auto_set_gps_origin: bool = True,
-        enable_virtual_sensors: bool = True,
     ):
         """
         Initialize the Gazebo adapter.
@@ -111,7 +99,6 @@ class GazeboAdapter(SensorAdapterInterface):
 
         self.topics = {**self.DEFAULT_TOPICS, **(topics or {})}
         self.auto_set_gps_origin = auto_set_gps_origin
-        self.enable_virtual_sensors = enable_virtual_sensors
         self._gps_origin_set = False
         self.wheel_radius = self.node.declare_parameter('wheel_radius', 0.23).value
 
@@ -217,65 +204,62 @@ class GazeboAdapter(SensorAdapterInterface):
             SENSOR_QOS,
         )
 
-        if self.enable_virtual_sensors:
-            # Virtual sensors - Cooling
-            self._water_pressure_sub = self.node.create_subscription(
-                Float32,
-                self.topics['water_pressure'],
-                self._water_pressure_callback,
-                SENSOR_QOS,
-            )
-            self._water_flow_sub = self.node.create_subscription(
-                Float32,
-                self.topics['water_flow'],
-                self._water_flow_callback,
-                SENSOR_QOS,
-            )
-            self._water_temp_in_sub = self.node.create_subscription(
-                Float32,
-                self.topics['water_temp_in'],
-                self._water_temp_in_callback,
-                SENSOR_QOS,
-            )
-            self._water_temp_out_sub = self.node.create_subscription(
-                Float32,
-                self.topics['water_temp_out'],
-                self._water_temp_out_callback,
-                SENSOR_QOS,
-            )
-            self._water_temp_radiator_sub = self.node.create_subscription(
-                Float32,
-                self.topics['water_temp_radiator'],
-                self._water_temp_radiator_callback,
-                SENSOR_QOS,
-            )
+        # Virtual sensors - Cooling
+        self._water_pressure_sub = self.node.create_subscription(
+            Float32,
+            self.topics['water_pressure'],
+            self._water_pressure_callback,
+            SENSOR_QOS,
+        )
+        self._water_flow_sub = self.node.create_subscription(
+            Float32,
+            self.topics['water_flow'],
+            self._water_flow_callback,
+            SENSOR_QOS,
+        )
+        self._water_temp_in_sub = self.node.create_subscription(
+            Float32,
+            self.topics['water_temp_in'],
+            self._water_temp_in_callback,
+            SENSOR_QOS,
+        )
+        self._water_temp_out_sub = self.node.create_subscription(
+            Float32,
+            self.topics['water_temp_out'],
+            self._water_temp_out_callback,
+            SENSOR_QOS,
+        )
+        self._water_temp_radiator_sub = self.node.create_subscription(
+            Float32,
+            self.topics['water_temp_radiator'],
+            self._water_temp_radiator_callback,
+            SENSOR_QOS,
+        )
 
-            # Virtual sensors - Brakes
-            self._brake_temp_fr_sub = self.node.create_subscription(
-                Float32,
-                self.topics['brake_temp_fr'],
-                self._brake_temp_fr_callback,
-                SENSOR_QOS,
-            )
-            self._brake_temp_rl_sub = self.node.create_subscription(
-                Float32,
-                self.topics['brake_temp_rl'],
-                self._brake_temp_rl_callback,
-                SENSOR_QOS,
-            )
+        # Virtual sensors - Brakes
+        self._brake_temp_fr_sub = self.node.create_subscription(
+            Float32,
+            self.topics['brake_temp_fr'],
+            self._brake_temp_fr_callback,
+            SENSOR_QOS,
+        )
+        self._brake_temp_rl_sub = self.node.create_subscription(
+            Float32,
+            self.topics['brake_temp_rl'],
+            self._brake_temp_rl_callback,
+            SENSOR_QOS,
+        )
 
-            # Virtual sensors - Pitot
-            self._pitot_pressure_sub = self.node.create_subscription(
-                Float32,
-                self.topics['pitot_pressure'],
-                self._pitot_pressure_callback,
-                SENSOR_QOS,
-            )
+        # Virtual sensors - Pitot
+        self._pitot_pressure_sub = self.node.create_subscription(
+            Float32,
+            self.topics['pitot_pressure'],
+            self._pitot_pressure_callback,
+            SENSOR_QOS,
+        )
 
         self.log_info("Subscribed to Gazebo topics:")
         for name, topic in self.topics.items():
-            if not self.enable_virtual_sensors and name in self.VIRTUAL_TOPIC_KEYS:
-                continue
             self.log_info(f"  {name}: {topic}")
 
     def _get_timestamp(self, header) -> float:

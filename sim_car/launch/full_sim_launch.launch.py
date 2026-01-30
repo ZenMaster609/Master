@@ -12,7 +12,7 @@ from launch import LaunchDescription
 from launch.actions import DeclareLaunchArgument, IncludeLaunchDescription
 from launch.conditions import IfCondition
 from launch.launch_description_sources import PythonLaunchDescriptionSource
-from launch.substitutions import LaunchConfiguration, PathJoinSubstitution, PythonExpression
+from launch.substitutions import LaunchConfiguration, PathJoinSubstitution
 from launch_ros.actions import Node
 from launch_ros.substitutions import FindPackageShare
 from ament_index_python.packages import get_package_share_directory
@@ -39,12 +39,6 @@ def generate_launch_description():
         'world',
         default_value=PathJoinSubstitution([sim_car_share, 'worlds', 'small_track.world']),
         description='Full path to world file to load'
-    )
-
-    sensor_mode_arg = DeclareLaunchArgument(
-        'sensor_mode',
-        default_value='real',
-        description='Sensor mode: real, virtual, or both'
     )
 
     plotting_arg = DeclareLaunchArgument(
@@ -95,23 +89,12 @@ def generate_launch_description():
         }.items(),
     )
 
-    sensor_mode = LaunchConfiguration('sensor_mode')
     enable_steering_gui = LaunchConfiguration('steering')
-    enable_real_sensors = PythonExpression([
-        "'true' if '", sensor_mode, "' in ['real', 'both'] else 'false'"
-    ])
-    enable_virtual_sensors = PythonExpression([
-        "'true' if '", sensor_mode, "' in ['virtual', 'both'] else 'false'"
-    ])
 
     sim_nodes_launch = IncludeLaunchDescription(
         PythonLaunchDescriptionSource(
             PathJoinSubstitution([sim_car_share, 'launch', 'nodes.launch.py'])
         ),
-        launch_arguments={
-            'enable_real_sensors': enable_real_sensors,
-            'enable_virtual_sensors': enable_virtual_sensors,
-        }.items(),
     )
 
     plotter_launch = IncludeLaunchDescription(
@@ -121,9 +104,6 @@ def generate_launch_description():
         launch_arguments={
             'adapter': 'gazebo',
             'enable_plot': LaunchConfiguration('plotting'),
-            'enable_real_plot': enable_real_sensors,
-            'enable_virtual_plot': enable_virtual_sensors,
-            'enable_virtual_sensors': enable_virtual_sensors,
             'enable_log': LaunchConfiguration('logging'),
             'enable_rosbag': LaunchConfiguration('rosbagging'),
             'use_sim_time': LaunchConfiguration('use_sim_time'),
@@ -133,8 +113,9 @@ def generate_launch_description():
 
     steering_gui_node = Node(
         name='eufs_robot_steering_gui',
-        package='eufs_rqt',
+        package='steering_gui',
         executable='eufs_robot_steering_gui',
+        arguments=['--force-discover'],
         output='screen',
         condition=IfCondition(LaunchConfiguration('steering'))
     )
@@ -162,7 +143,6 @@ def generate_launch_description():
         headless_arg,
         update_rate_arg,
         world_arg,
-        sensor_mode_arg,
         plotting_arg,
         logging_arg,
         close_plots_on_shutdown_arg,

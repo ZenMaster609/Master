@@ -20,7 +20,12 @@ from ..core.vehicle_state import VehicleState
 from ..core.run_session import RunSession
 from ..core.qos_profiles import PLOTTER_QOS, RELIABLE_SENSOR_QOS
 from ..plotting.plot_manager import PlotManager
-from ..plotting.plot_config import get_default_plots, get_virtual_sensor_plots, PlotLayoutConfig
+from ..plotting.plot_config import (
+    get_default_plots,
+    get_virtual_sensor_plots,
+    get_all_plots,
+    PlotLayoutConfig,
+)
 
 
 class PlotterNode(Node):
@@ -53,7 +58,7 @@ class PlotterNode(Node):
         self.declare_parameter('backend', 'pyqtgraph')
         self.declare_parameter('update_rate_hz', 30.0)
         self.declare_parameter('window_title', 'Vehicle Plotter')
-        self.declare_parameter('plot_layout', 'default')
+        self.declare_parameter('plot_layout', 'all')
         self.declare_parameter('dark_mode', True)
         self.declare_parameter('enable_gui', True)
         self.declare_parameter('state_topic', 'vehicle_plotter/state')
@@ -96,12 +101,15 @@ class PlotterNode(Node):
         # Create plot configuration
         if plot_layout == 'virtual_sensors':
             layout_config = get_virtual_sensor_plots()
-        else:
-            if plot_layout != 'default':
-                self.get_logger().warn(
-                    f"Unknown plot_layout '{plot_layout}', using default"
-                )
+        elif plot_layout == 'default':
             layout_config = get_default_plots()
+        elif plot_layout == 'all':
+            layout_config = get_all_plots()
+        else:
+            self.get_logger().warn(
+                f"Unknown plot_layout '{plot_layout}', using all"
+            )
+            layout_config = get_all_plots()
         layout_config.window_title = window_title
         layout_config.dark_mode = dark_mode
         layout_config.update_rate_hz = update_rate

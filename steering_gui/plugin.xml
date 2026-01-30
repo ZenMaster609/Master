@@ -1,0 +1,17 @@
+<library path="src">
+  <class name="eufs_robot_steering_gui" type="steering_gui.EUFSRobotSteeringGUI.EUFSRobotSteeringGUI" base_class_type="rqt_gui_py::Plugin">
+    <description>
+      A GUI to control steer the car using AckermannDriveStamped messages
+    </description>
+    <qtgui>
+      <group>
+        <label>EUFS</label>
+        <icon type="theme">folder</icon>
+        <statustip>Plugins related to EUFS</statustip>
+      </group>
+      <label>EUFS Robot Steering GUI</label>
+      <icon type="theme">utilities-system-monitor</icon>
+      <statustip>Controls the car using AckermannDriveStamped messages</statustip>
+    </qtgui>
+  </class>
+</library>
