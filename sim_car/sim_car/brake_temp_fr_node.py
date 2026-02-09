@@ -7,7 +7,7 @@ class BrakeTempFrNode(VirtualSensorNodeBase):
     def __init__(self):
         super().__init__(
             node_name='brake_temp_fr_node',
-            publish_topic='/sim/brakes/temp_fr',
+            publish_topic='/sim/raw/brakes/temp_fr',
             noise_param='noise_brake_temp',
             noise_default=1.0,
             needs_brake_cmd=True,

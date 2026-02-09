@@ -1,7 +1,7 @@
 """
 Suspension Sensor Node for Formula Student Car.
 
-Reads suspension joint positions from /sim/joint_states and publishes
+Reads suspension joint positions from /sim/raw/joint_states and publishes
 them as displacement values in millimeters with configurable noise and bias.
 """
 
@@ -11,6 +11,8 @@ from rclpy.node import Node
 from nav_msgs.msg import Odometry
 from sensor_msgs.msg import JointState
 from std_msgs.msg import Float32MultiArray
+
+from .topic_utils import apply_topic_prefix
 
 
 class SuspensionSensorNode(Node):
@@ -31,11 +33,11 @@ class SuspensionSensorNode(Node):
         filter_tau_sec (float): Low-pass filter time constant, 0 disables
 
     Subscribes:
-        /sim/joint_states (sensor_msgs/JointState)
-        /sim/odom (nav_msgs/Odometry) [synthetic mode]
+        /sim/raw/joint_states (sensor_msgs/JointState)
+        /sim/raw/odom (nav_msgs/Odometry) [synthetic mode]
 
     Publishes:
-        /sim/suspension (std_msgs/Float32MultiArray) - [FL, FR, RL, RR] in mm
+        /sim/raw/suspension (std_msgs/Float32MultiArray) - [FL, FR, RL, RR] in mm
     """
 
     # Joint names in the URDF
@@ -62,6 +64,7 @@ class SuspensionSensorNode(Node):
         self.declare_parameter('pitch_gain', 4.0)  # mm per m/s^2
         self.declare_parameter('roll_gain', 3.0)  # mm per m/s^2
         self.declare_parameter('filter_tau_sec', 0.0)
+        self.declare_parameter('topic_prefix', '/sim/raw')
 
         # Get parameters
         self.mode = self.get_parameter('mode').value
@@ -78,6 +81,7 @@ class SuspensionSensorNode(Node):
         self.pitch_gain = float(self.get_parameter('pitch_gain').value)
         self.roll_gain = float(self.get_parameter('roll_gain').value)
         self.filter_tau_sec = float(self.get_parameter('filter_tau_sec').value)
+        self.topic_prefix = str(self.get_parameter('topic_prefix').value)
 
         # Store latest joint positions (meters, from Gazebo)
         self.suspension_positions = [0.0, 0.0, 0.0, 0.0]  # FL, FR, RL, RR
@@ -88,16 +92,19 @@ class SuspensionSensorNode(Node):
         self._filtered_mm = None
 
         # Publisher
+        suspension_topic = apply_topic_prefix('/sim/raw/suspension', self.topic_prefix)
         self.suspension_pub = self.create_publisher(
-            Float32MultiArray, '/sim/suspension', 10)
+            Float32MultiArray, suspension_topic, 10)
 
         # Subscriber to joint states
+        joint_states_topic = apply_topic_prefix('/sim/raw/joint_states', self.topic_prefix)
         self.joint_state_sub = self.create_subscription(
-            JointState, '/sim/joint_states', self.joint_state_callback, 10)
+            JointState, joint_states_topic, self.joint_state_callback, 10)
 
         # Subscriber to odometry (synthetic mode)
+        odom_topic = apply_topic_prefix('/sim/raw/odom', self.topic_prefix)
         self.odom_sub = self.create_subscription(
-            Odometry, '/sim/odom', self.odom_callback, 10)
+            Odometry, odom_topic, self.odom_callback, 10)
 
         # Timer for publishing at fixed rate
         timer_period = 1.0 / self.publish_rate

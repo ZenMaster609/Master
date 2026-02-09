@@ -2,7 +2,7 @@
 
 """
 Wheel encoder node for the simulated car.
-Subscribes to wheel joint states and publishes wheel RPM.
+Subscribes to wheel joint states and publishes wheel RPM and speed.
 """
 
 import math
@@ -10,6 +10,8 @@ import rclpy
 from rclpy.node import Node
 from sensor_msgs.msg import JointState
 from std_msgs.msg import Float32MultiArray
+
+from .topic_utils import apply_topic_prefix
 
 
 class WheelEncoderNode(Node):
@@ -20,41 +22,53 @@ class WheelEncoderNode(Node):
         self.declare_parameter('publish_rate', 50.0)  # Hz
         self.declare_parameter('publish_rpm', True)
         self.declare_parameter('publish_angle_accum', True)
+        self.declare_parameter('publish_speed_mm_s', True)
         self.declare_parameter('wheel_radius', 0.23)  # meters
         self.declare_parameter('min_dt', 1e-4)  # seconds
         self.declare_parameter('min_window_sec', 0.04)  # seconds
         self.declare_parameter('min_delta', 1e-4)  # radians
+        self.declare_parameter('topic_prefix', '/sim/raw')
 
         self.publish_rate = self.get_parameter('publish_rate').value
         self.publish_rpm = self.get_parameter('publish_rpm').value
         self.publish_angle_accum = self.get_parameter('publish_angle_accum').value
+        self.publish_speed_mm_s = self.get_parameter('publish_speed_mm_s').value
         self.wheel_radius = self.get_parameter('wheel_radius').value
         self.min_dt = self.get_parameter('min_dt').value
         self.min_window_sec = self.get_parameter('min_window_sec').value
         self.min_delta = self.get_parameter('min_delta').value
+        self.topic_prefix = str(self.get_parameter('topic_prefix').value)
 
         # Subscribe to joint states from Gazebo (via ros_gz_bridge)
-        # Uses /sim/ namespace for all simulation topics
+        # Uses /sim/raw/ namespace for all raw simulation topics
+        joint_states_topic = apply_topic_prefix('/sim/raw/joint_states', self.topic_prefix)
         self.joint_state_sub = self.create_subscription(
             JointState,
-            '/sim/joint_states',
+            joint_states_topic,
             self.joint_state_callback,
             10
         )
 
-        # Publisher for wheel RPM under /sim/ namespace
+        # Publisher for wheel RPM under /sim/raw/ namespace
         self.encoder_rpm_pub = None
         if self.publish_rpm:
             self.encoder_rpm_pub = self.create_publisher(
                 Float32MultiArray,
-                '/sim/wheel_encoder/rpm',
+                apply_topic_prefix('/sim/raw/wheel_encoder/rpm', self.topic_prefix),
                 10
             )
         self.encoder_angle_pub = None
         if self.publish_angle_accum:
             self.encoder_angle_pub = self.create_publisher(
                 Float32MultiArray,
-                '/sim/wheel_encoder/angle_accum',
+                apply_topic_prefix('/sim/raw/wheel_encoder/angle_accum', self.topic_prefix),
+                10
+            )
+        self.encoder_speed_pub = None
+        if self.publish_speed_mm_s:
+            self.encoder_speed_pub = self.create_publisher(
+                Float32MultiArray,
+                apply_topic_prefix('/sim/raw/wheel_encoder/speed_mm_s', self.topic_prefix),
                 10
             )
 
@@ -86,9 +100,18 @@ class WheelEncoderNode(Node):
         self.get_logger().info('Wheel encoder node started')
         self.get_logger().info(f'Publishing at {self.publish_rate} Hz')
         if self.publish_rpm:
-            self.get_logger().info('Publishing wheel RPM on /sim/wheel_encoder/rpm')
+            rpm_topic = apply_topic_prefix('/sim/raw/wheel_encoder/rpm', self.topic_prefix)
+            self.get_logger().info(f'Publishing wheel RPM on {rpm_topic}')
         if self.publish_angle_accum:
-            self.get_logger().info('Publishing wheel angle accum on /sim/wheel_encoder/angle_accum')
+            angle_topic = apply_topic_prefix('/sim/raw/wheel_encoder/angle_accum', self.topic_prefix)
+            self.get_logger().info(f'Publishing wheel angle accum on {angle_topic}')
+        if self.publish_speed_mm_s:
+            speed_topic = apply_topic_prefix('/sim/raw/wheel_encoder/speed_mm_s', self.topic_prefix)
+            self.get_logger().info(f'Publishing wheel speeds on {speed_topic}')
+
+    def _rpm_to_mm_s(self, rpm: float) -> float:
+        """Convert wheel RPM to linear speed in mm/s."""
+        return rpm * self.wheel_radius * 2.0 * math.pi / 60.0 * 1000.0
 
     def _get_msg_time(self, msg: JointState) -> float:
         if msg.header.stamp.sec != 0 or msg.header.stamp.nanosec != 0:
@@ -134,6 +157,7 @@ class WheelEncoderNode(Node):
 
         wheel_rpm = []
         wheel_angle_accum = []
+        wheel_speed_mm_s = []
         for idx_name, wheel_name in enumerate(self.wheel_names):
             accum_time = self._time_accum[wheel_name]
             angle_accum = self._angle_accum[wheel_name]
@@ -146,6 +170,7 @@ class WheelEncoderNode(Node):
                 rpm = self._last_rpm[idx_name]
             wheel_rpm.append(rpm)
             wheel_angle_accum.append(angle_accum)
+            wheel_speed_mm_s.append(self._rpm_to_mm_s(rpm))
         self._last_rpm = wheel_rpm
 
         if self.encoder_rpm_pub is not None:
@@ -156,6 +181,10 @@ class WheelEncoderNode(Node):
             angle_msg = Float32MultiArray()
             angle_msg.data = wheel_angle_accum
             self.encoder_angle_pub.publish(angle_msg)
+        if self.encoder_speed_pub is not None:
+            speed_msg = Float32MultiArray()
+            speed_msg.data = wheel_speed_mm_s
+            self.encoder_speed_pub.publish(speed_msg)
 
     def status_callback(self):
         """Periodic status update"""

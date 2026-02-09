@@ -154,6 +154,10 @@ class CANAdapter(SensorAdapterInterface):
         self.synchronizer.add_sample('steering_angle', timestamp, msg)
         self._last_steering_angle = msg
 
+    def _rpm_to_mm_s(self, rpm: float) -> float:
+        """Convert wheel RPM to linear speed in mm/s."""
+        return rpm * self.wheel_radius * 2.0 * math.pi / 60.0 * 1000.0
+
     def compute_state(
         self,
         synced_data: Dict[str, Any],
@@ -176,6 +180,7 @@ class CANAdapter(SensorAdapterInterface):
         wheel_velocities: Optional[Float32MultiArray] = synced_data.get('wheel_velocities')
         if wheel_velocities is not None and len(wheel_velocities.data) >= 4:
             state.encoder_velocities = list(wheel_velocities.data[:4])  # [FL, FR, RL, RR] RPM
+            state.encoder_speeds_mm_s = [self._rpm_to_mm_s(rpm) for rpm in state.encoder_velocities]
 
             # Compute average speed from wheel RPM
             if self.wheel_radius > 0.0:

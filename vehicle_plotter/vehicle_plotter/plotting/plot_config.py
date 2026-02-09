@@ -118,7 +118,7 @@ def get_default_plots() -> PlotLayoutConfig:
     import math
 
     return PlotLayoutConfig(
-        rows=3,
+        rows=4,
         cols=2,
         window_size=(1200, 1000),
         plots=[
@@ -183,7 +183,7 @@ def get_default_plots() -> PlotLayoutConfig:
                 buffer_size=1000,
             ),
 
-            # Bottom row: Suspension travel vs time
+            # Row 2: Suspension travel vs time
             PlotConfig(
                 name="Suspension",
                 plot_type="timeseries",
@@ -200,6 +200,21 @@ def get_default_plots() -> PlotLayoutConfig:
             ),
 
             PlotConfig(
+                name="Wheel Speed (mm/s)",
+                plot_type="timeseries",
+                x_axis_type=XAxisType.TIME,
+                series=[
+                    SeriesConfig(name="FL", variable="encoder_speeds_mm_s[0]", color="#2ca02c"),
+                    SeriesConfig(name="FR", variable="encoder_speeds_mm_s[1]", color="#d62728"),
+                    SeriesConfig(name="RL", variable="encoder_speeds_mm_s[2]", color="#9467bd"),
+                    SeriesConfig(name="RR", variable="encoder_speeds_mm_s[3]", color="#8c564b"),
+                ],
+                y_axis=AxisConfig(label="Wheel Speed", unit="mm/s"),
+                row=2, col=1,
+                buffer_size=1000,
+            ),
+
+            PlotConfig(
                 name="Encoder Angle Accum",
                 plot_type="timeseries",
                 x_axis_type=XAxisType.TIME,
@@ -210,7 +225,7 @@ def get_default_plots() -> PlotLayoutConfig:
                     SeriesConfig(name="RR", variable="encoder_angle_accum[3]", color="#8c564b"),
                 ],
                 y_axis=AxisConfig(label="Angle Accum", unit="rad"),
-                row=2, col=1,
+                row=3, col=0,
                 buffer_size=1000,
             ),
         ],
@@ -338,6 +353,20 @@ def get_all_plots() -> PlotLayoutConfig:
                 ],
                 y_axis=AxisConfig(label="Wheel RPM", unit="RPM"),
                 row=1, col=0,
+                buffer_size=1000,
+            ),
+            PlotConfig(
+                name="Wheel Speed (mm/s)",
+                plot_type="timeseries",
+                x_axis_type=XAxisType.TIME,
+                series=[
+                    SeriesConfig(name="FL", variable="encoder_speeds_mm_s[0]", color="#2ca02c"),
+                    SeriesConfig(name="FR", variable="encoder_speeds_mm_s[1]", color="#d62728"),
+                    SeriesConfig(name="RL", variable="encoder_speeds_mm_s[2]", color="#9467bd"),
+                    SeriesConfig(name="RR", variable="encoder_speeds_mm_s[3]", color="#8c564b"),
+                ],
+                y_axis=AxisConfig(label="Wheel Speed", unit="mm/s"),
+                row=3, col=1,
                 buffer_size=1000,
             ),
             PlotConfig(

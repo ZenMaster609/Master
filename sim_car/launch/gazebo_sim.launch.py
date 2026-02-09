@@ -27,6 +27,7 @@ def generate_launch_description():
     world = LaunchConfiguration('world', default=world_file)
     headless = LaunchConfiguration('headless', default='false')
     update_rate_hz = LaunchConfiguration('update_rate_hz', default='100.0')
+    topic_prefix = LaunchConfiguration('topic_prefix', default='/sim/raw')
 
     resource_path = os.path.join(pkg_sim_car)
     resource_paths = [
@@ -60,6 +61,11 @@ def generate_launch_description():
             default_value='100.0',
             description='Dynamics + joint state update rate (Hz)'
         ),
+        DeclareLaunchArgument(
+            'topic_prefix',
+            default_value='/sim/raw',
+            description='Topic prefix for sim sensors (/sim or /sim/raw)'
+        ),
         OpaqueFunction(function=_launch_simulation),
     ])
 
@@ -78,12 +84,15 @@ def _launch_simulation(context, *args, **kwargs):
 
     world_path = LaunchConfiguration('world').perform(context)
     urdf_path = os.path.join(pkg_sim_car, 'urdf', 'eufs_car.urdf.xacro')
+    topic_prefix = LaunchConfiguration('topic_prefix').perform(context)
 
     updated_world = _write_updated_world(world_path, max_step_size)
     eufs_config_path = os.path.join(pkg_sim_car, 'config', 'eufs_config.yaml')
     update_rate_value = float(LaunchConfiguration('update_rate_hz').perform(context))
     updated_eufs_config = _write_updated_eufs_config(eufs_config_path, update_rate_value)
-    robot_desc = _build_robot_description(urdf_path, imu_rate, gnss_rate, updated_eufs_config)
+    robot_desc = _build_robot_description(
+        urdf_path, imu_rate, gnss_rate, updated_eufs_config, topic_prefix
+    )
 
     use_sim_time = LaunchConfiguration('use_sim_time')
     headless = LaunchConfiguration('headless')
@@ -139,10 +148,10 @@ def _launch_simulation(context, *args, **kwargs):
         package='ros_gz_bridge',
         executable='parameter_bridge',
         arguments=[
-            '/sim/odom@nav_msgs/msg/Odometry[gz.msgs.Odometry',
-            '/sim/imu@sensor_msgs/msg/Imu[gz.msgs.IMU',
-            '/sim/navsat@sensor_msgs/msg/NavSatFix[gz.msgs.NavSat',
-            '/sim/joint_states@sensor_msgs/msg/JointState[gz.msgs.Model',
+            f'{topic_prefix}/odom@nav_msgs/msg/Odometry[gz.msgs.Odometry',
+            f'{topic_prefix}/imu@sensor_msgs/msg/Imu[gz.msgs.IMU',
+            f'{topic_prefix}/navsat@sensor_msgs/msg/NavSatFix[gz.msgs.NavSat',
+            f'{topic_prefix}/joint_states@sensor_msgs/msg/JointState[gz.msgs.Model',
             '/clock@rosgraph_msgs/msg/Clock[gz.msgs.Clock',
         ],
         output='screen',
@@ -217,8 +226,8 @@ def _write_updated_eufs_config(config_path, update_rate_hz):
         return tmp.name
 
 
-def _build_robot_description(urdf_path, imu_rate, gnss_rate, eufs_config_path):
-    robot_xml = _load_robot_xml(urdf_path, eufs_config_path)
+def _build_robot_description(urdf_path, imu_rate, gnss_rate, eufs_config_path, topic_prefix):
+    robot_xml = _load_robot_xml(urdf_path, eufs_config_path, topic_prefix)
     try:
         root = ET.fromstring(robot_xml)
     except ET.ParseError:
@@ -246,15 +255,20 @@ def _build_robot_description(urdf_path, imu_rate, gnss_rate, eufs_config_path):
     return ET.tostring(root, encoding='unicode')
 
 
-def _load_robot_xml(urdf_path, eufs_config_path):
+def _load_robot_xml(urdf_path, eufs_config_path, topic_prefix):
     if urdf_path.endswith('.xacro'):
-        return _run_xacro(urdf_path, eufs_config_path)
+        return _run_xacro(urdf_path, eufs_config_path, topic_prefix)
     with open(urdf_path, 'r') as urdf_file:
         return urdf_file.read()
 
 
-def _run_xacro(urdf_path, eufs_config_path):
-    cmd = ['xacro', urdf_path, f'config_file:={eufs_config_path}']
+def _run_xacro(urdf_path, eufs_config_path, topic_prefix):
+    cmd = [
+        'xacro',
+        urdf_path,
+        f'config_file:={eufs_config_path}',
+        f'topic_prefix:={topic_prefix}',
+    ]
     result = subprocess.run(cmd, capture_output=True, text=True, check=False)
     if result.returncode != 0:
         raise RuntimeError(result.stderr.strip())

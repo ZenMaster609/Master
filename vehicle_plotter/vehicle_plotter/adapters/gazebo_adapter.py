@@ -34,6 +34,7 @@ class GazeboAdapter(SensorAdapterInterface):
     - /gps/fix (sensor_msgs/NavSatFix) - GPS data at ~5Hz
     - /odom (nav_msgs/Odometry) - Odometry at ~50Hz
     - /wheel_encoder/rpm (std_msgs/Float32MultiArray) - Wheel speeds in RPM
+    - /wheel_encoder/speed_mm_s (std_msgs/Float32MultiArray) - Wheel speeds in mm/s
     - /wheel_encoder/angle_accum (std_msgs/Float32MultiArray) - Angle accumulation per wheel (rad)
 
     Topic names are configurable via ROS parameters.
@@ -46,6 +47,7 @@ class GazeboAdapter(SensorAdapterInterface):
         'gps': '/sim/navsat',                           # From ros_gz_bridge
         'odom': '/sim/odom',                            # From ros_gz_bridge
         'encoder_velocities': '/sim/wheel_encoder/rpm',  # From wheel_encoder_node
+        'encoder_speeds_mm_s': '/sim/wheel_encoder/speed_mm_s',  # From wheel_encoder_node
         'encoder_angle_accum': '/sim/wheel_encoder/angle_accum',  # From wheel_encoder_node
         'suspension': '/sim/suspension',                # From suspension_sensor_node
         'steering_angle': '/sim/steering_angle',        # From steering_sensor_node
@@ -66,6 +68,7 @@ class GazeboAdapter(SensorAdapterInterface):
         'gps': 5.0,
         'odom': 50.0,
         'encoder_velocities': 50.0,
+        'encoder_speeds_mm_s': 50.0,
         'encoder_angle_accum': 50.0,
         'suspension': 100.0,
         'steering_angle': 100.0,
@@ -107,6 +110,7 @@ class GazeboAdapter(SensorAdapterInterface):
         self._last_gps: Optional[NavSatFix] = None
         self._last_odom: Optional[Odometry] = None
         self._last_encoder_velocities: Optional[Float32MultiArray] = None
+        self._last_encoder_speeds_mm_s: Optional[Float32MultiArray] = None
         self._last_encoder_angle_accum: Optional[Float32MultiArray] = None
         self._last_suspension: Optional[Float32MultiArray] = None
         self._last_steering_angle: Optional[Float32] = None
@@ -151,6 +155,12 @@ class GazeboAdapter(SensorAdapterInterface):
             required=False,
             interpolate=False,
         )
+        self.synchronizer.add_sensor(
+            'encoder_speeds_mm_s',
+            rate_hz=self.SENSOR_RATES['encoder_speeds_mm_s'],
+            required=False,
+            interpolate=False,
+        )
 
         # Create subscriptions
         self._imu_sub = self.node.create_subscription(
@@ -178,6 +188,13 @@ class GazeboAdapter(SensorAdapterInterface):
             Float32MultiArray,
             self.topics['encoder_velocities'],
             self._encoder_velocities_callback,
+            SENSOR_QOS,
+        )
+
+        self._encoder_speeds_mm_s_sub = self.node.create_subscription(
+            Float32MultiArray,
+            self.topics['encoder_speeds_mm_s'],
+            self._encoder_speeds_mm_s_callback,
             SENSOR_QOS,
         )
 
@@ -310,6 +327,15 @@ class GazeboAdapter(SensorAdapterInterface):
         """Encoder angle accumulation callback."""
         self._last_encoder_angle_accum = msg
 
+    def _encoder_speeds_mm_s_callback(self, msg: Float32MultiArray) -> None:
+        """Encoder linear speed callback."""
+        if self._last_odom is not None:
+            timestamp = self._get_timestamp(self._last_odom.header)
+        else:
+            timestamp = 0.0
+        self.synchronizer.add_sample('encoder_speeds_mm_s', timestamp, msg)
+        self._last_encoder_speeds_mm_s = msg
+
     def _suspension_callback(self, msg: Float32MultiArray) -> None:
         """Suspension displacement callback."""
         self._last_suspension = msg
@@ -407,6 +433,12 @@ class GazeboAdapter(SensorAdapterInterface):
         if encoder_velocities is not None and len(encoder_velocities.data) >= 4:
             state.encoder_velocities = list(encoder_velocities.data[:4])
 
+        encoder_speeds_mm_s: Optional[Float32MultiArray] = synced_data.get('encoder_speeds_mm_s')
+        if encoder_speeds_mm_s is not None and len(encoder_speeds_mm_s.data) >= 4:
+            state.encoder_speeds_mm_s = list(encoder_speeds_mm_s.data[:4])
+        elif self._last_encoder_speeds_mm_s is not None and len(self._last_encoder_speeds_mm_s.data) >= 4:
+            state.encoder_speeds_mm_s = list(self._last_encoder_speeds_mm_s.data[:4])
+
         if self._last_encoder_angle_accum is not None and len(self._last_encoder_angle_accum.data) >= 4:
             state.encoder_angle_accum = list(self._last_encoder_angle_accum.data[:4])
 
@@ -465,6 +497,7 @@ class GazeboAdapter(SensorAdapterInterface):
             'gps': self._last_gps,
             'odom': self._last_odom,
             'encoder_velocities': self._last_encoder_velocities,
+            'encoder_speeds_mm_s': self._last_encoder_speeds_mm_s,
             'encoder_angle_accum': self._last_encoder_angle_accum,
             'suspension': self._last_suspension,
             'steering_angle': self._last_steering_angle,

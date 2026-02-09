@@ -14,7 +14,7 @@ window:
 
 # Grid layout (3x3 for all sensors)
 layout:
-  rows: 3
+  rows: 4
   cols: 3
 
 # Plot definitions
@@ -212,3 +212,28 @@ plots:
         color: "#17becf"
         line_width: 2.0
     buffer_size: 500
+
+  # Wheel speed in mm/s
+  - name: "Wheel Speed (mm/s)"
+    type: "timeseries"
+    row: 3
+    col: 1
+    x_axis_type: "time"
+    y_axis:
+      label: "Wheel Speed"
+      unit: "mm/s"
+    series:
+      - name: "FL"
+        variable: "encoder_speeds_mm_s[0]"
+        color: "#2ca02c"
+      - name: "FR"
+        variable: "encoder_speeds_mm_s[1]"
+        color: "#d62728"
+      - name: "RL"
+        variable: "encoder_speeds_mm_s[2]"
+        color: "#9467bd"
+      - name: "RR"
+        variable: "encoder_speeds_mm_s[3]"
+        color: "#8c564b"
+    buffer_size: 1000
+    show_legend: true

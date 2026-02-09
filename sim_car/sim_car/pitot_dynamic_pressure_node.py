@@ -7,7 +7,7 @@ class PitotDynamicPressureNode(VirtualSensorNodeBase):
     def __init__(self):
         super().__init__(
             node_name='pitot_dynamic_pressure_node',
-            publish_topic='/sim/pitot/dynamic_pressure',
+            publish_topic='/sim/raw/pitot/dynamic_pressure',
             noise_param='noise_pitot',
             noise_default=2.0,
         )

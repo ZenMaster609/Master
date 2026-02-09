@@ -9,6 +9,7 @@ from nav_msgs.msg import Odometry
 from std_msgs.msg import Float32
 
 from .virtual_sensors_model import VirtualSensorsModel
+from .topic_utils import apply_topic_prefix
 
 
 class VirtualSensorNodeBase(Node):
@@ -29,6 +30,7 @@ class VirtualSensorNodeBase(Node):
         self.declare_parameter('publish_rate', publish_rate_default)
         self.declare_parameter('ambient_temp', 25.0)
         self.declare_parameter(noise_param, noise_default)
+        self.declare_parameter('topic_prefix', '/sim/raw')
         if needs_brake_cmd:
             self.declare_parameter('brake_cmd_topic', '/sim/brake_cmd')
 
@@ -41,12 +43,14 @@ class VirtualSensorNodeBase(Node):
 
         self.ambient_temp = float(self.get_parameter('ambient_temp').value)
         self.noise_stddev = float(self.get_parameter(noise_param).value)
+        self.topic_prefix = str(self.get_parameter('topic_prefix').value)
 
         self.model = VirtualSensorsModel(ambient_temp=self.ambient_temp)
 
+        publish_topic = apply_topic_prefix(publish_topic, self.topic_prefix)
         self.publisher = self.create_publisher(Float32, publish_topic, 10)
         self.odom_sub = self.create_subscription(
-            Odometry, '/sim/odom', self.odom_callback, 10
+            Odometry, apply_topic_prefix('/sim/raw/odom', self.topic_prefix), self.odom_callback, 10
         )
         self.cmd_vel_sub = self.create_subscription(
             Twist, '/cmd_vel', self.cmd_vel_callback, 10

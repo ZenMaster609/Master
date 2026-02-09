@@ -19,6 +19,7 @@ from geometry_msgs.msg import Twist
 from std_msgs.msg import Float32
 
 from .virtual_sensors_model import VirtualSensorsModel
+from .topic_utils import apply_topic_prefix
 
 
 class VirtualSensorsNode(Node):
@@ -31,19 +32,19 @@ class VirtualSensorsNode(Node):
         noise_* (float): Noise standard deviation for each sensor
 
     Subscribes:
-        /sim/odom (nav_msgs/Odometry): For vehicle speed
+        /sim/raw/odom (nav_msgs/Odometry): For vehicle speed
         /cmd_vel (geometry_msgs/Twist): For throttle proxy (and brake fallback)
         /sim/brake_cmd (std_msgs/Float32): For explicit braking command (0..1)
 
     Publishes:
-        /sim/cooling/water_pressure (Float32) - bar
-        /sim/cooling/water_flow (Float32) - L/min
-        /sim/cooling/water_temp_in (Float32) - Celsius
-        /sim/cooling/water_temp_out (Float32) - Celsius
-        /sim/cooling/water_temp_radiator (Float32) - Celsius
-        /sim/brakes/temp_fr (Float32) - Celsius
-        /sim/brakes/temp_rl (Float32) - Celsius
-        /sim/pitot/dynamic_pressure (Float32) - Pa
+        /sim/raw/cooling/water_pressure (Float32) - bar
+        /sim/raw/cooling/water_flow (Float32) - L/min
+        /sim/raw/cooling/water_temp_in (Float32) - Celsius
+        /sim/raw/cooling/water_temp_out (Float32) - Celsius
+        /sim/raw/cooling/water_temp_radiator (Float32) - Celsius
+        /sim/raw/brakes/temp_fr (Float32) - Celsius
+        /sim/raw/brakes/temp_rl (Float32) - Celsius
+        /sim/raw/pitot/dynamic_pressure (Float32) - Pa
     """
 
     def __init__(self):
@@ -52,6 +53,7 @@ class VirtualSensorsNode(Node):
         # Declare parameters
         self.declare_parameter('publish_rate', 10.0)  # Hz
         self.declare_parameter('ambient_temp', 25.0)  # Celsius
+        self.declare_parameter('topic_prefix', '/sim/raw')
 
         # Per-sensor publish rates (Hz)
         self.declare_parameter('publish_rate_water_pressure', self.get_parameter('publish_rate').value)
@@ -79,6 +81,7 @@ class VirtualSensorsNode(Node):
         self.noise_temp = self.get_parameter('noise_temp').value
         self.noise_brake_temp = self.get_parameter('noise_brake_temp').value
         self.noise_pitot = self.get_parameter('noise_pitot').value
+        self.topic_prefix = str(self.get_parameter('topic_prefix').value)
 
         self.publish_rates = {
             'water_pressure': self.get_parameter('publish_rate_water_pressure').value,
@@ -101,29 +104,29 @@ class VirtualSensorsNode(Node):
 
         # Publishers - Cooling
         self.pressure_pub = self.create_publisher(
-            Float32, '/sim/cooling/water_pressure', 10)
+            Float32, apply_topic_prefix('/sim/raw/cooling/water_pressure', self.topic_prefix), 10)
         self.flow_pub = self.create_publisher(
-            Float32, '/sim/cooling/water_flow', 10)
+            Float32, apply_topic_prefix('/sim/raw/cooling/water_flow', self.topic_prefix), 10)
         self.temp_in_pub = self.create_publisher(
-            Float32, '/sim/cooling/water_temp_in', 10)
+            Float32, apply_topic_prefix('/sim/raw/cooling/water_temp_in', self.topic_prefix), 10)
         self.temp_out_pub = self.create_publisher(
-            Float32, '/sim/cooling/water_temp_out', 10)
+            Float32, apply_topic_prefix('/sim/raw/cooling/water_temp_out', self.topic_prefix), 10)
         self.temp_rad_pub = self.create_publisher(
-            Float32, '/sim/cooling/water_temp_radiator', 10)
+            Float32, apply_topic_prefix('/sim/raw/cooling/water_temp_radiator', self.topic_prefix), 10)
 
         # Publishers - Brakes
         self.brake_fr_pub = self.create_publisher(
-            Float32, '/sim/brakes/temp_fr', 10)
+            Float32, apply_topic_prefix('/sim/raw/brakes/temp_fr', self.topic_prefix), 10)
         self.brake_rl_pub = self.create_publisher(
-            Float32, '/sim/brakes/temp_rl', 10)
+            Float32, apply_topic_prefix('/sim/raw/brakes/temp_rl', self.topic_prefix), 10)
 
         # Publishers - Pitot
         self.pitot_pub = self.create_publisher(
-            Float32, '/sim/pitot/dynamic_pressure', 10)
+            Float32, apply_topic_prefix('/sim/raw/pitot/dynamic_pressure', self.topic_prefix), 10)
 
         # Subscribers
         self.odom_sub = self.create_subscription(
-            Odometry, '/sim/odom', self.odom_callback, 10)
+            Odometry, apply_topic_prefix('/sim/raw/odom', self.topic_prefix), self.odom_callback, 10)
         self.cmd_vel_sub = self.create_subscription(
             Twist, '/cmd_vel', self.cmd_vel_callback, 10)
         brake_topic = self.get_parameter('brake_cmd_topic').value

@@ -51,6 +51,9 @@ class VehicleState:
     # Wheel encoder speeds [FL, FR, RL, RR] in RPM
     encoder_velocities: List[float] = field(default_factory=lambda: [0.0, 0.0, 0.0, 0.0])
 
+    # Wheel encoder linear speeds [FL, FR, RL, RR] in mm/s
+    encoder_speeds_mm_s: List[float] = field(default_factory=lambda: [0.0, 0.0, 0.0, 0.0])
+
     # Wheel encoder angle accumulation [FL, FR, RL, RR] in radians (per RPM window)
     encoder_angle_accum: List[float] = field(default_factory=lambda: [0.0, 0.0, 0.0, 0.0])
 
@@ -130,6 +133,10 @@ class VehicleState:
             'encoder_fr': self.encoder_velocities[1],
             'encoder_rl': self.encoder_velocities[2],
             'encoder_rr': self.encoder_velocities[3],
+            'encoder_speed_fl': self.encoder_speeds_mm_s[0],
+            'encoder_speed_fr': self.encoder_speeds_mm_s[1],
+            'encoder_speed_rl': self.encoder_speeds_mm_s[2],
+            'encoder_speed_rr': self.encoder_speeds_mm_s[3],
             'encoder_angle_fl': self.encoder_angle_accum[0],
             'encoder_angle_fr': self.encoder_angle_accum[1],
             'encoder_angle_rl': self.encoder_angle_accum[2],
@@ -204,6 +211,7 @@ class VehicleState:
 
         # Encoders
         msg.encoder_velocities = [float(v) for v in self.encoder_velocities]
+        msg.encoder_speeds_mm_s = [float(v) for v in self.encoder_speeds_mm_s]
         msg.encoder_angle_accum = [float(v) for v in self.encoder_angle_accum]
 
         # GPS
@@ -272,6 +280,7 @@ class VehicleState:
             slip_longitudinal=msg.slip_longitudinal,
             slip_lateral=msg.slip_lateral,
             encoder_velocities=list(msg.encoder_velocities),
+            encoder_speeds_mm_s=list(msg.encoder_speeds_mm_s),
             encoder_angle_accum=list(msg.encoder_angle_accum),
             gps_latitude=msg.gps_latitude,
             gps_longitude=msg.gps_longitude,
@@ -314,6 +323,7 @@ class VehicleState:
             slip_longitudinal=self.slip_longitudinal,
             slip_lateral=self.slip_lateral,
             encoder_velocities=list(self.encoder_velocities),
+            encoder_speeds_mm_s=list(self.encoder_speeds_mm_s),
             encoder_angle_accum=list(self.encoder_angle_accum),
             gps_latitude=self.gps_latitude,
             gps_longitude=self.gps_longitude,

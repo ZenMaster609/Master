@@ -34,6 +34,9 @@ float64 slip_lateral
 # Wheel encoder speeds [FL, FR, RL, RR] in RPM
 float32[4] encoder_velocities
 
+# Wheel encoder linear speeds [FL, FR, RL, RR] in mm/s
+float32[4] encoder_speeds_mm_s
+
 # Wheel encoder angle accumulation [FL, FR, RL, RR] in radians (per RPM window)
 float32[4] encoder_angle_accum
 

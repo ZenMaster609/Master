@@ -12,7 +12,7 @@ from launch import LaunchDescription
 from launch.actions import DeclareLaunchArgument, IncludeLaunchDescription
 from launch.conditions import IfCondition
 from launch.launch_description_sources import PythonLaunchDescriptionSource
-from launch.substitutions import LaunchConfiguration, PathJoinSubstitution
+from launch.substitutions import LaunchConfiguration, PathJoinSubstitution, PythonExpression
 from launch_ros.actions import Node
 from launch_ros.substitutions import FindPackageShare
 from ament_index_python.packages import get_package_share_directory
@@ -77,6 +77,24 @@ def generate_launch_description():
         description='Use simulation time from /clock topic'
     )
 
+    measure_arg = DeclareLaunchArgument(
+        'measure',
+        default_value='true',
+        description='Enable measurement_node and use /sim/raw topics'
+    )
+
+    measurement_config_arg = DeclareLaunchArgument(
+        'measurement_config',
+        default_value=PathJoinSubstitution([sim_car_share, 'config', 'sensor_config.yaml']),
+        description='Measurement config YAML path'
+    )
+
+    topic_prefix = PythonExpression([
+        "'/sim/raw' if '",
+        LaunchConfiguration('measure'),
+        "'.lower() == 'true' else '/sim'"
+    ])
+
     gazebo_launch = IncludeLaunchDescription(
         PythonLaunchDescriptionSource(
             PathJoinSubstitution([sim_car_share, 'launch', 'gazebo_sim.launch.py'])
@@ -86,6 +104,7 @@ def generate_launch_description():
             'world': LaunchConfiguration('world'),
             'use_sim_time': LaunchConfiguration('use_sim_time'),
             'update_rate_hz': LaunchConfiguration('update_rate_hz'),
+            'topic_prefix': topic_prefix,
         }.items(),
     )
 
@@ -95,6 +114,23 @@ def generate_launch_description():
         PythonLaunchDescriptionSource(
             PathJoinSubstitution([sim_car_share, 'launch', 'nodes.launch.py'])
         ),
+        launch_arguments={
+            'topic_prefix': topic_prefix,
+        }.items(),
+    )
+
+    measurement_node = Node(
+        package='measurement_node',
+        executable='measurement_node',
+        name='measurement_node',
+        output='screen',
+        condition=IfCondition(PythonExpression([
+            "'", LaunchConfiguration('measure'), "'.lower() == 'true'"
+        ])),
+        parameters=[{
+            'use_sim_time': LaunchConfiguration('use_sim_time'),
+            'config_path': LaunchConfiguration('measurement_config'),
+        }],
     )
 
     plotter_launch = IncludeLaunchDescription(
@@ -149,8 +185,11 @@ def generate_launch_description():
         rosbagging_arg,
         steering_arg,
         use_sim_time_arg,
+        measure_arg,
+        measurement_config_arg,
         gazebo_launch,
         sim_nodes_launch,
+        measurement_node,
         plotter_launch,
         steering_bridge_node,
         steering_gui_node,

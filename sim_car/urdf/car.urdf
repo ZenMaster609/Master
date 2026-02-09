@@ -560,7 +560,7 @@
     - IMU sensor: 50Hz with Gaussian noise
     - NavSat sensor: 50Hz GPS with position noise
 
-    All topics use /sim/ namespace to distinguish from real hardware.
+    All raw sensor topics use /sim/raw/ namespace to distinguish from processed data.
   -->
 
   <!-- Wheel friction for stable tire-ground contact -->
@@ -627,7 +627,7 @@
       <joint_name>suspension_fr_joint</joint_name>
       <joint_name>suspension_rl_joint</joint_name>
       <joint_name>suspension_rr_joint</joint_name>
-      <topic>/sim/joint_states</topic>
+      <topic>/sim/raw/joint_states</topic>
       <update_rate>100</update_rate>
     </plugin>
   </gazebo>
@@ -636,7 +636,7 @@
   <gazebo>
     <plugin filename="ignition-gazebo-odometry-publisher-system"
             name="ignition::gazebo::systems::OdometryPublisher">
-      <odom_topic>/sim/odom</odom_topic>
+      <odom_topic>/sim/raw/odom</odom_topic>
       <odom_frame>odom</odom_frame>
       <robot_base_frame>base_footprint</robot_base_frame>
       <odom_publish_frequency>50</odom_publish_frequency>
@@ -647,7 +647,7 @@
   <!-- IMU Sensor -->
   <gazebo reference="imu_link">
     <sensor name="imu" type="imu">
-      <topic>/sim/imu</topic>
+      <topic>/sim/raw/imu</topic>
       <update_rate>50</update_rate>
       <always_on>true</always_on>
       <visualize>false</visualize>
@@ -699,7 +699,7 @@
   <!-- NavSat/GPS Sensor -->
   <gazebo reference="gps_link">
     <sensor name="navsat" type="navsat">
-      <topic>/sim/navsat</topic>
+      <topic>/sim/raw/navsat</topic>
       <update_rate>50</update_rate>
       <always_on>true</always_on>
       <navsat>

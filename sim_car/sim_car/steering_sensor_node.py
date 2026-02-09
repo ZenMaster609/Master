@@ -1,7 +1,7 @@
 """
 Steering Angle Sensor Node for Formula Student Car.
 
-Reads steering joint positions from /sim/joint_states and publishes
+Reads steering joint positions from /sim/raw/joint_states and publishes
 the average steering angle in degrees with configurable noise and latency.
 """
 
@@ -12,6 +12,8 @@ import rclpy
 from rclpy.node import Node
 from sensor_msgs.msg import JointState
 from std_msgs.msg import Float32
+
+from .topic_utils import apply_topic_prefix
 
 
 class SteeringSensorNode(Node):
@@ -24,10 +26,10 @@ class SteeringSensorNode(Node):
         publish_rate (float): Output rate in Hz
 
     Subscribes:
-        /sim/joint_states (sensor_msgs/JointState)
+        /sim/raw/joint_states (sensor_msgs/JointState)
 
     Publishes:
-        /sim/steering_angle (std_msgs/Float32) - steering angle in degrees
+        /sim/raw/steering_angle (std_msgs/Float32) - steering angle in degrees
     """
 
     # Joint names for steering
@@ -42,6 +44,7 @@ class SteeringSensorNode(Node):
         self.declare_parameter('publish_rate', 100.0)  # Hz
         self.declare_parameter('bias', 0.0)  # degrees
         self.declare_parameter('dropout_probability', 0.0)  # 0-1
+        self.declare_parameter('topic_prefix', '/sim/raw')
 
         # Get parameters
         self.noise_stddev = self.get_parameter('noise_stddev').value
@@ -49,6 +52,7 @@ class SteeringSensorNode(Node):
         self.publish_rate = self.get_parameter('publish_rate').value
         self.bias = self.get_parameter('bias').value
         self.dropout_probability = self.get_parameter('dropout_probability').value
+        self.topic_prefix = str(self.get_parameter('topic_prefix').value)
 
         # Latency buffer (stores (timestamp, value) pairs)
         # Buffer size based on latency and publish rate
@@ -61,12 +65,14 @@ class SteeringSensorNode(Node):
         self.joint_state_received = False
 
         # Publisher
+        steering_topic = apply_topic_prefix('/sim/raw/steering_angle', self.topic_prefix)
         self.steering_pub = self.create_publisher(
-            Float32, '/sim/steering_angle', 10)
+            Float32, steering_topic, 10)
 
         # Subscriber
+        joint_states_topic = apply_topic_prefix('/sim/raw/joint_states', self.topic_prefix)
         self.joint_state_sub = self.create_subscription(
-            JointState, '/sim/joint_states', self.joint_state_callback, 10)
+            JointState, joint_states_topic, self.joint_state_callback, 10)
 
         # Timer for publishing at fixed rate
         timer_period = 1.0 / self.publish_rate

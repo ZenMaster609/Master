@@ -19,6 +19,8 @@ topics:
 
   # Wheel encoder speeds in RPM (from wheel_encoder_node)
   encoder_velocities: /sim/wheel_encoder/rpm
+  # Wheel encoder linear speeds in mm/s (from wheel_encoder_node)
+  encoder_speeds_mm_s: /sim/wheel_encoder/speed_mm_s
   # Wheel encoder angle accumulation (from wheel_encoder_node)
   encoder_angle_accum: /sim/wheel_encoder/angle_accum
 
@@ -31,6 +33,7 @@ sensor_rates:
   gps: 5.0
   odom: 50.0
   encoder_velocities: 50.0
+  encoder_speeds_mm_s: 50.0
   encoder_angle_accum: 50.0
 
 # GPS origin (set to 0,0 for auto-detection from first GPS message)

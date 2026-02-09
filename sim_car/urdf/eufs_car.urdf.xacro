@@ -2,6 +2,7 @@
 <robot name="eufs" xmlns:xacro="http://www.ros.org/wiki/xacro">
   <xacro:arg name="config_file" default=""/>
   <xacro:arg name="chassis_mesh" default="file://$(find sim_car)/meshes/sisu-20d.dae"/>
+  <xacro:arg name="topic_prefix" default="/sim/raw"/>
 
   <xacro:property name="config" value="${load_yaml('$(arg config_file)')}"/>
 
@@ -91,7 +92,7 @@
       <joint_name>front_right_wheel_joint</joint_name>
       <joint_name>rear_left_wheel_joint</joint_name>
       <joint_name>rear_right_wheel_joint</joint_name>
-      <topic>/sim/joint_states</topic>
+      <topic>$(arg topic_prefix)/joint_states</topic>
       <update_rate>${config['dynamics']['update_rate_hz']}</update_rate>
     </plugin>
   </gazebo>
@@ -100,7 +101,7 @@
   <gazebo>
     <plugin filename="ignition-gazebo-odometry-publisher-system"
             name="ignition::gazebo::systems::OdometryPublisher">
-      <odom_topic>/sim/odom</odom_topic>
+      <odom_topic>$(arg topic_prefix)/odom</odom_topic>
       <odom_frame>odom</odom_frame>
       <robot_base_frame>base_footprint</robot_base_frame>
       <odom_publish_frequency>50</odom_publish_frequency>
@@ -111,7 +112,7 @@
   <!-- IMU Sensor -->
   <gazebo reference="imu_link">
     <sensor name="imu" type="imu">
-      <topic>/sim/imu</topic>
+      <topic>$(arg topic_prefix)/imu</topic>
       <update_rate>50</update_rate>
       <always_on>true</always_on>
       <visualize>false</visualize>
@@ -163,7 +164,7 @@
   <!-- NavSat/GPS Sensor -->
   <gazebo reference="gps_link">
     <sensor name="navsat" type="navsat">
-      <topic>/sim/navsat</topic>
+      <topic>$(arg topic_prefix)/navsat</topic>
       <update_rate>50</update_rate>
       <always_on>true</always_on>
       <navsat>

@@ -7,7 +7,7 @@ class WaterTempInNode(VirtualSensorNodeBase):
     def __init__(self):
         super().__init__(
             node_name='water_temp_in_node',
-            publish_topic='/sim/cooling/water_temp_in',
+            publish_topic='/sim/raw/cooling/water_temp_in',
             noise_param='noise_temp',
             noise_default=0.3,
         )

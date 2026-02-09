@@ -7,7 +7,7 @@ class WaterTempRadiatorNode(VirtualSensorNodeBase):
     def __init__(self):
         super().__init__(
             node_name='water_temp_radiator_node',
-            publish_topic='/sim/cooling/water_temp_radiator',
+            publish_topic='/sim/raw/cooling/water_temp_radiator',
             noise_param='noise_temp',
             noise_default=0.3,
         )
