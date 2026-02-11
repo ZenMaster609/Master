@@ -5,7 +5,7 @@ signals:
     input_topic: /sim/raw/imu
     output_topic: /sim/imu
     msg_type: sensor_msgs/msg/Imu
-    rate_hz: 100.0
+    rate_hz: 50.0
     latency_ms: 0.0
     dropout_prob: 0.0
     noise_std:
@@ -115,7 +115,7 @@ signals:
     input_topic: /sim/raw/suspension
     output_topic: /sim/suspension
     msg_type: std_msgs/msg/Float32MultiArray
-    rate_hz: 100.0
+    rate_hz: 50.0
     latency_ms: 0.0
     dropout_prob: 0.0
     noise_std: 0.0
@@ -129,7 +129,7 @@ signals:
     input_topic: /sim/raw/steering_angle
     output_topic: /sim/steering_angle
     msg_type: std_msgs/msg/Float32
-    rate_hz: 100.0
+    rate_hz: 50.0
     latency_ms: 0.0
     dropout_prob: 0.0
     noise_std: 0.0

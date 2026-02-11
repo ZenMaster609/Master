@@ -170,10 +170,3 @@ Common subscriptions and parameters for these nodes:
 | Publishes | Ackermann commands to a user-selected topic, `/sim/brake_cmd` (`std_msgs/Float32`) |
 | Subscribes | none |
 | Key parameters | `brake_cmd_topic` |
-
-## eufs_tracks
-
-### `eufs_track_generator` (launch)
-
-- The launch file `eufs_sim/eufs_tracks/launch/eufs_track_generator.launch.py` starts a node named `eufs_track_generator` with package `eufs_tracks` and executable `eufs_tracks`.
-- Track generation and conversion scripts also exist under `eufs_sim/eufs_tracks/scripts/`.

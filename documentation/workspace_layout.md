@@ -9,7 +9,6 @@ Master/
 ├── canbus_decoder/               # CAN decoder ROS2 package
 ├── eufs_gz_dynamics/             # Gazebo dynamics plugin (C++)
 ├── eufs_msgs/                    # EUFS message and action definitions
-├── eufs_sim/                     # EUFS simulation resources (multiple packages)
 ├── measurement_node/             # Measurement noise/latency node
 ├── sim_car/                      # Main Gazebo simulation package
 ├── steering_gui/                 # RQT steering GUI plugin
@@ -32,13 +31,7 @@ Master/
 | `canbus_decoder` | `canbus_decoder/` | Python | Decode raw CAN frames into wheel/suspension/steering topics. |
 | `eufs_gz_dynamics` | `eufs_gz_dynamics/` | C++ | Gazebo dynamics plugin library for EUFS car models. |
 | `eufs_msgs` | `eufs_msgs/` | Interface | EUFS messages/actions used by EUFS simulation stack. |
-| `eufs_launcher` | `eufs_sim/eufs_launcher/` | Python | EUFS sim launcher tools and launch files. |
-| `eufs_models` | `eufs_sim/eufs_models/` | C++ | EUFS vehicle model and dynamics utilities. |
-| `eufs_plugins` | `eufs_sim/eufs_plugins/` | C++/URDF | Gazebo plugins and URDF snippets for EUFS models. |
-| `eufs_racecar` | `eufs_sim/eufs_racecar/` | URDF/assets | EUFS racecar model assets and launch file. |
-| `eufs_rqt` | `eufs_sim/eufs_rqt/` | Python | EUFS RQT GUI plugins and perspective config. |
-| `eufs_sensors` | `eufs_sim/eufs_sensors/` | URDF/assets | EUFS sensor models (IMU, GPS, lidar, etc.). |
-| `eufs_tracks` | `eufs_sim/eufs_tracks/` | Python | Track generation and conversion tools. |
+| `eufs_models` | `eufs_sim/eufs_models/` | C++ | EUFS vehicle model library required by `eufs_gz_dynamics`. |
 | `measurement_node` | `measurement_node/` | Python | Noise/latency/dropout layer between /sim/raw and /sim. |
 | `sim_car` | `sim_car/` | Python | Gazebo Fortress sim, virtual sensors, control bridge. |
 | `steering_gui` | `steering_gui/` | Python | RQT steering GUI for Ackermann commands. |

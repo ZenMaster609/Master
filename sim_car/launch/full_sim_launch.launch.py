@@ -61,14 +61,20 @@ def generate_launch_description():
 
     rosbagging_arg = DeclareLaunchArgument(
         'rosbagging',
-        default_value='true',
+        default_value='false',
         description='Enable rosbag recording'
     )
 
     steering_arg = DeclareLaunchArgument(
         'steering',
-        default_value='false',
+        default_value='true',
         description='Enable the EUFS steering GUI'
+    )
+
+    control_bridge_arg = DeclareLaunchArgument(
+        'bridge',
+        default_value='throttle',
+        description="Control bridge to use: 'throttle' or 'ackermann'"
     )
 
     use_sim_time_arg = DeclareLaunchArgument(
@@ -79,7 +85,7 @@ def generate_launch_description():
 
     measure_arg = DeclareLaunchArgument(
         'measure',
-        default_value='true',
+        default_value='false',
         description='Enable measurement_node and use /sim/raw topics'
     )
 
@@ -158,6 +164,26 @@ def generate_launch_description():
 
     control_config = _load_control_config()
 
+    throttle_bridge_node = Node(
+        name='throttle_cmd_bridge',
+        package='sim_car',
+        executable='throttle_cmd_bridge',
+        output='screen',
+        parameters=[{
+            'input_topic': '/cmd',
+            'output_topic': '/cmd_vel',
+            'wheelbase': 1.6,
+            'input_mode': 'throttle',
+            'max_speed': control_config['max_speed'],
+            'accel_limit': control_config['accel_limit'],
+            'brake_decel_limit': control_config['brake_decel_limit'],
+        }],
+        condition=IfCondition(PythonExpression([
+            "'", LaunchConfiguration('steering'), "'.lower() == 'true' and '",
+            LaunchConfiguration('bridge'), "'.lower() == 'throttle'"
+        ]))
+    )
+
     steering_bridge_node = Node(
         name='ackermann_cmd_bridge',
         package='sim_car',
@@ -172,7 +198,10 @@ def generate_launch_description():
             'accel_limit': control_config['accel_limit'],
             'brake_decel_limit': control_config['brake_decel_limit'],
         }],
-        condition=IfCondition(LaunchConfiguration('steering'))
+        condition=IfCondition(PythonExpression([
+            "'", LaunchConfiguration('steering'), "'.lower() == 'true' and '",
+            LaunchConfiguration('bridge'), "'.lower() == 'ackermann'"
+        ]))
     )
 
     return LaunchDescription([
@@ -184,6 +213,7 @@ def generate_launch_description():
         close_plots_on_shutdown_arg,
         rosbagging_arg,
         steering_arg,
+        control_bridge_arg,
         use_sim_time_arg,
         measure_arg,
         measurement_config_arg,
@@ -191,6 +221,7 @@ def generate_launch_description():
         sim_nodes_launch,
         measurement_node,
         plotter_launch,
+        throttle_bridge_node,
         steering_bridge_node,
         steering_gui_node,
     ])

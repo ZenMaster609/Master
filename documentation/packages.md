@@ -20,6 +20,7 @@ This file summarizes each ROS2 package in the workspace, with its nodes, launch 
 - Nodes: none (builds a shared library in `lib/`).
 - Launch files: none.
 - Configs: none in this package.
+- Dependency note: requires `eufs_models` from `eufs_sim/eufs_models/`.
 
 ## eufs_msgs (`eufs_msgs/`)
 
@@ -29,63 +30,11 @@ This file summarizes each ROS2 package in the workspace, with its nodes, launch 
 - Nodes: none.
 - Launch files: none.
 
-## eufs_launcher (`eufs_sim/eufs_launcher/`)
-
-- Purpose: EUFS sim launcher UI and launch files.
-- Nodes: none (ships a `scripts/eufs_launcher` helper).
-- Launch files:
-  - `eufs_sim/eufs_launcher/launch/eufs_launcher.launch.py`
-  - `eufs_sim/eufs_launcher/launch/simulation.launch.py`
-- Configs:
-  - `eufs_sim/eufs_launcher/config/eufs_launcher.yaml`
-  - `eufs_sim/eufs_launcher/config/default.rviz`
-
 ## eufs_models (`eufs_sim/eufs_models/`)
 
-- Purpose: EUFS vehicle model utilities and libraries (C++).
+- Purpose: EUFS vehicle model utilities and libraries (C++) required by `eufs_gz_dynamics`.
 - Nodes: none (library built from `src/`).
 - Launch files: none.
-- Configs:
-  - `eufs_sim/eufs_models/config/noise.yaml`
-
-## eufs_plugins (`eufs_sim/eufs_plugins/`)
-
-- Purpose: Gazebo plugins and URDF snippets for EUFS models.
-- Nodes: none (plugins and URDF resources).
-- Launch files: none.
-- Assets: `gazebo_cone_plugins/`, `gazebo_race_car_model/`, `gazebo_simulate_bounding_boxes/`, `urdf/`.
-
-## eufs_racecar (`eufs_sim/eufs_racecar/`)
-
-- Purpose: EUFS racecar model assets (URDF, meshes, materials) and a load launch file.
-- Nodes: none.
-- Launch files:
-  - `eufs_sim/eufs_racecar/launch/load_car.launch.py`
-- Assets: `urdf/`, `meshes/`, `materials/`, `robots/`.
-
-## eufs_rqt (`eufs_sim/eufs_rqt/`)
-
-- Purpose: EUFS RQT GUI plugins and perspective configuration.
-- Nodes: none (ships `scripts/eufs_robot_steering_gui` and `scripts/mission_control_gui`).
-- Launch files: none.
-- Configs:
-  - `eufs_sim/eufs_rqt/config/eufs_sim.perspective`
-
-## eufs_sensors (`eufs_sim/eufs_sensors/`)
-
-- Purpose: EUFS sensor URDFs and meshes (IMU, GPS, lidar, etc.).
-- Nodes: none.
-- Launch files: none.
-- Assets: `urdf/`, `meshes/`.
-
-## eufs_tracks (`eufs_sim/eufs_tracks/`)
-
-- Purpose: Track generation and format conversion tools.
-- Nodes: a launch file references an executable named `eufs_tracks`.
-- Scripts: `scripts/eufs_tracks_generator`, `scripts/eufs_tracks_converter`.
-- Launch files:
-  - `eufs_sim/eufs_tracks/launch/eufs_track_generator.launch.py`
-- Assets: `worlds/`, `models/`, `materials/`, `meshes/`, `csv/`, `image/`.
 
 ## measurement_node (`measurement_node/`)
 

@@ -63,24 +63,8 @@ This file lists the main configuration files used by the packages in this worksp
 - High-rate IMU-only configuration for VN-200.
 - Similar structure to `default_output.yaml`, with GPS/INS disabled.
 
-## eufs_sim
-
-### `eufs_sim/eufs_launcher/config/eufs_launcher.yaml`
-
-- Launcher UI defaults and simulation options.
-
-### `eufs_sim/eufs_launcher/config/default.rviz`
-
-- Default RViz configuration used by EUFS launch files.
+## eufs_models
 
 ### `eufs_sim/eufs_models/config/noise.yaml`
 
-- Noise parameters for EUFS vehicle model dynamics.
-
-### `eufs_sim/eufs_rqt/config/eufs_sim.perspective`
-
-- RQT perspective used by EUFS GUI tools.
-
-### `eufs_sim/eufs_plugins/**/config/*.yaml`
-
-- Plugin-specific configuration for EUFS Gazebo plugins (cone recolor, bounding boxes, etc.).
+- Noise parameters for EUFS vehicle model dynamics (required by `eufs_gz_dynamics`).

@@ -23,7 +23,7 @@ aero:
   C_drag: 1   # F_Drag = C_Drag*v_x^2
 
 dynamics:
-  update_rate_hz: 100.0
+  update_rate_hz: 50.0
   control_delay_sec: 0.0
 
 control:

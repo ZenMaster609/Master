@@ -42,6 +42,7 @@ setup(
         'console_scripts': [
             'wheel_encoder_node = sim_car.wheel_encoder_node:main',
             'ackermann_cmd_bridge = sim_car.ackermann_cmd_bridge:main',
+            'throttle_cmd_bridge = sim_car.throttle_cmd_bridge:main',
             'suspension_sensor_node = sim_car.suspension_sensor_node:main',
             'steering_sensor_node = sim_car.steering_sensor_node:main',
             'virtual_sensors_node = sim_car.virtual_sensors_node:main',

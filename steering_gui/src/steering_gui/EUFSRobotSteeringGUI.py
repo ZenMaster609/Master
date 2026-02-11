@@ -226,10 +226,14 @@ class EUFSRobotSteeringGUI(Plugin):
             self._widget.min_linear_double_spin_box.setValue(
                 -default_vel_range)
             self.slider_units = "m/s"
+        elif self.command_mode == "throttle":
+            self._widget.max_linear_double_spin_box.setValue(1.0)
+            self._widget.min_linear_double_spin_box.setValue(0.0)
+            self.slider_units = "throttle"
         else:
             self.logger.error(
-                "Invalid command mode: '{}', must be 'acceleration' or "
-                "'velocity'".format(
+                "Invalid command mode: '{}', must be 'acceleration', "
+                "'velocity', or 'throttle'".format(
                     self.command_mode))
 
         # Update sliders to use configurable units
@@ -466,6 +470,8 @@ class EUFSRobotSteeringGUI(Plugin):
             drive.drive.speed = linear
         elif self.command_mode == "acceleration":
             drive.drive.acceleration = linear
+        elif self.command_mode == "throttle":
+            drive.drive.acceleration = linear
 
         drive.drive.steering_angle = angular
         drive.drive.steering_angle_velocity = 0.0
@@ -507,6 +513,11 @@ class EUFSRobotSteeringGUI(Plugin):
                 'accx_max', self._widget.max_linear_double_spin_box.value())
             instance_settings.set_value(
                 'accx_min', self._widget.min_linear_double_spin_box.value())
+        elif self.command_mode == "throttle":
+            instance_settings.set_value(
+                'thr_max', self._widget.max_linear_double_spin_box.value())
+            instance_settings.set_value(
+                'thr_min', self._widget.min_linear_double_spin_box.value())
 
         instance_settings.set_value(
             'w_max', self._widget.max_angular_double_spin_box.value())
@@ -545,6 +556,15 @@ class EUFSRobotSteeringGUI(Plugin):
             self._widget.max_linear_double_spin_box.setValue(float(value))
             value = self.get_param(
                 instance_settings, 'velx_min',
+                self._widget.min_linear_double_spin_box.value())
+            self._widget.min_linear_double_spin_box.setValue(float(value))
+        elif self.command_mode == 'throttle':
+            value = self.get_param(
+                instance_settings, 'thr_max',
+                self._widget.max_linear_double_spin_box.value())
+            self._widget.max_linear_double_spin_box.setValue(float(value))
+            value = self.get_param(
+                instance_settings, 'thr_min',
                 self._widget.min_linear_double_spin_box.value())
             self._widget.min_linear_double_spin_box.setValue(float(value))
 
