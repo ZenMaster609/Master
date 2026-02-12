@@ -122,6 +122,11 @@ class GazeboAdapter(SensorAdapterInterface):
         self._last_brake_temp_fr: Optional[Float32] = None
         self._last_brake_temp_rl: Optional[Float32] = None
         self._last_pitot_pressure: Optional[Float32] = None
+        self._dr_x = 0.0
+        self._dr_y = 0.0
+        self._dr_vx = 0.0
+        self._dr_vy = 0.0
+        self._last_dr_time: Optional[float] = None
 
         # Set up subscriptions
         self.setup_subscriptions()
@@ -427,6 +432,13 @@ class GazeboAdapter(SensorAdapterInterface):
             state.gps_longitude = gps.longitude
             state.gps_altitude = gps.altitude
             state.gps_valid = gps.status.status >= 0
+            if state.gps_valid and get_gps_origin() is not None:
+                try:
+                    state.gps_local_x, state.gps_local_y = gps_to_local(
+                        gps.latitude, gps.longitude
+                    )
+                except ValueError:
+                    pass
 
         # Encoder RPM
         encoder_velocities: Optional[Float32MultiArray] = synced_data.get('encoder_velocities')
@@ -444,6 +456,31 @@ class GazeboAdapter(SensorAdapterInterface):
 
         # Compute derived quantities
         state.update_speed()
+
+        # IMU-derived yaw and dead-reckoning position
+        if imu is not None:
+            q = imu.orientation
+            state.imu_yaw = quaternion_to_yaw(q.x, q.y, q.z, q.w)
+            if self._last_dr_time is None:
+                self._last_dr_time = state.timestamp
+            dt = max(0.0, state.timestamp - self._last_dr_time)
+            if 0.0 < dt <= 0.2:
+                ax = float(imu.linear_acceleration.x)
+                ay = float(imu.linear_acceleration.y)
+                cy = math.cos(state.imu_yaw)
+                sy = math.sin(state.imu_yaw)
+                ax_world = cy * ax - sy * ay
+                ay_world = sy * ax + cy * ay
+                self._dr_vx += ax_world * dt
+                self._dr_vy += ay_world * dt
+                self._dr_x += self._dr_vx * dt
+                self._dr_y += self._dr_vy * dt
+            self._last_dr_time = state.timestamp
+
+        state.dr_x = self._dr_x
+        state.dr_y = self._dr_y
+        state.imu_vx = self._dr_vx
+        state.imu_vy = self._dr_vy
 
         # Compute slip if we have wheel RPM (convert to m/s for slip calc)
         if state.encoder_velocities and state.speed > 0.01 and self.wheel_radius > 0.0:

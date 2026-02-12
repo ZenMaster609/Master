@@ -21,6 +21,11 @@ float64 vy
 float64 yaw           # radians, range: -pi to pi
 float64 yaw_rate      # rad/s, positive = counter-clockwise
 
+# IMU-derived orientation (yaw) and dead-reckoned velocity
+float64 imu_vx         # m/s, IMU-only integration
+float64 imu_vy         # m/s, IMU-only integration
+float64 imu_yaw        # radians, yaw from IMU orientation
+
 # Derived quantities
 float64 speed                 # sqrt(vx^2 + vy^2), m/s
 float64 distance_traveled     # cumulative distance, meters

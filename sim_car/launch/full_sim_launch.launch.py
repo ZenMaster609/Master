@@ -148,6 +148,7 @@ def generate_launch_description():
             'enable_plot': LaunchConfiguration('plotting'),
             'enable_log': LaunchConfiguration('logging'),
             'enable_rosbag': LaunchConfiguration('rosbagging'),
+            'sensor_config': LaunchConfiguration('measurement_config'),
             'use_sim_time': LaunchConfiguration('use_sim_time'),
             'close_plots_on_shutdown': LaunchConfiguration('close_plots'),
         }.items(),

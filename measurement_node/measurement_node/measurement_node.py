@@ -303,6 +303,8 @@ class MeasurementNode(Node):
         for name, raw_cfg in signals.items():
             if not isinstance(raw_cfg, dict):
                 continue
+            if raw_cfg.get('plot_only', False):
+                continue
             cfg = self._parse_signal(name, raw_cfg)
             if not cfg.enabled:
                 continue

@@ -297,13 +297,13 @@ def get_all_plots() -> PlotLayoutConfig:
     import math
 
     return PlotLayoutConfig(
-        rows=4,
+        rows=5,
         cols=3,
         window_title="Vehicle Plotter",
-        window_size=(1600, 1200),
+        window_size=(1600, 1350),
         plots=[
             PlotConfig(
-                name="Position Trajectory",
+                name="Odom Position",
                 plot_type="xy",
                 x_axis=AxisConfig(label="X", variable="x", unit="m"),
                 series=[SeriesConfig(name="Y", variable="y", color="#1f77b4")],
@@ -313,7 +313,7 @@ def get_all_plots() -> PlotLayoutConfig:
                 buffer_size=2000,
             ),
             PlotConfig(
-                name="Velocity",
+                name="Odom Velocity",
                 plot_type="timeseries",
                 x_axis_type=XAxisType.TIME,
                 series=[
@@ -326,7 +326,7 @@ def get_all_plots() -> PlotLayoutConfig:
                 buffer_size=1000,
             ),
             PlotConfig(
-                name="Heading",
+                name="Odom Yaw",
                 plot_type="timeseries",
                 x_axis_type=XAxisType.TIME,
                 series=[
@@ -444,6 +444,44 @@ def get_all_plots() -> PlotLayoutConfig:
                 y_axis=AxisConfig(label="Temperature", unit="C"),
                 row=3, col=0,
                 buffer_size=1000,
+            ),
+            PlotConfig(
+                name="IMU Velocity",
+                plot_type="timeseries",
+                x_axis_type=XAxisType.TIME,
+                series=[
+                    SeriesConfig(name="IMU Vx", variable="imu_vx", color="#17becf"),
+                    SeriesConfig(name="IMU Vy", variable="imu_vy", color="#bcbd22"),
+                ],
+                y_axis=AxisConfig(label="Velocity", unit="m/s"),
+                row=4, col=0,
+                buffer_size=1000,
+            ),
+            PlotConfig(
+                name="IMU Yaw",
+                plot_type="timeseries",
+                x_axis_type=XAxisType.TIME,
+                series=[
+                    SeriesConfig(
+                        name="IMU Yaw",
+                        variable="imu_yaw",
+                        color="#8c564b",
+                        transform=lambda x: x * 180 / math.pi,
+                    ),
+                ],
+                y_axis=AxisConfig(label="Yaw", unit="deg"),
+                row=4, col=1,
+                buffer_size=1000,
+            ),
+            PlotConfig(
+                name="GNSS Position",
+                plot_type="xy",
+                x_axis=AxisConfig(label="X", variable="gps_local_x", unit="m"),
+                series=[SeriesConfig(name="Y", variable="gps_local_y", color="#2ca02c")],
+                y_axis=AxisConfig(label="Y", variable="gps_local_y", unit="m"),
+                row=4, col=2,
+                show_grid=True,
+                buffer_size=2000,
             ),
         ],
     )

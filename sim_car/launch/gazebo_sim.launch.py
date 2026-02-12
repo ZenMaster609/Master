@@ -144,16 +144,34 @@ def _launch_simulation(context, *args, **kwargs):
         parameters=[{'use_sim_time': use_sim_time}]
     )
 
+    imu_enabled = _any_signal_enabled(
+        sensor_config,
+        topics=[f'{topic_prefix}/imu', '/sim/imu', '/sim/raw/imu'],
+    )
+    navsat_enabled = _any_signal_enabled(
+        sensor_config,
+        topics=[f'{topic_prefix}/navsat', '/sim/navsat', '/sim/raw/navsat'],
+    )
+    odom_enabled = _any_signal_enabled(
+        sensor_config,
+        topics=[f'{topic_prefix}/odom', '/sim/odom', '/sim/raw/odom'],
+    )
+
+    bridge_args = [
+        f'{topic_prefix}/joint_states@sensor_msgs/msg/JointState[gz.msgs.Model',
+        '/clock@rosgraph_msgs/msg/Clock[gz.msgs.Clock',
+    ]
+    if odom_enabled:
+        bridge_args.append(f'{topic_prefix}/odom@nav_msgs/msg/Odometry[gz.msgs.Odometry')
+    if imu_enabled:
+        bridge_args.append(f'{topic_prefix}/imu@sensor_msgs/msg/Imu[gz.msgs.IMU')
+    if navsat_enabled:
+        bridge_args.append(f'{topic_prefix}/navsat@sensor_msgs/msg/NavSatFix[gz.msgs.NavSat')
+
     bridge = Node(
         package='ros_gz_bridge',
         executable='parameter_bridge',
-        arguments=[
-            f'{topic_prefix}/odom@nav_msgs/msg/Odometry[gz.msgs.Odometry',
-            f'{topic_prefix}/imu@sensor_msgs/msg/Imu[gz.msgs.IMU',
-            f'{topic_prefix}/navsat@sensor_msgs/msg/NavSatFix[gz.msgs.NavSat',
-            f'{topic_prefix}/joint_states@sensor_msgs/msg/JointState[gz.msgs.Model',
-            '/clock@rosgraph_msgs/msg/Clock[gz.msgs.Clock',
-        ],
+        arguments=bridge_args,
         output='screen',
         parameters=[{'use_sim_time': use_sim_time}]
     )
@@ -183,6 +201,27 @@ def _get_config_value(config, keys, default):
             return default
         value = value[key]
     return value if value is not None else default
+
+
+def _any_signal_enabled(config, topics, default=True):
+    signals = config.get('signals')
+    if not isinstance(signals, dict):
+        return default
+    found = False
+    for signal in signals.values():
+        if not isinstance(signal, dict):
+            continue
+        if signal.get('plot_only', False):
+            continue
+        input_topic = signal.get('input_topic')
+        output_topic = signal.get('output_topic')
+        if input_topic in topics or output_topic in topics:
+            found = True
+            if bool(signal.get('enabled', True)):
+                return True
+    if not found:
+        return default
+    return False
 
 
 def _write_updated_world(world_path, max_step_size):

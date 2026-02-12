@@ -113,6 +113,12 @@ def generate_launch_description():
         description='Use simulation time from /clock topic'
     )
 
+    sensor_config_arg = DeclareLaunchArgument(
+        'sensor_config',
+        default_value='',
+        description='Path to sim_car sensor_config.yaml (empty = auto-detect)'
+    )
+
     # Rosbag options
     enable_rosbag_arg = DeclareLaunchArgument(
         'enable_rosbag',
@@ -157,6 +163,7 @@ def generate_launch_description():
             'save_plots_on_exit': LaunchConfiguration('save_plots_on_exit'),
             'save_plot_data_on_exit': LaunchConfiguration('save_plot_data_on_exit'),
             'close_plots_on_shutdown': LaunchConfiguration('close_plots'),
+            'sensor_config_path': LaunchConfiguration('sensor_config'),
             'use_sim_time': False,  # Use wall clock for timers
         }],
     )
@@ -211,6 +218,7 @@ def generate_launch_description():
         gps_origin_lat_arg,
         gps_origin_lon_arg,
         use_sim_time_arg,
+        sensor_config_arg,
         enable_rosbag_arg,
 
         # Nodes (session_manager must start first)

@@ -7,7 +7,7 @@ This file provides guidance to Codex when working in this repository.
 Always include copyable command lines prefixed with `cd ~/ros2_ws &&` whenever you mention build, run, launch, source, or test steps. When a rebuild is relevant, also include the appropriate `colcon` rebuild command. When sourcing is needed, also include the appropriate `source` command (often `source install/setup.bash`). If you provide multiple commands, each line must start with `cd ~/ros2_ws &&`.
 
 ## ROS2/Gazebo Process Policy
-
+If you ask me to run something to get some data, i will always reply run it yourself, so you might aswell skip the step where you ask and just run it. The only time where i run something and report to you is if theres anything purely visual that only i can see.
 You are authorized to build and run ROS2 projects in this workspace. After collecting whatever data you need, shut down any ROS2 and Gazebo processes you started.
 
 ## Workspace Summary

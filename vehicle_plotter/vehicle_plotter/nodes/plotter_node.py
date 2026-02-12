@@ -7,14 +7,17 @@ using PyQtGraph. Supports auto-save of plots on shutdown.
 """
 
 import rclpy
+import yaml
 from rclpy.node import Node
 from pathlib import Path
-from typing import Optional
+from typing import Optional, Dict, List
+from dataclasses import replace
 from datetime import datetime
 import time
 
 from vehicle_plotter_msgs.msg import VehicleState as VehicleStateMsg
 from vehicle_plotter_msgs.msg import RunSession as RunSessionMsg
+from ament_index_python.packages import get_package_share_directory
 
 from ..core.vehicle_state import VehicleState
 from ..core.run_session import RunSession
@@ -26,6 +29,47 @@ from ..plotting.plot_config import (
     get_all_plots,
     PlotLayoutConfig,
 )
+
+_SIGNAL_OVERRIDE_BY_VARIABLE = {
+    'x': 'odom_position',
+    'y': 'odom_position',
+    'vx': 'odom_velocity',
+    'vy': 'odom_velocity',
+    'speed': 'odom_velocity',
+    'yaw': 'odom_yaw',
+    'imu_vx': 'imu_velocity',
+    'imu_vy': 'imu_velocity',
+    'imu_yaw': 'imu_yaw',
+    'gps_local_x': 'gnss_position',
+    'gps_local_y': 'gnss_position',
+}
+
+_VARIABLE_TO_TOPICS = {
+    'x': ['/sim/odom'],
+    'y': ['/sim/odom'],
+    'vx': ['/sim/odom'],
+    'vy': ['/sim/odom'],
+    'speed': ['/sim/odom'],
+    'yaw': ['/sim/odom'],
+    'encoder_velocities': ['/sim/wheel_encoder/rpm'],
+    'encoder_speeds_mm_s': ['/sim/wheel_encoder/speed_mm_s'],
+    'encoder_angle_accum': ['/sim/wheel_encoder/angle_accum'],
+    'suspension': ['/sim/suspension'],
+    'steering_angle': ['/sim/steering_angle'],
+    'water_pressure': ['/sim/cooling/water_pressure'],
+    'water_flow': ['/sim/cooling/water_flow'],
+    'water_temp_in': ['/sim/cooling/water_temp_in'],
+    'water_temp_out': ['/sim/cooling/water_temp_out'],
+    'water_temp_radiator': ['/sim/cooling/water_temp_radiator'],
+    'brake_temp_fr': ['/sim/brakes/temp_fr'],
+    'brake_temp_rl': ['/sim/brakes/temp_rl'],
+    'pitot_dynamic_pressure': ['/sim/pitot/dynamic_pressure'],
+    'imu_vx': ['/sim/imu'],
+    'imu_vy': ['/sim/imu'],
+    'imu_yaw': ['/sim/imu'],
+    'gps_local_x': ['/sim/navsat'],
+    'gps_local_y': ['/sim/navsat'],
+}
 
 
 class PlotterNode(Node):
@@ -68,6 +112,7 @@ class PlotterNode(Node):
         self.declare_parameter('wait_for_session', True)
         self.declare_parameter('session_timeout_sec', 5.0)
         self.declare_parameter('base_path', '')
+        self.declare_parameter('sensor_config_path', '')
 
         # Get parameters
         backend = self.get_parameter('backend').value
@@ -83,6 +128,7 @@ class PlotterNode(Node):
         self._wait_for_session = self.get_parameter('wait_for_session').value
         self._session_timeout = self.get_parameter('session_timeout_sec').value
         base_path_str = self.get_parameter('base_path').value
+        sensor_config_path = self.get_parameter('sensor_config_path').value
 
         # Parse base path
         if base_path_str:
@@ -113,6 +159,7 @@ class PlotterNode(Node):
         layout_config.window_title = window_title
         layout_config.dark_mode = dark_mode
         layout_config.update_rate_hz = update_rate
+        layout_config = self._filter_layout_by_sensor_config(layout_config, sensor_config_path)
 
         # Initialize plot manager
         self.plot_manager = PlotManager(
@@ -172,6 +219,91 @@ class PlotterNode(Node):
         self._shutdown_from_window_close = False
 
         self.get_logger().info(f'PlotterNode started, subscribed to {state_topic}')
+
+    def _filter_layout_by_sensor_config(
+        self,
+        layout: PlotLayoutConfig,
+        sensor_config_path: str,
+    ) -> PlotLayoutConfig:
+        config_path = sensor_config_path or self._default_sensor_config_path()
+        if not config_path:
+            return layout
+        config = self._load_sensor_config(config_path)
+        if not config:
+            return layout
+
+        enabled_by_name, enabled_by_topic = self._build_signal_index(config)
+
+        def is_enabled_for_variable(variable: str) -> bool:
+            base = variable.split('[', 1)[0]
+            override = _SIGNAL_OVERRIDE_BY_VARIABLE.get(base)
+            if override and override in enabled_by_name:
+                return bool(enabled_by_name[override])
+            topics = _VARIABLE_TO_TOPICS.get(base)
+            if not topics:
+                return True
+            return any(enabled_by_topic.get(t, True) for t in topics)
+
+        filtered_plots = []
+        for plot in layout.plots:
+            if plot.x_axis and plot.x_axis.variable:
+                if not is_enabled_for_variable(plot.x_axis.variable):
+                    continue
+
+            filtered_series = [
+                series for series in plot.series
+                if is_enabled_for_variable(series.variable)
+            ]
+            if not filtered_series:
+                continue
+            filtered_plots.append(replace(plot, series=filtered_series))
+
+        if not filtered_plots:
+            return layout
+
+        return replace(layout, plots=filtered_plots)
+
+    def _default_sensor_config_path(self) -> str:
+        try:
+            sim_car_share = get_package_share_directory('sim_car')
+            return str(Path(sim_car_share) / 'config' / 'sensor_config.yaml')
+        except Exception:
+            return ''
+
+    def _load_sensor_config(self, path: str) -> Dict:
+        try:
+            with open(path, 'r') as config_file:
+                return yaml.safe_load(config_file) or {}
+        except (OSError, yaml.YAMLError):
+            return {}
+
+    def _build_signal_index(self, config: Dict) -> tuple:
+        signals = config.get('signals', {})
+        if not isinstance(signals, dict):
+            return {}, {}
+
+        enabled_by_name: Dict[str, bool] = {}
+        enabled_by_topic: Dict[str, bool] = {}
+
+        for name, raw in signals.items():
+            if not isinstance(raw, dict):
+                continue
+            enabled = bool(raw.get('enabled', True))
+            enabled_by_name[name] = enabled
+
+            if raw.get('plot_only', False):
+                continue
+
+            for key in ('input_topic', 'output_topic'):
+                topic = raw.get(key)
+                if not topic:
+                    continue
+                if topic in enabled_by_topic:
+                    enabled_by_topic[topic] = enabled_by_topic[topic] or enabled
+                else:
+                    enabled_by_topic[topic] = enabled
+
+        return enabled_by_name, enabled_by_topic
 
     def session_callback(self, msg: RunSessionMsg) -> None:
         """Handle incoming run session message."""

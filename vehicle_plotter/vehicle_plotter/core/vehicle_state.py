@@ -40,6 +40,11 @@ class VehicleState:
     yaw: float = 0.0          # radians, -pi to pi
     yaw_rate: float = 0.0     # rad/s
 
+    # IMU-derived orientation and dead-reckoned velocity
+    imu_vx: float = 0.0
+    imu_vy: float = 0.0
+    imu_yaw: float = 0.0
+
     # Derived quantities
     speed: float = 0.0                          # sqrt(vx^2 + vy^2)
     distance_traveled: float = 0.0              # cumulative (meters)
@@ -125,6 +130,9 @@ class VehicleState:
             'vy': self.vy,
             'yaw': self.yaw,
             'yaw_rate': self.yaw_rate,
+            'imu_vx': self.imu_vx,
+            'imu_vy': self.imu_vy,
+            'imu_yaw': self.imu_yaw,
             'speed': self.speed,
             'distance_traveled': self.distance_traveled,
             'slip_longitudinal': self.slip_longitudinal,
@@ -201,6 +209,11 @@ class VehicleState:
         msg.yaw = self.yaw
         msg.yaw_rate = self.yaw_rate
 
+        # IMU-derived
+        msg.imu_vx = self.imu_vx
+        msg.imu_vy = self.imu_vy
+        msg.imu_yaw = self.imu_yaw
+
         # Derived
         msg.speed = self.speed
         msg.distance_traveled = self.distance_traveled
@@ -275,6 +288,9 @@ class VehicleState:
             vy=msg.vy,
             yaw=msg.yaw,
             yaw_rate=msg.yaw_rate,
+            imu_vx=msg.imu_vx,
+            imu_vy=msg.imu_vy,
+            imu_yaw=msg.imu_yaw,
             speed=msg.speed,
             distance_traveled=msg.distance_traveled,
             slip_longitudinal=msg.slip_longitudinal,
@@ -318,6 +334,9 @@ class VehicleState:
             vy=self.vy,
             yaw=self.yaw,
             yaw_rate=self.yaw_rate,
+            imu_vx=self.imu_vx,
+            imu_vy=self.imu_vy,
+            imu_yaw=self.imu_yaw,
             speed=self.speed,
             distance_traveled=self.distance_traveled,
             slip_longitudinal=self.slip_longitudinal,
