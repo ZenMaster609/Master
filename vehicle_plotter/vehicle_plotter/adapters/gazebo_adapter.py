@@ -109,6 +109,7 @@ class GazeboAdapter(SensorAdapterInterface):
         self._last_imu: Optional[Imu] = None
         self._last_gps: Optional[NavSatFix] = None
         self._last_odom: Optional[Odometry] = None
+        self._last_raw_odom: Optional[Odometry] = None
         self._last_encoder_velocities: Optional[Float32MultiArray] = None
         self._last_encoder_speeds_mm_s: Optional[Float32MultiArray] = None
         self._last_encoder_angle_accum: Optional[Float32MultiArray] = None
@@ -226,6 +227,14 @@ class GazeboAdapter(SensorAdapterInterface):
             SENSOR_QOS,
         )
 
+        # Raw odometry (unprocessed)
+        self._raw_odom_sub = self.node.create_subscription(
+            Odometry,
+            '/sim/raw/odom',
+            self._raw_odom_callback,
+            SENSOR_QOS,
+        )
+
         # Virtual sensors - Cooling
         self._water_pressure_sub = self.node.create_subscription(
             Float32,
@@ -317,6 +326,10 @@ class GazeboAdapter(SensorAdapterInterface):
         if not hasattr(self, '_first_odom_logged'):
             self._first_odom_logged = True
             self.log_info(f"First odom received: timestamp={timestamp:.2f}s, pos=({msg.pose.pose.position.x:.2f}, {msg.pose.pose.position.y:.2f})")
+
+    def _raw_odom_callback(self, msg: Odometry) -> None:
+        """Raw odometry callback (unprocessed)."""
+        self._last_raw_odom = msg
 
     def _encoder_velocities_callback(self, msg: Float32MultiArray) -> None:
         """Encoder RPM callback - add to synchronizer."""
@@ -418,6 +431,17 @@ class GazeboAdapter(SensorAdapterInterface):
 
             # Yaw rate from odometry
             state.yaw_rate = odom.twist.twist.angular.z
+
+        # Raw odometry (fallback to processed if raw not available)
+        raw_odom = self._last_raw_odom or odom
+        if raw_odom is not None:
+            state.raw_x = raw_odom.pose.pose.position.x
+            state.raw_y = raw_odom.pose.pose.position.y
+            state.raw_vx = raw_odom.twist.twist.linear.x
+            state.raw_vy = raw_odom.twist.twist.linear.y
+            q_raw = raw_odom.pose.pose.orientation
+            state.raw_yaw = quaternion_to_yaw(q_raw.x, q_raw.y, q_raw.z, q_raw.w)
+            state.raw_speed = math.sqrt(state.raw_vx ** 2 + state.raw_vy ** 2)
 
         # Refine yaw rate from IMU if available
         imu: Optional[Imu] = synced_data.get('imu')

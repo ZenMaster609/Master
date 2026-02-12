@@ -40,6 +40,14 @@ class VehicleState:
     yaw: float = 0.0          # radians, -pi to pi
     yaw_rate: float = 0.0     # rad/s
 
+    # Raw odometry (unprocessed /sim/raw/odom)
+    raw_x: float = 0.0
+    raw_y: float = 0.0
+    raw_vx: float = 0.0
+    raw_vy: float = 0.0
+    raw_yaw: float = 0.0
+    raw_speed: float = 0.0
+
     # IMU-derived orientation and dead-reckoned velocity
     imu_vx: float = 0.0
     imu_vy: float = 0.0
@@ -130,6 +138,12 @@ class VehicleState:
             'vy': self.vy,
             'yaw': self.yaw,
             'yaw_rate': self.yaw_rate,
+            'raw_x': self.raw_x,
+            'raw_y': self.raw_y,
+            'raw_vx': self.raw_vx,
+            'raw_vy': self.raw_vy,
+            'raw_yaw': self.raw_yaw,
+            'raw_speed': self.raw_speed,
             'imu_vx': self.imu_vx,
             'imu_vy': self.imu_vy,
             'imu_yaw': self.imu_yaw,
@@ -208,6 +222,14 @@ class VehicleState:
         # Orientation
         msg.yaw = self.yaw
         msg.yaw_rate = self.yaw_rate
+
+        # Raw odometry
+        msg.raw_x = self.raw_x
+        msg.raw_y = self.raw_y
+        msg.raw_vx = self.raw_vx
+        msg.raw_vy = self.raw_vy
+        msg.raw_yaw = self.raw_yaw
+        msg.raw_speed = self.raw_speed
 
         # IMU-derived
         msg.imu_vx = self.imu_vx
@@ -288,6 +310,12 @@ class VehicleState:
             vy=msg.vy,
             yaw=msg.yaw,
             yaw_rate=msg.yaw_rate,
+            raw_x=msg.raw_x,
+            raw_y=msg.raw_y,
+            raw_vx=msg.raw_vx,
+            raw_vy=msg.raw_vy,
+            raw_yaw=msg.raw_yaw,
+            raw_speed=msg.raw_speed,
             imu_vx=msg.imu_vx,
             imu_vy=msg.imu_vy,
             imu_yaw=msg.imu_yaw,
@@ -334,6 +362,12 @@ class VehicleState:
             vy=self.vy,
             yaw=self.yaw,
             yaw_rate=self.yaw_rate,
+            raw_x=self.raw_x,
+            raw_y=self.raw_y,
+            raw_vx=self.raw_vx,
+            raw_vy=self.raw_vy,
+            raw_yaw=self.raw_yaw,
+            raw_speed=self.raw_speed,
             imu_vx=self.imu_vx,
             imu_vy=self.imu_vy,
             imu_yaw=self.imu_yaw,

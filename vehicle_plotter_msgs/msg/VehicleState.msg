@@ -21,6 +21,14 @@ float64 vy
 float64 yaw           # radians, range: -pi to pi
 float64 yaw_rate      # rad/s, positive = counter-clockwise
 
+# Raw odometry (unprocessed /sim/raw/odom)
+float64 raw_x
+float64 raw_y
+float64 raw_vx
+float64 raw_vy
+float64 raw_yaw
+float64 raw_speed
+
 # IMU-derived orientation (yaw) and dead-reckoned velocity
 float64 imu_vx         # m/s, IMU-only integration
 float64 imu_vy         # m/s, IMU-only integration

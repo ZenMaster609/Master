@@ -1,7 +1,7 @@
 seed: 12345
 signals:
   imu:
-    enabled: true
+    enabled: false
     input_topic: /sim/raw/imu
     output_topic: /sim/imu
     msg_type: sensor_msgs/msg/Imu
@@ -25,17 +25,17 @@ signals:
       linear_acceleration: 50.0
 
   imu_velocity:
-    enabled: true
+    enabled: false
     plot_only: true
     output_topic: /sim/imu
 
   imu_yaw:
-    enabled: true
+    enabled: false
     plot_only: true
     output_topic: /sim/imu
 
   navsat:
-    enabled: true
+    enabled: false
     input_topic: /sim/raw/navsat
     output_topic: /sim/navsat
     msg_type: sensor_msgs/msg/NavSatFix
@@ -64,7 +64,7 @@ signals:
       altitude: 10000.0
 
   gnss_position:
-    enabled: true
+    enabled: false
     plot_only: true
     output_topic: /sim/navsat
 
@@ -74,7 +74,7 @@ signals:
     output_topic: /sim/odom
     msg_type: nav_msgs/msg/Odometry
     rate_hz: 50.0
-    latency_ms: 0.0
+    latency_ms: 500.0
     dropout_prob: 0.0
     noise_std: 0.0
     bias_init: 0.0
@@ -83,20 +83,35 @@ signals:
     saturation_max: null
     apply_orientation: false
 
-  odom_position:
+  realistic_position:
     enabled: true
     plot_only: true
     output_topic: /sim/odom
 
-  odom_velocity:
+  realistic_velocity:
     enabled: true
     plot_only: true
     output_topic: /sim/odom
 
-  odom_yaw:
+  realistic_yaw:
     enabled: true
     plot_only: true
     output_topic: /sim/odom
+
+  raw_position:
+    enabled: false
+    plot_only: true
+    output_topic: /sim/raw/odom
+
+  raw_velocity:
+    enabled: false
+    plot_only: true
+    output_topic: /sim/raw/odom
+
+  raw_yaw:
+    enabled: false
+    plot_only: true
+    output_topic: /sim/raw/odom
 
   wheel_encoder_rpm:
     enabled: false

@@ -85,7 +85,7 @@ def generate_launch_description():
 
     measure_arg = DeclareLaunchArgument(
         'measure',
-        default_value='false',
+        default_value='true',
         description='Enable measurement_node and use /sim/raw topics'
     )
 
