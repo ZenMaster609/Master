@@ -54,6 +54,7 @@ setup(
             'brake_temp_fr_node = sim_car.brake_temp_fr_node:main',
             'brake_temp_rl_node = sim_car.brake_temp_rl_node:main',
             'pitot_dynamic_pressure_node = sim_car.pitot_dynamic_pressure_node:main',
+            'camera_stream_node = sim_car.camera_stream_node:main',
         ],
     },
 )

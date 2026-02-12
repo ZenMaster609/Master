@@ -65,6 +65,6 @@ This file lists the main configuration files used by the packages in this worksp
 
 ## eufs_models
 
-### `eufs_sim/eufs_models/config/noise.yaml`
+### `eufs_remastered/eufs_models/config/noise.yaml`
 
 - Noise parameters for EUFS vehicle model dynamics (required by `eufs_gz_dynamics`).

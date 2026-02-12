@@ -1,0 +1,46 @@
+# Probabilities for recoloring cones.
+# Row format:
+#   source_color:
+#     destination_color: probability
+#
+# Rows should sum to 1.0. Destination color "undetected" drops the cone.
+
+blue:
+  blue: 1.0
+  yellow: 0.0
+  orange: 0.0
+  big_orange: 0.0
+  unknown_color: 0.0
+  undetected: 0.0
+
+yellow:
+  blue: 0.0
+  yellow: 1.0
+  orange: 0.0
+  big_orange: 0.0
+  unknown_color: 0.0
+  undetected: 0.0
+
+orange:
+  blue: 0.0
+  yellow: 0.0
+  orange: 1.0
+  big_orange: 0.0
+  unknown_color: 0.0
+  undetected: 0.0
+
+big_orange:
+  blue: 0.0
+  yellow: 0.0
+  orange: 0.0
+  big_orange: 1.0
+  unknown_color: 0.0
+  undetected: 0.0
+
+unknown_color:
+  blue: 0.0
+  yellow: 0.0
+  orange: 0.0
+  big_orange: 0.0
+  unknown_color: 1.0
+  undetected: 0.0

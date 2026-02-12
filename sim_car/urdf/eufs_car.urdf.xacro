@@ -3,6 +3,9 @@
   <xacro:arg name="config_file" default=""/>
   <xacro:arg name="chassis_mesh" default="file://$(find sim_car)/meshes/sisu-20d.dae"/>
   <xacro:arg name="topic_prefix" default="/sim/raw"/>
+  <xacro:arg name="publish_track_cones" default="true"/>
+  <xacro:arg name="enable_cone_miscoloring" default="false"/>
+  <xacro:arg name="cone_confusion_yaml" default="$(find gazebo_cone_plugins)/config/cone_confusion_matrix.yaml"/>
 
   <xacro:property name="config" value="${load_yaml('$(arg config_file)')}"/>
 
@@ -62,6 +65,45 @@
     <origin xyz="-0.5 0 0.15" rpy="0 0 0"/>
   </joint>
 
+  <!-- Stereo Camera Links -->
+  <link name="stereo_left_link">
+    <visual>
+      <geometry>
+        <box size="0.04 0.03 0.02"/>
+      </geometry>
+      <material name="silver"/>
+    </visual>
+    <inertial>
+      <mass value="0.03"/>
+      <inertia ixx="0.00001" ixy="0.0" ixz="0.0" iyy="0.00001" iyz="0.0" izz="0.00001"/>
+    </inertial>
+  </link>
+
+  <joint name="stereo_left_joint" type="fixed">
+    <parent link="chassis"/>
+    <child link="stereo_left_link"/>
+    <origin xyz="1.71 0.06 0.2" rpy="0 0 0"/>
+  </joint>
+
+  <link name="stereo_right_link">
+    <visual>
+      <geometry>
+        <box size="0.04 0.03 0.02"/>
+      </geometry>
+      <material name="silver"/>
+    </visual>
+    <inertial>
+      <mass value="0.03"/>
+      <inertia ixx="0.00001" ixy="0.0" ixz="0.0" iyy="0.00001" iyz="0.0" izz="0.00001"/>
+    </inertial>
+  </link>
+
+  <joint name="stereo_right_joint" type="fixed">
+    <parent link="chassis"/>
+    <child link="stereo_right_link"/>
+    <origin xyz="1.71 -0.06 0.2" rpy="0 0 0"/>
+  </joint>
+
   <!-- EUFS dynamics plugin (gz-sim) -->
   <gazebo>
     <plugin filename="libeufs_gz_dynamics.so" name="eufs_gz_dynamics::EufsRaceCarModel">
@@ -79,6 +121,35 @@
       <front_right_wheel>front_right_wheel_joint</front_right_wheel>
       <rear_left_wheel>rear_left_wheel_joint</rear_left_wheel>
       <rear_right_wheel>rear_right_wheel_joint</rear_right_wheel>
+    </plugin>
+  </gazebo>
+
+  <!-- Remastered cone plugin (Ignition Gazebo Fortress) -->
+  <gazebo>
+    <plugin filename="libgazebo_ground_truth_cones.so"
+            name="gazebo_plugins::eufs_plugins::GazeboGroundTruthConesRemastered">
+      <updateRate>100.0</updateRate>
+      <trackModelName>track</trackModelName>
+      <carFrameLink>base_footprint</carFrameLink>
+
+      <groundTruthTrackTopicName>/ground_truth/track</groundTruthTrackTopicName>
+      <visibleConesTopicName>/ground_truth/cones</visibleConesTopicName>
+      <trackFrame>map</trackFrame>
+      <visibleFrame>base_footprint</visibleFrame>
+      <publishTrack>$(arg publish_track_cones)</publishTrack>
+
+      <cameraViewDistance>15.0</cameraViewDistance>
+      <cameraMinViewDistance>0.5</cameraMinViewDistance>
+      <cameraFOV>2.09</cameraFOV>
+      <lidarOn>true</lidarOn>
+      <lidarViewDistance>100.0</lidarViewDistance>
+      <lidarMinViewDistance>1.0</lidarMinViewDistance>
+      <lidarXViewDistance>20.0</lidarXViewDistance>
+      <lidarYViewDistance>20.0</lidarYViewDistance>
+      <lidarFOV>3.141593</lidarFOV>
+
+      <enableConeMiscoloring>$(arg enable_cone_miscoloring)</enableConeMiscoloring>
+      <confusionMatrixYaml>$(arg cone_confusion_yaml)</confusionMatrixYaml>
     </plugin>
   </gazebo>
 
@@ -183,6 +254,54 @@
           </vertical>
         </position_sensing>
       </navsat>
+    </sensor>
+  </gazebo>
+
+  <!-- Stereo Left Camera Sensor -->
+  <gazebo reference="stereo_left_link">
+    <sensor name="stereo_left_camera" type="camera">
+      <topic>$(arg topic_prefix)/stereo/left/image_raw</topic>
+      <camera_info_topic>$(arg topic_prefix)/stereo/left/camera_info</camera_info_topic>
+      <update_rate>15</update_rate>
+      <always_on>true</always_on>
+      <visualize>false</visualize>
+      <camera>
+        <!-- ZED 2i (2.1mm lens) -->
+        <horizontal_fov>1.919862</horizontal_fov>
+        <image>
+          <width>1920</width>
+          <height>1080</height>
+          <format>R8G8B8</format>
+        </image>
+        <clip>
+          <near>0.3</near>
+          <far>20.0</far>
+        </clip>
+      </camera>
+    </sensor>
+  </gazebo>
+
+  <!-- Stereo Right Camera Sensor -->
+  <gazebo reference="stereo_right_link">
+    <sensor name="stereo_right_camera" type="camera">
+      <topic>$(arg topic_prefix)/stereo/right/image_raw</topic>
+      <camera_info_topic>$(arg topic_prefix)/stereo/right/camera_info</camera_info_topic>
+      <update_rate>15</update_rate>
+      <always_on>true</always_on>
+      <visualize>false</visualize>
+      <camera>
+        <!-- ZED 2i (2.1mm lens) -->
+        <horizontal_fov>1.919862</horizontal_fov>
+        <image>
+          <width>1920</width>
+          <height>1080</height>
+          <format>R8G8B8</format>
+        </image>
+        <clip>
+          <near>0.3</near>
+          <far>20.0</far>
+        </clip>
+      </camera>
     </sensor>
   </gazebo>
 </robot>

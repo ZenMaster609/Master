@@ -14,23 +14,32 @@ This file summarizes each ROS2 package in the workspace, with its nodes, launch 
   - `canbus_decoder/launch/can_monitor.launch.py`
 - Configs: none (parameters are set via launch or CLI).
 
-## eufs_gz_dynamics (`eufs_gz_dynamics/`)
+## eufs_gz_dynamics (`eufs_remastered/eufs_gz_dynamics/`)
 
 - Purpose: Gazebo dynamics plugin library for EUFS models.
 - Nodes: none (builds a shared library in `lib/`).
 - Launch files: none.
 - Configs: none in this package.
-- Dependency note: requires `eufs_models` from `eufs_sim/eufs_models/`.
+- Dependency note: requires `eufs_models` from `eufs_remastered/eufs_models/`.
 
-## eufs_msgs (`eufs_msgs/`)
+## gazebo_cone_plugins (`eufs_remastered/gazebo_cone_plugins/`)
+
+- Purpose: Remastered cone plugin for ground-truth cones, per-frame visible cones, and optional YAML confusion-matrix mis-coloring.
+- Nodes: none (builds plugin library `libgazebo_ground_truth_cones.so`).
+- Launch files: none.
+- Configs:
+  - `eufs_remastered/gazebo_cone_plugins/config/cone_confusion_matrix.yaml`
+- Compatibility note: targets ROS 2 Humble + Ignition Gazebo Fortress (`ignition-gazebo6`).
+
+## eufs_msgs (`eufs_remastered/eufs_msgs/`)
 
 - Purpose: EUFS messages and actions used by EUFS sim tooling.
-- Messages: numerous `.msg` files under `eufs_msgs/msg/`.
-- Actions: `eufs_msgs/action/CheckForObjects.action`.
+- Messages: numerous `.msg` files under `eufs_remastered/eufs_msgs/msg/`.
+- Actions: `eufs_remastered/eufs_msgs/action/CheckForObjects.action`.
 - Nodes: none.
 - Launch files: none.
 
-## eufs_models (`eufs_sim/eufs_models/`)
+## eufs_models (`eufs_remastered/eufs_models/`)
 
 - Purpose: EUFS vehicle model utilities and libraries (C++) required by `eufs_gz_dynamics`.
 - Nodes: none (library built from `src/`).
@@ -72,7 +81,7 @@ This file summarizes each ROS2 package in the workspace, with its nodes, launch 
   - `sim_car/config/eufs_config.yaml`
 - Assets: `urdf/`, `worlds/`, `models/`, `meshes/`, `materials/`.
 
-## steering_gui (`steering_gui/`)
+## steering_gui (`eufs_remastered/steering_gui/`)
 
 - Purpose: RQT steering GUI for sending Ackermann commands and brake commands.
 - Executable script:

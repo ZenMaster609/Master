@@ -28,6 +28,7 @@ def generate_launch_description():
     headless = LaunchConfiguration('headless', default='false')
     update_rate_hz = LaunchConfiguration('update_rate_hz', default='100.0')
     topic_prefix = LaunchConfiguration('topic_prefix', default='/sim/raw')
+    sensors_render_engine = LaunchConfiguration('sensors_render_engine', default='ogre')
 
     resource_path = os.path.join(pkg_sim_car)
     resource_paths = [
@@ -66,6 +67,11 @@ def generate_launch_description():
             default_value='/sim/raw',
             description='Topic prefix for sim sensors (/sim or /sim/raw)'
         ),
+        DeclareLaunchArgument(
+            'sensors_render_engine',
+            default_value='ogre',
+            description='Render engine for injected sensors plugin (ogre or ogre2)'
+        ),
         OpaqueFunction(function=_launch_simulation),
     ])
 
@@ -85,8 +91,9 @@ def _launch_simulation(context, *args, **kwargs):
     world_path = LaunchConfiguration('world').perform(context)
     urdf_path = os.path.join(pkg_sim_car, 'urdf', 'eufs_car.urdf.xacro')
     topic_prefix = LaunchConfiguration('topic_prefix').perform(context)
+    sensors_render_engine = LaunchConfiguration('sensors_render_engine').perform(context)
 
-    updated_world = _write_updated_world(world_path, max_step_size)
+    updated_world = _write_updated_world(world_path, max_step_size, sensors_render_engine)
     eufs_config_path = os.path.join(pkg_sim_car, 'config', 'eufs_config.yaml')
     update_rate_value = float(LaunchConfiguration('update_rate_hz').perform(context))
     updated_eufs_config = _write_updated_eufs_config(eufs_config_path, update_rate_value)
@@ -160,6 +167,10 @@ def _launch_simulation(context, *args, **kwargs):
     bridge_args = [
         f'{topic_prefix}/joint_states@sensor_msgs/msg/JointState[gz.msgs.Model',
         '/clock@rosgraph_msgs/msg/Clock[gz.msgs.Clock',
+        f'{topic_prefix}/stereo/left/image_raw@sensor_msgs/msg/Image[gz.msgs.Image',
+        f'{topic_prefix}/stereo/right/image_raw@sensor_msgs/msg/Image[gz.msgs.Image',
+        f'{topic_prefix}/stereo/left/camera_info@sensor_msgs/msg/CameraInfo[gz.msgs.CameraInfo',
+        f'{topic_prefix}/stereo/right/camera_info@sensor_msgs/msg/CameraInfo[gz.msgs.CameraInfo',
     ]
     if odom_enabled:
         bridge_args.append(f'{topic_prefix}/odom@nav_msgs/msg/Odometry[gz.msgs.Odometry')
@@ -224,18 +235,21 @@ def _any_signal_enabled(config, topics, default=True):
     return False
 
 
-def _write_updated_world(world_path, max_step_size):
+def _write_updated_world(world_path, max_step_size, sensors_render_engine):
     try:
         tree = ET.parse(world_path)
         root = tree.getroot()
     except ET.ParseError:
         return world_path
 
-    physics = root.find('.//world/physics')
+    world_elem = root.find('.//world')
+    if world_elem is None:
+        return world_path
+
+    _ensure_required_world_systems(world_elem, sensors_render_engine)
+
+    physics = world_elem.find('physics')
     if physics is None:
-        world_elem = root.find('.//world')
-        if world_elem is None:
-            return world_path
         physics = ET.SubElement(world_elem, 'physics', attrib={'name': 'configured', 'type': 'ignored'})
     max_step_elem = physics.find('max_step_size')
     if max_step_elem is None:
@@ -245,6 +259,41 @@ def _write_updated_world(world_path, max_step_size):
     tmp = tempfile.NamedTemporaryFile(delete=False, suffix='.sdf')
     tree.write(tmp.name, encoding='utf-8', xml_declaration=True)
     return tmp.name
+
+
+def _ensure_required_world_systems(world_elem, sensors_render_engine):
+    required_plugins = [
+        ('ignition-gazebo-physics-system', 'ignition::gazebo::systems::Physics'),
+        ('ignition-gazebo-user-commands-system', 'ignition::gazebo::systems::UserCommands'),
+        ('ignition-gazebo-scene-broadcaster-system', 'ignition::gazebo::systems::SceneBroadcaster'),
+        ('ignition-gazebo-sensors-system', 'ignition::gazebo::systems::Sensors'),
+    ]
+
+    existing_plugins = world_elem.findall('plugin')
+
+    for filename, plugin_name in required_plugins:
+        plugin_elem = _find_world_plugin(existing_plugins, filename, plugin_name)
+        if plugin_elem is None:
+            plugin_elem = ET.SubElement(world_elem, 'plugin', attrib={
+                'filename': filename,
+                'name': plugin_name,
+            })
+            existing_plugins.append(plugin_elem)
+
+        if plugin_name == 'ignition::gazebo::systems::Sensors' and plugin_elem.find('render_engine') is None:
+            render_engine = plugin_elem.find('render_engine')
+            if render_engine is None:
+                render_engine = ET.SubElement(plugin_elem, 'render_engine')
+            render_engine.text = sensors_render_engine
+
+
+def _find_world_plugin(plugins, filename, plugin_name):
+    for plugin in plugins:
+        if plugin.get('filename') == filename:
+            return plugin
+        if plugin.get('name') == plugin_name:
+            return plugin
+    return None
 
 
 def _write_updated_eufs_config(config_path, update_rate_hz):

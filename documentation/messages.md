@@ -15,5 +15,5 @@
 ## eufs_msgs
 
 - Message definitions used by EUFS tooling. These are not authored in this repository but are included for compatibility with EUFS simulation components.
-- Message directory: `eufs_msgs/msg/`.
-- Action directory: `eufs_msgs/action/`.
+- Message directory: `eufs_remastered/eufs_msgs/msg/`.
+- Action directory: `eufs_remastered/eufs_msgs/action/`.

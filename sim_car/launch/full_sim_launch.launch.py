@@ -25,7 +25,7 @@ def generate_launch_description():
 
     headless_arg = DeclareLaunchArgument(
         'headless',
-        default_value='true',
+        default_value='false',
         description='Run Gazebo headless (no GUI)'
     )
 
@@ -35,15 +35,21 @@ def generate_launch_description():
         description='Dynamics + joint state update rate (Hz)'
     )
 
+    sensors_render_engine_arg = DeclareLaunchArgument(
+        'sensors_render_engine',
+        default_value='ogre',
+        description='Render engine for injected Gazebo sensors plugin (ogre or ogre2)'
+    )
+
     world_arg = DeclareLaunchArgument(
         'world',
-        default_value=PathJoinSubstitution([sim_car_share, 'worlds', 'small_track.world']),
+        default_value=PathJoinSubstitution([sim_car_share, 'worlds', 'acceleration.world']),
         description='Full path to world file to load'
     )
 
     plotting_arg = DeclareLaunchArgument(
         'plotting',
-        default_value='true',
+        default_value='false',
         description='Enable live plotting'
     )
 
@@ -89,6 +95,12 @@ def generate_launch_description():
         description='Enable measurement_node and use /sim/raw topics'
     )
 
+    camera_stream_arg = DeclareLaunchArgument(
+        'camera_stream',
+        default_value='true',
+        description='Enable local OpenCV stereo camera stream window'
+    )
+
     measurement_config_arg = DeclareLaunchArgument(
         'measurement_config',
         default_value=PathJoinSubstitution([sim_car_share, 'config', 'sensor_config.yaml']),
@@ -110,6 +122,7 @@ def generate_launch_description():
             'world': LaunchConfiguration('world'),
             'use_sim_time': LaunchConfiguration('use_sim_time'),
             'update_rate_hz': LaunchConfiguration('update_rate_hz'),
+            'sensors_render_engine': LaunchConfiguration('sensors_render_engine'),
             'topic_prefix': topic_prefix,
         }.items(),
     )
@@ -205,9 +218,24 @@ def generate_launch_description():
         ]))
     )
 
+    camera_stream_node = Node(
+        package='sim_car',
+        executable='camera_stream_node',
+        name='camera_stream_node',
+        output='screen',
+        parameters=[{
+            'left_topic': PythonExpression(["'", topic_prefix, "' + '/stereo/left/image_raw'"]),
+            'right_topic': PythonExpression(["'", topic_prefix, "' + '/stereo/right/image_raw'"]),
+            'window_name': 'Sim Stereo Stream',
+            'show_right': True,
+        }],
+        condition=IfCondition(LaunchConfiguration('camera_stream'))
+    )
+
     return LaunchDescription([
         headless_arg,
         update_rate_arg,
+        sensors_render_engine_arg,
         world_arg,
         plotting_arg,
         logging_arg,
@@ -217,6 +245,7 @@ def generate_launch_description():
         control_bridge_arg,
         use_sim_time_arg,
         measure_arg,
+        camera_stream_arg,
         measurement_config_arg,
         gazebo_launch,
         sim_nodes_launch,
@@ -224,6 +253,7 @@ def generate_launch_description():
         plotter_launch,
         throttle_bridge_node,
         steering_bridge_node,
+        camera_stream_node,
         steering_gui_node,
     ])
 

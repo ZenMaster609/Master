@@ -23,7 +23,7 @@ Core packages:
 - `steering_gui`: RQT GUI for Ackermann commands and brake command.
 - `vehicle_plotter_msgs`: `VehicleState` and `RunSession` messages.
 
-`eufs_models` (under `eufs_sim/`) is required by `eufs_gz_dynamics`. Other `eufs_sim` packages are currently not used by the core pipeline.
+`eufs_models` (under `eufs_remastered/`) is required by `eufs_gz_dynamics`. Other `eufs_sim` packages are currently not used by the core pipeline.
 
 ## Data Output Paths
 
