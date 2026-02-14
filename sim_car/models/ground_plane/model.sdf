@@ -7,7 +7,7 @@
         <geometry>
           <plane>
             <normal>0 0 1</normal>
-            <size>1000 1000</size>
+            <size>200 200</size>
           </plane>
         </geometry>
         <surface>
@@ -27,6 +27,23 @@
         </surface>
         <max_contacts>10</max_contacts>
       </collision>
+      <visual name='visual'>
+        <geometry>
+          <mesh>
+            <uri>../../meshes/asphalt_plane_200x200.obj</uri>
+          </mesh>
+        </geometry>
+        <material>
+          <ambient>0.35 0.35 0.35 1</ambient>
+          <diffuse>0.45 0.45 0.45 1</diffuse>
+          <specular>0.02 0.02 0.02 1</specular>
+          <pbr>
+            <metal>
+              <albedo_map>../../materials/asphalt.jpg</albedo_map>
+            </metal>
+          </pbr>
+        </material>
+      </visual>
       <self_collide>0</self_collide>
       <kinematic>0</kinematic>
       <gravity>1</gravity>

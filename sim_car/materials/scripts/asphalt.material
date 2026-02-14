@@ -1,0 +1,19 @@
+material SimCar/Asphalt
+{
+  technique
+  {
+    pass
+    {
+      ambient 0.35 0.35 0.35 1
+      diffuse 0.45 0.45 0.45 1
+      specular 0.02 0.02 0.02 1
+
+      texture_unit
+      {
+        texture asphalt.jpg
+        // 200m plane with ~5m visual tile size -> 40 repeats per axis
+        scale 40 40
+      }
+    }
+  }
+}

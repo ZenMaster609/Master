@@ -55,6 +55,8 @@ setup(
             'brake_temp_rl_node = sim_car.brake_temp_rl_node:main',
             'pitot_dynamic_pressure_node = sim_car.pitot_dynamic_pressure_node:main',
             'camera_stream_node = sim_car.camera_stream_node:main',
+            'stereo_depth_node = sim_car.stereo_depth_node:main',
+            'stereo_eval_node = sim_car.stereo_eval_node:main',
         ],
     },
 )

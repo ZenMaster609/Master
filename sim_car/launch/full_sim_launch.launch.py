@@ -73,7 +73,7 @@ def generate_launch_description():
 
     steering_arg = DeclareLaunchArgument(
         'steering',
-        default_value='true',
+        default_value='false',
         description='Enable the EUFS steering GUI'
     )
 
@@ -97,8 +97,26 @@ def generate_launch_description():
 
     camera_stream_arg = DeclareLaunchArgument(
         'camera_stream',
-        default_value='true',
+        default_value='false',
         description='Enable local OpenCV stereo camera stream window'
+    )
+
+    stereo_rect_arg = DeclareLaunchArgument(
+        'stereo_rect',
+        default_value='false',
+        description='Enable local OpenCV view of rectified stereo feeds'
+    )
+
+    stereo_depth_arg = DeclareLaunchArgument(
+        'stereo_depth',
+        default_value='true',
+        description='Enable stereo depth estimation node'
+    )
+
+    stereo_eval_arg = DeclareLaunchArgument(
+        'stereo_eval',
+        default_value='true',
+        description='Enable stereo calibration/rectification evaluation node'
     )
 
     measurement_config_arg = DeclareLaunchArgument(
@@ -232,6 +250,61 @@ def generate_launch_description():
         condition=IfCondition(LaunchConfiguration('camera_stream'))
     )
 
+    stereo_rect_stream_node = Node(
+        package='sim_car',
+        executable='camera_stream_node',
+        name='stereo_rect_stream_node',
+        output='screen',
+        parameters=[{
+            'left_topic': PythonExpression(["'", topic_prefix, "' + '/stereo/left/image_rect'"]),
+            'right_topic': PythonExpression(["'", topic_prefix, "' + '/stereo/right/image_rect'"]),
+            'window_name': 'Stereo Rectified Stream',
+            'show_right': True,
+            'display_scale': 0.5,
+        }],
+        condition=IfCondition(LaunchConfiguration('stereo_rect'))
+    )
+
+    stereo_depth_node = Node(
+        package='sim_car',
+        executable='stereo_depth_node',
+        name='stereo_depth_node',
+        output='screen',
+        parameters=[{
+            'left_image_topic': PythonExpression(["'", topic_prefix, "' + '/stereo/left/image_raw'"]),
+            'right_image_topic': PythonExpression(["'", topic_prefix, "' + '/stereo/right/image_raw'"]),
+            'left_camera_info_topic': PythonExpression(["'", topic_prefix, "' + '/stereo/left/camera_info'"]),
+            'right_camera_info_topic': PythonExpression(["'", topic_prefix, "' + '/stereo/right/camera_info'"]),
+            'left_rect_topic': PythonExpression(["'", topic_prefix, "' + '/stereo/left/image_rect'"]),
+            'right_rect_topic': PythonExpression(["'", topic_prefix, "' + '/stereo/right/image_rect'"]),
+            'disparity_topic': PythonExpression(["'", topic_prefix, "' + '/stereo/disparity'"]),
+            'depth_topic': PythonExpression(["'", topic_prefix, "' + '/stereo/depth'"]),
+            'depth_preview_topic': PythonExpression(["'", topic_prefix, "' + '/stereo/depth_preview'"]),
+            'calibration_file': PathJoinSubstitution([sim_car_share, 'config', 'stereo_calibration.yaml']),
+            'baseline_m': 0.12,
+            'publish_rectified': True,
+            'publish_preview': True,
+        }],
+        condition=IfCondition(LaunchConfiguration('stereo_depth'))
+    )
+
+    stereo_eval_node = Node(
+        package='sim_car',
+        executable='stereo_eval_node',
+        name='stereo_eval_node',
+        output='screen',
+        parameters=[{
+            'left_rect_topic': PythonExpression(["'", topic_prefix, "' + '/stereo/left/image_rect'"]),
+            'right_rect_topic': PythonExpression(["'", topic_prefix, "' + '/stereo/right/image_rect'"]),
+            'disparity_topic': PythonExpression(["'", topic_prefix, "' + '/stereo/disparity'"]),
+            'depth_topic': PythonExpression(["'", topic_prefix, "' + '/stereo/depth'"]),
+            'min_depth_m': 0.3,
+            'max_depth_m': 30.0,
+            'report_period_sec': 1.0,
+        }],
+        condition=IfCondition(LaunchConfiguration('stereo_eval'))
+    )
+
     return LaunchDescription([
         headless_arg,
         update_rate_arg,
@@ -246,6 +319,9 @@ def generate_launch_description():
         use_sim_time_arg,
         measure_arg,
         camera_stream_arg,
+        stereo_rect_arg,
+        stereo_depth_arg,
+        stereo_eval_arg,
         measurement_config_arg,
         gazebo_launch,
         sim_nodes_launch,
@@ -254,6 +330,9 @@ def generate_launch_description():
         throttle_bridge_node,
         steering_bridge_node,
         camera_stream_node,
+        stereo_rect_stream_node,
+        stereo_depth_node,
+        stereo_eval_node,
         steering_gui_node,
     ])
 

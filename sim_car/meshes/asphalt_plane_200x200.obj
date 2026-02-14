@@ -1,0 +1,14 @@
+# 200x200 ground mesh with UV tiling for asphalt texture.
+# UV scale 40x40 gives ~5m texture repeat on each axis.
+o asphalt_plane_200x200
+v -100.0 -100.0 0.0
+v  100.0 -100.0 0.0
+v  100.0  100.0 0.0
+v -100.0  100.0 0.0
+vt 0.0 0.0
+vt 40.0 0.0
+vt 40.0 40.0
+vt 0.0 40.0
+vn 0.0 0.0 1.0
+f 1/1/1 2/2/1 3/3/1
+f 1/1/1 3/3/1 4/4/1
