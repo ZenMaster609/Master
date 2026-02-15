@@ -1,22 +1,22 @@
 # Stereo calibration for sim stereo cameras (starter values).
 # These values are consistent with current sim settings:
-# - Resolution: 1920x1080
+# - Resolution: 1280x720
 # - Horizontal FOV: 110 deg
 # - Baseline: 0.12 m
 #
 # Replace with measured calibration later if you run a checkerboard calibration.
 
 stereo_calibration:
-  image_width: 1920
-  image_height: 1080
+  image_width: 1280
+  image_height: 720
 
   # Left camera intrinsics
   left:
     camera_matrix:
       rows: 3
       cols: 3
-      data: [672.212103, 0.0, 959.5,
-             0.0, 672.212103, 539.5,
+      data: [448.141402, 0.0, 639.5,
+             0.0, 448.141402, 359.5,
              0.0, 0.0, 1.0]
     distortion_model: plumb_bob
     distortion_coefficients:
@@ -32,8 +32,8 @@ stereo_calibration:
     projection_matrix:
       rows: 3
       cols: 4
-      data: [672.212103, 0.0, 959.5, 0.0,
-             0.0, 672.212103, 539.5, 0.0,
+      data: [448.141402, 0.0, 639.5, 0.0,
+             0.0, 448.141402, 359.5, 0.0,
              0.0, 0.0, 1.0, 0.0]
 
   # Right camera intrinsics
@@ -41,8 +41,8 @@ stereo_calibration:
     camera_matrix:
       rows: 3
       cols: 3
-      data: [672.212103, 0.0, 959.5,
-             0.0, 672.212103, 539.5,
+      data: [448.141402, 0.0, 639.5,
+             0.0, 448.141402, 359.5,
              0.0, 0.0, 1.0]
     distortion_model: plumb_bob
     distortion_coefficients:
@@ -58,8 +58,8 @@ stereo_calibration:
     projection_matrix:
       rows: 3
       cols: 4
-      data: [672.212103, 0.0, 959.5, -80.665452,
-             0.0, 672.212103, 539.5, 0.0,
+      data: [448.141402, 0.0, 639.5, -53.776968,
+             0.0, 448.141402, 359.5, 0.0,
              0.0, 0.0, 1.0, 0.0]
 
   # Stereo extrinsics: transform from left camera to right camera
@@ -80,7 +80,7 @@ stereo_calibration:
     q_matrix:
       rows: 4
       cols: 4
-      data: [1.0, 0.0, 0.0, -959.5,
-             0.0, 1.0, 0.0, -539.5,
-             0.0, 0.0, 0.0, 672.212103,
+      data: [1.0, 0.0, 0.0, -639.5,
+             0.0, 1.0, 0.0, -359.5,
+             0.0, 0.0, 0.0, 448.141402,
              0.0, 0.0, 8.333333333, 0.0]

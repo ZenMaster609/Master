@@ -40,6 +40,11 @@ def generate_launch_description():
     resource_path_value = ':'.join(resource_paths)
 
     return LaunchDescription([
+        # Prefer discrete NVIDIA GPU rendering when available.
+        SetEnvironmentVariable('__NV_PRIME_RENDER_OFFLOAD', '1'),
+        SetEnvironmentVariable('__GLX_VENDOR_LIBRARY_NAME', 'nvidia'),
+        SetEnvironmentVariable('LIBGL_ALWAYS_SOFTWARE', '0'),
+        SetEnvironmentVariable('CUDA_VISIBLE_DEVICES', '0'),
         SetEnvironmentVariable('GZ_SIM_RESOURCE_PATH', resource_path_value),
         SetEnvironmentVariable('IGN_GAZEBO_RESOURCE_PATH', resource_path_value),
         DeclareLaunchArgument(

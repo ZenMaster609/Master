@@ -269,8 +269,8 @@
         <!-- ZED 2i (2.1mm lens) -->
         <horizontal_fov>1.919862</horizontal_fov>
         <image>
-          <width>1920</width>
-          <height>1080</height>
+          <width>1280</width>
+          <height>720</height>
           <format>R8G8B8</format>
         </image>
         <clip>
@@ -293,8 +293,8 @@
         <!-- ZED 2i (2.1mm lens) -->
         <horizontal_fov>1.919862</horizontal_fov>
         <image>
-          <width>1920</width>
-          <height>1080</height>
+          <width>1280</width>
+          <height>720</height>
           <format>R8G8B8</format>
         </image>
         <clip>

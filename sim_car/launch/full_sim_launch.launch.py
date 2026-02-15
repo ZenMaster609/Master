@@ -14,6 +14,7 @@ from launch.conditions import IfCondition
 from launch.launch_description_sources import PythonLaunchDescriptionSource
 from launch.substitutions import LaunchConfiguration, PathJoinSubstitution, PythonExpression
 from launch_ros.actions import Node
+from launch_ros.parameter_descriptions import ParameterValue
 from launch_ros.substitutions import FindPackageShare
 from ament_index_python.packages import get_package_share_directory
 import yaml
@@ -73,7 +74,7 @@ def generate_launch_description():
 
     steering_arg = DeclareLaunchArgument(
         'steering',
-        default_value='false',
+        default_value='true',
         description='Enable the EUFS steering GUI'
     )
 
@@ -91,26 +92,38 @@ def generate_launch_description():
 
     measure_arg = DeclareLaunchArgument(
         'measure',
-        default_value='true',
+        default_value='false',
         description='Enable measurement_node and use /sim/raw topics'
     )
 
     camera_stream_arg = DeclareLaunchArgument(
         'camera_stream',
-        default_value='false',
-        description='Enable local OpenCV stereo camera stream window'
-    )
-
-    stereo_rect_arg = DeclareLaunchArgument(
-        'stereo_rect',
-        default_value='false',
-        description='Enable local OpenCV view of rectified stereo feeds'
+        default_value='none',
+        description="OpenCV stereo stream window mode: 'raw', 'rect', or 'none'"
     )
 
     stereo_depth_arg = DeclareLaunchArgument(
         'stereo_depth',
         default_value='true',
         description='Enable stereo depth estimation node'
+    )
+
+    stereo_compute_depth_arg = DeclareLaunchArgument(
+        'stereo_compute_depth',
+        default_value='true',
+        description='(Deprecated) Compute disparity/depth in stereo_depth_node'
+    )
+
+    disparity_toggle_arg = DeclareLaunchArgument(
+        'disparity_toggle',
+        default_value='true',
+        description='Master enable for disparity + depth computation'
+    )
+
+    disparity_sampling_arg = DeclareLaunchArgument(
+        'disparity_sampling',
+        default_value='1',
+        description='Compute disparity+depth every N rectified pairs (1=every frame, 5=every 5 frames)'
     )
 
     stereo_eval_arg = DeclareLaunchArgument(
@@ -242,27 +255,29 @@ def generate_launch_description():
         name='camera_stream_node',
         output='screen',
         parameters=[{
-            'left_topic': PythonExpression(["'", topic_prefix, "' + '/stereo/left/image_raw'"]),
-            'right_topic': PythonExpression(["'", topic_prefix, "' + '/stereo/right/image_raw'"]),
-            'window_name': 'Sim Stereo Stream',
+            'left_topic': PythonExpression([
+                "'", topic_prefix, "' + ("
+                "'/stereo/left/image_raw' if '", LaunchConfiguration('camera_stream'),
+                "'.lower() == 'raw' else '/stereo/left/image_rect'"
+                ")"
+            ]),
+            'right_topic': PythonExpression([
+                "'", topic_prefix, "' + ("
+                "'/stereo/right/image_raw' if '", LaunchConfiguration('camera_stream'),
+                "'.lower() == 'raw' else '/stereo/right/image_rect'"
+                ")"
+            ]),
+            'window_name': PythonExpression([
+                "'Stereo Raw Stream' if '", LaunchConfiguration('camera_stream'),
+                "'.lower() == 'raw' else 'Stereo Rectified Stream'"
+            ]),
             'show_right': True,
+            'downsampling': 0.3,
+            'n_frames': 3,
         }],
-        condition=IfCondition(LaunchConfiguration('camera_stream'))
-    )
-
-    stereo_rect_stream_node = Node(
-        package='sim_car',
-        executable='camera_stream_node',
-        name='stereo_rect_stream_node',
-        output='screen',
-        parameters=[{
-            'left_topic': PythonExpression(["'", topic_prefix, "' + '/stereo/left/image_rect'"]),
-            'right_topic': PythonExpression(["'", topic_prefix, "' + '/stereo/right/image_rect'"]),
-            'window_name': 'Stereo Rectified Stream',
-            'show_right': True,
-            'display_scale': 0.5,
-        }],
-        condition=IfCondition(LaunchConfiguration('stereo_rect'))
+        condition=IfCondition(PythonExpression([
+            "'", LaunchConfiguration('camera_stream'), "'.lower() != 'none'"
+        ]))
     )
 
     stereo_depth_node = Node(
@@ -284,6 +299,18 @@ def generate_launch_description():
             'baseline_m': 0.12,
             'publish_rectified': True,
             'publish_preview': True,
+            'rectify_rate_hz': 15.0,
+            'disparity_sampling': ParameterValue(
+                LaunchConfiguration('disparity_sampling'),
+                value_type=int,
+            ),
+            # Gazebo cameras can be phase-shifted; allow a bit more slack so rectified outputs stay live.
+            'max_time_diff_sec': 0.08,
+            # disparity_toggle is the master switch; stereo_compute_depth kept for backward compat.
+            'compute_disparity': ParameterValue(PythonExpression([
+                "'", LaunchConfiguration('disparity_toggle'), "'.lower() == 'true' and '",
+                LaunchConfiguration('stereo_compute_depth'), "'.lower() == 'true'"
+            ]), value_type=bool),
         }],
         condition=IfCondition(LaunchConfiguration('stereo_depth'))
     )
@@ -319,8 +346,10 @@ def generate_launch_description():
         use_sim_time_arg,
         measure_arg,
         camera_stream_arg,
-        stereo_rect_arg,
         stereo_depth_arg,
+        stereo_compute_depth_arg,
+        disparity_toggle_arg,
+        disparity_sampling_arg,
         stereo_eval_arg,
         measurement_config_arg,
         gazebo_launch,
@@ -330,7 +359,6 @@ def generate_launch_description():
         throttle_bridge_node,
         steering_bridge_node,
         camera_stream_node,
-        stereo_rect_stream_node,
         stereo_depth_node,
         stereo_eval_node,
         steering_gui_node,
