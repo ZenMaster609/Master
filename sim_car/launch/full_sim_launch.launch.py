@@ -102,58 +102,16 @@ def generate_launch_description():
         description='Enable sim_car sensor nodes launch include'
     )
 
-    camera_stream_arg = DeclareLaunchArgument(
-        'camera_stream',
-        default_value='none',
-        description="OpenCV stereo stream window mode: 'raw', 'rect', or 'none'"
-    )
-
-    stereo_depth_arg = DeclareLaunchArgument(
-        'stereo_depth',
-        default_value='true',
-        description='Enable stereo depth estimation node'
-    )
-
-    stereo_compute_depth_arg = DeclareLaunchArgument(
-        'stereo_compute_depth',
-        default_value='true',
-        description='(Deprecated) Compute disparity/depth in stereo_depth_node'
-    )
-
-    disparity_toggle_arg = DeclareLaunchArgument(
-        'disparity_toggle',
-        default_value='true',
-        description='Master enable for disparity + depth computation'
-    )
-
-    disparity_sampling_arg = DeclareLaunchArgument(
-        'disparity_sampling',
-        default_value='1',
-        description='Compute disparity+depth every N rectified pairs (1=every frame, 5=every 5 frames)'
-    )
-
     perf_log_hz_arg = DeclareLaunchArgument(
         'perf_log_hz',
         default_value='1.0',
-        description='Stereo depth performance log frequency in Hz'
+        description='Perception debug/eval publish frequency in Hz'
     )
 
     cuda_arg = DeclareLaunchArgument(
         'cuda',
         default_value='true',
         description='Enable CUDA disparity backend (false forces CPU StereoSGBM)'
-    )
-
-    stereo_output_mode_arg = DeclareLaunchArgument(
-        'stereo_output_mode',
-        default_value='none',
-        description="Stereo output mode: 'depth', 'disparity', 'both', or 'none'"
-    )
-
-    stereo_eval_arg = DeclareLaunchArgument(
-        'stereo_eval',
-        default_value='false',
-        description='Enable stereo calibration/rectification evaluation node'
     )
 
     measurement_config_arg = DeclareLaunchArgument(
@@ -181,8 +139,6 @@ def generate_launch_description():
             'topic_prefix': topic_prefix,
         }.items(),
     )
-
-    enable_steering_gui = LaunchConfiguration('steering')
 
     sim_nodes_launch = IncludeLaunchDescription(
         PythonLaunchDescriptionSource(
@@ -275,59 +231,23 @@ def generate_launch_description():
         ]))
     )
 
-    camera_stream_node = Node(
+    perception_node = Node(
         package='sim_car',
-        executable='camera_stream_node',
-        name='camera_stream_node',
+        executable='perception_node',
+        name='perception_node',
         output='screen',
         parameters=[{
-            'left_topic': PythonExpression([
-                "'", topic_prefix, "' + ("
-                "'/stereo/left/image_raw' if '", LaunchConfiguration('camera_stream'),
-                "'.lower() == 'raw' else '/stereo/left/image_rect'"
-                ")"
-            ]),
-            'right_topic': PythonExpression([
-                "'", topic_prefix, "' + ("
-                "'/stereo/right/image_raw' if '", LaunchConfiguration('camera_stream'),
-                "'.lower() == 'raw' else '/stereo/right/image_rect'"
-                ")"
-            ]),
-            'window_name': PythonExpression([
-                "'Stereo Raw Stream' if '", LaunchConfiguration('camera_stream'),
-                "'.lower() == 'raw' else 'Stereo Rectified Stream'"
-            ]),
-            'show_right': True,
-            'downsampling': 0.3,
-        }],
-        condition=IfCondition(PythonExpression([
-            "'", LaunchConfiguration('camera_stream'), "'.lower() != 'none'"
-        ]))
-    )
-
-    stereo_depth_node = Node(
-        package='sim_car',
-        executable='stereo_depth_node',
-        name='stereo_depth_node',
-        output='screen',
-        parameters=[{
+            'use_sim_time': ParameterValue(
+                LaunchConfiguration('use_sim_time'),
+                value_type=bool,
+            ),
             'left_image_topic': PythonExpression(["'", topic_prefix, "' + '/stereo/left/image_raw'"]),
             'right_image_topic': PythonExpression(["'", topic_prefix, "' + '/stereo/right/image_raw'"]),
             'left_camera_info_topic': PythonExpression(["'", topic_prefix, "' + '/stereo/left/camera_info'"]),
             'right_camera_info_topic': PythonExpression(["'", topic_prefix, "' + '/stereo/right/camera_info'"]),
-            'left_rect_topic': PythonExpression(["'", topic_prefix, "' + '/stereo/left/image_rect'"]),
-            'right_rect_topic': PythonExpression(["'", topic_prefix, "' + '/stereo/right/image_rect'"]),
-            'disparity_topic': PythonExpression(["'", topic_prefix, "' + '/stereo/disparity'"]),
-            'depth_topic': PythonExpression(["'", topic_prefix, "' + '/stereo/depth'"]),
-            'depth_preview_topic': PythonExpression(["'", topic_prefix, "' + '/stereo/depth_preview'"]),
+            'eval_topic_prefix': PythonExpression(["'", topic_prefix, "' + '/stereo/eval'"]),
             'calibration_file': PathJoinSubstitution([sim_car_share, 'config', 'stereo_calibration.yaml']),
             'baseline_m': 0.12,
-            'publish_rectified': False,
-            'publish_preview': False,
-            'disparity_sampling': ParameterValue(
-                LaunchConfiguration('disparity_sampling'),
-                value_type=int,
-            ),
             'perf_log_hz': ParameterValue(
                 LaunchConfiguration('perf_log_hz'),
                 value_type=float,
@@ -336,33 +256,9 @@ def generate_launch_description():
                 LaunchConfiguration('cuda'),
                 value_type=bool,
             ),
-            'output_mode': LaunchConfiguration('stereo_output_mode'),
             # Gazebo cameras can be phase-shifted; allow a bit more slack so rectified outputs stay live.
             'max_time_diff_sec': 0.08,
-            # disparity_toggle is the master switch; stereo_compute_depth kept for backward compat.
-            'compute_disparity': ParameterValue(PythonExpression([
-                "'", LaunchConfiguration('disparity_toggle'), "'.lower() == 'true' and '",
-                LaunchConfiguration('stereo_compute_depth'), "'.lower() == 'true'"
-            ]), value_type=bool),
         }],
-        condition=IfCondition(LaunchConfiguration('stereo_depth'))
-    )
-
-    stereo_eval_node = Node(
-        package='sim_car',
-        executable='stereo_eval_node',
-        name='stereo_eval_node',
-        output='screen',
-        parameters=[{
-            'left_rect_topic': PythonExpression(["'", topic_prefix, "' + '/stereo/left/image_rect'"]),
-            'right_rect_topic': PythonExpression(["'", topic_prefix, "' + '/stereo/right/image_rect'"]),
-            'disparity_topic': PythonExpression(["'", topic_prefix, "' + '/stereo/disparity'"]),
-            'depth_topic': PythonExpression(["'", topic_prefix, "' + '/stereo/depth'"]),
-            'min_depth_m': 0.3,
-            'max_depth_m': 30.0,
-            'report_period_sec': 1.0,
-        }],
-        condition=IfCondition(LaunchConfiguration('stereo_eval'))
     )
 
     return LaunchDescription([
@@ -379,15 +275,8 @@ def generate_launch_description():
         use_sim_time_arg,
         measure_arg,
         sensor_nodes_arg,
-        camera_stream_arg,
-        stereo_depth_arg,
-        stereo_compute_depth_arg,
-        disparity_toggle_arg,
-        disparity_sampling_arg,
         perf_log_hz_arg,
         cuda_arg,
-        stereo_output_mode_arg,
-        stereo_eval_arg,
         measurement_config_arg,
         gazebo_launch,
         sim_nodes_launch,
@@ -395,9 +284,7 @@ def generate_launch_description():
         plotter_launch,
         throttle_bridge_node,
         steering_bridge_node,
-        camera_stream_node,
-        stereo_depth_node,
-        stereo_eval_node,
+        perception_node,
         steering_gui_node,
     ])
 

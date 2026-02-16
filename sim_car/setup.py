@@ -1,4 +1,4 @@
-from setuptools import setup
+from setuptools import find_packages, setup
 from glob import glob
 import os
 
@@ -18,7 +18,7 @@ package_name = 'sim_car'
 setup(
     name=package_name,
     version='0.0.1',
-    packages=[package_name],
+    packages=find_packages(include=[package_name, f'{package_name}.*']),
     data_files=[
         ('share/ament_index/resource_index/packages',
             ['resource/' + package_name]),
@@ -54,9 +54,7 @@ setup(
             'brake_temp_fr_node = sim_car.brake_temp_fr_node:main',
             'brake_temp_rl_node = sim_car.brake_temp_rl_node:main',
             'pitot_dynamic_pressure_node = sim_car.pitot_dynamic_pressure_node:main',
-            'camera_stream_node = sim_car.camera_stream_node:main',
-            'stereo_depth_node = sim_car.stereo_depth_node:main',
-            'stereo_eval_node = sim_car.stereo_eval_node:main',
+            'perception_node = sim_car.perception_node:main',
         ],
     },
 )
