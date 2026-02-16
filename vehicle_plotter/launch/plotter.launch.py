@@ -126,6 +126,12 @@ def generate_launch_description():
         description='Enable rosbag recording'
     )
 
+    enable_data_collector_arg = DeclareLaunchArgument(
+        'enable_data_collector',
+        default_value='true',
+        description='Enable data collector node'
+    )
+
     # Data collector node (always runs)
     # Note: We use wall clock for timers but sensor timestamps for sync,
     # so use_sim_time is set to false to ensure timers fire reliably
@@ -134,6 +140,7 @@ def generate_launch_description():
         executable='data_collector_node',
         name='data_collector',
         output='screen',
+        condition=IfCondition(LaunchConfiguration('enable_data_collector')),
         parameters=[{
             'adapter': LaunchConfiguration('adapter'),
             'output_rate_hz': LaunchConfiguration('output_rate_hz'),
@@ -220,6 +227,7 @@ def generate_launch_description():
         use_sim_time_arg,
         sensor_config_arg,
         enable_rosbag_arg,
+        enable_data_collector_arg,
 
         # Nodes (session_manager must start first)
         session_manager_node,

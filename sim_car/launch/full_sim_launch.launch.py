@@ -56,7 +56,7 @@ def generate_launch_description():
 
     logging_arg = DeclareLaunchArgument(
         'logging',
-        default_value='true',
+        default_value='false',
         description='Enable data logging'
     )
 
@@ -96,6 +96,12 @@ def generate_launch_description():
         description='Enable measurement_node and use /sim/raw topics'
     )
 
+    sensor_nodes_arg = DeclareLaunchArgument(
+        'sensor_nodes',
+        default_value='false',
+        description='Enable sim_car sensor nodes launch include'
+    )
+
     camera_stream_arg = DeclareLaunchArgument(
         'camera_stream',
         default_value='none',
@@ -126,9 +132,27 @@ def generate_launch_description():
         description='Compute disparity+depth every N rectified pairs (1=every frame, 5=every 5 frames)'
     )
 
+    perf_log_hz_arg = DeclareLaunchArgument(
+        'perf_log_hz',
+        default_value='1.0',
+        description='Stereo depth performance log frequency in Hz'
+    )
+
+    cuda_arg = DeclareLaunchArgument(
+        'cuda',
+        default_value='true',
+        description='Enable CUDA disparity backend (false forces CPU StereoSGBM)'
+    )
+
+    stereo_output_mode_arg = DeclareLaunchArgument(
+        'stereo_output_mode',
+        default_value='none',
+        description="Stereo output mode: 'depth', 'disparity', 'both', or 'none'"
+    )
+
     stereo_eval_arg = DeclareLaunchArgument(
         'stereo_eval',
-        default_value='true',
+        default_value='false',
         description='Enable stereo calibration/rectification evaluation node'
     )
 
@@ -167,6 +191,7 @@ def generate_launch_description():
         launch_arguments={
             'topic_prefix': topic_prefix,
         }.items(),
+        condition=IfCondition(LaunchConfiguration('sensor_nodes')),
     )
 
     measurement_node = Node(
@@ -192,6 +217,7 @@ def generate_launch_description():
             'enable_plot': LaunchConfiguration('plotting'),
             'enable_log': LaunchConfiguration('logging'),
             'enable_rosbag': LaunchConfiguration('rosbagging'),
+            'enable_data_collector': 'false',
             'sensor_config': LaunchConfiguration('measurement_config'),
             'use_sim_time': LaunchConfiguration('use_sim_time'),
             'close_plots_on_shutdown': LaunchConfiguration('close_plots'),
@@ -273,7 +299,6 @@ def generate_launch_description():
             ]),
             'show_right': True,
             'downsampling': 0.3,
-            'n_frames': 3,
         }],
         condition=IfCondition(PythonExpression([
             "'", LaunchConfiguration('camera_stream'), "'.lower() != 'none'"
@@ -297,13 +322,21 @@ def generate_launch_description():
             'depth_preview_topic': PythonExpression(["'", topic_prefix, "' + '/stereo/depth_preview'"]),
             'calibration_file': PathJoinSubstitution([sim_car_share, 'config', 'stereo_calibration.yaml']),
             'baseline_m': 0.12,
-            'publish_rectified': True,
-            'publish_preview': True,
-            'rectify_rate_hz': 15.0,
+            'publish_rectified': False,
+            'publish_preview': False,
             'disparity_sampling': ParameterValue(
                 LaunchConfiguration('disparity_sampling'),
                 value_type=int,
             ),
+            'perf_log_hz': ParameterValue(
+                LaunchConfiguration('perf_log_hz'),
+                value_type=float,
+            ),
+            'prefer_cuda': ParameterValue(
+                LaunchConfiguration('cuda'),
+                value_type=bool,
+            ),
+            'output_mode': LaunchConfiguration('stereo_output_mode'),
             # Gazebo cameras can be phase-shifted; allow a bit more slack so rectified outputs stay live.
             'max_time_diff_sec': 0.08,
             # disparity_toggle is the master switch; stereo_compute_depth kept for backward compat.
@@ -345,11 +378,15 @@ def generate_launch_description():
         control_bridge_arg,
         use_sim_time_arg,
         measure_arg,
+        sensor_nodes_arg,
         camera_stream_arg,
         stereo_depth_arg,
         stereo_compute_depth_arg,
         disparity_toggle_arg,
         disparity_sampling_arg,
+        perf_log_hz_arg,
+        cuda_arg,
+        stereo_output_mode_arg,
         stereo_eval_arg,
         measurement_config_arg,
         gazebo_launch,
