@@ -30,7 +30,8 @@ setup(
     + walk_data_files('config', os.path.join('share', package_name, 'config'))
     + walk_data_files('meshes', os.path.join('share', package_name, 'meshes'))
     + walk_data_files('materials', os.path.join('share', package_name, 'materials'))
-    + walk_data_files('models', os.path.join('share', package_name, 'models')),
+    + walk_data_files('models', os.path.join('share', package_name, 'models'))
+    + walk_data_files('yolo', os.path.join('share', package_name, 'yolo')),
     install_requires=['setuptools'],
     zip_safe=True,
     maintainer='user',

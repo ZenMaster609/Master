@@ -8,7 +8,7 @@ import numpy as np
 class CameraDebugPublisher:
     """Publishes a debug image from disparity, depth, or rectified-left every N frames."""
 
-    VALID_MODES = {'none', 'disparity', 'depth', 'left_rect'}
+    VALID_MODES = {'none', 'disparity', 'depth', 'left_rect', 'yolo'}
     BOX_HALF_SIZE_PX = 14
 
     def __init__(
@@ -60,6 +60,7 @@ class CameraDebugPublisher:
         depth: np.ndarray,
         left_rect: np.ndarray | None = None,
         cone_overlays: list[dict] | None = None,
+        yolo_detections: list[dict] | None = None,
     ):
         if self._publisher is None:
             return
@@ -71,13 +72,12 @@ class CameraDebugPublisher:
         if self._mode == 'depth':
             image = self._depth_to_mono8(depth)
             image = cv2.cvtColor(image, cv2.COLOR_GRAY2BGR)
-            self._draw_overlays(image, cone_overlays)
             encoding = 'bgr8'
-        elif self._mode == 'left_rect':
+        elif self._mode == 'left_rect' or self._mode == 'yolo':
             if left_rect is None:
                 return
             image = self._left_rect_to_bgr8(left_rect)
-            self._draw_overlays(image, cone_overlays)
+            self._draw_yolo_overlays(image, yolo_detections)
             encoding = 'bgr8'
         else:
             image = self._disparity_to_mono8(disparity)
@@ -190,6 +190,56 @@ class CameraDebugPublisher:
                         thickness,
                         cv2.LINE_AA,
                     )
+
+    @staticmethod
+    def _draw_yolo_overlays(image: np.ndarray, yolo_detections: list[dict] | None):
+        if not yolo_detections:
+            return
+
+        h, w = image.shape[:2]
+        color = (0, 220, 0)
+        for det in yolo_detections:
+            x0 = int(det.get('x0', -1))
+            y0 = int(det.get('y0', -1))
+            x1 = int(det.get('x1', -1))
+            y1 = int(det.get('y1', -1))
+            if x1 <= x0 or y1 <= y0:
+                continue
+
+            x0 = max(0, min(w - 1, x0))
+            y0 = max(0, min(h - 1, y0))
+            x1 = max(0, min(w - 1, x1))
+            y1 = max(0, min(h - 1, y1))
+            cv2.rectangle(image, (x0, y0), (x1, y1), color, 2)
+
+            label = str(det.get('label', '')).strip()
+            confidence = det.get('confidence', None)
+            depth_m = det.get('depth_m', None)
+            if confidence is None:
+                text = label
+            elif label:
+                text = f'{label} {float(confidence):.2f}'
+            else:
+                text = f'{float(confidence):.2f}'
+            if depth_m is not None and np.isfinite(float(depth_m)):
+                if text:
+                    text = f'{text} {float(depth_m):.2f}m'
+                else:
+                    text = f'{float(depth_m):.2f}m'
+            if not text:
+                continue
+
+            font = cv2.FONT_HERSHEY_SIMPLEX
+            scale = 0.50
+            thickness = 1
+            (tw, th), baseline = cv2.getTextSize(text, font, scale, thickness)
+            tx = x0
+            ty = max(th + 2, y0 - 4)
+            box_y0 = max(0, ty - th - baseline - 2)
+            box_y1 = min(h - 1, ty + 2)
+            box_x1 = min(w - 1, tx + tw + 4)
+            cv2.rectangle(image, (tx, box_y0), (box_x1, box_y1), color, -1)
+            cv2.putText(image, text, (tx + 2, ty), font, scale, (0, 0, 0), thickness, cv2.LINE_AA)
 
     @staticmethod
     def _color_bgr(color: str) -> tuple[int, int, int]:

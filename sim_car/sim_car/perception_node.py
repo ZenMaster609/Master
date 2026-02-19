@@ -3,6 +3,7 @@
 from collections import deque
 from dataclasses import dataclass
 import math
+import os
 import threading
 import time
 from typing import Deque, Optional
@@ -25,6 +26,8 @@ from sim_car.perception import (
     StereoEvaluator,
     StereoPipeline,
     StereoPipelineConfig,
+    YoloOnnxDetector,
+    YoloPtDetector,
 )
 
 
@@ -109,8 +112,6 @@ class ConeRunningStats:
 class PerceptionNode(Node):
     """Subscribes stereo topics, computes disparity/depth, and publishes eval metrics."""
 
-    CAMERA_DEBUG_EVERY_N = 30
-
     def __init__(self):
         super().__init__('perception_node')
 
@@ -174,12 +175,13 @@ class PerceptionNode(Node):
             node=self,
             mode=self.camera_debug,
             topic=self.camera_debug_topic,
-            publish_every_n=self.CAMERA_DEBUG_EVERY_N,
+            publish_every_n=self.camera_debug_n_frames,
             min_depth_m=self.min_depth_m,
             max_depth_m=self.max_depth_m,
             max_disparity=float(sanitized_disparities),
             disparity_valid_threshold=self.disparity_valid_threshold,
         )
+        self._yolo_detector = self._init_yolo_detector()
 
         prefix = self.eval_topic_prefix.rstrip('/')
         self._cone_pairs_pub = self.create_publisher(Int32, f'{prefix}/cone_depth_pairs', 10)
@@ -190,6 +192,8 @@ class PerceptionNode(Node):
         self._cone_range_rmse_pub = self.create_publisher(Float32, f'{prefix}/cone_depth_range_rmse_m', 10)
         self._cone_sync_dt_pub = self.create_publisher(Float32, f'{prefix}/cone_depth_sync_dt_ms', 10)
         self._cone_per_cone_pub = self.create_publisher(String, f'{prefix}/cone_depth_per_cone', 10)
+        self._yolo_count_pub = self.create_publisher(Int32, f'{prefix}/yolo/detection_count', 10)
+        self._yolo_infer_ms_pub = self.create_publisher(Float32, f'{prefix}/yolo/inference_ms', 10)
 
         self.create_subscription(Image, self.left_image_topic, self._left_image_cb, 10)
         self.create_subscription(Image, self.right_image_topic, self._right_image_cb, 10)
@@ -210,7 +214,8 @@ class PerceptionNode(Node):
             f'left={self.left_image_topic} right={self.right_image_topic} '
             f'eval_prefix={self.eval_topic_prefix} perf_log_hz={self.perf_log_hz:.2f} '
             f'camera_debug={self.camera_debug} cones={self.ground_truth_cones_topic} '
-            f'track={self.ground_truth_track_topic} odom={self.cone_eval_odom_topic}'
+            f'track={self.ground_truth_track_topic} odom={self.cone_eval_odom_topic} '
+            f'yolo_enabled={self.yolo_enabled}'
         )
 
     def _declare_parameters(self):
@@ -246,6 +251,15 @@ class PerceptionNode(Node):
         self.declare_parameter('eval_match_ratio_test', 0.75)
         self.declare_parameter('camera_debug', 'none')
         self.declare_parameter('camera_debug_topic', '/sim/raw/stereo/camera_debug')
+        self.declare_parameter('camera_debug_n_frames', 30)
+        self.declare_parameter('yolo_enabled', False)
+        self.declare_parameter('yolo_model_path', '')
+        self.declare_parameter('yolo_input_size', 640)
+        self.declare_parameter('yolo_conf_threshold', 0.25)
+        self.declare_parameter('yolo_iou_threshold', 0.45)
+        self.declare_parameter('yolo_max_detections', 100)
+        self.declare_parameter('yolo_prefer_cuda', True)
+        self.declare_parameter('yolo_class_names', [])
 
         self.declare_parameter('ground_truth_cones_topic', '/ground_truth/cones')
         self.declare_parameter('ground_truth_track_topic', '/ground_truth/track')
@@ -292,6 +306,16 @@ class PerceptionNode(Node):
         self.eval_match_ratio_test = float(self.get_parameter('eval_match_ratio_test').value)
         self.camera_debug = self._sanitize_camera_debug(self.get_parameter('camera_debug').value)
         self.camera_debug_topic = str(self.get_parameter('camera_debug_topic').value)
+        self.camera_debug_n_frames = max(1, int(self.get_parameter('camera_debug_n_frames').value))
+        self.yolo_enabled = bool(self.get_parameter('yolo_enabled').value)
+        self.yolo_model_path = str(self.get_parameter('yolo_model_path').value)
+        self.yolo_input_size = max(64, int(self.get_parameter('yolo_input_size').value))
+        self.yolo_conf_threshold = float(self.get_parameter('yolo_conf_threshold').value)
+        self.yolo_iou_threshold = float(self.get_parameter('yolo_iou_threshold').value)
+        self.yolo_max_detections = max(1, int(self.get_parameter('yolo_max_detections').value))
+        self.yolo_prefer_cuda = bool(self.get_parameter('yolo_prefer_cuda').value)
+        raw_class_names = self.get_parameter('yolo_class_names').value
+        self.yolo_class_names = self._sanitize_yolo_class_names(raw_class_names)
 
         self.ground_truth_cones_topic = str(self.get_parameter('ground_truth_cones_topic').value)
         self.ground_truth_track_topic = str(self.get_parameter('ground_truth_track_topic').value)
@@ -391,10 +415,14 @@ class PerceptionNode(Node):
             self._perf.record_processed(timings_ms=output.timings_ms, backend=output.backend)
 
             eval_header = self._common_header(left_packet.msg.header, right_packet.msg.header)
-            self._latest_cone_metrics, cone_overlays = self._evaluate_cone_depth(
+            yolo_detections = []
+            if self._yolo_detector is not None:
+                yolo_detections, infer_ms = self._run_yolo(output.left_rect)
+                self._yolo_count_pub.publish(Int32(data=len(yolo_detections)))
+                self._yolo_infer_ms_pub.publish(Float32(data=float(infer_ms)))
+            self._latest_cone_metrics = self._evaluate_yolo_depth(
                 depth=output.depth,
-                left_info=self._left_info,
-                eval_header=eval_header,
+                yolo_detections=yolo_detections,
             )
 
             self._camera_debug.maybe_publish(
@@ -402,8 +430,109 @@ class PerceptionNode(Node):
                 disparity=output.disparity,
                 depth=output.depth,
                 left_rect=output.left_rect,
-                cone_overlays=cone_overlays,
+                cone_overlays=[],
+                yolo_detections=yolo_detections,
             )
+
+    def _evaluate_yolo_depth(
+        self,
+        depth: np.ndarray,
+        yolo_detections: list[dict],
+    ) -> ConeDepthMetrics:
+        """Estimate cone depth from YOLO bounding boxes (center-point depth sampling)."""
+        metrics = ConeDepthMetrics()
+        if depth is None or depth.size == 0 or not yolo_detections:
+            self._publish_cone_metrics(metrics)
+            return metrics
+
+        h, w = depth.shape[:2]
+        pairs = 0
+        for det in yolo_detections:
+            x0 = int(det.get('x0', -1))
+            y0 = int(det.get('y0', -1))
+            x1 = int(det.get('x1', -1))
+            y1 = int(det.get('y1', -1))
+            if x1 <= x0 or y1 <= y0:
+                det['depth_m'] = None
+                continue
+
+            u = max(0.0, min(float(w - 1), 0.5 * float(x0 + x1)))
+            v = max(0.0, min(float(h - 1), 0.5 * float(y0 + y1)))
+            est_axis = self._sample_depth(depth, u, v, self.cone_eval_pixel_radius)
+            if np.isfinite(est_axis):
+                det['depth_m'] = float(est_axis)
+                pairs += 1
+            else:
+                det['depth_m'] = None
+
+        metrics.pairs = pairs
+        self._publish_cone_metrics(metrics)
+        return metrics
+
+    def _init_yolo_detector(self):
+        if not self.yolo_enabled:
+            return None
+        model_path = self._resolve_yolo_model_path(self.yolo_model_path)
+        if not model_path or not os.path.isfile(model_path):
+            self.get_logger().warn(
+                f'YOLO model not found (yolo_model_path="{self.yolo_model_path}"); disabling YOLO.'
+            )
+            return None
+        suffix = os.path.splitext(model_path)[1].lower()
+        try:
+            if suffix == '.pt':
+                return YoloPtDetector(
+                    logger=self.get_logger(),
+                    model_path=model_path,
+                    input_size=self.yolo_input_size,
+                    conf_threshold=self.yolo_conf_threshold,
+                    iou_threshold=self.yolo_iou_threshold,
+                    max_detections=self.yolo_max_detections,
+                    class_names=self.yolo_class_names,
+                    prefer_cuda=self.yolo_prefer_cuda,
+                )
+            if suffix == '.onnx':
+                return YoloOnnxDetector(
+                    logger=self.get_logger(),
+                    model_path=model_path,
+                    input_size=self.yolo_input_size,
+                    conf_threshold=self.yolo_conf_threshold,
+                    iou_threshold=self.yolo_iou_threshold,
+                    max_detections=self.yolo_max_detections,
+                    class_names=self.yolo_class_names,
+                    prefer_cuda=self.yolo_prefer_cuda,
+                )
+            self.get_logger().warn(
+                f'Unsupported YOLO model extension "{suffix}" for "{model_path}"; expected .pt or .onnx.'
+            )
+            return None
+        except Exception as exc:  # pylint: disable=broad-except
+            self.get_logger().warn(f'Failed to initialize YOLO detector ({exc}); disabling YOLO.')
+            return None
+
+    def _run_yolo(self, left_rect: np.ndarray) -> tuple[list[dict], float]:
+        if self._yolo_detector is None:
+            return [], 0.0
+        try:
+            detections, infer_ms = self._yolo_detector.detect(left_rect)
+        except Exception as exc:  # pylint: disable=broad-except
+            self.get_logger().warn(f'YOLO inference failed ({exc})')
+            return [], 0.0
+
+        overlays = []
+        for det in detections:
+            overlays.append(
+                {
+                    'x0': int(det.x0),
+                    'y0': int(det.y0),
+                    'x1': int(det.x1),
+                    'y1': int(det.y1),
+                    'confidence': float(det.confidence),
+                    'class_id': int(det.class_id),
+                    'label': str(det.label),
+                }
+            )
+        return overlays, float(infer_ms)
 
     def _pair_frames(self):
         while self._left_queue and self._right_queue:
@@ -1047,6 +1176,30 @@ class PerceptionNode(Node):
         return f'{value:.4f}'
 
     @staticmethod
+    def _resolve_yolo_model_path(path: str) -> str:
+        candidate = str(path).strip()
+        if not candidate:
+            return ''
+        if os.path.isabs(candidate):
+            return candidate
+        direct = os.path.abspath(candidate)
+        if os.path.exists(direct):
+            return direct
+        workspace_relative = os.path.abspath(os.path.join(os.path.expanduser('~/ros2_ws'), candidate))
+        if os.path.exists(workspace_relative):
+            return workspace_relative
+        return direct
+
+    @staticmethod
+    def _sanitize_yolo_class_names(value) -> list[str]:
+        if isinstance(value, (list, tuple)):
+            return [str(v).strip() for v in value if str(v).strip()]
+        text = str(value).strip()
+        if not text:
+            return []
+        return [token.strip() for token in text.split(',') if token.strip()]
+
+    @staticmethod
     def _stamp_to_sec(msg: Image) -> float:
         return float(msg.header.stamp.sec) + float(msg.header.stamp.nanosec) * 1e-9
 
@@ -1059,7 +1212,7 @@ class PerceptionNode(Node):
         mode = str(value).strip().lower()
         if mode == 'rect_left':
             mode = 'left_rect'
-        if mode in {'disparity', 'depth', 'left_rect', 'none'}:
+        if mode in {'disparity', 'depth', 'left_rect', 'yolo', 'none'}:
             return mode
         return 'none'
 

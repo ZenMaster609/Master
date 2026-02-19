@@ -12,7 +12,7 @@ from launch import LaunchDescription
 from launch.actions import DeclareLaunchArgument, IncludeLaunchDescription
 from launch.conditions import IfCondition
 from launch.launch_description_sources import PythonLaunchDescriptionSource
-from launch.substitutions import LaunchConfiguration, PathJoinSubstitution, PythonExpression
+from launch.substitutions import EnvironmentVariable, LaunchConfiguration, PathJoinSubstitution, PythonExpression
 from launch_ros.actions import Node
 from launch_ros.parameter_descriptions import ParameterValue
 from launch_ros.substitutions import FindPackageShare
@@ -123,7 +123,77 @@ def generate_launch_description():
     camera_debug_arg = DeclareLaunchArgument(
         'camera_debug',
         default_value='none',
-        description="Perception debug image mode: 'disparity', 'depth', 'left_rect', or 'none'"
+        description="Perception debug image mode: 'disparity', 'depth', 'left_rect', 'yolo', or 'none'"
+    )
+
+    camera_debug_n_frames_arg = DeclareLaunchArgument(
+        'camera_debug_n_frames',
+        default_value='30',
+        description='Publish camera debug image every N frames (1=every frame)'
+    )
+
+    yolo_enabled_arg = DeclareLaunchArgument(
+        'yolo_enabled',
+        default_value='false',
+        description='Enable ONNX YOLO detection in perception_node'
+    )
+
+    yolo_model_path_arg = DeclareLaunchArgument(
+        'yolo_model_path',
+        default_value=PathJoinSubstitution([sim_car_share, 'yolo', 'weights', 'best.pt']),
+        description='Path to YOLO model (.pt or .onnx)'
+    )
+
+    yolo_input_size_arg = DeclareLaunchArgument(
+        'yolo_input_size',
+        default_value='640',
+        description='YOLO ONNX square input size'
+    )
+
+    yolo_conf_threshold_arg = DeclareLaunchArgument(
+        'yolo_conf_threshold',
+        default_value='0.25',
+        description='YOLO confidence threshold'
+    )
+
+    yolo_iou_threshold_arg = DeclareLaunchArgument(
+        'yolo_iou_threshold',
+        default_value='0.45',
+        description='YOLO NMS IoU threshold'
+    )
+
+    yolo_prefer_cuda_arg = DeclareLaunchArgument(
+        'yolo_prefer_cuda',
+        default_value='true',
+        description='Prefer OpenCV DNN CUDA backend for YOLO ONNX'
+    )
+
+    opencv_pythonpath_arg = DeclareLaunchArgument(
+        'opencv_pythonpath',
+        default_value=PathJoinSubstitution(
+            [EnvironmentVariable('HOME'), 'ros2_ws', 'opencv_local', 'lib', 'python3.10', 'dist-packages']
+        ),
+        description='OpenCV python package path prepended for perception_node'
+    )
+
+    opencv_ld_library_path_arg = DeclareLaunchArgument(
+        'opencv_ld_library_path',
+        default_value=PathJoinSubstitution([EnvironmentVariable('HOME'), 'ros2_ws', 'opencv_local', 'lib']),
+        description='OpenCV shared library path prepended for perception_node'
+    )
+
+    cudnn_ld_library_path_arg = DeclareLaunchArgument(
+        'cudnn_ld_library_path',
+        default_value='/tmp/cudnn_py/nvidia/cudnn/lib',
+        description='cuDNN shared library path prepended for perception_node'
+    )
+
+    yolo_ultralytics_pythonpath_arg = DeclareLaunchArgument(
+        'yolo_ultralytics_pythonpath',
+        default_value=PathJoinSubstitution(
+            [EnvironmentVariable('HOME'), 'ros2_ws', 'yolo_pt_venv', 'lib', 'python3.10', 'site-packages']
+        ),
+        description='Ultralytics/torch site-packages path for YOLO .pt backend'
     )
 
     measurement_config_arg = DeclareLaunchArgument(
@@ -251,6 +321,23 @@ def generate_launch_description():
         executable='perception_node',
         name='perception_node',
         output='screen',
+        additional_env={
+            'PYTHONNOUSERSITE': '1',
+            'PYTHONPATH': [
+                LaunchConfiguration('opencv_pythonpath'),
+                ':',
+                LaunchConfiguration('yolo_ultralytics_pythonpath'),
+                ':',
+                EnvironmentVariable('PYTHONPATH', default_value=''),
+            ],
+            'LD_LIBRARY_PATH': [
+                LaunchConfiguration('opencv_ld_library_path'),
+                ':',
+                LaunchConfiguration('cudnn_ld_library_path'),
+                ':',
+                EnvironmentVariable('LD_LIBRARY_PATH', default_value=''),
+            ],
+        },
         parameters=[{
             'use_sim_time': ParameterValue(
                 LaunchConfiguration('use_sim_time'),
@@ -263,8 +350,33 @@ def generate_launch_description():
             'eval_topic_prefix': PythonExpression(["'", topic_prefix, "' + '/stereo/eval'"]),
             'camera_debug_topic': PythonExpression(["'", topic_prefix, "' + '/stereo/camera_debug'"]),
             'camera_debug': LaunchConfiguration('camera_debug'),
+            'camera_debug_n_frames': ParameterValue(
+                LaunchConfiguration('camera_debug_n_frames'),
+                value_type=int,
+            ),
             'calibration_file': PathJoinSubstitution([sim_car_share, 'config', 'stereo_calibration.yaml']),
             'baseline_m': 0.12,
+            'yolo_enabled': ParameterValue(
+                LaunchConfiguration('yolo_enabled'),
+                value_type=bool,
+            ),
+            'yolo_model_path': LaunchConfiguration('yolo_model_path'),
+            'yolo_input_size': ParameterValue(
+                LaunchConfiguration('yolo_input_size'),
+                value_type=int,
+            ),
+            'yolo_conf_threshold': ParameterValue(
+                LaunchConfiguration('yolo_conf_threshold'),
+                value_type=float,
+            ),
+            'yolo_iou_threshold': ParameterValue(
+                LaunchConfiguration('yolo_iou_threshold'),
+                value_type=float,
+            ),
+            'yolo_prefer_cuda': ParameterValue(
+                LaunchConfiguration('yolo_prefer_cuda'),
+                value_type=bool,
+            ),
             'perf_log_hz': ParameterValue(
                 LaunchConfiguration('perf_log_hz'),
                 value_type=float,
@@ -307,6 +419,17 @@ def generate_launch_description():
         perf_log_hz_arg,
         cuda_arg,
         camera_debug_arg,
+        camera_debug_n_frames_arg,
+        yolo_enabled_arg,
+        yolo_model_path_arg,
+        yolo_input_size_arg,
+        yolo_conf_threshold_arg,
+        yolo_iou_threshold_arg,
+        yolo_prefer_cuda_arg,
+        opencv_pythonpath_arg,
+        opencv_ld_library_path_arg,
+        cudnn_ld_library_path_arg,
+        yolo_ultralytics_pythonpath_arg,
         measurement_config_arg,
         gazebo_launch,
         sim_nodes_launch,
