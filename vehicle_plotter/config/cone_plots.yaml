@@ -1,0 +1,182 @@
+# Cone depth validation plots for vehicle_plotter.
+#
+# Input topic publishes CSV rows in std_msgs/String:
+# cone_id,color,samples,axis_mae_m,axis_rmse_m,dcam,dgt
+
+window:
+  title: "Cone Depth Validation"
+  width: 2200
+  height: 950
+  dark_mode: true
+  update_rate_hz: 15.0
+
+layout:
+  rows: 2
+  cols: 5
+  buffer_size: 900
+
+settings:
+  cone_topic: "/sim/stereo/eval/cone_depth_per_cone"
+  top_cone_count: 4
+  total_average_stride: 15
+
+plots:
+  - name: "cone_1"
+    type: "timeseries"
+    row: 0
+    col: 0
+    x_axis_type: "time"
+    y_axis:
+      label: "Error"
+      unit: "m"
+    series:
+      - name: "RMSE"
+        variable: "cone_1_rmse"
+        color: "#d62728"
+      - name: "MAE"
+        variable: "cone_1_mae"
+        color: "#1f77b4"
+
+  - name: "cone_2"
+    type: "timeseries"
+    row: 0
+    col: 1
+    x_axis_type: "time"
+    y_axis:
+      label: "Error"
+      unit: "m"
+    series:
+      - name: "RMSE"
+        variable: "cone_2_rmse"
+        color: "#d62728"
+      - name: "MAE"
+        variable: "cone_2_mae"
+        color: "#1f77b4"
+
+  - name: "cone_3"
+    type: "timeseries"
+    row: 0
+    col: 2
+    x_axis_type: "time"
+    y_axis:
+      label: "Error"
+      unit: "m"
+    series:
+      - name: "RMSE"
+        variable: "cone_3_rmse"
+        color: "#d62728"
+      - name: "MAE"
+        variable: "cone_3_mae"
+        color: "#1f77b4"
+
+  - name: "cone_4"
+    type: "timeseries"
+    row: 0
+    col: 3
+    x_axis_type: "time"
+    y_axis:
+      label: "Error"
+      unit: "m"
+    series:
+      - name: "RMSE"
+        variable: "cone_4_rmse"
+        color: "#d62728"
+      - name: "MAE"
+        variable: "cone_4_mae"
+        color: "#1f77b4"
+
+  - name: "average_now"
+    type: "timeseries"
+    row: 0
+    col: 4
+    x_axis_type: "time"
+    y_axis:
+      label: "Error"
+      unit: "m"
+    series:
+      - name: "Avg RMSE"
+        variable: "avg_rmse"
+        color: "#d62728"
+      - name: "Avg MAE"
+        variable: "avg_mae"
+        color: "#1f77b4"
+
+  - name: "cone_1_distance"
+    type: "timeseries"
+    row: 1
+    col: 0
+    x_axis_type: "time"
+    y_axis:
+      label: "Distance"
+      unit: "m"
+    series:
+      - name: "dcam"
+        variable: "cone_1_dcam"
+        color: "#2ca02c"
+      - name: "dgt"
+        variable: "cone_1_dgt"
+        color: "#ff7f0e"
+
+  - name: "cone_2_distance"
+    type: "timeseries"
+    row: 1
+    col: 1
+    x_axis_type: "time"
+    y_axis:
+      label: "Distance"
+      unit: "m"
+    series:
+      - name: "dcam"
+        variable: "cone_2_dcam"
+        color: "#2ca02c"
+      - name: "dgt"
+        variable: "cone_2_dgt"
+        color: "#ff7f0e"
+
+  - name: "cone_3_distance"
+    type: "timeseries"
+    row: 1
+    col: 2
+    x_axis_type: "time"
+    y_axis:
+      label: "Distance"
+      unit: "m"
+    series:
+      - name: "dcam"
+        variable: "cone_3_dcam"
+        color: "#2ca02c"
+      - name: "dgt"
+        variable: "cone_3_dgt"
+        color: "#ff7f0e"
+
+  - name: "cone_4_distance"
+    type: "timeseries"
+    row: 1
+    col: 3
+    x_axis_type: "time"
+    y_axis:
+      label: "Distance"
+      unit: "m"
+    series:
+      - name: "dcam"
+        variable: "cone_4_dcam"
+        color: "#2ca02c"
+      - name: "dgt"
+        variable: "cone_4_dgt"
+        color: "#ff7f0e"
+
+  - name: "average_total"
+    type: "timeseries"
+    row: 1
+    col: 4
+    x_axis_type: "time"
+    y_axis:
+      label: "Error"
+      unit: "m"
+    series:
+      - name: "Total Avg RMSE"
+        variable: "avg_total_rmse"
+        color: "#d62728"
+      - name: "Total Avg MAE"
+        variable: "avg_total_mae"
+        color: "#1f77b4"

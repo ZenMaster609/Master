@@ -138,9 +138,9 @@
       <visibleFrame>base_footprint</visibleFrame>
       <publishTrack>$(arg publish_track_cones)</publishTrack>
 
-      <cameraViewDistance>15.0</cameraViewDistance>
-      <cameraMinViewDistance>0.5</cameraMinViewDistance>
-      <cameraFOV>2.09</cameraFOV>
+      <cameraViewDistance>20.0</cameraViewDistance>
+      <cameraMinViewDistance>0.3</cameraMinViewDistance>
+      <cameraFOV>1.919862</cameraFOV>
       <lidarOn>true</lidarOn>
       <lidarViewDistance>100.0</lidarViewDistance>
       <lidarMinViewDistance>1.0</lidarMinViewDistance>

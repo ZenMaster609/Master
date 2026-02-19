@@ -54,6 +54,12 @@ def generate_launch_description():
         description='Enable live plotting'
     )
 
+    cone_plotting_arg = DeclareLaunchArgument(
+        'cone_plotting',
+        default_value='false',
+        description='Enable live cone depth plotting'
+    )
+
     logging_arg = DeclareLaunchArgument(
         'logging',
         default_value='false',
@@ -114,6 +120,12 @@ def generate_launch_description():
         description='Enable CUDA disparity backend (false forces CPU StereoSGBM)'
     )
 
+    camera_debug_arg = DeclareLaunchArgument(
+        'camera_debug',
+        default_value='none',
+        description="Perception debug image mode: 'disparity', 'depth', 'left_rect', or 'none'"
+    )
+
     measurement_config_arg = DeclareLaunchArgument(
         'measurement_config',
         default_value=PathJoinSubstitution([sim_car_share, 'config', 'sensor_config.yaml']),
@@ -171,12 +183,15 @@ def generate_launch_description():
         launch_arguments={
             'adapter': 'gazebo',
             'enable_plot': LaunchConfiguration('plotting'),
+            'enable_cone_plot': LaunchConfiguration('cone_plotting'),
             'enable_log': LaunchConfiguration('logging'),
             'enable_rosbag': LaunchConfiguration('rosbagging'),
             'enable_data_collector': 'false',
             'sensor_config': LaunchConfiguration('measurement_config'),
             'use_sim_time': LaunchConfiguration('use_sim_time'),
-            'close_plots_on_shutdown': LaunchConfiguration('close_plots'),
+            'close_plots': LaunchConfiguration('close_plots'),
+            'cone_eval_topic': PythonExpression(["'", topic_prefix, "' + '/stereo/eval/cone_depth_per_cone'"]),
+            'cone_plot_config': PathJoinSubstitution([vehicle_plotter_share, 'config', 'cone_plots.yaml']),
         }.items(),
     )
 
@@ -246,6 +261,8 @@ def generate_launch_description():
             'left_camera_info_topic': PythonExpression(["'", topic_prefix, "' + '/stereo/left/camera_info'"]),
             'right_camera_info_topic': PythonExpression(["'", topic_prefix, "' + '/stereo/right/camera_info'"]),
             'eval_topic_prefix': PythonExpression(["'", topic_prefix, "' + '/stereo/eval'"]),
+            'camera_debug_topic': PythonExpression(["'", topic_prefix, "' + '/stereo/camera_debug'"]),
+            'camera_debug': LaunchConfiguration('camera_debug'),
             'calibration_file': PathJoinSubstitution([sim_car_share, 'config', 'stereo_calibration.yaml']),
             'baseline_m': 0.12,
             'perf_log_hz': ParameterValue(
@@ -261,12 +278,24 @@ def generate_launch_description():
         }],
     )
 
+    camera_debug_viewer_node = Node(
+        package='rqt_image_view',
+        executable='rqt_image_view',
+        name='camera_debug_viewer',
+        output='screen',
+        arguments=[PythonExpression(["'", topic_prefix, "' + '/stereo/camera_debug'"])],
+        condition=IfCondition(PythonExpression([
+            "'", LaunchConfiguration('camera_debug'), "'.lower() != 'none'"
+        ])),
+    )
+
     return LaunchDescription([
         headless_arg,
         update_rate_arg,
         sensors_render_engine_arg,
         world_arg,
         plotting_arg,
+        cone_plotting_arg,
         logging_arg,
         close_plots_on_shutdown_arg,
         rosbagging_arg,
@@ -277,6 +306,7 @@ def generate_launch_description():
         sensor_nodes_arg,
         perf_log_hz_arg,
         cuda_arg,
+        camera_debug_arg,
         measurement_config_arg,
         gazebo_launch,
         sim_nodes_launch,
@@ -285,6 +315,7 @@ def generate_launch_description():
         throttle_bridge_node,
         steering_bridge_node,
         perception_node,
+        camera_debug_viewer_node,
         steering_gui_node,
     ])
 
