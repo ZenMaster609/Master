@@ -92,7 +92,7 @@ def generate_launch_description():
 
     control_bridge_arg = DeclareLaunchArgument(
         'bridge',
-        default_value='throttle',
+        default_value='ackermann',
         description="Control bridge to use: 'throttle' or 'ackermann'"
     )
 
@@ -110,13 +110,19 @@ def generate_launch_description():
 
     sensor_nodes_arg = DeclareLaunchArgument(
         'sensor_nodes',
-        default_value='true',
+        default_value='false',
         description='Enable sim_car sensor nodes launch include'
+    )
+
+    boundary_planner_arg = DeclareLaunchArgument(
+        'boundary_planner',
+        default_value='true',
+        description='Enable boundary planner node'
     )
 
     perf_log_hz_arg = DeclareLaunchArgument(
         'perf_log_hz',
-        default_value='1.0',
+        default_value='0.2',
         description='Perception debug/eval publish frequency in Hz'
     )
 
@@ -281,7 +287,7 @@ def generate_launch_description():
                 "'.lower() == 'true') else 'false'"
             ]),
             'enable_rosbag': LaunchConfiguration('rosbagging'),
-            'enable_data_collector': 'true',
+            'enable_data_collector': 'false',
             'sensor_config': LaunchConfiguration('measurement_config'),
             'use_sim_time': LaunchConfiguration('use_sim_time'),
             'close_plots': LaunchConfiguration('close_plots'),
@@ -429,6 +435,25 @@ def generate_launch_description():
         }],
     )
 
+    boundary_planner_node = Node(
+        package='sim_car',
+        executable='boundary_planner_node',
+        name='boundary_planner_node',
+        output='screen',
+        parameters=[
+            PathJoinSubstitution([sim_car_share, 'config', 'boundary_planner.yaml']),
+            {
+                'use_sim_time': ParameterValue(
+                    LaunchConfiguration('use_sim_time'),
+                    value_type=bool,
+                ),
+                'topics.cones_topic': PythonExpression(["'", topic_prefix, "' + '/stereo/perception/cones_3d'"]),
+                'topics.odom_topic': '/sim/odom',
+            },
+        ],
+        condition=IfCondition(LaunchConfiguration('boundary_planner')),
+    )
+
     camera_debug_viewer_node = Node(
         package='rqt_image_view',
         executable='rqt_image_view',
@@ -456,6 +481,7 @@ def generate_launch_description():
         use_sim_time_arg,
         measure_arg,
         sensor_nodes_arg,
+        boundary_planner_arg,
         perf_log_hz_arg,
         cuda_arg,
         camera_debug_arg,
@@ -480,6 +506,7 @@ def generate_launch_description():
         throttle_bridge_node,
         steering_bridge_node,
         perception_node,
+        boundary_planner_node,
         camera_debug_viewer_node,
         steering_gui_node,
     ])

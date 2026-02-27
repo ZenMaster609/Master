@@ -16,6 +16,7 @@
   <depend>ackermann_msgs</depend>
   <depend>sensor_msgs</depend>
   <depend>nav_msgs</depend>
+  <depend>visualization_msgs</depend>
   <depend>eufs_msgs</depend>
   <depend>vehicle_plotter_msgs</depend>
   <depend>tf2_ros</depend>

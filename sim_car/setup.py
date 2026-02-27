@@ -56,6 +56,7 @@ setup(
             'brake_temp_rl_node = sim_car.brake_temp_rl_node:main',
             'pitot_dynamic_pressure_node = sim_car.pitot_dynamic_pressure_node:main',
             'perception_node = sim_car.perception_node:main',
+            'boundary_planner_node = sim_car.boundary_planner_node:main',
         ],
     },
 )

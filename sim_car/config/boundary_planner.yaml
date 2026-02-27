@@ -1,0 +1,58 @@
+boundary_planner_node:
+  ros__parameters:
+    topics:
+      cones_topic: "sim/stereo/perception/cones_3d"
+      odom_topic: "sim/odom"
+      cmd_topic: "/cmd"
+      path_topic: "sim/planner/centerline_path"
+      markers_topic: "sim/planner/markers"
+
+    gating:
+      min_confidence: 0.35
+      x_min_m: 0.5
+      x_max_m: 20.0
+      y_abs_max_m: 8.0
+      max_cone_age_s: 0.25
+      hold_last_valid_s: 0.50
+
+    fitting:
+      fit_model: "poly2"
+      min_points_per_side: 4
+      max_points_per_side: 15
+      use_ransac: true
+      ransac_iters: 60
+      ransac_inlier_thresh_m: 0.25
+
+    path_generation:
+      horizon_m: 15.0
+      sample_count: 25
+      track_width_m: 3.0
+      side_offset_m: 0.0
+
+    pure_pursuit:
+      lookahead_min_m: 2.5
+      lookahead_gain: 0.6
+      steering_limit_rad: 0.5
+      wheelbase_m: 1.6
+      stop_if_no_path: true
+
+    speed_control:
+      speed_min_mps: 1.5
+      speed_max_mps: 8.0
+      curvature_speed_gain: 3.0
+      lowpass_speed_alpha: 0.25
+
+    debug:
+      publish_path: true
+      publish_markers: true
+      log_throttle_s: 1.0
+
+    frames:
+      base_frame: "base_footprint"
+      tf_timeout_s: 0.02
+
+    colors:
+      left_boundary: ["blue"]
+      right_boundary: ["yellow"]
+
+    planner_rate_hz: 30.0
