@@ -15,7 +15,7 @@ from typing import Dict, List, Optional
 import rclpy
 from rclpy.executors import ExternalShutdownException
 from rclpy.node import Node
-from std_msgs.msg import String
+from std_msgs.msg import Float32, Int32, String
 import yaml
 from ament_index_python.packages import get_package_share_directory
 
@@ -37,6 +37,10 @@ class ConeRow:
     samples: int
     mae: Optional[float]
     rmse: Optional[float]
+    rmse_x: Optional[float]
+    rmse_y: Optional[float]
+    dcam_inst: Optional[float]
+    dgt_inst: Optional[float]
     dcam: Optional[float]
     dgt: Optional[float]
 
@@ -46,6 +50,7 @@ class ConePlotRuntimeConfig:
     """Runtime behavior loaded from YAML."""
 
     cone_topic: str
+    cone_metrics_prefix: str
     top_cone_count: int
     total_average_stride: int
 
@@ -94,11 +99,65 @@ class ConePlotterNode(Node):
         self._avg_total_mae: Optional[float] = None
 
         self._msg_count = 0
+        self._latest_rows: List[ConeRow] = []
+        self._slot_rows: List[Optional[ConeRow]] = [None] * self._top_cone_count
+        self._latest_cone_metrics: Dict[str, Optional[float]] = {
+            'cone_depth_pairs': None,
+            'cone_depth_axis_mae_m': None,
+            'cone_depth_axis_rmse_m': None,
+            'cone_depth_axis_bias_m': None,
+            'cone_depth_range_mae_m': None,
+            'cone_depth_range_rmse_m': None,
+            'cone_depth_sync_dt_ms': None,
+        }
 
         self._cone_sub = self.create_subscription(
             String,
             runtime_config.cone_topic,
             self._cone_table_callback,
+            10,
+        )
+        prefix = runtime_config.cone_metrics_prefix.rstrip('/')
+        self._cone_pairs_sub = self.create_subscription(
+            Int32,
+            f'{prefix}/cone_depth_pairs',
+            self._cone_pairs_callback,
+            10,
+        )
+        self._cone_axis_mae_sub = self.create_subscription(
+            Float32,
+            f'{prefix}/cone_depth_axis_mae_m',
+            self._cone_axis_mae_callback,
+            10,
+        )
+        self._cone_axis_rmse_sub = self.create_subscription(
+            Float32,
+            f'{prefix}/cone_depth_axis_rmse_m',
+            self._cone_axis_rmse_callback,
+            10,
+        )
+        self._cone_axis_bias_sub = self.create_subscription(
+            Float32,
+            f'{prefix}/cone_depth_axis_bias_m',
+            self._cone_axis_bias_callback,
+            10,
+        )
+        self._cone_range_mae_sub = self.create_subscription(
+            Float32,
+            f'{prefix}/cone_depth_range_mae_m',
+            self._cone_range_mae_callback,
+            10,
+        )
+        self._cone_range_rmse_sub = self.create_subscription(
+            Float32,
+            f'{prefix}/cone_depth_range_rmse_m',
+            self._cone_range_rmse_callback,
+            10,
+        )
+        self._cone_sync_dt_sub = self.create_subscription(
+            Float32,
+            f'{prefix}/cone_depth_sync_dt_ms',
+            self._cone_sync_dt_callback,
             10,
         )
 
@@ -110,6 +169,7 @@ class ConePlotterNode(Node):
         self.get_logger().info(
             'ConePlotterNode started '
             f'topic={runtime_config.cone_topic} '
+            f'metrics_prefix={runtime_config.cone_metrics_prefix} '
             f'top_cones={self._top_cone_count} '
             f'total_avg_stride={self._total_average_stride}'
         )
@@ -143,8 +203,12 @@ class ConePlotterNode(Node):
         topic = cone_topic_override or str(
             settings.get('cone_topic', '/sim/stereo/eval/cone_depth_per_cone')
         )
+        metrics_prefix = topic
+        if metrics_prefix.endswith('/cone_depth_per_cone'):
+            metrics_prefix = metrics_prefix[: -len('/cone_depth_per_cone')]
         return ConePlotRuntimeConfig(
             cone_topic=topic,
+            cone_metrics_prefix=metrics_prefix,
             top_cone_count=max(1, int(settings.get('top_cone_count', 4))),
             total_average_stride=max(1, int(settings.get('total_average_stride', 15))),
         )
@@ -267,9 +331,9 @@ class ConePlotterNode(Node):
 
     def _cone_table_callback(self, msg: String) -> None:
         rows = self._parse_cone_rows(msg.data)
+        self._latest_rows = rows
 
-        ranked_rows = sorted(rows, key=self._cone_distance_sort_key)
-        selected = ranked_rows[:self._top_cone_count]
+        selected = self._select_slot_rows(rows)
 
         avg_rmse_now = self._mean([row.rmse for row in rows if row.rmse is not None])
         avg_mae_now = self._mean([row.mae for row in rows if row.mae is not None])
@@ -296,13 +360,103 @@ class ConePlotterNode(Node):
         for idx in range(self._top_cone_count):
             prefix = f'cone_{idx + 1}'
             row = selected[idx] if idx < len(selected) else None
+            dcam_plot = (
+                row.dcam_inst if row and row.dcam_inst is not None
+                else (row.dcam if row else None)
+            )
+            dgt_plot = (
+                row.dgt_inst if row and row.dgt_inst is not None
+                else (row.dgt if row else None)
+            )
             state_values[f'{prefix}_rmse'] = self._to_plot_value(row.rmse if row else None)
             state_values[f'{prefix}_mae'] = self._to_plot_value(row.mae if row else None)
-            state_values[f'{prefix}_dcam'] = self._to_plot_value(row.dcam if row else None)
-            state_values[f'{prefix}_dgt'] = self._to_plot_value(row.dgt if row else None)
+            state_values[f'{prefix}_rmse_x'] = self._to_plot_value(
+                row.rmse_x if row and row.rmse_x is not None else (row.rmse if row else None)
+            )
+            state_values[f'{prefix}_rmse_y'] = self._to_plot_value(
+                row.rmse_y if row and row.rmse_y is not None else (row.rmse if row else None)
+            )
+            state_values[f'{prefix}_dcam'] = self._to_plot_value(dcam_plot)
+            state_values[f'{prefix}_dgt'] = self._to_plot_value(dgt_plot)
+            state_values[f'{prefix}_dcam_inst'] = self._to_plot_value(row.dcam_inst if row else None)
+            state_values[f'{prefix}_dgt_inst'] = self._to_plot_value(row.dgt_inst if row else None)
+            state_values[f'{prefix}_dcam_avg'] = self._to_plot_value(row.dcam if row else None)
+            state_values[f'{prefix}_dgt_avg'] = self._to_plot_value(row.dgt if row else None)
+
+        for key, value in self._latest_cone_metrics.items():
+            state_values[key] = self._to_plot_value(value)
 
         self.plot_manager.push_state(SimpleNamespace(**state_values))
         self._msg_count += 1
+
+    def _push_state_from_latest(self) -> None:
+        rows = self._latest_rows
+        selected = list(self._slot_rows)
+        avg_rmse_now = self._mean([row.rmse for row in rows if row.rmse is not None])
+        avg_mae_now = self._mean([row.mae for row in rows if row.mae is not None])
+
+        state_values: Dict[str, float] = {
+            'timestamp': self._now_sec(),
+            'avg_rmse': self._to_plot_value(avg_rmse_now),
+            'avg_mae': self._to_plot_value(avg_mae_now),
+            'avg_total_rmse': self._to_plot_value(self._avg_total_rmse),
+            'avg_total_mae': self._to_plot_value(self._avg_total_mae),
+        }
+        for idx in range(self._top_cone_count):
+            prefix = f'cone_{idx + 1}'
+            row = selected[idx] if idx < len(selected) else None
+            dcam_plot = (
+                row.dcam_inst if row and row.dcam_inst is not None
+                else (row.dcam if row else None)
+            )
+            dgt_plot = (
+                row.dgt_inst if row and row.dgt_inst is not None
+                else (row.dgt if row else None)
+            )
+            state_values[f'{prefix}_rmse'] = self._to_plot_value(row.rmse if row else None)
+            state_values[f'{prefix}_mae'] = self._to_plot_value(row.mae if row else None)
+            state_values[f'{prefix}_rmse_x'] = self._to_plot_value(
+                row.rmse_x if row and row.rmse_x is not None else (row.rmse if row else None)
+            )
+            state_values[f'{prefix}_rmse_y'] = self._to_plot_value(
+                row.rmse_y if row and row.rmse_y is not None else (row.rmse if row else None)
+            )
+            state_values[f'{prefix}_dcam'] = self._to_plot_value(dcam_plot)
+            state_values[f'{prefix}_dgt'] = self._to_plot_value(dgt_plot)
+            state_values[f'{prefix}_dcam_inst'] = self._to_plot_value(row.dcam_inst if row else None)
+            state_values[f'{prefix}_dgt_inst'] = self._to_plot_value(row.dgt_inst if row else None)
+            state_values[f'{prefix}_dcam_avg'] = self._to_plot_value(row.dcam if row else None)
+            state_values[f'{prefix}_dgt_avg'] = self._to_plot_value(row.dgt if row else None)
+        for key, value in self._latest_cone_metrics.items():
+            state_values[key] = self._to_plot_value(value)
+
+        self.plot_manager.push_state(SimpleNamespace(**state_values))
+        self._msg_count += 1
+
+    def _set_metric(self, key: str, value: Optional[float]) -> None:
+        self._latest_cone_metrics[key] = value
+        self._push_state_from_latest()
+
+    def _cone_pairs_callback(self, msg: Int32) -> None:
+        self._set_metric('cone_depth_pairs', float(msg.data))
+
+    def _cone_axis_mae_callback(self, msg: Float32) -> None:
+        self._set_metric('cone_depth_axis_mae_m', float(msg.data))
+
+    def _cone_axis_rmse_callback(self, msg: Float32) -> None:
+        self._set_metric('cone_depth_axis_rmse_m', float(msg.data))
+
+    def _cone_axis_bias_callback(self, msg: Float32) -> None:
+        self._set_metric('cone_depth_axis_bias_m', float(msg.data))
+
+    def _cone_range_mae_callback(self, msg: Float32) -> None:
+        self._set_metric('cone_depth_range_mae_m', float(msg.data))
+
+    def _cone_range_rmse_callback(self, msg: Float32) -> None:
+        self._set_metric('cone_depth_range_rmse_m', float(msg.data))
+
+    def _cone_sync_dt_callback(self, msg: Float32) -> None:
+        self._set_metric('cone_depth_sync_dt_ms', float(msg.data))
 
     def _refresh_callback(self) -> None:
         if not self._window_open:
@@ -336,9 +490,56 @@ class ConePlotterNode(Node):
 
     @staticmethod
     def _cone_distance_sort_key(row: ConeRow):
-        dgt = row.dgt if row.dgt is not None else math.inf
-        dcam = row.dcam if row.dcam is not None else math.inf
+        dgt = (
+            row.dgt_inst if row.dgt_inst is not None
+            else (row.dgt if row.dgt is not None else math.inf)
+        )
+        dcam = (
+            row.dcam_inst if row.dcam_inst is not None
+            else (row.dcam if row.dcam is not None else math.inf)
+        )
         return (dgt, dcam, row.cone_id)
+
+    def _select_slot_rows(self, rows: List[ConeRow]) -> List[Optional[ConeRow]]:
+        ranked_rows = sorted(rows, key=self._cone_distance_sort_key)
+        if not ranked_rows:
+            return list(self._slot_rows)
+
+        by_id: Dict[str, ConeRow] = {}
+        for row in ranked_rows:
+            if row.cone_id not in by_id:
+                by_id[row.cone_id] = row
+
+        selected: List[Optional[ConeRow]] = [None] * self._top_cone_count
+        used_ids = set()
+
+        # Prefer keeping prior cone-to-column assignment stable.
+        for idx, prev in enumerate(self._slot_rows):
+            if prev is None:
+                continue
+            current = by_id.get(prev.cone_id)
+            if current is None:
+                continue
+            selected[idx] = current
+            used_ids.add(prev.cone_id)
+
+        for row in ranked_rows:
+            if row.cone_id in used_ids:
+                continue
+            try:
+                target_idx = selected.index(None)
+            except ValueError:
+                break
+            selected[target_idx] = row
+            used_ids.add(row.cone_id)
+
+        # Keep previous values for temporarily missing cone slots.
+        for idx, row in enumerate(selected):
+            if row is None:
+                selected[idx] = self._slot_rows[idx]
+
+        self._slot_rows = selected
+        return selected
 
     @staticmethod
     def _parse_cone_rows(text: str) -> List[ConeRow]:
@@ -348,7 +549,12 @@ class ConePlotterNode(Node):
         if lines[0].startswith('no per-cone depth samples'):
             return []
 
-        start_idx = 1 if lines[0].startswith('cone_id,') else 0
+        header_map: Dict[str, int] = {}
+        start_idx = 0
+        if lines[0].startswith('cone_id,'):
+            start_idx = 1
+            header_parts = [part.strip() for part in lines[0].split(',')]
+            header_map = {name: idx for idx, name in enumerate(header_parts)}
         parsed_rows: List[ConeRow] = []
 
         for line in lines[start_idx:]:
@@ -358,14 +564,26 @@ class ConePlotterNode(Node):
             if len(parts) < 7:
                 continue
 
+            def get_value(key: str, fallback_idx: Optional[int] = None) -> Optional[str]:
+                idx = header_map.get(key)
+                if idx is None:
+                    idx = fallback_idx
+                if idx is None or idx < 0 or idx >= len(parts):
+                    return None
+                return parts[idx]
+
             parsed_rows.append(
                 ConeRow(
                     cone_id=parts[0],
-                    samples=ConePlotterNode._parse_int(parts[2]),
-                    mae=ConePlotterNode._parse_float(parts[3]),
-                    rmse=ConePlotterNode._parse_float(parts[4]),
-                    dcam=ConePlotterNode._parse_float(parts[5]),
-                    dgt=ConePlotterNode._parse_float(parts[6]),
+                    samples=ConePlotterNode._parse_int(get_value('samples', 2) or '0'),
+                    mae=ConePlotterNode._parse_float(get_value('axis_mae_m', 3) or ''),
+                    rmse=ConePlotterNode._parse_float(get_value('axis_rmse_m', 4) or ''),
+                    rmse_x=ConePlotterNode._parse_float(get_value('axis_rmse_x_m', None) or ''),
+                    rmse_y=ConePlotterNode._parse_float(get_value('axis_rmse_y_m', None) or ''),
+                    dcam_inst=ConePlotterNode._parse_float(get_value('dcam_inst', None) or ''),
+                    dgt_inst=ConePlotterNode._parse_float(get_value('dgt_inst', None) or ''),
+                    dcam=ConePlotterNode._parse_float(get_value('dcam', 5) or ''),
+                    dgt=ConePlotterNode._parse_float(get_value('dgt', 6) or ''),
                 )
             )
 

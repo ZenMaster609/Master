@@ -9,7 +9,7 @@ import tempfile
 import xml.etree.ElementTree as ET
 import subprocess
 import yaml
-from ament_index_python.packages import get_package_share_directory
+from ament_index_python.packages import get_package_prefix, get_package_share_directory
 from launch import LaunchDescription
 from launch.actions import DeclareLaunchArgument, IncludeLaunchDescription, OpaqueFunction, SetEnvironmentVariable
 from launch.conditions import IfCondition, UnlessCondition
@@ -18,8 +18,19 @@ from launch.substitutions import LaunchConfiguration
 from launch_ros.actions import Node
 
 
+def _prepend_env_path(path: str, existing: str) -> str:
+    if not existing:
+        return path
+    entries = existing.split(os.pathsep)
+    if path in entries:
+        return existing
+    return f'{path}{os.pathsep}{existing}'
+
+
 def generate_launch_description():
     pkg_sim_car = get_package_share_directory('sim_car')
+    eufs_gz_dynamics_prefix = get_package_prefix('eufs_gz_dynamics')
+    eufs_gz_dynamics_lib = os.path.join(eufs_gz_dynamics_prefix, 'lib')
     world_file = os.path.join(pkg_sim_car, 'worlds', 'small_track.world')
 
     # Declare launch arguments
@@ -38,6 +49,14 @@ def generate_launch_description():
         os.path.join(resource_path, 'materials'),
     ]
     resource_path_value = ':'.join(resource_paths)
+    gz_system_plugin_path = _prepend_env_path(
+        eufs_gz_dynamics_lib,
+        os.environ.get('GZ_SIM_SYSTEM_PLUGIN_PATH', ''),
+    )
+    ign_system_plugin_path = _prepend_env_path(
+        eufs_gz_dynamics_lib,
+        os.environ.get('IGN_GAZEBO_SYSTEM_PLUGIN_PATH', ''),
+    )
 
     return LaunchDescription([
         # Prefer discrete NVIDIA GPU rendering when available.
@@ -47,6 +66,8 @@ def generate_launch_description():
         SetEnvironmentVariable('CUDA_VISIBLE_DEVICES', '0'),
         SetEnvironmentVariable('GZ_SIM_RESOURCE_PATH', resource_path_value),
         SetEnvironmentVariable('IGN_GAZEBO_RESOURCE_PATH', resource_path_value),
+        SetEnvironmentVariable('GZ_SIM_SYSTEM_PLUGIN_PATH', gz_system_plugin_path),
+        SetEnvironmentVariable('IGN_GAZEBO_SYSTEM_PLUGIN_PATH', ign_system_plugin_path),
         DeclareLaunchArgument(
             'use_sim_time',
             default_value='true',
@@ -77,6 +98,26 @@ def generate_launch_description():
             default_value='ogre',
             description='Render engine for injected sensors plugin (ogre or ogre2)'
         ),
+        DeclareLaunchArgument(
+            'spawn_x',
+            default_value='-50.0',
+            description='Initial world X position for the car model (meters)'
+        ),
+        DeclareLaunchArgument(
+            'spawn_y',
+            default_value='0.0',
+            description='Initial world Y position for the car model (meters)'
+        ),
+        DeclareLaunchArgument(
+            'spawn_z',
+            default_value='0.0',
+            description='Initial world Z position for the car model (meters)'
+        ),
+        DeclareLaunchArgument(
+            'spawn_yaw',
+            default_value='0.0',
+            description='Initial world yaw for the car model (radians)'
+        ),
         OpaqueFunction(function=_launch_simulation),
     ])
 
@@ -102,8 +143,12 @@ def _launch_simulation(context, *args, **kwargs):
     eufs_config_path = os.path.join(pkg_sim_car, 'config', 'eufs_config.yaml')
     update_rate_value = float(LaunchConfiguration('update_rate_hz').perform(context))
     updated_eufs_config = _write_updated_eufs_config(eufs_config_path, update_rate_value)
+    spawn_x = LaunchConfiguration('spawn_x').perform(context)
+    spawn_y = LaunchConfiguration('spawn_y').perform(context)
+    spawn_z = LaunchConfiguration('spawn_z').perform(context)
+    spawn_yaw = LaunchConfiguration('spawn_yaw').perform(context)
     robot_desc = _build_robot_description(
-        urdf_path, imu_rate, gnss_rate, updated_eufs_config, topic_prefix
+        urdf_path, imu_rate, gnss_rate, updated_eufs_config, topic_prefix, spawn_x, spawn_y, spawn_z, spawn_yaw
     )
 
     use_sim_time = LaunchConfiguration('use_sim_time')
@@ -131,9 +176,10 @@ def _launch_simulation(context, *args, **kwargs):
         arguments=[
             '-name', 'sim_car',
             '-topic', 'robot_description',
-            '-x', '0.0',
-            '-y', '0.0',
-            '-z', '0.5'
+            '-x', spawn_x,
+            '-y', spawn_y,
+            '-z', spawn_z,
+            '-Y', spawn_yaw,
         ],
         output='screen'
     )
@@ -319,7 +365,9 @@ def _write_updated_eufs_config(config_path, update_rate_hz):
         return tmp.name
 
 
-def _build_robot_description(urdf_path, imu_rate, gnss_rate, eufs_config_path, topic_prefix):
+def _build_robot_description(
+    urdf_path, imu_rate, gnss_rate, eufs_config_path, topic_prefix, spawn_x, spawn_y, spawn_z, spawn_yaw
+):
     robot_xml = _load_robot_xml(urdf_path, eufs_config_path, topic_prefix)
     try:
         root = ET.fromstring(robot_xml)
@@ -344,6 +392,10 @@ def _build_robot_description(urdf_path, imu_rate, gnss_rate, eufs_config_path, t
             if yaml_elem is None:
                 yaml_elem = ET.SubElement(plugin, 'yaml_config')
             yaml_elem.text = eufs_config_path
+            _set_plugin_param(plugin, 'initial_x', spawn_x)
+            _set_plugin_param(plugin, 'initial_y', spawn_y)
+            _set_plugin_param(plugin, 'initial_z', spawn_z)
+            _set_plugin_param(plugin, 'initial_yaw', spawn_yaw)
 
     return ET.tostring(root, encoding='unicode')
 
@@ -366,3 +418,10 @@ def _run_xacro(urdf_path, eufs_config_path, topic_prefix):
     if result.returncode != 0:
         raise RuntimeError(result.stderr.strip())
     return result.stdout
+
+
+def _set_plugin_param(plugin: ET.Element, name: str, value: str) -> None:
+    elem = plugin.find(name)
+    if elem is None:
+        elem = ET.SubElement(plugin, name)
+    elem.text = str(value)

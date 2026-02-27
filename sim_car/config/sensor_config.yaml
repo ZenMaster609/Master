@@ -74,7 +74,7 @@ signals:
     output_topic: /sim/odom
     msg_type: nav_msgs/msg/Odometry
     rate_hz: 50.0
-    latency_ms: 500.0
+    latency_ms: 0.0
     dropout_prob: 0.0
     noise_std: 0.0
     bias_init: 0.0

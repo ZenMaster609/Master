@@ -81,8 +81,15 @@ class EufsRaceCarModel final : public gz_sim::System,
     rear_left_wheel_joint_ = gz_sim::Joint(model_.JointByName(_ecm, rear_left_wheel_joint_name_));
     rear_right_wheel_joint_ = gz_sim::Joint(model_.JointByName(_ecm, rear_right_wheel_joint_name_));
 
-    auto pose = canonical_link_.WorldPose(_ecm);
-    offset_ = pose.value_or(gz::math::Pose3d::Zero);
+    if (use_initial_pose_override_) {
+      offset_ = gz::math::Pose3d(initial_x_, initial_y_, initial_z_, 0.0, 0.0, initial_yaw_);
+      offset_initialized_ = true;
+      state_.z = initial_z_;
+      RCLCPP_INFO(
+          node_->get_logger(),
+          "Using configured initial pose x=%.3f y=%.3f z=%.3f yaw=%.3f",
+          initial_x_, initial_y_, initial_z_, initial_yaw_);
+    }
 
     last_update_time_sec_ = 0.0;
     last_cmd_time_sec_ = node_->now().seconds();
@@ -121,6 +128,14 @@ class EufsRaceCarModel final : public gz_sim::System,
 
     auto pose = canonical_link_.WorldPose(_ecm);
     if (pose.has_value()) {
+      if (!offset_initialized_) {
+        offset_ = pose.value();
+        offset_initialized_ = true;
+        RCLCPP_INFO(
+            node_->get_logger(),
+            "Initial dynamics offset set to x=%.3f y=%.3f z=%.3f",
+            offset_.Pos().X(), offset_.Pos().Y(), offset_.Pos().Z());
+      }
       state_.z = pose->Pos().Z();
     }
 
@@ -191,6 +206,22 @@ class EufsRaceCarModel final : public gz_sim::System,
     }
     if (_sdf->HasElement("cmd_vel_topic")) {
       cmd_vel_topic_ = _sdf->Get<std::string>("cmd_vel_topic");
+    }
+    if (_sdf->HasElement("initial_x")) {
+      initial_x_ = _sdf->Get<double>("initial_x");
+      use_initial_pose_override_ = true;
+    }
+    if (_sdf->HasElement("initial_y")) {
+      initial_y_ = _sdf->Get<double>("initial_y");
+      use_initial_pose_override_ = true;
+    }
+    if (_sdf->HasElement("initial_z")) {
+      initial_z_ = _sdf->Get<double>("initial_z");
+      use_initial_pose_override_ = true;
+    }
+    if (_sdf->HasElement("initial_yaw")) {
+      initial_yaw_ = _sdf->Get<double>("initial_yaw");
+      use_initial_pose_override_ = true;
     }
 
     if (_sdf->HasElement("front_left_wheel_steering")) {
@@ -347,6 +378,7 @@ class EufsRaceCarModel final : public gz_sim::System,
   std::unique_ptr<eufs::models::VehicleModel> vehicle_;
 
   gz::math::Pose3d offset_{};
+  bool offset_initialized_ = false;
 
   double update_rate_hz_ = 1000.0;
   double steering_lock_time_ = 1.0;
@@ -361,6 +393,12 @@ class EufsRaceCarModel final : public gz_sim::System,
   double wheel_angle_fr_ = 0.0;
   double wheel_angle_rl_ = 0.0;
   double wheel_angle_rr_ = 0.0;
+
+  bool use_initial_pose_override_ = false;
+  double initial_x_ = 0.0;
+  double initial_y_ = 0.0;
+  double initial_z_ = 0.0;
+  double initial_yaw_ = 0.0;
 
   std::string vehicle_model_ = "DynamicBicycle";
   std::string yaml_config_path_;

@@ -38,6 +38,7 @@ class StereoPipelineOutput:
     """Result from one stereo pair processing pass."""
 
     left_rect: np.ndarray
+    left_rect_color: Optional[np.ndarray]
     right_rect: np.ndarray
     disparity: np.ndarray
     depth: np.ndarray
@@ -95,6 +96,7 @@ class StereoPipeline:
         total_t0 = time.perf_counter()
 
         decode_t0 = time.perf_counter()
+        left_bgr = self._decode_to_bgr(left_msg)
         left_gray = self._decode_to_gray(left_msg)
         right_gray = self._decode_to_gray(right_msg)
         decode_ms = (time.perf_counter() - decode_t0) * 1000.0
@@ -103,6 +105,7 @@ class StereoPipeline:
 
         rectify_t0 = time.perf_counter()
         left_rect, right_rect = self._rectify_gray(left_gray, right_gray)
+        left_rect_color = self._rectify_color(left_bgr) if left_bgr is not None else None
         rectify_ms = (time.perf_counter() - rectify_t0) * 1000.0
 
         disparity_t0 = time.perf_counter()
@@ -118,6 +121,7 @@ class StereoPipeline:
         total_ms = (time.perf_counter() - total_t0) * 1000.0
         return StereoPipelineOutput(
             left_rect=left_rect,
+            left_rect_color=left_rect_color,
             right_rect=right_rect,
             disparity=disparity,
             depth=depth,
@@ -299,6 +303,15 @@ class StereoPipeline:
         right_rect = cv2.remap(right_gray, self._map_r1, self._map_r2, cv2.INTER_LINEAR)
         return left_rect, right_rect
 
+    def _rectify_color(self, left_bgr: np.ndarray) -> np.ndarray:
+        if not self._rectify_ready:
+            return left_bgr
+
+        target_w, target_h = self._rectified_size
+        if left_bgr.shape[:2] != (target_h, target_w):
+            left_bgr = cv2.resize(left_bgr, (target_w, target_h), interpolation=cv2.INTER_LINEAR)
+        return cv2.remap(left_bgr, self._map_l1, self._map_l2, cv2.INTER_LINEAR)
+
     def _load_calibration(self):
         calibration_path = self._cfg.calibration_file.strip() or self._default_calibration_path()
         if not calibration_path:
@@ -410,6 +423,31 @@ class StereoPipeline:
         except Exception as exc:  # pylint: disable=broad-except
             self._logger.warn(f'Failed to decode image ({msg.encoding}): {exc}')
             return None
+
+    @staticmethod
+    def _decode_to_bgr(msg: Image) -> Optional[np.ndarray]:
+        try:
+            if msg.height <= 0 or msg.width <= 0:
+                return None
+
+            encoding = msg.encoding.lower()
+            if encoding == 'bgr8':
+                return StereoPipeline._reshape_color8(msg, channels=3)
+            if encoding == 'rgb8':
+                rgb = StereoPipeline._reshape_color8(msg, channels=3)
+                return cv2.cvtColor(rgb, cv2.COLOR_RGB2BGR)
+            if encoding == 'bgra8':
+                bgra = StereoPipeline._reshape_color8(msg, channels=4)
+                return cv2.cvtColor(bgra, cv2.COLOR_BGRA2BGR)
+            if encoding == 'rgba8':
+                rgba = StereoPipeline._reshape_color8(msg, channels=4)
+                return cv2.cvtColor(rgba, cv2.COLOR_RGBA2BGR)
+            if encoding in {'mono8', '8uc1'}:
+                gray = StereoPipeline._reshape_mono8(msg)
+                return cv2.cvtColor(gray, cv2.COLOR_GRAY2BGR)
+        except Exception:
+            return None
+        return None
 
     @staticmethod
     def _reshape_mono8(msg: Image) -> np.ndarray:

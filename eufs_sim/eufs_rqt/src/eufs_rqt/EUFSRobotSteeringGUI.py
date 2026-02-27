@@ -50,6 +50,10 @@ from std_msgs.msg import Float32
 class EUFSRobotSteeringGUI(Plugin):
     slider_factor = 1000.0
 
+    @classmethod
+    def _to_slider_units(cls, value):
+        return int(round(value * cls.slider_factor))
+
     def __init__(self, context):
         super(EUFSRobotSteeringGUI, self).__init__(context)
         self.setObjectName('EUFSRobotSteeringGUI')
@@ -402,19 +406,19 @@ class EUFSRobotSteeringGUI(Plugin):
 
     def _on_max_linear_changed(self, value):
         self._widget.linear_slider.setMaximum(
-            value * EUFSRobotSteeringGUI.slider_factor)
+            self._to_slider_units(value))
 
     def _on_min_linear_changed(self, value):
         self._widget.linear_slider.setMinimum(
-            value * EUFSRobotSteeringGUI.slider_factor)
+            self._to_slider_units(value))
 
     def _on_max_angular_changed(self, value):
         self._widget.angular_slider.setMaximum(
-            value * EUFSRobotSteeringGUI.slider_factor)
+            self._to_slider_units(value))
 
     def _on_min_angular_changed(self, value):
         self._widget.angular_slider.setMinimum(
-            value * EUFSRobotSteeringGUI.slider_factor)
+            self._to_slider_units(value))
 
     def _on_strong_increase_linear_pressed(self):
         self._widget.linear_slider.setValue(

@@ -231,6 +231,7 @@ def generate_launch_description():
             'buffer_size': 1000,
             'adapter': LaunchConfiguration('adapter'),  # For directory prefix (sim_ or jetson_)
             'auto_plot_on_shutdown': True,  # Generate plots when logger shuts down
+            'cone_eval_topic': LaunchConfiguration('cone_eval_topic'),
             'use_sim_time': False,  # Use wall clock for timers
         }],
     )

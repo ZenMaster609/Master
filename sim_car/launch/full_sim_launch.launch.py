@@ -38,7 +38,7 @@ def generate_launch_description():
 
     sensors_render_engine_arg = DeclareLaunchArgument(
         'sensors_render_engine',
-        default_value='ogre',
+        default_value='ogre2',
         description='Render engine for injected Gazebo sensors plugin (ogre or ogre2)'
     )
 
@@ -58,6 +58,12 @@ def generate_launch_description():
         'cone_plotting',
         default_value='false',
         description='Enable live cone depth plotting'
+    )
+
+    cone_plotting_2_arg = DeclareLaunchArgument(
+        'cone_plotting_2',
+        default_value='true',
+        description='Enable aggregated range-binned RMSE plotting'
     )
 
     logging_arg = DeclareLaunchArgument(
@@ -104,7 +110,7 @@ def generate_launch_description():
 
     sensor_nodes_arg = DeclareLaunchArgument(
         'sensor_nodes',
-        default_value='false',
+        default_value='true',
         description='Enable sim_car sensor nodes launch include'
     )
 
@@ -134,8 +140,8 @@ def generate_launch_description():
 
     yolo_enabled_arg = DeclareLaunchArgument(
         'yolo_enabled',
-        default_value='false',
-        description='Enable ONNX YOLO detection in perception_node'
+        default_value='true',
+        description='Enable YOLO detection in perception_node'
     )
 
     yolo_model_path_arg = DeclareLaunchArgument(
@@ -146,8 +152,8 @@ def generate_launch_description():
 
     yolo_input_size_arg = DeclareLaunchArgument(
         'yolo_input_size',
-        default_value='640',
-        description='YOLO ONNX square input size'
+        default_value='960',
+        description='YOLO square inference input size'
     )
 
     yolo_conf_threshold_arg = DeclareLaunchArgument(
@@ -168,6 +174,18 @@ def generate_launch_description():
         description='Prefer OpenCV DNN CUDA backend for YOLO ONNX'
     )
 
+    cone_eval_track_match_threshold_arg = DeclareLaunchArgument(
+        'cone_eval_track_match_threshold_m',
+        default_value='1.5',
+        description='Strict cone-to-track match radius in meters'
+    )
+
+    cone_eval_track_match_relaxed_threshold_arg = DeclareLaunchArgument(
+        'cone_eval_track_match_relaxed_threshold_m',
+        default_value='3.0',
+        description='Relaxed cone-to-track match radius in meters (ambiguity-guarded fallback)'
+    )
+
     opencv_pythonpath_arg = DeclareLaunchArgument(
         'opencv_pythonpath',
         default_value=PathJoinSubstitution(
@@ -184,7 +202,7 @@ def generate_launch_description():
 
     cudnn_ld_library_path_arg = DeclareLaunchArgument(
         'cudnn_ld_library_path',
-        default_value='/tmp/cudnn_py/nvidia/cudnn/lib',
+        default_value=PathJoinSubstitution([EnvironmentVariable('HOME'), 'ros2_ws', 'cudnn_py', 'nvidia', 'cudnn', 'lib']),
         description='cuDNN shared library path prepended for perception_node'
     )
 
@@ -228,6 +246,7 @@ def generate_launch_description():
         ),
         launch_arguments={
             'topic_prefix': topic_prefix,
+            'sensor_config': LaunchConfiguration('measurement_config'),
         }.items(),
         condition=IfCondition(LaunchConfiguration('sensor_nodes')),
     )
@@ -254,9 +273,15 @@ def generate_launch_description():
             'adapter': 'gazebo',
             'enable_plot': LaunchConfiguration('plotting'),
             'enable_cone_plot': LaunchConfiguration('cone_plotting'),
-            'enable_log': LaunchConfiguration('logging'),
+            'enable_log': PythonExpression([
+                "'true' if ('",
+                LaunchConfiguration('logging'),
+                "'.lower() == 'true' or '",
+                LaunchConfiguration('cone_plotting'),
+                "'.lower() == 'true') else 'false'"
+            ]),
             'enable_rosbag': LaunchConfiguration('rosbagging'),
-            'enable_data_collector': 'false',
+            'enable_data_collector': 'true',
             'sensor_config': LaunchConfiguration('measurement_config'),
             'use_sim_time': LaunchConfiguration('use_sim_time'),
             'close_plots': LaunchConfiguration('close_plots'),
@@ -349,6 +374,8 @@ def generate_launch_description():
             'right_camera_info_topic': PythonExpression(["'", topic_prefix, "' + '/stereo/right/camera_info'"]),
             'eval_topic_prefix': PythonExpression(["'", topic_prefix, "' + '/stereo/eval'"]),
             'camera_debug_topic': PythonExpression(["'", topic_prefix, "' + '/stereo/camera_debug'"]),
+            'cone_detections_topic': PythonExpression(["'", topic_prefix, "' + '/stereo/perception/cones_3d'"]),
+            'cone_detections_frame': 'base_footprint',
             'camera_debug': LaunchConfiguration('camera_debug'),
             'camera_debug_n_frames': ParameterValue(
                 LaunchConfiguration('camera_debug_n_frames'),
@@ -377,12 +404,24 @@ def generate_launch_description():
                 LaunchConfiguration('yolo_prefer_cuda'),
                 value_type=bool,
             ),
+            'cone_eval_track_match_threshold_m': ParameterValue(
+                LaunchConfiguration('cone_eval_track_match_threshold_m'),
+                value_type=float,
+            ),
+            'cone_eval_track_match_relaxed_threshold_m': ParameterValue(
+                LaunchConfiguration('cone_eval_track_match_relaxed_threshold_m'),
+                value_type=float,
+            ),
             'perf_log_hz': ParameterValue(
                 LaunchConfiguration('perf_log_hz'),
                 value_type=float,
             ),
             'prefer_cuda': ParameterValue(
                 LaunchConfiguration('cuda'),
+                value_type=bool,
+            ),
+            'cone_plotting_2': ParameterValue(
+                LaunchConfiguration('cone_plotting_2'),
                 value_type=bool,
             ),
             # Gazebo cameras can be phase-shifted; allow a bit more slack so rectified outputs stay live.
@@ -408,6 +447,7 @@ def generate_launch_description():
         world_arg,
         plotting_arg,
         cone_plotting_arg,
+        cone_plotting_2_arg,
         logging_arg,
         close_plots_on_shutdown_arg,
         rosbagging_arg,
@@ -426,6 +466,8 @@ def generate_launch_description():
         yolo_conf_threshold_arg,
         yolo_iou_threshold_arg,
         yolo_prefer_cuda_arg,
+        cone_eval_track_match_threshold_arg,
+        cone_eval_track_match_relaxed_threshold_arg,
         opencv_pythonpath_arg,
         opencv_ld_library_path_arg,
         cudnn_ld_library_path_arg,

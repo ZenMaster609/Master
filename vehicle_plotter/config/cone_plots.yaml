@@ -27,15 +27,20 @@ plots:
     col: 0
     x_axis_type: "time"
     y_axis:
-      label: "Error"
+      label: "Value"
       unit: "m"
+      limits: [0.0, 20.0]
+      auto_scale: false
     series:
-      - name: "RMSE"
-        variable: "cone_1_rmse"
+      - name: "RMSE_x"
+        variable: "cone_1_rmse_x"
         color: "#d62728"
-      - name: "MAE"
-        variable: "cone_1_mae"
+      - name: "RMSE_y"
+        variable: "cone_1_rmse_y"
         color: "#1f77b4"
+      - name: "GT_distance"
+        variable: "cone_1_dgt"
+        color: "#ff7f0e"
 
   - name: "cone_2"
     type: "timeseries"
@@ -43,15 +48,20 @@ plots:
     col: 1
     x_axis_type: "time"
     y_axis:
-      label: "Error"
+      label: "Value"
       unit: "m"
+      limits: [0.0, 20.0]
+      auto_scale: false
     series:
-      - name: "RMSE"
-        variable: "cone_2_rmse"
+      - name: "RMSE_x"
+        variable: "cone_2_rmse_x"
         color: "#d62728"
-      - name: "MAE"
-        variable: "cone_2_mae"
+      - name: "RMSE_y"
+        variable: "cone_2_rmse_y"
         color: "#1f77b4"
+      - name: "GT_distance"
+        variable: "cone_2_dgt"
+        color: "#ff7f0e"
 
   - name: "cone_3"
     type: "timeseries"
@@ -59,15 +69,20 @@ plots:
     col: 2
     x_axis_type: "time"
     y_axis:
-      label: "Error"
+      label: "Value"
       unit: "m"
+      limits: [0.0, 20.0]
+      auto_scale: false
     series:
-      - name: "RMSE"
-        variable: "cone_3_rmse"
+      - name: "RMSE_x"
+        variable: "cone_3_rmse_x"
         color: "#d62728"
-      - name: "MAE"
-        variable: "cone_3_mae"
+      - name: "RMSE_y"
+        variable: "cone_3_rmse_y"
         color: "#1f77b4"
+      - name: "GT_distance"
+        variable: "cone_3_dgt"
+        color: "#ff7f0e"
 
   - name: "cone_4"
     type: "timeseries"
@@ -75,15 +90,20 @@ plots:
     col: 3
     x_axis_type: "time"
     y_axis:
-      label: "Error"
+      label: "Value"
       unit: "m"
+      limits: [0.0, 20.0]
+      auto_scale: false
     series:
-      - name: "RMSE"
-        variable: "cone_4_rmse"
+      - name: "RMSE_x"
+        variable: "cone_4_rmse_x"
         color: "#d62728"
-      - name: "MAE"
-        variable: "cone_4_mae"
+      - name: "RMSE_y"
+        variable: "cone_4_rmse_y"
         color: "#1f77b4"
+      - name: "GT_distance"
+        variable: "cone_4_dgt"
+        color: "#ff7f0e"
 
   - name: "average_now"
     type: "timeseries"
@@ -94,12 +114,18 @@ plots:
       label: "Error"
       unit: "m"
     series:
-      - name: "Avg RMSE"
-        variable: "avg_rmse"
+      - name: "Axis RMSE"
+        variable: "cone_depth_axis_rmse_m"
         color: "#d62728"
-      - name: "Avg MAE"
-        variable: "avg_mae"
+      - name: "Axis MAE"
+        variable: "cone_depth_axis_mae_m"
         color: "#1f77b4"
+      - name: "Range RMSE"
+        variable: "cone_depth_range_rmse_m"
+        color: "#9467bd"
+      - name: "Range MAE"
+        variable: "cone_depth_range_mae_m"
+        color: "#17becf"
 
   - name: "cone_1_distance"
     type: "timeseries"
@@ -109,11 +135,13 @@ plots:
     y_axis:
       label: "Distance"
       unit: "m"
+      limits: [0.0, 20.0]
+      auto_scale: false
     series:
-      - name: "dcam"
+      - name: "predicted_distance"
         variable: "cone_1_dcam"
         color: "#2ca02c"
-      - name: "dgt"
+      - name: "GT_distance"
         variable: "cone_1_dgt"
         color: "#ff7f0e"
 
@@ -125,11 +153,13 @@ plots:
     y_axis:
       label: "Distance"
       unit: "m"
+      limits: [0.0, 20.0]
+      auto_scale: false
     series:
-      - name: "dcam"
+      - name: "predicted_distance"
         variable: "cone_2_dcam"
         color: "#2ca02c"
-      - name: "dgt"
+      - name: "GT_distance"
         variable: "cone_2_dgt"
         color: "#ff7f0e"
 
@@ -141,11 +171,13 @@ plots:
     y_axis:
       label: "Distance"
       unit: "m"
+      limits: [0.0, 20.0]
+      auto_scale: false
     series:
-      - name: "dcam"
+      - name: "predicted_distance"
         variable: "cone_3_dcam"
         color: "#2ca02c"
-      - name: "dgt"
+      - name: "GT_distance"
         variable: "cone_3_dgt"
         color: "#ff7f0e"
 
@@ -157,11 +189,13 @@ plots:
     y_axis:
       label: "Distance"
       unit: "m"
+      limits: [0.0, 20.0]
+      auto_scale: false
     series:
-      - name: "dcam"
+      - name: "predicted_distance"
         variable: "cone_4_dcam"
         color: "#2ca02c"
-      - name: "dgt"
+      - name: "GT_distance"
         variable: "cone_4_dgt"
         color: "#ff7f0e"
 
@@ -171,12 +205,15 @@ plots:
     col: 4
     x_axis_type: "time"
     y_axis:
-      label: "Error"
-      unit: "m"
+      label: "Aux"
+      unit: ""
     series:
-      - name: "Total Avg RMSE"
-        variable: "avg_total_rmse"
-        color: "#d62728"
-      - name: "Total Avg MAE"
-        variable: "avg_total_mae"
-        color: "#1f77b4"
+      - name: "Axis Bias (m)"
+        variable: "cone_depth_axis_bias_m"
+        color: "#8c564b"
+      - name: "Sync dt (ms)"
+        variable: "cone_depth_sync_dt_ms"
+        color: "#7f7f7f"
+      - name: "Pairs"
+        variable: "cone_depth_pairs"
+        color: "#bcbd22"

@@ -174,6 +174,9 @@ class PyQtGraphBackend(PlotBackend):
             if config.x_axis.unit:
                 label += f" ({config.x_axis.unit})"
             plot_item.setLabel('bottom', label)
+            if config.x_axis.limits:
+                plot_item.setXRange(*config.x_axis.limits)
+                plot_item.enableAutoRange(axis='x', enable=config.x_axis.auto_scale)
         elif config.plot_type == "timeseries":
             plot_item.setLabel('bottom', 'Time (s)')
 
@@ -191,6 +194,7 @@ class PyQtGraphBackend(PlotBackend):
         # Create curves for each series
         curves = {}
         colors = self._get_colors(len(config.series))
+        static_reference_curves = set()
 
         for i, series in enumerate(config.series):
             color = series.color if series.color != "auto" else colors[i]
@@ -205,10 +209,24 @@ class PyQtGraphBackend(PlotBackend):
             )
             curves[series.name] = curve
 
+            # Allow a static reference line by naming a series "y=x".
+            if series.name.strip().lower() == 'y=x':
+                x_min, x_max = 0.0, 1.0
+                if config.x_axis is not None and config.x_axis.limits:
+                    x_min, x_max = config.x_axis.limits
+                elif config.y_axis is not None and config.y_axis.limits:
+                    x_min, x_max = config.y_axis.limits
+                curve.setData(
+                    np.array([x_min, x_max], dtype=float),
+                    np.array([x_min, x_max], dtype=float),
+                )
+                static_reference_curves.add(series.name)
+
         # Store plot info
         self._plots[config.name] = {
             'item': plot_item,
             'curves': curves,
+            'static_reference_curves': static_reference_curves,
             'config': config,
         }
 
@@ -263,11 +281,14 @@ class PyQtGraphBackend(PlotBackend):
 
         plot_info = self._plots[plot_id]
         curves = plot_info['curves']
+        static_reference_curves = plot_info.get('static_reference_curves', set())
 
         # Convert to numpy for performance
         x_arr = np.array(x_data) if x_data else np.array([])
 
         for name, curve in curves.items():
+            if name in static_reference_curves:
+                continue
             if name in y_data:
                 y_arr = np.array(y_data[name]) if y_data[name] else np.array([])
 

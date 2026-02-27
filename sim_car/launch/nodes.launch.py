@@ -11,13 +11,30 @@ import os
 import yaml
 from ament_index_python.packages import get_package_share_directory
 from launch import LaunchDescription
-from launch.actions import DeclareLaunchArgument
-from launch.substitutions import LaunchConfiguration
+from launch.actions import DeclareLaunchArgument, OpaqueFunction
+from launch.substitutions import LaunchConfiguration, PathJoinSubstitution
 from launch_ros.actions import Node
+from launch_ros.substitutions import FindPackageShare
 
 
 def generate_launch_description():
-    sensor_config = _load_sensor_config()
+    return LaunchDescription([
+        DeclareLaunchArgument(
+            'topic_prefix',
+            default_value='/sim/raw',
+            description='Topic prefix for sim sensors (/sim or /sim/raw)',
+        ),
+        DeclareLaunchArgument(
+            'sensor_config',
+            default_value=PathJoinSubstitution([FindPackageShare('sim_car'), 'config', 'sensor_config.yaml']),
+            description='Path to sensor config YAML for sim_car sensor node enable/rates',
+        ),
+        OpaqueFunction(function=_build_sensor_nodes),
+    ])
+
+
+def _build_sensor_nodes(context):
+    sensor_config = _load_sensor_config(LaunchConfiguration('sensor_config').perform(context))
     topic_prefix = LaunchConfiguration('topic_prefix')
     wheel_rate = _get_signal_rate(sensor_config, '/sim/wheel_encoder/rpm', 50.0)
     suspension_rate = _get_signal_rate(sensor_config, '/sim/suspension', 50.0)
@@ -263,11 +280,6 @@ def generate_launch_description():
         )
 
     nodes = [
-        DeclareLaunchArgument(
-            'topic_prefix',
-            default_value='/sim/raw',
-            description='Topic prefix for sim sensors (/sim or /sim/raw)'
-        ),
         wheel_encoder_node,
         suspension_sensor_node,
         steering_sensor_node,
@@ -280,15 +292,16 @@ def generate_launch_description():
         brake_temp_rl_node,
         pitot_dynamic_pressure_node,
     ]
-    return LaunchDescription([node for node in nodes if node is not None])
+    return [node for node in nodes if node is not None]
 
 
-def _load_sensor_config():
-    config_path = os.path.join(
-        get_package_share_directory('sim_car'),
-        'config',
-        'sensor_config.yaml',
-    )
+def _load_sensor_config(config_path=None):
+    if not config_path:
+        config_path = os.path.join(
+            get_package_share_directory('sim_car'),
+            'config',
+            'sensor_config.yaml',
+        )
     try:
         with open(config_path, 'r') as config_file:
             return yaml.safe_load(config_file) or {}
