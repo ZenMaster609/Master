@@ -27,6 +27,7 @@ class AckermannCmdBridge(Node):
         self.declare_parameter('brake_cmd_topic', '/sim/brake_cmd')
         self.declare_parameter('steering_from_desired_speed', False)
         self.declare_parameter('steering_speed_floor', 0.2)
+        self.declare_parameter('steering_sign', 1.0)
 
         input_topic = self.get_parameter('input_topic').get_parameter_value().string_value
         output_topic = self.get_parameter('output_topic').get_parameter_value().string_value
@@ -43,6 +44,8 @@ class AckermannCmdBridge(Node):
         self.steering_speed_floor = (
             self.get_parameter('steering_speed_floor').get_parameter_value().double_value
         )
+        steering_sign_raw = self.get_parameter('steering_sign').get_parameter_value().double_value
+        self.steering_sign = -1.0 if steering_sign_raw < 0.0 else 1.0
 
         self.publisher = self.create_publisher(Twist, output_topic, 10)
         self.subscription = self.create_subscription(
@@ -74,6 +77,10 @@ class AckermannCmdBridge(Node):
         if self.control_rate <= 0:
             self.control_rate = 50.0
         self.control_timer = self.create_timer(1.0 / self.control_rate, self._control_loop)
+        self.get_logger().info(
+            f'ackermann_cmd_bridge configured mode={self.command_mode} '
+            f'wheelbase={self.wheelbase:.3f} steering_sign={self.steering_sign:+.0f}'
+        )
 
     def _on_command_mode(self, request, response):
         response.success = True
@@ -124,7 +131,8 @@ class AckermannCmdBridge(Node):
         twist = Twist()
         twist.linear.x = self.current_speed
         if self.wheelbase != 0.0:
-            twist.angular.z = steering_speed / self.wheelbase * math.tan(self.desired_steering)
+            effective_steering = self.steering_sign * self.desired_steering
+            twist.angular.z = steering_speed / self.wheelbase * math.tan(effective_steering)
         else:
             twist.angular.z = 0.0
 

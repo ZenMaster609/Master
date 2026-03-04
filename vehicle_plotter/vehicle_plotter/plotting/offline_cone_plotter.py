@@ -69,34 +69,71 @@ class OfflineConePlotter:
         if not csv_path.exists():
             return None
 
+        sources: List[str] = []
         gt_ranges: List[float] = []
-        ex_values: List[float] = []
-        ey_values: List[float] = []
+        error_values: List[float] = []
+        predicted_class_ids: List[float] = []
+        ground_truth_class_ids: List[float] = []
         with open(csv_path, 'r', newline='') as handle:
             reader = csv.DictReader(handle)
             for row in reader:
                 gt_raw = row.get('gt_range_m', '')
-                ex_raw = row.get('ex_m', '')
-                ey_raw = row.get('ey_m', '')
+                error_raw = row.get('error_m', '')
+                source_raw = row.get('source', 'unknown')
+                source = str(source_raw).strip().lower() or 'unknown'
+                gt = float('nan')
+                error = float('nan')
                 try:
                     gt = float(str(gt_raw).strip())
-                    ex = float(str(ex_raw).strip())
-                    ey = float(str(ey_raw).strip())
                 except ValueError:
+                    gt = float('nan')
+                if error_raw is not None and str(error_raw).strip() != '':
+                    try:
+                        error = float(str(error_raw).strip())
+                    except ValueError:
+                        error = float('nan')
+                else:
+                    ex_raw = row.get('ex_m', '')
+                    ey_raw = row.get('ey_m', '')
+                    try:
+                        ex = float(str(ex_raw).strip())
+                        ey = float(str(ey_raw).strip())
+                    except ValueError:
+                        ex = float('nan')
+                        ey = float('nan')
+                    if math.isfinite(ex) and math.isfinite(ey):
+                        error = math.hypot(ex, ey)
+                        source = 'stereo'
+                if not (math.isfinite(gt) and math.isfinite(error)):
                     continue
-                if not (math.isfinite(gt) and math.isfinite(ex) and math.isfinite(ey)):
-                    continue
+                predicted_class_id = self._parse_optional_float(row.get('predicted_class_id', ''))
+                ground_truth_class_id = self._parse_optional_float(row.get('ground_truth_class_id', ''))
+                sources.append(source)
                 gt_ranges.append(gt)
-                ex_values.append(ex)
-                ey_values.append(ey)
+                error_values.append(error)
+                predicted_class_ids.append(predicted_class_id)
+                ground_truth_class_ids.append(ground_truth_class_id)
 
         if not gt_ranges:
             return None
         return {
+            'source': np.asarray(sources, dtype=object),
             'gt_range_m': np.asarray(gt_ranges, dtype=np.float32),
-            'ex_m': np.asarray(ex_values, dtype=np.float32),
-            'ey_m': np.asarray(ey_values, dtype=np.float32),
+            'error_m': np.asarray(error_values, dtype=np.float32),
+            'predicted_class_id': np.asarray(predicted_class_ids, dtype=np.float32),
+            'ground_truth_class_id': np.asarray(ground_truth_class_ids, dtype=np.float32),
         }
+
+    @staticmethod
+    def _parse_optional_float(value: object) -> float:
+        text = '' if value is None else str(value).strip()
+        if text == '':
+            return float('nan')
+        try:
+            parsed = float(text)
+        except ValueError:
+            return float('nan')
+        return parsed if math.isfinite(parsed) else float('nan')
 
     @staticmethod
     def _series_present(rows: List[Dict[str, float]], name: str) -> bool:
@@ -215,13 +252,14 @@ class OfflineConePlotter:
         bin_centers = range_min + (np.arange(num_bins, dtype=np.float32) + 0.5) * bin_width
 
         gt = sample_data['gt_range_m']
-        ex = sample_data['ex_m']
-        ey = sample_data['ey_m']
+        error = sample_data['error_m']
+        source = sample_data['source']
+        predicted_class_id = sample_data.get('predicted_class_id')
+        ground_truth_class_id = sample_data.get('ground_truth_class_id')
 
         valid = (
             np.isfinite(gt)
-            & np.isfinite(ex)
-            & np.isfinite(ey)
+            & np.isfinite(error)
             & (gt >= range_min)
             & (gt <= range_max)
         )
@@ -229,21 +267,54 @@ class OfflineConePlotter:
             return None
 
         gt_valid = gt[valid]
-        ex_valid = ex[valid]
-        ey_valid = ey[valid]
+        error_valid = error[valid]
+        source_valid = source[valid]
+        predicted_valid = (
+            np.asarray(predicted_class_id, dtype=np.float32)[valid]
+            if predicted_class_id is not None
+            else np.full_like(gt_valid, np.nan, dtype=np.float32)
+        )
+        ground_truth_valid = (
+            np.asarray(ground_truth_class_id, dtype=np.float32)[valid]
+            if ground_truth_class_id is not None
+            else np.full_like(gt_valid, np.nan, dtype=np.float32)
+        )
 
         bin_indices = np.floor((gt_valid - range_min) / bin_width).astype(np.int32)
         bin_indices = np.clip(bin_indices, 0, num_bins - 1)
 
         counts = np.bincount(bin_indices, minlength=num_bins).astype(np.int32)
-        ex_sq_sum = np.bincount(bin_indices, weights=np.square(ex_valid), minlength=num_bins)
-        ey_sq_sum = np.bincount(bin_indices, weights=np.square(ey_valid), minlength=num_bins)
+        source_order = ['monocular', 'stereo', 'lidar']
+        source_colors = {
+            'monocular': 'tab:blue',
+            'stereo': 'tab:orange',
+            'lidar': 'tab:green',
+        }
+        source_labels = {
+            'monocular': 'mono_rmse',
+            'stereo': 'stereo_rmse',
+            'lidar': 'lidar_rmse',
+        }
+        rmse_by_source: Dict[str, np.ndarray] = {}
+        present_sources = set(str(item) for item in source_valid.tolist())
+        ordered_sources = source_order + sorted(s for s in present_sources if s not in source_order)
+        ordered_sources = [s for s in ordered_sources if s in present_sources]
+        for source_name in ordered_sources:
+            source_mask = source_valid == source_name
+            if not np.any(source_mask):
+                continue
+            source_bins = bin_indices[source_mask]
+            source_error = error_valid[source_mask]
+            source_counts = np.bincount(source_bins, minlength=num_bins).astype(np.int32)
+            source_sq_sum = np.bincount(source_bins, weights=np.square(source_error), minlength=num_bins)
+            rmse = np.full(num_bins, np.nan, dtype=np.float32)
+            non_empty = source_counts > 0
+            rmse[non_empty] = np.sqrt(source_sq_sum[non_empty] / source_counts[non_empty]).astype(np.float32)
+            rmse_by_source[source_name] = rmse
 
-        rmse_x = np.full(num_bins, np.nan, dtype=np.float32)
-        rmse_y = np.full(num_bins, np.nan, dtype=np.float32)
-        non_empty = counts > 0
-        rmse_x[non_empty] = np.sqrt(ex_sq_sum[non_empty] / counts[non_empty]).astype(np.float32)
-        rmse_y[non_empty] = np.sqrt(ey_sq_sum[non_empty] / counts[non_empty]).astype(np.float32)
+        rmse_pct_by_source = self._compute_source_rmse_percent(bin_centers, rmse_by_source)
+        total_rmse_pct = self._compute_total_rmse_percent(bin_centers, rmse_by_source)
+        correct_count, incorrect_count = self._compute_classification_counts(predicted_valid, ground_truth_valid)
 
         fig, (ax_top, ax_bottom) = plt.subplots(
             2,
@@ -253,19 +324,105 @@ class OfflineConePlotter:
             gridspec_kw={'height_ratios': [3, 1]},
         )
         fig.suptitle('Cone Range-Binned RMSE', fontsize=14)
+        ax_top_pct = ax_top.twinx()
 
-        ax_top.plot(bin_centers, rmse_x, label='RMSE_x', linewidth=2.0)
-        ax_top.plot(bin_centers, rmse_y, label='RMSE_y', linewidth=2.0)
+        finite_parts = []
+        finite_pct_parts = []
+        for source_name in ordered_sources:
+            rmse = rmse_by_source.get(source_name)
+            if rmse is None or not np.any(np.isfinite(rmse)):
+                continue
+            ax_top.plot(
+                bin_centers,
+                rmse,
+                label=source_labels.get(source_name, source_name),
+                linewidth=2.0,
+                color=source_colors.get(source_name, None),
+            )
+            finite_parts.append(rmse[np.isfinite(rmse)])
+            rmse_pct = rmse_pct_by_source.get(source_name)
+            if rmse_pct is not None and np.any(np.isfinite(rmse_pct)):
+                ax_top_pct.plot(
+                    bin_centers,
+                    rmse_pct,
+                    label=f"{source_labels.get(source_name, source_name)}_pct",
+                    linewidth=1.8,
+                    linestyle='--',
+                    color=source_colors.get(source_name, None),
+                    alpha=0.85,
+                )
+                finite_pct_parts.append(rmse_pct[np.isfinite(rmse_pct)])
         ax_top.set_xlim(range_min, range_max)
         ax_top.set_ylabel('RMSE (m)')
+        ax_top_pct.set_ylabel('RMSE (%)')
         ax_top.grid(True, alpha=0.3)
-        ax_top.legend()
+        if finite_parts:
+            handles = ax_top.get_lines() + ax_top_pct.get_lines()
+            ax_top.legend(handles=handles, loc='upper left', bbox_to_anchor=(0.0, 0.88))
+
+        total_rmse_text = 'n/a' if total_rmse_pct is None else f'{total_rmse_pct:.2f}%'
+        ax_top.text(
+            0.02,
+            0.98,
+            f'rmse_total={total_rmse_text}',
+            transform=ax_top.transAxes,
+            ha='left',
+            va='top',
+            fontsize=9,
+            bbox={
+                'boxstyle': 'round,pad=0.3',
+                'facecolor': 'white',
+                'edgecolor': '0.6',
+                'alpha': 0.85,
+            },
+        )
+
+        total_classified = correct_count + incorrect_count
+        accuracy_text = (
+            f'{(100.0 * float(correct_count) / float(total_classified)):.1f}%'
+            if total_classified > 0
+            else 'n/a'
+        )
+        ax_top.text(
+            0.98,
+            0.98,
+            'Cone classification',
+            transform=ax_top.transAxes,
+            ha='right',
+            va='top',
+            fontweight='semibold',
+            fontsize=10,
+        )
+        ax_top.text(
+            0.98,
+            0.90,
+            f'Correct: {correct_count}\n'
+            f'Incorrect: {incorrect_count}\n'
+            f'Accuracy: {accuracy_text}',
+            transform=ax_top.transAxes,
+            ha='right',
+            va='top',
+            fontsize=9,
+            bbox={
+                'boxstyle': 'round,pad=0.3',
+                'facecolor': 'white',
+                'edgecolor': '0.6',
+                'alpha': 0.85,
+            },
+        )
 
         ymax = 1.0
-        finite_vals = np.concatenate((rmse_x[np.isfinite(rmse_x)], rmse_y[np.isfinite(rmse_y)]))
-        if finite_vals.size > 0:
-            ymax = max(0.1, float(np.max(finite_vals)) * 1.2)
+        if finite_parts:
+            finite_vals = np.concatenate(finite_parts)
+            if finite_vals.size > 0:
+                ymax = max(0.1, float(np.max(finite_vals)) * 1.2)
         ax_top.set_ylim(0.0, ymax)
+        pct_ymax = 1.0
+        if finite_pct_parts:
+            finite_pct_vals = np.concatenate(finite_pct_parts)
+            if finite_pct_vals.size > 0:
+                pct_ymax = max(0.1, float(np.max(finite_pct_vals)) * 1.2)
+        ax_top_pct.set_ylim(0.0, pct_ymax)
 
         ax_bottom.bar(
             bin_centers,
@@ -289,3 +446,58 @@ class OfflineConePlotter:
         fig.savefig(final_path, dpi=dpi, bbox_inches='tight')
         plt.close(fig)
         return final_path
+
+    @staticmethod
+    def _compute_total_rmse_percent(
+        bin_centers: np.ndarray,
+        rmse_by_source: Dict[str, np.ndarray],
+    ) -> Optional[float]:
+        percent_values = [
+            arr[np.isfinite(arr)]
+            for arr in OfflineConePlotter._compute_source_rmse_percent(bin_centers, rmse_by_source).values()
+            if np.any(np.isfinite(arr))
+        ]
+
+        if not percent_values:
+            return None
+        return float(np.mean(np.concatenate(percent_values)))
+
+    @staticmethod
+    def _compute_source_rmse_percent(
+        bin_centers: np.ndarray,
+        rmse_by_source: Dict[str, np.ndarray],
+    ) -> Dict[str, np.ndarray]:
+        centers = np.asarray(bin_centers, dtype=np.float32)
+        if centers.size == 0:
+            return {}
+
+        source_rmse_pct: Dict[str, np.ndarray] = {}
+        for source, rmse in rmse_by_source.items():
+            rmse_arr = np.asarray(rmse, dtype=np.float32)
+            if rmse_arr.shape != centers.shape:
+                continue
+            rmse_pct = np.full_like(rmse_arr, np.nan, dtype=np.float32)
+            valid = np.isfinite(rmse_arr) & np.isfinite(centers) & (centers > 0.0)
+            if np.any(valid):
+                rmse_pct[valid] = (rmse_arr[valid] / centers[valid]) * 100.0
+            source_rmse_pct[source] = rmse_pct
+        return source_rmse_pct
+
+    @staticmethod
+    def _compute_classification_counts(
+        predicted_class_id: np.ndarray,
+        ground_truth_class_id: np.ndarray,
+    ) -> tuple[int, int]:
+        predicted = np.asarray(predicted_class_id, dtype=np.float32)
+        ground_truth = np.asarray(ground_truth_class_id, dtype=np.float32)
+        if predicted.shape != ground_truth.shape or predicted.size == 0:
+            return 0, 0
+
+        valid = np.isfinite(predicted) & np.isfinite(ground_truth)
+        if not np.any(valid):
+            return 0, 0
+
+        matches = predicted[valid].astype(np.int32) == ground_truth[valid].astype(np.int32)
+        correct_count = int(np.count_nonzero(matches))
+        incorrect_count = int(np.count_nonzero(~matches))
+        return correct_count, incorrect_count

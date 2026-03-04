@@ -6,6 +6,7 @@ Launches:
 1. Gazebo sim with the EUFS car in small_track.world (sim_car)
 2. Control + sensor nodes (sim_car)
 3. Vehicle plotter nodes (vehicle_plotter)
+
 """
 
 from launch import LaunchDescription
@@ -44,8 +45,32 @@ def generate_launch_description():
 
     world_arg = DeclareLaunchArgument(
         'world',
-        default_value=PathJoinSubstitution([sim_car_share, 'worlds', 'acceleration.world']),
+        default_value=PathJoinSubstitution([sim_car_share, 'worlds', 'small_track.world']),
         description='Full path to world file to load'
+    )
+
+    spawn_x_arg = DeclareLaunchArgument(
+        'spawn_x',
+        default_value='9.58',
+        description='Initial world X position for the car model (meters)'
+    )
+
+    spawn_y_arg = DeclareLaunchArgument(
+        'spawn_y',
+        default_value='-5.2',
+        description='Initial world Y position for the car model (meters)'
+    )
+
+    spawn_z_arg = DeclareLaunchArgument(
+        'spawn_z',
+        default_value='0.0',
+        description='Initial world Z position for the car model (meters)'
+    )
+
+    spawn_yaw_arg = DeclareLaunchArgument(
+        'spawn_yaw',
+        default_value='3.75',
+        description='Initial world yaw for the car model (radians)'
     )
 
     plotting_arg = DeclareLaunchArgument(
@@ -62,7 +87,7 @@ def generate_launch_description():
 
     cone_plotting_2_arg = DeclareLaunchArgument(
         'cone_plotting_2',
-        default_value='true',
+        default_value='false',
         description='Enable aggregated range-binned RMSE plotting'
     )
 
@@ -86,7 +111,7 @@ def generate_launch_description():
 
     steering_arg = DeclareLaunchArgument(
         'steering',
-        default_value='true',
+        default_value='false',
         description='Enable the EUFS steering GUI'
     )
 
@@ -94,6 +119,12 @@ def generate_launch_description():
         'bridge',
         default_value='ackermann',
         description="Control bridge to use: 'throttle' or 'ackermann'"
+    )
+
+    ackermann_steering_sign_arg = DeclareLaunchArgument(
+        'ackermann_steering_sign',
+        default_value='1.0',
+        description='Sign applied to Ackermann steering before cmd_vel conversion (+1 or -1)'
     )
 
     use_sim_time_arg = DeclareLaunchArgument(
@@ -114,16 +145,34 @@ def generate_launch_description():
         description='Enable sim_car sensor nodes launch include'
     )
 
-    boundary_planner_arg = DeclareLaunchArgument(
-        'boundary_planner',
+    planner_arg = DeclareLaunchArgument(
+        'planner',
+        default_value='pair_midpoint',
+        description="Planner to launch: 'boundary', 'pair_midpoint', or 'none'"
+    )
+
+    rviz_arg = DeclareLaunchArgument(
+        'rviz',
         default_value='true',
-        description='Enable boundary planner node'
+        description='Launch RViz with boundary planner debug config (disabled when headless=true)'
+    )
+
+    rviz_config_arg = DeclareLaunchArgument(
+        'rviz_config',
+        default_value=PathJoinSubstitution([sim_car_share, 'rviz', 'boundary_debug.rviz']),
+        description='Path to RViz display config file'
     )
 
     perf_log_hz_arg = DeclareLaunchArgument(
         'perf_log_hz',
-        default_value='0.2',
+        default_value='0.0',
         description='Perception debug/eval publish frequency in Hz'
+    )
+
+    perception_queue_size_arg = DeclareLaunchArgument(
+        'perception_queue_size',
+        default_value='8',
+        description='Max buffered frames per stereo side before dropping old frames'
     )
 
     cuda_arg = DeclareLaunchArgument(
@@ -132,16 +181,28 @@ def generate_launch_description():
         description='Enable CUDA disparity backend (false forces CPU StereoSGBM)'
     )
 
+    stereo_arg = DeclareLaunchArgument(
+        'stereo',
+        default_value='true',
+        description='Enable stereo depth processing for RMSE plotting'
+    )
+
     camera_debug_arg = DeclareLaunchArgument(
         'camera_debug',
-        default_value='none',
-        description="Perception debug image mode: 'disparity', 'depth', 'left_rect', 'yolo', or 'none'"
+        default_value='true',
+        description='Enable perception debug image stream (old mode values still act as enabled for compatibility)'
     )
 
     camera_debug_n_frames_arg = DeclareLaunchArgument(
         'camera_debug_n_frames',
-        default_value='30',
+        default_value='3',
         description='Publish camera debug image every N frames (1=every frame)'
+    )
+
+    monocular_bbox_height_offset_px_arg = DeclareLaunchArgument(
+        'monocular_bbox_height_offset_px',
+        default_value='1.3075',
+        description='Pixel offset subtracted from YOLO bbox height for monocular depth correction'
     )
 
     yolo_enabled_arg = DeclareLaunchArgument(
@@ -231,6 +292,10 @@ def generate_launch_description():
         LaunchConfiguration('measure'),
         "'.lower() == 'true' else '/sim'"
     ])
+    camera_debug_enabled_expr = PythonExpression([
+        "'", LaunchConfiguration('camera_debug'),
+        "'.strip().lower() in ['true', '1', 'on', 'yes', 'depth', 'disparity', 'left_rect', 'rect_left', 'yolo']"
+    ])
 
     gazebo_launch = IncludeLaunchDescription(
         PythonLaunchDescriptionSource(
@@ -243,6 +308,10 @@ def generate_launch_description():
             'update_rate_hz': LaunchConfiguration('update_rate_hz'),
             'sensors_render_engine': LaunchConfiguration('sensors_render_engine'),
             'topic_prefix': topic_prefix,
+            'spawn_x': LaunchConfiguration('spawn_x'),
+            'spawn_y': LaunchConfiguration('spawn_y'),
+            'spawn_z': LaunchConfiguration('spawn_z'),
+            'spawn_yaw': LaunchConfiguration('spawn_yaw'),
         }.items(),
     )
 
@@ -284,6 +353,8 @@ def generate_launch_description():
                 LaunchConfiguration('logging'),
                 "'.lower() == 'true' or '",
                 LaunchConfiguration('cone_plotting'),
+                "'.lower() == 'true' or '",
+                LaunchConfiguration('cone_plotting_2'),
                 "'.lower() == 'true') else 'false'"
             ]),
             'enable_rosbag': LaunchConfiguration('rosbagging'),
@@ -322,8 +393,7 @@ def generate_launch_description():
             'brake_decel_limit': control_config['brake_decel_limit'],
         }],
         condition=IfCondition(PythonExpression([
-            "'", LaunchConfiguration('steering'), "'.lower() == 'true' and '",
-            LaunchConfiguration('bridge'), "'.lower() == 'throttle'"
+            "'", LaunchConfiguration('bridge'), "'.lower() == 'throttle'"
         ]))
     )
 
@@ -336,14 +406,17 @@ def generate_launch_description():
             'input_topic': '/cmd',
             'output_topic': '/cmd_vel',
             'wheelbase': 1.6,
-            'command_mode': 'acceleration',
+            'command_mode': 'velocity',
+            'steering_sign': ParameterValue(
+                LaunchConfiguration('ackermann_steering_sign'),
+                value_type=float,
+            ),
             'max_speed': control_config['max_speed'],
             'accel_limit': control_config['accel_limit'],
             'brake_decel_limit': control_config['brake_decel_limit'],
         }],
         condition=IfCondition(PythonExpression([
-            "'", LaunchConfiguration('steering'), "'.lower() == 'true' and '",
-            LaunchConfiguration('bridge'), "'.lower() == 'ackermann'"
+            "'", LaunchConfiguration('bridge'), "'.lower() == 'ackermann'"
         ]))
     )
 
@@ -378,15 +451,31 @@ def generate_launch_description():
             'right_image_topic': PythonExpression(["'", topic_prefix, "' + '/stereo/right/image_raw'"]),
             'left_camera_info_topic': PythonExpression(["'", topic_prefix, "' + '/stereo/left/camera_info'"]),
             'right_camera_info_topic': PythonExpression(["'", topic_prefix, "' + '/stereo/right/camera_info'"]),
+            'stereo_enabled': ParameterValue(
+                LaunchConfiguration('stereo'),
+                value_type=bool,
+            ),
+            'monocular_cone_height_m': 0.3034,
+            'monocular_bbox_height_offset_px': ParameterValue(
+                LaunchConfiguration('monocular_bbox_height_offset_px'),
+                value_type=float,
+            ),
             'eval_topic_prefix': PythonExpression(["'", topic_prefix, "' + '/stereo/eval'"]),
             'camera_debug_topic': PythonExpression(["'", topic_prefix, "' + '/stereo/camera_debug'"]),
             'cone_detections_topic': PythonExpression(["'", topic_prefix, "' + '/stereo/perception/cones_3d'"]),
             'cone_detections_frame': 'base_footprint',
-            'camera_debug': LaunchConfiguration('camera_debug'),
+            'camera_debug': ParameterValue(
+                LaunchConfiguration('camera_debug'),
+                value_type=str,
+            ),
             'camera_debug_n_frames': ParameterValue(
                 LaunchConfiguration('camera_debug_n_frames'),
                 value_type=int,
             ),
+            'planner_path_topic': '/sim/planner/pair_midpoint_path',
+            'planner_markers_topic': '/sim/planner/pair_midpoint_markers',
+            'camera_debug_scale': 0.5,
+            'camera_debug_mono': True,
             'calibration_file': PathJoinSubstitution([sim_car_share, 'config', 'stereo_calibration.yaml']),
             'baseline_m': 0.12,
             'yolo_enabled': ParameterValue(
@@ -422,6 +511,10 @@ def generate_launch_description():
                 LaunchConfiguration('perf_log_hz'),
                 value_type=float,
             ),
+            'queue_size': ParameterValue(
+                LaunchConfiguration('perception_queue_size'),
+                value_type=int,
+            ),
             'prefer_cuda': ParameterValue(
                 LaunchConfiguration('cuda'),
                 value_type=bool,
@@ -449,9 +542,34 @@ def generate_launch_description():
                 ),
                 'topics.cones_topic': PythonExpression(["'", topic_prefix, "' + '/stereo/perception/cones_3d'"]),
                 'topics.odom_topic': '/sim/odom',
+                'debug.publish_path': True,
+                'debug.publish_markers': True,
             },
         ],
-        condition=IfCondition(LaunchConfiguration('boundary_planner')),
+        condition=IfCondition(PythonExpression([
+            "'", LaunchConfiguration('planner'), "'.lower() == 'boundary'"
+        ])),
+    )
+
+    pair_midpoint_planner_node = Node(
+        package='sim_car',
+        executable='pair_midpoint_planner_node',
+        name='pair_midpoint_planner_node',
+        output='screen',
+        parameters=[
+            PathJoinSubstitution([sim_car_share, 'config', 'pair_midpoint_planner.yaml']),
+            {
+                'use_sim_time': ParameterValue(
+                    LaunchConfiguration('use_sim_time'),
+                    value_type=bool,
+                ),
+                'topics.cones_topic': PythonExpression(["'", topic_prefix, "' + '/stereo/perception/cones_3d'"]),
+                'topics.odom_topic': '/sim/odom',
+            },
+        ],
+        condition=IfCondition(PythonExpression([
+            "'", LaunchConfiguration('planner'), "'.lower() == 'pair_midpoint'"
+        ])),
     )
 
     camera_debug_viewer_node = Node(
@@ -460,8 +578,24 @@ def generate_launch_description():
         name='camera_debug_viewer',
         output='screen',
         arguments=[PythonExpression(["'", topic_prefix, "' + '/stereo/camera_debug'"])],
+        condition=IfCondition(camera_debug_enabled_expr),
+    )
+
+    rviz_node = Node(
+        package='rviz2',
+        executable='rviz2',
+        name='boundary_debug_rviz',
+        output='screen',
+        arguments=['-d', LaunchConfiguration('rviz_config')],
+        parameters=[{
+            'use_sim_time': ParameterValue(
+                LaunchConfiguration('use_sim_time'),
+                value_type=bool,
+            ),
+        }],
         condition=IfCondition(PythonExpression([
-            "'", LaunchConfiguration('camera_debug'), "'.lower() != 'none'"
+            "'", LaunchConfiguration('rviz'), "'.lower() == 'true' and '",
+            LaunchConfiguration('headless'), "'.lower() != 'true'"
         ])),
     )
 
@@ -470,6 +604,10 @@ def generate_launch_description():
         update_rate_arg,
         sensors_render_engine_arg,
         world_arg,
+        spawn_x_arg,
+        spawn_y_arg,
+        spawn_z_arg,
+        spawn_yaw_arg,
         plotting_arg,
         cone_plotting_arg,
         cone_plotting_2_arg,
@@ -478,14 +616,20 @@ def generate_launch_description():
         rosbagging_arg,
         steering_arg,
         control_bridge_arg,
+        ackermann_steering_sign_arg,
         use_sim_time_arg,
         measure_arg,
         sensor_nodes_arg,
-        boundary_planner_arg,
+        planner_arg,
+        rviz_arg,
+        rviz_config_arg,
         perf_log_hz_arg,
+        perception_queue_size_arg,
         cuda_arg,
+        stereo_arg,
         camera_debug_arg,
         camera_debug_n_frames_arg,
+        monocular_bbox_height_offset_px_arg,
         yolo_enabled_arg,
         yolo_model_path_arg,
         yolo_input_size_arg,
@@ -507,7 +651,9 @@ def generate_launch_description():
         steering_bridge_node,
         perception_node,
         boundary_planner_node,
+        pair_midpoint_planner_node,
         camera_debug_viewer_node,
+        rviz_node,
         steering_gui_node,
     ])
 

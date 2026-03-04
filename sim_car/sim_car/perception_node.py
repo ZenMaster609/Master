@@ -1,7 +1,9 @@
 """ROS2 node that runs stereo perception and evaluation in one process."""
 
+import csv
 from collections import deque
 from dataclasses import dataclass
+import io
 import math
 import os
 import threading
@@ -9,6 +11,7 @@ import time
 import warnings
 from typing import Deque, Optional
 
+import cv2
 import numpy as np
 import rclpy
 from rclpy.duration import Duration
@@ -16,11 +19,12 @@ from rclpy.executors import ExternalShutdownException
 from rclpy.node import Node
 from rclpy.time import Time
 from eufs_msgs.msg import ConeArrayWithCovariance
-from nav_msgs.msg import Odometry
+from nav_msgs.msg import Odometry, Path
 from sensor_msgs.msg import CameraInfo, Image
 from std_msgs.msg import Float32, Header, Int32, String
 from tf2_ros import Buffer, TransformException, TransformListener
 from vehicle_plotter_msgs.msg import ConeDetection, ConeDetectionArray
+from visualization_msgs.msg import Marker, MarkerArray
 
 from sim_car.perception import (
     CameraDebugPublisher,
@@ -30,6 +34,7 @@ from sim_car.perception import (
     StereoPipelineConfig,
     YoloOnnxDetector,
     YoloPtDetector,
+    estimate_axis_depth_from_bbox_height,
 )
 from sim_car.perception.range_rmse_analyzer import RangeRMSEAnalyzer
 from sim_car.perception.range_rmse_live_plot import RangeRMSELivePlot
@@ -158,8 +163,48 @@ class VisibleConeMetrics:
     dgt: float
 
 
+@dataclass
+class MonocularFitSample:
+    """Per-match monocular sample used for offline depth fitting."""
+
+    timestamp: float
+    session_source: str
+    u_center_px: float
+    v_center_px: float
+    bbox_height_px: float
+    bbox_width_px: float
+    fy_px: float
+    fx_px: float
+    cx_px: float
+    cy_px: float
+    est_axis_depth_m: float
+    gt_axis_depth_m: float
+    axis_error_m: float
+    gt_range_m: float
+    gt_x_cam_m: float
+    gt_y_cam_m: float
+    gt_z_cam_m: float
+    est_x_cam_m: float
+    est_y_cam_m: float
+    est_z_cam_m: float
+    error_xy_m: float
+    cone_color: str
+    predicted_class_id: Optional[int]
+    ground_truth_class_id: Optional[int]
+    cone_id: str
+    projection_model: str
+
+
 class PerceptionNode(Node):
     """Subscribes stereo topics, computes disparity/depth, and publishes eval metrics."""
+
+    _CONE_CLASS_NAME_TO_ID = {
+        'blue': 0,
+        'yellow': 1,
+        'orange': 2,
+        'big_orange': 3,
+        'unknown': 4,
+    }
 
     def __init__(self):
         super().__init__('perception_node')
@@ -182,6 +227,11 @@ class PerceptionNode(Node):
         self._track_lock = threading.Lock()
         self._track_cones = []
         self._track_frame_id = 'map'
+        self._planner_path_lock = threading.Lock()
+        self._latest_planner_path: Optional[Path] = None
+        self._planner_markers_lock = threading.Lock()
+        self._latest_pair_links_marker: Optional[Marker] = None
+        self._latest_planner_status_text: str = ''
         self._odom_lock = threading.Lock()
         self._latest_odom = None
         self._odom_queue: Deque[tuple[float, Odometry]] = deque()
@@ -192,51 +242,53 @@ class PerceptionNode(Node):
         self._range_rmse_analyzer: Optional[RangeRMSEAnalyzer] = None
         self._range_rmse_plot: Optional[RangeRMSELivePlot] = None
         self._warned_cone_frame_fallback = False
+        self._warned_cone_source_alias = False
+        self._warned_cone_projection_alias = False
+        self._last_throttled_log_sec: dict[str, float] = {}
 
         self._tf_buffer = Buffer(cache_time=Duration(seconds=10.0))
         self._tf_listener = TransformListener(self._tf_buffer, self)
         self._tf_cache_lock = threading.Lock()
         self._tf_cache = {}
 
-        self._pipeline = StereoPipeline(
-            logger=self.get_logger(),
-            config=StereoPipelineConfig(
-                calibration_file=self.calibration_file,
-                prefer_cuda=self.prefer_cuda,
-                min_disparity=self.min_disparity,
-                num_disparities=self.num_disparities,
-                block_size=self.block_size,
-                uniqueness_ratio=self.uniqueness_ratio,
-                speckle_window_size=self.speckle_window_size,
-                speckle_range=self.speckle_range,
-                disp12_max_diff=self.disp12_max_diff,
-                pre_filter_cap=self.pre_filter_cap,
-                baseline_m=self.baseline_m,
-                focal_length_px=self.focal_length_px,
-                disparity_valid_threshold=self.disparity_valid_threshold,
+        self._pipeline: Optional[StereoPipeline] = None
+        self._evaluator: Optional[StereoEvaluator] = None
+        self._perf: Optional[PerfLogger] = None
+        if self.stereo_enabled:
+            self._pipeline = StereoPipeline(
+                logger=self.get_logger(),
+                config=StereoPipelineConfig(
+                    calibration_file=self.calibration_file,
+                    prefer_cuda=self.prefer_cuda,
+                    min_disparity=self.min_disparity,
+                    num_disparities=self.num_disparities,
+                    block_size=self.block_size,
+                    uniqueness_ratio=self.uniqueness_ratio,
+                    speckle_window_size=self.speckle_window_size,
+                    speckle_range=self.speckle_range,
+                    disp12_max_diff=self.disp12_max_diff,
+                    pre_filter_cap=self.pre_filter_cap,
+                    baseline_m=self.baseline_m,
+                    focal_length_px=self.focal_length_px,
+                    disparity_valid_threshold=self.disparity_valid_threshold,
+                    min_depth_m=self.min_depth_m,
+                    max_depth_m=self.max_depth_m,
+                ),
+            )
+            self._evaluator = StereoEvaluator(
                 min_depth_m=self.min_depth_m,
                 max_depth_m=self.max_depth_m,
-            ),
-        )
-        self._evaluator = StereoEvaluator(
-            min_depth_m=self.min_depth_m,
-            max_depth_m=self.max_depth_m,
-            disparity_valid_threshold=self.disparity_valid_threshold,
-            orb_features=self.eval_orb_features,
-            max_matches=self.eval_max_matches,
-            match_ratio_test=self.eval_match_ratio_test,
-        )
-        self._perf = PerfLogger(self, eval_topic_prefix=self.eval_topic_prefix)
-        sanitized_disparities = max(16, (self.num_disparities // 16) * 16)
+                disparity_valid_threshold=self.disparity_valid_threshold,
+                orb_features=self.eval_orb_features,
+                max_matches=self.eval_max_matches,
+                match_ratio_test=self.eval_match_ratio_test,
+            )
+            self._perf = PerfLogger(self, eval_topic_prefix=self.eval_topic_prefix)
         self._camera_debug = CameraDebugPublisher(
             node=self,
-            mode=self.camera_debug,
+            enabled=self.camera_debug,
             topic=self.camera_debug_topic,
             publish_every_n=self.camera_debug_n_frames,
-            min_depth_m=self.min_depth_m,
-            max_depth_m=self.max_depth_m,
-            max_disparity=float(sanitized_disparities),
-            disparity_valid_threshold=self.disparity_valid_threshold,
         )
         self._yolo_detector = self._init_yolo_detector()
         self._yolo_backend = self._yolo_detector.backend if self._yolo_detector is not None else 'disabled'
@@ -256,22 +308,32 @@ class PerceptionNode(Node):
         self._cone_id_matches_pub = self.create_publisher(Int32, f'{prefix}/cone_depth_cone_id_matches', 10)
         self._cone_per_cone_pub = self.create_publisher(String, f'{prefix}/cone_depth_per_cone', 10)
         self._cone_sample_pub = self.create_publisher(String, f'{prefix}/cone_depth_samples', 10)
+        self._cone_mono_fit_sample_pub = self.create_publisher(
+            String,
+            f'{prefix}/cone_depth_monocular_fit_samples',
+            10,
+        )
         self._yolo_count_pub = self.create_publisher(Int32, f'{prefix}/yolo/detection_count', 10)
         self._yolo_infer_ms_pub = self.create_publisher(Float32, f'{prefix}/yolo/inference_ms', 10)
         self._cone_detections_pub = self.create_publisher(ConeDetectionArray, self.cone_detections_topic, 10)
 
         self.create_subscription(Image, self.left_image_topic, self._left_image_cb, 10)
-        self.create_subscription(Image, self.right_image_topic, self._right_image_cb, 10)
         self.create_subscription(CameraInfo, self.left_camera_info_topic, self._left_info_cb, 10)
-        self.create_subscription(CameraInfo, self.right_camera_info_topic, self._right_info_cb, 10)
+        if self.stereo_enabled:
+            self.create_subscription(Image, self.right_image_topic, self._right_image_cb, 10)
+            self.create_subscription(CameraInfo, self.right_camera_info_topic, self._right_info_cb, 10)
         self.create_subscription(ConeArrayWithCovariance, self.ground_truth_cones_topic, self._cone_gt_cb, 10)
         self.create_subscription(ConeArrayWithCovariance, self.ground_truth_track_topic, self._track_gt_cb, 10)
+        self.create_subscription(Path, self.planner_path_topic, self._planner_path_cb, 10)
+        self.create_subscription(MarkerArray, self.planner_markers_topic, self._planner_markers_cb, 10)
         self.create_subscription(Odometry, self.cone_eval_odom_topic, self._odom_cb, 10)
 
-        self._worker_thread = threading.Thread(target=self._worker_loop, daemon=True)
-        self._worker_thread.start()
+        self._worker_thread: Optional[threading.Thread] = None
+        if self.stereo_enabled:
+            self._worker_thread = threading.Thread(target=self._worker_loop, daemon=True)
+            self._worker_thread.start()
 
-        if self.perf_log_hz > 0.0:
+        if self.perf_log_hz > 0.0 and self._perf is not None and self._evaluator is not None:
             self.create_timer(1.0 / self.perf_log_hz, self._perf_timer_cb)
         if self.cone_plotting_2:
             self._range_rmse_analyzer = RangeRMSEAnalyzer(
@@ -297,13 +359,20 @@ class PerceptionNode(Node):
         self.get_logger().info(
             'perception_node ready: '
             f'left={self.left_image_topic} right={self.right_image_topic} '
+            f'stereo_enabled={self.stereo_enabled} '
             f'eval_prefix={self.eval_topic_prefix} perf_log_hz={self.perf_log_hz:.2f} '
             f'camera_debug={self.camera_debug} cones={self.ground_truth_cones_topic} '
             f'track={self.ground_truth_track_topic} odom={self.cone_eval_odom_topic} '
             f'yolo_enabled={self.yolo_enabled} yolo_backend={self._yolo_backend} '
             f'cone_plotting_2={self.cone_plotting_2} '
+            f'monocular_cone_height_m={self.monocular_cone_height_m:.4f} '
+            f'monocular_bbox_height_offset_px={self.monocular_bbox_height_offset_px:.3f} '
             f'cone_detections_topic={self.cone_detections_topic} '
-            f'cone_detections_frame={self.cone_detections_frame}'
+            f'cone_detections_frame={self.cone_detections_frame} '
+            f'planner_path_topic={self.planner_path_topic} '
+            f'planner_markers_topic={self.planner_markers_topic} '
+            f'camera_debug_scale={self.camera_debug_scale:.2f} '
+            f'camera_debug_mono={self.camera_debug_mono}'
         )
 
     def _declare_parameters(self):
@@ -311,6 +380,9 @@ class PerceptionNode(Node):
         self.declare_parameter('right_image_topic', '/sim/raw/stereo/right/image_raw')
         self.declare_parameter('left_camera_info_topic', '/sim/raw/stereo/left/camera_info')
         self.declare_parameter('right_camera_info_topic', '/sim/raw/stereo/right/camera_info')
+        self.declare_parameter('stereo_enabled', True)
+        self.declare_parameter('monocular_cone_height_m', 0.3034)
+        self.declare_parameter('monocular_bbox_height_offset_px', 0.0)
 
         self.declare_parameter('calibration_file', '')
         self.declare_parameter('max_time_diff_sec', 0.08)
@@ -337,9 +409,13 @@ class PerceptionNode(Node):
         self.declare_parameter('eval_orb_features', 700)
         self.declare_parameter('eval_max_matches', 200)
         self.declare_parameter('eval_match_ratio_test', 0.75)
-        self.declare_parameter('camera_debug', 'none')
+        self.declare_parameter('camera_debug', 'true')
         self.declare_parameter('camera_debug_topic', '/sim/raw/stereo/camera_debug')
         self.declare_parameter('camera_debug_n_frames', 30)
+        self.declare_parameter('planner_path_topic', '/sim/planner/pair_midpoint_path')
+        self.declare_parameter('planner_markers_topic', '/sim/planner/pair_midpoint_markers')
+        self.declare_parameter('camera_debug_scale', 0.5)
+        self.declare_parameter('camera_debug_mono', True)
         self.declare_parameter('yolo_enabled', False)
         self.declare_parameter('yolo_model_path', '')
         self.declare_parameter('yolo_input_size', 960)
@@ -371,6 +447,9 @@ class PerceptionNode(Node):
         self.right_image_topic = str(self.get_parameter('right_image_topic').value)
         self.left_camera_info_topic = str(self.get_parameter('left_camera_info_topic').value)
         self.right_camera_info_topic = str(self.get_parameter('right_camera_info_topic').value)
+        self.stereo_enabled = bool(self.get_parameter('stereo_enabled').value)
+        self.monocular_cone_height_m = max(1e-6, float(self.get_parameter('monocular_cone_height_m').value))
+        self.monocular_bbox_height_offset_px = float(self.get_parameter('monocular_bbox_height_offset_px').value)
 
         self.calibration_file = str(self.get_parameter('calibration_file').value)
         self.max_time_diff_sec = max(0.0, float(self.get_parameter('max_time_diff_sec').value))
@@ -397,9 +476,23 @@ class PerceptionNode(Node):
         self.eval_orb_features = int(self.get_parameter('eval_orb_features').value)
         self.eval_max_matches = int(self.get_parameter('eval_max_matches').value)
         self.eval_match_ratio_test = float(self.get_parameter('eval_match_ratio_test').value)
-        self.camera_debug = self._sanitize_camera_debug(self.get_parameter('camera_debug').value)
+        raw_camera_debug = self.get_parameter('camera_debug').value
+        self.camera_debug = self._sanitize_camera_debug(raw_camera_debug)
+        raw_camera_debug_token = str(raw_camera_debug).strip().lower()
+        if raw_camera_debug_token in {'rect_left', 'left_rect', 'depth', 'disparity', 'yolo'}:
+            self.get_logger().warn(
+                f'camera_debug="{raw_camera_debug}" uses deprecated mode semantics; treating it as enabled'
+            )
         self.camera_debug_topic = str(self.get_parameter('camera_debug_topic').value)
         self.camera_debug_n_frames = max(1, int(self.get_parameter('camera_debug_n_frames').value))
+        self.planner_path_topic = str(self.get_parameter('planner_path_topic').value).strip()
+        if not self.planner_path_topic:
+            self.planner_path_topic = '/sim/planner/pair_midpoint_path'
+        self.planner_markers_topic = str(self.get_parameter('planner_markers_topic').value).strip()
+        if not self.planner_markers_topic:
+            self.planner_markers_topic = '/sim/planner/pair_midpoint_markers'
+        self.camera_debug_scale = float(np.clip(float(self.get_parameter('camera_debug_scale').value), 0.1, 1.0))
+        self.camera_debug_mono = bool(self.get_parameter('camera_debug_mono').value)
         self.yolo_enabled = bool(self.get_parameter('yolo_enabled').value)
         self.yolo_model_path = str(self.get_parameter('yolo_model_path').value)
         self.yolo_input_size = max(64, int(self.get_parameter('yolo_input_size').value))
@@ -443,7 +536,10 @@ class PerceptionNode(Node):
         self._right_info = msg
 
     def _left_image_cb(self, msg: Image):
-        self._enqueue_frame(msg, side='left')
+        if self.stereo_enabled:
+            self._enqueue_frame(msg, side='left')
+            return
+        self._process_monocular_frame(msg)
 
     def _right_image_cb(self, msg: Image):
         self._enqueue_frame(msg, side='right')
@@ -466,6 +562,23 @@ class PerceptionNode(Node):
         with self._track_lock:
             self._track_cones = refs
             self._track_frame_id = frame_id
+
+    def _planner_path_cb(self, msg: Path):
+        with self._planner_path_lock:
+            self._latest_planner_path = msg
+
+    def _planner_markers_cb(self, msg: MarkerArray):
+        pair_links_marker = None
+        status_text = ''
+        for marker in msg.markers:
+            marker_ns = str(marker.ns).strip()
+            if marker.type == Marker.LINE_LIST and marker_ns == 'pair_links':
+                pair_links_marker = marker
+            elif marker.type == Marker.TEXT_VIEW_FACING and marker_ns == 'status':
+                status_text = str(marker.text)
+        with self._planner_markers_lock:
+            self._latest_pair_links_marker = pair_links_marker
+            self._latest_planner_status_text = status_text
 
     def _odom_cb(self, msg: Odometry):
         stamp_sec = self._stamp_msg_to_sec(msg.header.stamp)
@@ -506,6 +619,8 @@ class PerceptionNode(Node):
                     return
 
             left_packet, right_packet = pair
+            if self._pipeline is None:
+                continue
             output = self._pipeline.process(
                 left_msg=left_packet.msg,
                 right_msg=right_packet.msg,
@@ -515,62 +630,179 @@ class PerceptionNode(Node):
             if output is None:
                 continue
 
-            self._evaluator.update(
-                left_rect_gray=output.left_rect,
-                right_rect_gray=output.right_rect,
-                disparity=output.disparity,
-                depth=output.depth,
-            )
-            self._perf.record_processed(timings_ms=output.timings_ms, backend=output.backend)
+            if self._evaluator is not None:
+                self._evaluator.update(
+                    left_rect_gray=output.left_rect,
+                    right_rect_gray=output.right_rect,
+                    disparity=output.disparity,
+                    depth=output.depth,
+                )
+            if self._perf is not None:
+                self._perf.record_processed(timings_ms=output.timings_ms, backend=output.backend)
 
             eval_header = self._common_header(left_packet.msg.header, right_packet.msg.header)
-            yolo_input_image = output.left_rect_color if output.left_rect_color is not None else output.left_rect
-            yolo_detections = []
-            if self._yolo_detector is not None:
-                yolo_detections, infer_ms = self._run_yolo(yolo_input_image)
-                self._yolo_count_pub.publish(Int32(data=len(yolo_detections)))
-                self._yolo_infer_ms_pub.publish(Float32(data=float(infer_ms)))
+            stereo_left_info = self._pipeline.build_rectified_left_camera_info(self._left_info)
+            rectification_rotation = self._pipeline.left_rectification_rotation()
+
+            stereo_debug_image = output.left_rect_color
+            if stereo_debug_image is None:
+                stereo_debug_image = output.left_rect
+            yolo_input_image = output.left_rect_color
+            if yolo_input_image is None:
+                yolo_input_image = cv2.cvtColor(output.left_rect, cv2.COLOR_GRAY2BGR)
+
+            yolo_detections, infer_ms = self._run_yolo(yolo_input_image)
+            self._yolo_count_pub.publish(Int32(data=len(yolo_detections)))
+            self._yolo_infer_ms_pub.publish(Float32(data=float(infer_ms)))
+            self._apply_depth_map_to_detections(output.depth, yolo_detections)
             self._latest_cone_metrics = self._evaluate_yolo_depth(
-                depth=output.depth,
                 yolo_detections=yolo_detections,
+                left_info=stereo_left_info,
+                eval_header=eval_header,
+                sample_source='stereo',
+                rectification_rotation=rectification_rotation,
+                publish_range_rmse_samples=False,
+            )
+
+            if self.cone_plotting_2:
+                self._evaluate_cone_depth(
+                    depth=output.depth,
+                    left_info=stereo_left_info,
+                    eval_header=eval_header,
+                    publish_results=False,
+                    record_stats=False,
+                    sample_source='stereo',
+                    rectification_rotation=rectification_rotation,
+                )
+
+            if self._camera_debug.should_publish():
+                debug_image = self._build_camera_debug_image(
+                    left_rect=stereo_debug_image,
+                    left_info=stereo_left_info,
+                    eval_header=eval_header,
+                    yolo_detections=yolo_detections,
+                )
+                if debug_image is not None:
+                    encoding = 'mono8' if self.camera_debug_mono else 'bgr8'
+                    self._camera_debug.publish_image(eval_header, debug_image, encoding)
+
+    def _build_camera_debug_image(
+        self,
+        left_rect: np.ndarray | None,
+        left_info: Optional[CameraInfo],
+        eval_header: Header,
+        yolo_detections: list[dict],
+    ) -> Optional[np.ndarray]:
+        if left_rect is None or left_rect.size == 0:
+            return None
+
+        if left_rect.ndim == 2:
+            debug_image = left_rect.copy()
+        elif left_rect.ndim == 3 and left_rect.shape[2] == 1:
+            debug_image = left_rect[:, :, 0].copy()
+        elif left_rect.ndim == 3 and left_rect.shape[2] >= 3:
+            debug_image = cv2.cvtColor(left_rect[:, :, :3], cv2.COLOR_BGR2GRAY)
+        else:
+            return None
+
+        if self.camera_debug_scale < 0.999:
+            debug_image = cv2.resize(
+                debug_image,
+                None,
+                fx=self.camera_debug_scale,
+                fy=self.camera_debug_scale,
+                interpolation=cv2.INTER_AREA,
+            )
+
+        self._draw_yolo_debug_overlays(debug_image, yolo_detections)
+        self._draw_pair_links_overlay(
+            image=debug_image,
+            left_info=left_info,
+            eval_header=eval_header,
+        )
+        self._draw_planner_path_overlay(
+            image=debug_image,
+            left_info=left_info,
+            eval_header=eval_header,
+        )
+        self._draw_debug_status_text(debug_image, yolo_detection_count=len(yolo_detections))
+
+        if self.camera_debug_mono:
+            return debug_image
+        return cv2.cvtColor(debug_image, cv2.COLOR_GRAY2BGR)
+
+    def _process_monocular_frame(self, msg: Image) -> None:
+        left_bgr = StereoPipeline._decode_to_bgr(msg)
+        if left_bgr is None:
+            return
+
+        yolo_input_image = left_bgr
+        if yolo_input_image is None:
+            return
+
+        eval_header = Header()
+        eval_header.stamp = msg.header.stamp
+        eval_header.frame_id = msg.header.frame_id
+
+        yolo_detections, infer_ms = self._run_yolo(yolo_input_image)
+        self._yolo_count_pub.publish(Int32(data=len(yolo_detections)))
+        self._yolo_infer_ms_pub.publish(Float32(data=float(infer_ms)))
+        self._apply_monocular_depth_to_detections(yolo_detections, self._left_info)
+        self._latest_cone_metrics = self._evaluate_yolo_depth(
+            yolo_detections=yolo_detections,
+            left_info=self._left_info,
+            eval_header=eval_header,
+        )
+
+        if self._camera_debug.should_publish():
+            debug_image = self._build_camera_debug_image(
+                left_rect=left_bgr,
                 left_info=self._left_info,
                 eval_header=eval_header,
-            )
-
-            self._camera_debug.maybe_publish(
-                header=eval_header,
-                disparity=output.disparity,
-                depth=output.depth,
-                left_rect=yolo_input_image,
-                cone_overlays=[],
                 yolo_detections=yolo_detections,
             )
+            if debug_image is not None:
+                encoding = 'mono8' if self.camera_debug_mono else 'bgr8'
+                self._camera_debug.publish_image(eval_header, debug_image, encoding)
 
-    def _evaluate_yolo_depth(
+    def _apply_monocular_depth_to_detections(
+        self,
+        yolo_detections: list[dict],
+        left_info: Optional[CameraInfo],
+    ) -> None:
+        if not yolo_detections:
+            return
+
+        _fx, fy, _cx, _cy = self._camera_intrinsics(left_info) if left_info is not None else (0.0, 0.0, 0.0, 0.0)
+        for det in yolo_detections:
+            x0 = float(det.get('x0', -1.0))
+            y0 = float(det.get('y0', -1.0))
+            x1 = float(det.get('x1', -1.0))
+            y1 = float(det.get('y1', -1.0))
+            if x1 <= x0 or y1 <= y0:
+                det['depth_m'] = None
+                continue
+
+            det['u_center'] = 0.5 * (x0 + x1)
+            det['v_center'] = 0.5 * (y0 + y1)
+            bbox_height_px = y1 - y0
+            depth_m = estimate_axis_depth_from_bbox_height(
+                fy_px=fy,
+                cone_height_m=self.monocular_cone_height_m,
+                bbox_height_px=bbox_height_px,
+                bbox_height_offset_px=self.monocular_bbox_height_offset_px,
+            )
+            det['depth_m'] = float(depth_m) if depth_m is not None else None
+
+    def _apply_depth_map_to_detections(
         self,
         depth: np.ndarray,
         yolo_detections: list[dict],
-        left_info: Optional[CameraInfo],
-        eval_header: Header,
-    ) -> ConeDepthMetrics:
-        """Estimate YOLO depth and compute GT depth MAE/RMSE from projected cones."""
-        metrics = ConeDepthMetrics()
-        metrics.yolo_detections = len(yolo_detections) if yolo_detections is not None else 0
-        visible_rows: list[VisibleConeMetrics] = []
-        range_rmse_samples: list[tuple[float, float, float]] = []
+    ) -> None:
         if depth is None or depth.size == 0 or not yolo_detections:
-            self._publish_cone_detections(
-                yolo_detections=[],
-                left_info=left_info,
-                eval_header=eval_header,
-            )
-            self._set_latest_visible_cones(visible_rows)
-            self._publish_per_cone_table()
-            self._publish_cone_metrics(metrics)
-            return metrics
+            return
 
-        h, w = depth.shape[:2]
-        yolo_depth_pairs = 0
+        height, width = depth.shape[:2]
         for det in yolo_detections:
             x0 = int(det.get('x0', -1))
             y0 = int(det.get('y0', -1))
@@ -580,63 +812,433 @@ class PerceptionNode(Node):
                 det['depth_m'] = None
                 continue
 
-            u = max(0.0, min(float(w - 1), 0.5 * float(x0 + x1)))
-            v = max(0.0, min(float(h - 1), 0.5 * float(y0 + y1)))
+            u = max(0.0, min(float(width - 1), 0.5 * float(x0 + x1)))
+            v = max(0.0, min(float(height - 1), 0.5 * float(y0 + y1)))
             det['u_center'] = float(u)
             det['v_center'] = float(v)
-            est_axis = self._sample_depth(depth, u, v, self.cone_eval_pixel_radius)
+            est_axis = self._sample_depth_from_bbox(depth, x0, y0, x1, y1)
             if np.isfinite(est_axis):
                 det['depth_m'] = float(est_axis)
-                yolo_depth_pairs += 1
             else:
                 det['depth_m'] = None
-        metrics.yolo_depth_valid = yolo_depth_pairs
-        self._publish_cone_detections(
-            yolo_detections=yolo_detections,
+
+    @staticmethod
+    def _sample_depth_from_bbox(
+        depth: np.ndarray,
+        x0: int,
+        y0: int,
+        x1: int,
+        y1: int,
+    ) -> float:
+        """Sample depth from the lower-middle of a bbox, where cone pixels are more stable."""
+        height, width = depth.shape[:2]
+        if x1 <= x0 or y1 <= y0:
+            return float('nan')
+
+        box_w = x1 - x0
+        box_h = y1 - y0
+        crop_x0 = max(0, x0 + int(round(0.25 * box_w)))
+        crop_x1 = min(width, x1 - int(round(0.25 * box_w)))
+        crop_y0 = max(0, y0 + int(round(0.45 * box_h)))
+        crop_y1 = min(height, y0 + int(round(0.95 * box_h)))
+        if crop_x1 <= crop_x0 or crop_y1 <= crop_y0:
+            u = 0.5 * float(x0 + x1)
+            v = 0.5 * float(y0 + y1)
+            return PerceptionNode._sample_depth(depth, u, v, radius_px=2)
+
+        patch = depth[crop_y0:crop_y1, crop_x0:crop_x1]
+        valid = patch[np.isfinite(patch)]
+        if valid.size > 0:
+            return float(np.median(valid))
+
+        u = 0.5 * float(x0 + x1)
+        v = 0.5 * float(y0 + y1)
+        return PerceptionNode._sample_depth(depth, u, v, radius_px=2)
+
+    def _draw_yolo_debug_overlays(self, image: np.ndarray, yolo_detections: list[dict]) -> None:
+        if image is None or not yolo_detections:
+            return
+
+        height, width = image.shape[:2]
+        scale = self.camera_debug_scale
+        font = cv2.FONT_HERSHEY_SIMPLEX
+        font_scale = 0.40
+        thickness = 1
+
+        for det in yolo_detections:
+            x0 = int(round(float(det.get('x0', -1)) * scale))
+            y0 = int(round(float(det.get('y0', -1)) * scale))
+            x1 = int(round(float(det.get('x1', -1)) * scale))
+            y1 = int(round(float(det.get('y1', -1)) * scale))
+            if x1 <= x0 or y1 <= y0:
+                continue
+
+            x0 = max(0, min(width - 1, x0))
+            y0 = max(0, min(height - 1, y0))
+            x1 = max(0, min(width - 1, x1))
+            y1 = max(0, min(height - 1, y1))
+            cv2.rectangle(image, (x0, y0), (x1, y1), 255, 1)
+
+            label = str(det.get('label', '')).strip()
+            if not label:
+                continue
+
+            (text_w, text_h), baseline = cv2.getTextSize(label, font, font_scale, thickness)
+            text_x = max(0, min(width - text_w - 3, x0))
+            text_y = max(text_h + baseline + 2, y0 - 2)
+            box_y0 = max(0, text_y - text_h - baseline - 2)
+            box_y1 = min(height - 1, text_y + 1)
+            box_x1 = min(width - 1, text_x + text_w + 2)
+            cv2.rectangle(image, (text_x, box_y0), (box_x1, box_y1), 0, -1)
+            cv2.putText(image, label, (text_x + 1, text_y), font, font_scale, 255, thickness, cv2.LINE_AA)
+
+    def _draw_planner_path_overlay(
+        self,
+        image: np.ndarray,
+        left_info: Optional[CameraInfo],
+        eval_header: Header,
+    ) -> None:
+        projected_segments = self._project_planner_path_to_debug_image(
+            image_shape=image.shape,
             left_info=left_info,
             eval_header=eval_header,
         )
+        if not projected_segments:
+            return
+
+        for segment in projected_segments:
+            if len(segment) >= 2:
+                cv2.polylines(image, [np.array(segment, dtype=np.int32)], False, 180, 2, cv2.LINE_AA)
+            for point in segment:
+                cv2.circle(image, point, 2, 120, -1, cv2.LINE_AA)
+
+    def _draw_pair_links_overlay(
+        self,
+        image: np.ndarray,
+        left_info: Optional[CameraInfo],
+        eval_header: Header,
+    ) -> None:
+        projected_segments = self._project_pair_links_to_debug_image(
+            image_shape=image.shape,
+            left_info=left_info,
+            eval_header=eval_header,
+        )
+        if not projected_segments:
+            return
+
+        for start_point, end_point in projected_segments:
+            cv2.line(image, start_point, end_point, 200, 1, cv2.LINE_AA)
+            cv2.circle(image, start_point, 1, 160, -1, cv2.LINE_AA)
+            cv2.circle(image, end_point, 1, 160, -1, cv2.LINE_AA)
+
+    def _project_pair_links_to_debug_image(
+        self,
+        image_shape: tuple[int, ...],
+        left_info: Optional[CameraInfo],
+        eval_header: Header,
+    ) -> list[tuple[tuple[int, int], tuple[int, int]]]:
+        if left_info is None:
+            return []
+
+        pair_links_marker = self._latest_pair_links_marker_copy()
+        if pair_links_marker is None or len(pair_links_marker.points) < 2:
+            return []
+
+        image_stamp_sec = self._stamp_msg_to_sec(eval_header.stamp)
+        marker_stamp_sec = self._stamp_msg_to_sec(pair_links_marker.header.stamp)
+        if marker_stamp_sec > 0.0 and image_stamp_sec > 0.0 and abs(marker_stamp_sec - image_stamp_sec) > 0.5:
+            return []
+
+        camera_frame = str(left_info.header.frame_id).strip() or str(eval_header.frame_id).strip()
+        marker_frame = str(pair_links_marker.header.frame_id).strip()
+        if not camera_frame or not marker_frame:
+            return []
+
+        fx, fy, cx, cy = self._camera_intrinsics(left_info)
+        if fx <= 0.0 or fy <= 0.0:
+            return []
+
+        transform = self._lookup_transform(
+            target_frame=camera_frame,
+            source_frame=marker_frame,
+            stamp=eval_header.stamp,
+        )
+        if transform is None:
+            return []
+
+        projection_model = self._projection_model_for_frame(camera_frame)
+        height, width = image_shape[:2]
+        projected_segments: list[tuple[tuple[int, int], tuple[int, int]]] = []
+        point_count = len(pair_links_marker.points)
+        for idx in range(0, point_count - 1, 2):
+            start = pair_links_marker.points[idx]
+            end = pair_links_marker.points[idx + 1]
+            projected_pair = []
+            for point in (start, end):
+                x_cam, y_cam, z_cam = self._transform_point(transform, float(point.x), float(point.y), float(point.z))
+                projection = self._project_to_pixel(
+                    x_cam=x_cam,
+                    y_cam=y_cam,
+                    z_cam=z_cam,
+                    fx=fx,
+                    fy=fy,
+                    cx=cx,
+                    cy=cy,
+                    model=projection_model,
+                )
+                if projection is None:
+                    projected_pair = []
+                    break
+                u, v, _ = projection
+                u = int(round(u * self.camera_debug_scale))
+                v = int(round(v * self.camera_debug_scale))
+                if u < 0 or v < 0 or u >= width or v >= height:
+                    projected_pair = []
+                    break
+                projected_pair.append((u, v))
+            if len(projected_pair) == 2:
+                projected_segments.append((projected_pair[0], projected_pair[1]))
+        return projected_segments
+
+    def _draw_debug_status_text(self, image: np.ndarray, yolo_detection_count: int) -> None:
+        lines = [f'yolo={int(yolo_detection_count)}']
+        planner_status = self._latest_planner_status_text_copy()
+        if planner_status:
+            lines.extend([line.strip() for line in planner_status.splitlines() if line.strip()])
+        else:
+            lines.append('planner_status=unavailable')
+
+        font = cv2.FONT_HERSHEY_SIMPLEX
+        font_scale = 0.42
+        thickness = 1
+        line_gap = 4
+        text_sizes = [cv2.getTextSize(line, font, font_scale, thickness)[0] for line in lines]
+        max_width = max((size[0] for size in text_sizes), default=0)
+        line_height = max((size[1] for size in text_sizes), default=10) + line_gap
+        box_height = max(18, len(lines) * line_height + 8)
+        box_width = max(30, max_width + 10)
+
+        height, width = image.shape[:2]
+        x0 = 6
+        y0 = 6
+        x1 = min(width - 1, x0 + box_width)
+        y1 = min(height - 1, y0 + box_height)
+        cv2.rectangle(image, (x0, y0), (x1, y1), 0, -1)
+        cv2.rectangle(image, (x0, y0), (x1, y1), 180, 1)
+
+        baseline_y = y0 + 14
+        for idx, line in enumerate(lines):
+            y = min(height - 4, baseline_y + idx * line_height)
+            cv2.putText(image, line, (x0 + 4, y), font, font_scale, 255, thickness, cv2.LINE_AA)
+
+    def _project_planner_path_to_debug_image(
+        self,
+        image_shape: tuple[int, ...],
+        left_info: Optional[CameraInfo],
+        eval_header: Header,
+    ) -> list[list[tuple[int, int]]]:
+        if left_info is None:
+            self._warn_throttled('camera_debug_no_info', 'camera_debug skipping planner overlay: no left camera info')
+            return []
+
+        planner_path = self._latest_planner_path_copy()
+        if planner_path is None or not planner_path.poses:
+            self._warn_throttled('camera_debug_no_path', 'camera_debug skipping planner overlay: no planner path')
+            return []
+
+        image_stamp_sec = self._stamp_msg_to_sec(eval_header.stamp)
+        path_stamp_sec = self._stamp_msg_to_sec(planner_path.header.stamp)
+        if path_stamp_sec > 0.0 and image_stamp_sec > 0.0 and abs(path_stamp_sec - image_stamp_sec) > 0.5:
+            self._warn_throttled(
+                'camera_debug_stale_path',
+                f'camera_debug skipping stale planner path: dt={abs(path_stamp_sec - image_stamp_sec):.3f}s',
+            )
+            return []
+
+        camera_frame = str(left_info.header.frame_id).strip() or str(eval_header.frame_id).strip()
+        path_frame = str(planner_path.header.frame_id).strip()
+        if not camera_frame or not path_frame:
+            self._warn_throttled('camera_debug_path_frame', 'camera_debug skipping planner overlay: missing frame ids')
+            return []
+
+        fx, fy, cx, cy = self._camera_intrinsics(left_info)
+        if fx <= 0.0 or fy <= 0.0:
+            self._warn_throttled('camera_debug_intrinsics', 'camera_debug skipping planner overlay: invalid intrinsics')
+            return []
+
+        transform = self._lookup_transform(
+            target_frame=camera_frame,
+            source_frame=path_frame,
+            stamp=eval_header.stamp,
+        )
+        if transform is None:
+            self._warn_throttled(
+                'camera_debug_path_tf',
+                f'camera_debug skipping planner overlay: transform {path_frame}->{camera_frame} unavailable',
+            )
+            return []
+
+        projection_model = self._projection_model_for_frame(camera_frame)
+        height, width = image_shape[:2]
+        projected_segments: list[list[tuple[int, int]]] = []
+        current_segment: list[tuple[int, int]] = []
+        for pose_stamped in planner_path.poses:
+            px = float(pose_stamped.pose.position.x)
+            py = float(pose_stamped.pose.position.y)
+            pz = float(pose_stamped.pose.position.z)
+            x_cam, y_cam, z_cam = self._transform_point(transform, px, py, pz)
+            projection = self._project_to_pixel(
+                x_cam=x_cam,
+                y_cam=y_cam,
+                z_cam=z_cam,
+                fx=fx,
+                fy=fy,
+                cx=cx,
+                cy=cy,
+                model=projection_model,
+            )
+            if projection is None:
+                if current_segment:
+                    projected_segments.append(current_segment)
+                    current_segment = []
+                continue
+            u, v, _ = projection
+            u = int(round(u * self.camera_debug_scale))
+            v = int(round(v * self.camera_debug_scale))
+            if u < 0 or v < 0 or u >= width or v >= height:
+                if current_segment:
+                    projected_segments.append(current_segment)
+                    current_segment = []
+                continue
+            current_segment.append((u, v))
+        if current_segment:
+            projected_segments.append(current_segment)
+        return projected_segments
+
+    def _latest_planner_path_copy(self) -> Optional[Path]:
+        with self._planner_path_lock:
+            return self._latest_planner_path
+
+    def _latest_pair_links_marker_copy(self) -> Optional[Marker]:
+        with self._planner_markers_lock:
+            return self._latest_pair_links_marker
+
+    def _latest_planner_status_text_copy(self) -> str:
+        with self._planner_markers_lock:
+            return self._latest_planner_status_text
+
+    def _evaluate_yolo_depth(
+        self,
+        yolo_detections: list[dict],
+        left_info: Optional[CameraInfo],
+        eval_header: Header,
+        publish_results: bool = True,
+        publish_cone_detections: bool = True,
+        record_stats: bool = True,
+        sample_source: str = 'monocular',
+        rectification_rotation: Optional[np.ndarray] = None,
+        publish_range_rmse_samples: bool = True,
+    ) -> ConeDepthMetrics:
+        """Estimate monocular YOLO depth and compute GT depth MAE/RMSE."""
+        metrics = ConeDepthMetrics()
+        metrics.yolo_detections = len(yolo_detections) if yolo_detections is not None else 0
+        visible_rows: list[VisibleConeMetrics] = []
+        range_rmse_samples: list[tuple[str, float, float, Optional[int], Optional[int]]] = []
+        monocular_fit_samples: list[MonocularFitSample] = []
+        if not yolo_detections:
+            if publish_cone_detections:
+                self._publish_cone_detections(
+                    yolo_detections=[],
+                    left_info=left_info,
+                    eval_header=eval_header,
+                )
+            return self._finalize_public_cone_eval(
+                metrics=metrics,
+                visible_rows=visible_rows,
+                range_rmse_samples=range_rmse_samples,
+                monocular_fit_samples=monocular_fit_samples,
+                publish_results=publish_results,
+                publish_range_rmse_samples=publish_range_rmse_samples,
+            )
+
+        yolo_depth_pairs = 0
+        for det in yolo_detections:
+            est_axis = det.get('depth_m', None)
+            if est_axis is None or not np.isfinite(float(est_axis)):
+                det['depth_m'] = None
+                continue
+            yolo_depth_pairs += 1
+        metrics.yolo_depth_valid = yolo_depth_pairs
+        if publish_cone_detections:
+            self._publish_cone_detections(
+                yolo_detections=yolo_detections,
+                left_info=left_info,
+                eval_header=eval_header,
+            )
 
         # GT MAE/RMSE computed by matching YOLO boxes to projected GT cone points.
         if left_info is None:
             metrics.pairs = yolo_depth_pairs
-            self._set_latest_visible_cones(visible_rows)
-            self._publish_per_cone_table()
-            self._publish_cone_metrics(metrics)
-            return metrics
+            return self._finalize_public_cone_eval(
+                metrics=metrics,
+                visible_rows=visible_rows,
+                range_rmse_samples=range_rmse_samples,
+                monocular_fit_samples=monocular_fit_samples,
+                publish_results=publish_results,
+                publish_range_rmse_samples=publish_range_rmse_samples,
+            )
 
         fx, fy, cx, cy = self._camera_intrinsics(left_info)
         if fx <= 0.0 or fy <= 0.0:
             metrics.pairs = yolo_depth_pairs
-            self._set_latest_visible_cones(visible_rows)
-            self._publish_per_cone_table()
-            self._publish_cone_metrics(metrics)
-            return metrics
+            return self._finalize_public_cone_eval(
+                metrics=metrics,
+                visible_rows=visible_rows,
+                range_rmse_samples=range_rmse_samples,
+                monocular_fit_samples=monocular_fit_samples,
+                publish_results=publish_results,
+                publish_range_rmse_samples=publish_range_rmse_samples,
+            )
+
+        image_height = int(left_info.height) if int(left_info.height) > 0 else 0
+        image_width = int(left_info.width) if int(left_info.width) > 0 else 0
 
         frame_stamp_sec = self._stamp_msg_to_sec(eval_header.stamp)
         cone_packet = self._get_nearest_cone_packet(frame_stamp_sec)
         if cone_packet is None:
             metrics.pairs = yolo_depth_pairs
-            self._set_latest_visible_cones(visible_rows)
-            self._publish_per_cone_table()
-            self._publish_cone_metrics(metrics)
-            return metrics
+            return self._finalize_public_cone_eval(
+                metrics=metrics,
+                visible_rows=visible_rows,
+                range_rmse_samples=range_rmse_samples,
+                monocular_fit_samples=monocular_fit_samples,
+                publish_results=publish_results,
+                publish_range_rmse_samples=publish_range_rmse_samples,
+            )
 
         metrics.sync_dt_ms = abs(frame_stamp_sec - cone_packet.stamp_sec) * 1000.0
         if metrics.sync_dt_ms > self.cone_eval_sync_slop_sec * 1000.0:
             metrics.pairs = yolo_depth_pairs
-            self._set_latest_visible_cones(visible_rows)
-            self._publish_per_cone_table()
-            self._publish_cone_metrics(metrics)
-            return metrics
+            return self._finalize_public_cone_eval(
+                metrics=metrics,
+                visible_rows=visible_rows,
+                range_rmse_samples=range_rmse_samples,
+                monocular_fit_samples=monocular_fit_samples,
+                publish_results=publish_results,
+                publish_range_rmse_samples=publish_range_rmse_samples,
+            )
 
         src_frame = cone_packet.msg.header.frame_id
         if not src_frame:
             metrics.pairs = yolo_depth_pairs
-            self._set_latest_visible_cones(visible_rows)
-            self._publish_per_cone_table()
-            self._publish_cone_metrics(metrics)
-            return metrics
+            return self._finalize_public_cone_eval(
+                metrics=metrics,
+                visible_rows=visible_rows,
+                range_rmse_samples=range_rmse_samples,
+                monocular_fit_samples=monocular_fit_samples,
+                publish_results=publish_results,
+                publish_range_rmse_samples=publish_range_rmse_samples,
+            )
 
         transform_bundle = self._resolve_transform_and_projection(
             source_frame=src_frame,
@@ -645,10 +1247,13 @@ class PerceptionNode(Node):
         )
         if transform_bundle is None:
             metrics.pairs = yolo_depth_pairs
-            self._set_latest_visible_cones(visible_rows)
-            self._publish_per_cone_table()
-            self._publish_cone_metrics(metrics)
-            return metrics
+            return self._finalize_public_cone_eval(
+                metrics=metrics,
+                visible_rows=visible_rows,
+                range_rmse_samples=range_rmse_samples,
+                monocular_fit_samples=monocular_fit_samples,
+                publish_results=publish_results,
+            )
         transform, projection_model = transform_bundle
 
         with self._track_lock:
@@ -674,10 +1279,13 @@ class PerceptionNode(Node):
         gt_points = []
         for cone_color, cone in self._iter_cones(cone_packet.msg):
             x_cam, y_cam, z_cam = self._transform_point(transform, cone.point.x, cone.point.y, cone.point.z)
+            x_eval, y_eval, z_eval = x_cam, y_cam, z_cam
+            if rectification_rotation is not None:
+                x_eval, y_eval, z_eval = self._rotate_point(rectification_rotation, x_cam, y_cam, z_cam)
             projection = self._project_to_pixel(
-                x_cam=x_cam,
-                y_cam=y_cam,
-                z_cam=z_cam,
+                x_cam=x_eval,
+                y_cam=y_eval,
+                z_cam=z_eval,
                 fx=fx,
                 fy=fy,
                 cx=cx,
@@ -687,7 +1295,11 @@ class PerceptionNode(Node):
             if projection is None:
                 continue
             u_gt, v_gt, gt_axis = projection
-            if u_gt < 0.0 or v_gt < 0.0 or u_gt >= float(w) or v_gt >= float(h):
+            if (
+                image_width > 0
+                and image_height > 0
+                and (u_gt < 0.0 or v_gt < 0.0 or u_gt >= float(image_width) or v_gt >= float(image_height))
+            ):
                 continue
             gt_range = math.sqrt((x_cam * x_cam) + (y_cam * y_cam) + (z_cam * z_cam))
             cone_id = None
@@ -794,23 +1406,68 @@ class PerceptionNode(Node):
             )
             if est_cam is None:
                 continue
-            est_x, est_y, _ = est_cam
+            est_x, est_y, est_z = est_cam
+            if rectification_rotation is not None:
+                est_x, est_y, est_z = self._rotate_point_transpose(rectification_rotation, est_x, est_y, est_z)
             err_x = est_x - float(matched['x_cam'])
             err_y = est_y - float(matched['y_cam'])
+            cone_color = str(matched.get('color', 'unknown'))
+            predicted_class_id = self._detection_to_class_id(det)
+            ground_truth_class_id = self._cone_class_name_to_id(cone_color)
+            error_xy_m = math.hypot(err_x, err_y)
             errors_axis.append(axis_err)
             ray_scale = math.sqrt(1.0 + ((u_center - cx) / fx) ** 2 + ((v_center - cy) / fy) ** 2)
             est_range = float(est_axis) * ray_scale
             errors_range.append(est_range - gt_range)
             self._record_range_rmse_sample(
+                source=sample_source,
                 gt_range_m=gt_range,
-                ex_m=err_x,
-                ey_m=err_y,
+                error_m=error_xy_m,
+                predicted_class_id=predicted_class_id,
+                ground_truth_class_id=ground_truth_class_id,
             )
-            range_rmse_samples.append((gt_range, err_x, err_y))
+            range_rmse_samples.append(
+                (
+                    sample_source,
+                    gt_range,
+                    error_xy_m,
+                    predicted_class_id,
+                    ground_truth_class_id,
+                )
+            )
 
             cone_id = matched.get('cone_id')
-            cone_color = str(matched.get('color', 'unknown'))
-            if isinstance(cone_id, str):
+            monocular_fit_samples.append(
+                MonocularFitSample(
+                    timestamp=float(frame_stamp_sec),
+                    session_source='monocular',
+                    u_center_px=float(u_center),
+                    v_center_px=float(v_center),
+                    bbox_height_px=float(y1 - y0),
+                    bbox_width_px=float(x1 - x0),
+                    fy_px=float(fy),
+                    fx_px=float(fx),
+                    cx_px=float(cx),
+                    cy_px=float(cy),
+                    est_axis_depth_m=float(est_axis),
+                    gt_axis_depth_m=float(gt_axis),
+                    axis_error_m=float(axis_err),
+                    gt_range_m=float(gt_range),
+                    gt_x_cam_m=float(matched['x_cam']),
+                    gt_y_cam_m=float(matched['y_cam']),
+                    gt_z_cam_m=float(matched['z_cam']),
+                    est_x_cam_m=float(est_x),
+                    est_y_cam_m=float(est_y),
+                    est_z_cam_m=float(est_z),
+                    error_xy_m=float(error_xy_m),
+                    cone_color=cone_color,
+                    predicted_class_id=predicted_class_id,
+                    ground_truth_class_id=ground_truth_class_id,
+                    cone_id=str(cone_id) if cone_id is not None else '',
+                    projection_model=str(projection_model),
+                )
+            )
+            if isinstance(cone_id, str) and record_stats:
                 cone_id_matches += 1
                 self._update_cone_stats(
                     cone_id=cone_id,
@@ -849,11 +1506,14 @@ class PerceptionNode(Node):
             range_arr = np.asarray(errors_range, dtype=np.float32)
             metrics.range_mae_m = float(np.mean(np.abs(range_arr)))
             metrics.range_rmse_m = float(np.sqrt(np.mean(np.square(range_arr))))
-        self._publish_range_rmse_samples(range_rmse_samples)
-        self._set_latest_visible_cones(visible_rows)
-        self._publish_per_cone_table()
-        self._publish_cone_metrics(metrics)
-        return metrics
+        return self._finalize_public_cone_eval(
+            metrics=metrics,
+            visible_rows=visible_rows,
+            range_rmse_samples=range_rmse_samples,
+            monocular_fit_samples=monocular_fit_samples,
+            publish_results=publish_results,
+            publish_range_rmse_samples=publish_range_rmse_samples,
+        )
 
     def _init_yolo_detector(self):
         if not self.yolo_enabled:
@@ -964,46 +1624,65 @@ class PerceptionNode(Node):
         depth: np.ndarray,
         left_info: Optional[CameraInfo],
         eval_header: Header,
+        publish_results: bool = True,
+        record_stats: bool = True,
+        sample_source: str = 'stereo',
+        rectification_rotation: Optional[np.ndarray] = None,
     ) -> tuple[ConeDepthMetrics, list[dict]]:
         metrics = ConeDepthMetrics()
         overlays = []
         visible_rows: list[VisibleConeMetrics] = []
-        range_rmse_samples: list[tuple[float, float, float]] = []
+        range_rmse_samples: list[tuple[str, float, float, Optional[int], Optional[int]]] = []
         if left_info is None:
-            self._set_latest_visible_cones(visible_rows)
-            self._publish_per_cone_table()
-            self._publish_cone_metrics(metrics)
-            return metrics, overlays
+            return self._finalize_optional_cone_eval(
+                metrics=metrics,
+                overlays=overlays,
+                visible_rows=visible_rows,
+                range_rmse_samples=range_rmse_samples,
+                publish_results=publish_results,
+            )
 
         height, width = depth.shape[:2]
         fx, fy, cx, cy = self._camera_intrinsics(left_info)
         if fx <= 0.0 or fy <= 0.0:
-            self._set_latest_visible_cones(visible_rows)
-            self._publish_per_cone_table()
-            self._publish_cone_metrics(metrics)
-            return metrics, overlays
+            return self._finalize_optional_cone_eval(
+                metrics=metrics,
+                overlays=overlays,
+                visible_rows=visible_rows,
+                range_rmse_samples=range_rmse_samples,
+                publish_results=publish_results,
+            )
 
         frame_stamp_sec = self._stamp_msg_to_sec(eval_header.stamp)
         cone_packet = self._get_nearest_cone_packet(frame_stamp_sec)
         if cone_packet is None:
-            self._set_latest_visible_cones(visible_rows)
-            self._publish_per_cone_table()
-            self._publish_cone_metrics(metrics)
-            return metrics, overlays
+            return self._finalize_optional_cone_eval(
+                metrics=metrics,
+                overlays=overlays,
+                visible_rows=visible_rows,
+                range_rmse_samples=range_rmse_samples,
+                publish_results=publish_results,
+            )
 
         metrics.sync_dt_ms = abs(frame_stamp_sec - cone_packet.stamp_sec) * 1000.0
         if metrics.sync_dt_ms > self.cone_eval_sync_slop_sec * 1000.0:
-            self._set_latest_visible_cones(visible_rows)
-            self._publish_per_cone_table()
-            self._publish_cone_metrics(metrics)
-            return metrics, overlays
+            return self._finalize_optional_cone_eval(
+                metrics=metrics,
+                overlays=overlays,
+                visible_rows=visible_rows,
+                range_rmse_samples=range_rmse_samples,
+                publish_results=publish_results,
+            )
 
         src_frame = cone_packet.msg.header.frame_id
         if not src_frame:
-            self._set_latest_visible_cones(visible_rows)
-            self._publish_per_cone_table()
-            self._publish_cone_metrics(metrics)
-            return metrics, overlays
+            return self._finalize_optional_cone_eval(
+                metrics=metrics,
+                overlays=overlays,
+                visible_rows=visible_rows,
+                range_rmse_samples=range_rmse_samples,
+                publish_results=publish_results,
+            )
 
         transform_bundle = self._resolve_transform_and_projection(
             source_frame=src_frame,
@@ -1011,10 +1690,13 @@ class PerceptionNode(Node):
             stamp=eval_header.stamp,
         )
         if transform_bundle is None:
-            self._set_latest_visible_cones(visible_rows)
-            self._publish_per_cone_table()
-            self._publish_cone_metrics(metrics)
-            return metrics, overlays
+            return self._finalize_optional_cone_eval(
+                metrics=metrics,
+                overlays=overlays,
+                visible_rows=visible_rows,
+                range_rmse_samples=range_rmse_samples,
+                publish_results=publish_results,
+            )
         transform, projection_model = transform_bundle
         with self._track_lock:
             track_frame_id = self._track_frame_id
@@ -1041,10 +1723,13 @@ class PerceptionNode(Node):
 
         for cone_color, cone in self._iter_cones(cone_packet.msg):
             x_cam, y_cam, z_cam = self._transform_point(transform, cone.point.x, cone.point.y, cone.point.z)
+            x_eval, y_eval, z_eval = x_cam, y_cam, z_cam
+            if rectification_rotation is not None:
+                x_eval, y_eval, z_eval = self._rotate_point(rectification_rotation, x_cam, y_cam, z_cam)
             projection = self._project_to_pixel(
-                x_cam=x_cam,
-                y_cam=y_cam,
-                z_cam=z_cam,
+                x_cam=x_eval,
+                y_cam=y_eval,
+                z_cam=z_eval,
                 fx=fx,
                 fy=fy,
                 cx=cx,
@@ -1074,19 +1759,33 @@ class PerceptionNode(Node):
             )
             if est_cam is None:
                 continue
-            est_x, est_y, _ = est_cam
+            est_x, est_y, est_z = est_cam
+            if rectification_rotation is not None:
+                est_x, est_y, est_z = self._rotate_point_transpose(rectification_rotation, est_x, est_y, est_z)
             err_x = est_x - float(x_cam)
             err_y = est_y - float(y_cam)
+            predicted_class_id = self._cone_class_name_to_id(cone_color)
+            ground_truth_class_id = predicted_class_id
             errors_axis.append(err_axis)
             gt_range = math.sqrt((x_cam * x_cam) + (y_cam * y_cam) + (z_cam * z_cam))
             ray_scale = math.sqrt(1.0 + ((u - cx) / fx) ** 2 + ((v - cy) / fy) ** 2)
             est_range = float(est_axis) * ray_scale
             self._record_range_rmse_sample(
+                source=sample_source,
                 gt_range_m=gt_range,
-                ex_m=err_x,
-                ey_m=err_y,
+                error_m=math.hypot(err_x, err_y),
+                predicted_class_id=predicted_class_id,
+                ground_truth_class_id=ground_truth_class_id,
             )
-            range_rmse_samples.append((gt_range, err_x, err_y))
+            range_rmse_samples.append(
+                (
+                    sample_source,
+                    gt_range,
+                    math.hypot(err_x, err_y),
+                    predicted_class_id,
+                    ground_truth_class_id,
+                )
+            )
             cone_id = None
             if track_coord_mode == 'transform':
                 x_map, y_map, _ = self._transform_point(
@@ -1120,7 +1819,7 @@ class PerceptionNode(Node):
                         y_map=y_map,
                         color=cone_color,
                     )
-            if cone_id is not None:
+            if cone_id is not None and record_stats:
                 self._update_cone_stats(
                     cone_id=cone_id,
                     color=cone_color,
@@ -1184,11 +1883,13 @@ class PerceptionNode(Node):
             metrics.range_rmse_m = float(np.sqrt(np.mean(np.square(range_arr))))
 
         overlays = self._assign_overlay_placements(overlays, cx)
-        self._publish_range_rmse_samples(range_rmse_samples)
-        self._set_latest_visible_cones(visible_rows)
-        self._publish_per_cone_table()
-        self._publish_cone_metrics(metrics)
-        return metrics, overlays
+        return self._finalize_optional_cone_eval(
+            metrics=metrics,
+            overlays=overlays,
+            visible_rows=visible_rows,
+            range_rmse_samples=range_rmse_samples,
+            publish_results=publish_results,
+        )
 
     @staticmethod
     def _assign_overlay_placements(overlays: list[dict], image_cx: float) -> list[dict]:
@@ -1227,6 +1928,39 @@ class PerceptionNode(Node):
             if 'placement' not in overlay:
                 overlay['placement'] = 'right'
         return overlays
+
+    def _finalize_public_cone_eval(
+        self,
+        metrics: ConeDepthMetrics,
+        visible_rows: list[VisibleConeMetrics],
+        range_rmse_samples: list[tuple[str, float, float, Optional[int], Optional[int]]],
+        monocular_fit_samples: Optional[list[MonocularFitSample]] = None,
+        publish_results: bool = True,
+        publish_range_rmse_samples: bool = True,
+    ) -> ConeDepthMetrics:
+        if publish_range_rmse_samples:
+            self._publish_range_rmse_samples(range_rmse_samples)
+        self._publish_monocular_fit_samples(monocular_fit_samples or [])
+        if publish_results:
+            self._set_latest_visible_cones(visible_rows)
+            self._publish_per_cone_table()
+            self._publish_cone_metrics(metrics)
+        return metrics
+
+    def _finalize_optional_cone_eval(
+        self,
+        metrics: ConeDepthMetrics,
+        overlays: list[dict],
+        visible_rows: list[VisibleConeMetrics],
+        range_rmse_samples: list[tuple[str, float, float, Optional[int], Optional[int]]],
+        publish_results: bool,
+    ) -> tuple[ConeDepthMetrics, list[dict]]:
+        self._publish_range_rmse_samples(range_rmse_samples)
+        if publish_results:
+            self._set_latest_visible_cones(visible_rows)
+            self._publish_per_cone_table()
+            self._publish_cone_metrics(metrics)
+        return metrics, overlays
 
     @staticmethod
     def _side_safe_placement(placement: str, side: str) -> str:
@@ -1684,27 +2418,37 @@ class PerceptionNode(Node):
         projection_model = self._projection_model_for_frame(camera_frame)
         cam_to_output = None
         output_frame = self.cone_detections_frame
+        transform_source_frame = camera_frame
         if camera_frame != self.cone_detections_frame:
-            cam_to_output = self._lookup_transform(
-                target_frame=self.cone_detections_frame,
-                source_frame=camera_frame,
-                stamp=eval_header.stamp,
+            target_candidates = [self.cone_detections_frame]
+            namespaced_frame = self._resolve_namespaced_output_frame(
+                camera_frame=camera_frame,
+                requested_frame=self.cone_detections_frame,
             )
-            if cam_to_output is None:
-                namespaced_frame = self._resolve_namespaced_output_frame(
-                    camera_frame=camera_frame,
-                    requested_frame=self.cone_detections_frame,
-                )
-                if namespaced_frame and namespaced_frame != self.cone_detections_frame:
+            if namespaced_frame and namespaced_frame not in target_candidates:
+                target_candidates.append(namespaced_frame)
+
+            source_candidates = self._cone_output_source_frame_candidates(
+                source_frame=camera_frame,
+                requested_output_frame=self.cone_detections_frame,
+            )
+
+            for target_candidate in target_candidates:
+                if cam_to_output is not None:
+                    break
+                for source_candidate in source_candidates:
                     candidate = self._lookup_transform(
-                        target_frame=namespaced_frame,
-                        source_frame=camera_frame,
+                        target_frame=target_candidate,
+                        source_frame=source_candidate,
                         stamp=eval_header.stamp,
                     )
-                    if candidate is not None:
-                        cam_to_output = candidate
-                        output_frame = namespaced_frame
-                        msg.header.frame_id = output_frame
+                    if candidate is None:
+                        continue
+                    cam_to_output = candidate
+                    output_frame = target_candidate
+                    transform_source_frame = source_candidate
+                    msg.header.frame_id = output_frame
+                    break
 
             if cam_to_output is None:
                 output_frame = camera_frame
@@ -1716,6 +2460,27 @@ class PerceptionNode(Node):
                         f'publishing in source frame "{output_frame}"'
                     )
                     self._warned_cone_frame_fallback = True
+            elif (transform_source_frame != camera_frame) and (not self._warned_cone_source_alias):
+                self.get_logger().warn(
+                    'cone detections using frame alias '
+                    f'{transform_source_frame}->{output_frame} '
+                    f'(original source {camera_frame})'
+                )
+                self._warned_cone_source_alias = True
+
+        reconstruction_model = projection_model
+        if transform_source_frame != camera_frame:
+            aliased_model = self._projection_model_for_frame(transform_source_frame)
+            if aliased_model != reconstruction_model:
+                reconstruction_model = aliased_model
+                if not self._warned_cone_projection_alias:
+                    self.get_logger().warn(
+                        'cone detections projection model override '
+                        f'{projection_model}->{reconstruction_model} '
+                        f'because transform source frame is "{transform_source_frame}" '
+                        f'(original "{camera_frame}")'
+                    )
+                    self._warned_cone_projection_alias = True
 
         for det in yolo_detections:
             axis_depth = det.get('depth_m')
@@ -1742,7 +2507,7 @@ class PerceptionNode(Node):
                 fy=fy,
                 cx=cx,
                 cy=cy,
-                model=projection_model,
+                model=reconstruction_model,
             )
             if cam_point is None:
                 continue
@@ -1840,6 +2605,25 @@ class PerceptionNode(Node):
         return px, py, pz
 
     @staticmethod
+    def _rotate_point(rotation: np.ndarray, x: float, y: float, z: float) -> tuple[float, float, float]:
+        point = np.asarray([x, y, z], dtype=np.float64)
+        rotated = rotation @ point
+        return float(rotated[0]), float(rotated[1]), float(rotated[2])
+
+    @staticmethod
+    def _rotate_point_transpose(rotation: np.ndarray, x: float, y: float, z: float) -> tuple[float, float, float]:
+        point = np.asarray([x, y, z], dtype=np.float64)
+        rotated = rotation.T @ point
+        return float(rotated[0]), float(rotated[1]), float(rotated[2])
+
+    def _warn_throttled(self, key: str, message: str) -> None:
+        now_sec = time.monotonic()
+        last_sec = self._last_throttled_log_sec.get(key, -1.0)
+        if (now_sec - last_sec) >= 1.0:
+            self.get_logger().warn(message)
+            self._last_throttled_log_sec[key] = now_sec
+
+    @staticmethod
     def _transform_point_from_pose(pose, x: float, y: float, z: float):
         q = pose.orientation
 
@@ -1892,10 +2676,9 @@ class PerceptionNode(Node):
                 yield 'unknown', cone
 
     def _perf_timer_cb(self):
-        self._perf.log_and_publish(self._evaluator.snapshot())
+        if self._perf is not None and self._evaluator is not None:
+            self._perf.log_and_publish(self._evaluator.snapshot())
         self._publish_per_cone_table()
-        with self._cone_stats_lock:
-            tracked_cones = len(self._cone_stats)
         m = self._latest_cone_metrics
         self.get_logger().info(
             'cone depth eval '
@@ -1903,15 +2686,7 @@ class PerceptionNode(Node):
             f'yolo_det={m.yolo_detections} '
             f'depth_valid={m.yolo_depth_valid} '
             f'gt_proj={m.gt_projected} '
-            f'bbox_matches={m.bbox_matches} '
-            f'cone_id_matches={m.cone_id_matches} '
-            f'axis_mae={self._fmt_opt(m.axis_mae_m)} '
-            f'axis_rmse={self._fmt_opt(m.axis_rmse_m)} '
-            f'axis_bias={self._fmt_opt(m.axis_bias_m)} '
-            f'range_mae={self._fmt_opt(m.range_mae_m)} '
-            f'range_rmse={self._fmt_opt(m.range_rmse_m)} '
-            f'sync_dt_ms={self._fmt_opt(m.sync_dt_ms)} '
-            f'per_cone_tracked={tracked_cones}'
+            f'bbox_matches={m.bbox_matches}'
         )
 
     @staticmethod
@@ -1920,28 +2695,59 @@ class PerceptionNode(Node):
             return 'n/a'
         return f'{value:.4f}'
 
-    def _record_range_rmse_sample(self, gt_range_m: float, ex_m: float, ey_m: float) -> None:
+    def _record_range_rmse_sample(
+        self,
+        source: str,
+        gt_range_m: float,
+        error_m: float,
+        predicted_class_id: Optional[int] = None,
+        ground_truth_class_id: Optional[int] = None,
+    ) -> None:
         if self._range_rmse_analyzer is None:
             return
         self._range_rmse_analyzer.add_sample(
+            source=source,
             gt_range_m=gt_range_m,
-            ex_m=ex_m,
-            ey_m=ey_m,
+            error_m=error_m,
+            predicted_class_id=predicted_class_id,
+            ground_truth_class_id=ground_truth_class_id,
         )
 
-    def _publish_range_rmse_samples(self, samples: list[tuple[float, float, float]]) -> None:
+    def _publish_range_rmse_samples(
+        self,
+        samples: list[tuple[str, float, float, Optional[int], Optional[int]]],
+    ) -> None:
         if not self.cone_plotting_2:
             return
         if not samples:
             return
-        lines = ['gt_range_m,ex_m,ey_m']
-        for gt_range_m, ex_m, ey_m in samples:
-            if not (math.isfinite(gt_range_m) and math.isfinite(ex_m) and math.isfinite(ey_m)):
+        lines = ['source,gt_range_m,error_m,predicted_class_id,ground_truth_class_id']
+        for source, gt_range_m, error_m, predicted_class_id, ground_truth_class_id in samples:
+            if not source:
                 continue
-            lines.append(f'{gt_range_m:.6f},{ex_m:.6f},{ey_m:.6f}')
+            if not (math.isfinite(gt_range_m) and math.isfinite(error_m)):
+                continue
+            predicted_str = '' if predicted_class_id is None else str(int(predicted_class_id))
+            gt_str = '' if ground_truth_class_id is None else str(int(ground_truth_class_id))
+            lines.append(f'{source},{gt_range_m:.6f},{error_m:.6f},{predicted_str},{gt_str}')
         if len(lines) <= 1:
             return
         self._cone_sample_pub.publish(String(data='\n'.join(lines)))
+
+    def _publish_monocular_fit_samples(self, samples: list[MonocularFitSample]) -> None:
+        if not samples:
+            return
+        fieldnames = list(MonocularFitSample.__dataclass_fields__.keys())
+        buffer = io.StringIO()
+        writer = csv.DictWriter(buffer, fieldnames=fieldnames)
+        writer.writeheader()
+        for sample in samples:
+            row = {}
+            for key in fieldnames:
+                value = getattr(sample, key)
+                row[key] = '' if value is None else value
+            writer.writerow(row)
+        self._cone_mono_fit_sample_pub.publish(String(data=buffer.getvalue().strip()))
 
     def _update_range_rmse_plot(self) -> None:
         if self._range_rmse_analyzer is None or self._range_rmse_plot is None:
@@ -1984,13 +2790,13 @@ class PerceptionNode(Node):
         return float(stamp.sec) + float(stamp.nanosec) * 1e-9
 
     @staticmethod
-    def _sanitize_camera_debug(value) -> str:
-        mode = str(value).strip().lower()
-        if mode == 'rect_left':
-            mode = 'left_rect'
-        if mode in {'disparity', 'depth', 'left_rect', 'yolo', 'none'}:
-            return mode
-        return 'none'
+    def _sanitize_camera_debug(value) -> bool:
+        token = str(value).strip().lower()
+        if token in {'', 'false', '0', 'off', 'none', 'no'}:
+            return False
+        if token in {'rect_left', 'left_rect', 'depth', 'disparity', 'yolo'}:
+            return True
+        return token in {'true', '1', 'on', 'yes'}
 
     @staticmethod
     def _sanitize_projection_model(value) -> str:
@@ -2021,6 +2827,22 @@ class PerceptionNode(Node):
             return 'blue'
         return 'unknown'
 
+    @classmethod
+    def _cone_class_name_to_id(cls, value: str) -> int:
+        normalized = cls._normalize_detection_color(value)
+        return int(cls._CONE_CLASS_NAME_TO_ID.get(normalized, cls._CONE_CLASS_NAME_TO_ID['unknown']))
+
+    def _detection_to_class_id(self, det: dict) -> int:
+        class_id = det.get('class_id')
+        if class_id is not None:
+            try:
+                idx = int(class_id)
+            except (TypeError, ValueError):
+                idx = -1
+            if 0 <= idx < len(self.yolo_class_names):
+                return self._cone_class_name_to_id(self.yolo_class_names[idx])
+        return self._cone_class_name_to_id(str(det.get('label', '')))
+
     @staticmethod
     def _resolve_namespaced_output_frame(camera_frame: str, requested_frame: str) -> str:
         requested = str(requested_frame).strip().strip('/')
@@ -2039,6 +2861,48 @@ class PerceptionNode(Node):
             return requested
         return f'{prefix}/{requested}'
 
+    @classmethod
+    def _cone_output_source_frame_candidates(
+        cls,
+        source_frame: str,
+        requested_output_frame: str,
+    ) -> list[str]:
+        source = str(source_frame).strip().strip('/')
+        if not source:
+            return []
+
+        candidates: list[str] = [source]
+        if '/' in source:
+            parts = [p for p in source.split('/') if p]
+            if parts:
+                leaf = parts[-1]
+                if leaf not in candidates:
+                    candidates.append(leaf)
+                namespace_leaf = f'{parts[0]}/{leaf}'
+                if namespace_leaf not in candidates:
+                    candidates.append(namespace_leaf)
+
+            requested = str(requested_output_frame).strip().strip('/')
+            marker = f'/{requested}/' if requested else ''
+            source_with_slashes = f'/{source}/'
+            if marker and marker in source_with_slashes:
+                idx = source_with_slashes.find(marker)
+                prefix = source_with_slashes[1:idx].strip('/')
+                suffix_start = idx + len(marker)
+                suffix = source_with_slashes[suffix_start:-1].strip('/')
+                if prefix and suffix:
+                    prefixed_suffix = f'{prefix}/{suffix}'
+                    if prefixed_suffix not in candidates:
+                        candidates.append(prefixed_suffix)
+
+        expanded = list(candidates)
+        for token in candidates:
+            if token.endswith('_camera'):
+                link_token = token[:-7] + '_link'
+                if link_token not in expanded:
+                    expanded.append(link_token)
+        return expanded
+
     @staticmethod
     def _max_stamp(a, b):
         if (int(a.sec), int(a.nanosec)) >= (int(b.sec), int(b.nanosec)):
@@ -2055,7 +2919,7 @@ class PerceptionNode(Node):
         with self._queue_cv:
             self._running = False
             self._queue_cv.notify_all()
-        if self._worker_thread.is_alive():
+        if self._worker_thread is not None and self._worker_thread.is_alive():
             self._worker_thread.join(timeout=2.0)
         if self._range_rmse_plot is not None:
             self._range_rmse_plot.close()

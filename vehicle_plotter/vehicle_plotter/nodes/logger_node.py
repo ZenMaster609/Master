@@ -132,7 +132,8 @@ class LoggerNode(Node):
             'yolo_inference_ms': float('nan'),
         }
         self._cone_records: List[Dict[str, float]] = []
-        self._cone_range_rmse_samples: List[Dict[str, float]] = []
+        self._cone_range_rmse_samples: List[Dict[str, object]] = []
+        self._monocular_fit_samples: List[Dict[str, object]] = []
         self._cone_slot_rows: List[Optional[Dict[str, object]]] = [None] * self._cone_top_count
 
         if enable_logging:
@@ -199,6 +200,12 @@ class LoggerNode(Node):
             String,
             f'{prefix}/cone_depth_samples',
             self._cone_depth_samples_callback,
+            10,
+        )
+        self._cone_mono_fit_samples_sub = self.create_subscription(
+            String,
+            f'{prefix}/cone_depth_monocular_fit_samples',
+            self._cone_monocular_fit_samples_callback,
             10,
         )
         self._cone_yolo_detections_sub = self.create_subscription(
@@ -502,7 +509,9 @@ class LoggerNode(Node):
 
         start_idx = 0
         first = lines[0].lower().replace(' ', '')
-        if first.startswith('gt_range_m,ex_m,ey_m'):
+        use_new_schema = first.startswith('source,gt_range_m,error_m')
+        use_old_schema = first.startswith('gt_range_m,ex_m,ey_m')
+        if use_new_schema or use_old_schema:
             start_idx = 1
 
         timestamp_sec = float(self.get_clock().now().nanoseconds) * 1e-9
@@ -511,21 +520,67 @@ class LoggerNode(Node):
 
         for line in lines[start_idx:]:
             parts = [part.strip() for part in line.split(',')]
-            if len(parts) < 3:
-                continue
-            gt_range_m = self._parse_float(parts[0])
-            ex_m = self._parse_float(parts[1])
-            ey_m = self._parse_float(parts[2])
-            if not (math.isfinite(gt_range_m) and math.isfinite(ex_m) and math.isfinite(ey_m)):
+            source = 'unknown'
+            gt_range_m = float('nan')
+            error_m = float('nan')
+            predicted_class_id = float('nan')
+            ground_truth_class_id = float('nan')
+            if len(parts) >= 3 and use_new_schema:
+                source = parts[0].strip().lower() or 'unknown'
+                gt_range_m = self._parse_float(parts[1])
+                error_m = self._parse_float(parts[2])
+                if len(parts) >= 5:
+                    predicted_class_id = self._parse_float(parts[3])
+                    ground_truth_class_id = self._parse_float(parts[4])
+            elif len(parts) >= 3:
+                gt_range_m = self._parse_float(parts[0])
+                ex_m = self._parse_float(parts[1])
+                ey_m = self._parse_float(parts[2])
+                error_m = math.hypot(ex_m, ey_m) if math.isfinite(ex_m) and math.isfinite(ey_m) else float('nan')
+                source = 'stereo'
+            if not (math.isfinite(gt_range_m) and math.isfinite(error_m)):
                 continue
             self._cone_range_rmse_samples.append(
                 {
                     'timestamp': timestamp_sec,
+                    'source': source,
                     'gt_range_m': gt_range_m,
-                    'ex_m': ex_m,
-                    'ey_m': ey_m,
+                    'error_m': error_m,
+                    'predicted_class_id': predicted_class_id,
+                    'ground_truth_class_id': ground_truth_class_id,
                 }
             )
+
+    def _cone_monocular_fit_samples_callback(self, msg: String) -> None:
+        payload = str(msg.data).strip()
+        if not payload:
+            return
+        reader = csv.DictReader(payload.splitlines())
+        if reader.fieldnames is None:
+            return
+        for row in reader:
+            if not row:
+                continue
+            parsed: Dict[str, object] = {}
+            for key, value in row.items():
+                if key is None:
+                    continue
+                text = '' if value is None else str(value).strip()
+                if text == '':
+                    parsed[key] = ''
+                    continue
+                lowered = text.lower()
+                if lowered in {'nan', 'n/a', 'none'}:
+                    parsed[key] = ''
+                    continue
+                try:
+                    number = float(text)
+                except ValueError:
+                    parsed[key] = text
+                else:
+                    parsed[key] = number if math.isfinite(number) else ''
+            if parsed:
+                self._monocular_fit_samples.append(parsed)
 
     def _cone_pairs_callback(self, msg: Int32) -> None:
         self._cone_latest_metrics['cone_depth_pairs'] = float(msg.data)
@@ -693,6 +748,7 @@ class LoggerNode(Node):
             if self._run_session is not None:
                 self._save_cone_metrics_csv()
                 self._save_cone_range_rmse_samples_csv()
+                self._save_monocular_fit_samples_csv()
 
             # Auto-generate plots if enabled
             if self._auto_plot and self._run_session is not None:
@@ -713,12 +769,30 @@ class LoggerNode(Node):
         if self._run_session is None or not self._cone_range_rmse_samples:
             return
         out_path = self._run_session.logs_path / 'cone_range_rmse_samples.csv'
-        fieldnames = ['timestamp', 'gt_range_m', 'ex_m', 'ey_m']
+        fieldnames = [
+            'timestamp',
+            'source',
+            'gt_range_m',
+            'error_m',
+            'predicted_class_id',
+            'ground_truth_class_id',
+        ]
         with open(out_path, 'w', newline='') as handle:
             writer = csv.DictWriter(handle, fieldnames=fieldnames)
             writer.writeheader()
             writer.writerows(self._cone_range_rmse_samples)
         self._safe_log_info(f'Saved cone range RMSE sample log: {out_path}')
+
+    def _save_monocular_fit_samples_csv(self) -> None:
+        if self._run_session is None or not self._monocular_fit_samples:
+            return
+        out_path = self._run_session.logs_path / 'monocular_fit_samples.csv'
+        fieldnames = list(self._monocular_fit_samples[0].keys())
+        with open(out_path, 'w', newline='') as handle:
+            writer = csv.DictWriter(handle, fieldnames=fieldnames)
+            writer.writeheader()
+            writer.writerows(self._monocular_fit_samples)
+        self._safe_log_info(f'Saved monocular fit sample log: {out_path}')
 
     def _generate_offline_plots(self) -> None:
         """Generate offline plots from logged data."""

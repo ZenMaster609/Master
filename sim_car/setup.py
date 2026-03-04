@@ -31,6 +31,7 @@ setup(
     + walk_data_files('meshes', os.path.join('share', package_name, 'meshes'))
     + walk_data_files('materials', os.path.join('share', package_name, 'materials'))
     + walk_data_files('models', os.path.join('share', package_name, 'models'))
+    + walk_data_files('rviz', os.path.join('share', package_name, 'rviz'))
     + walk_data_files('yolo', os.path.join('share', package_name, 'yolo')),
     install_requires=['setuptools'],
     zip_safe=True,
@@ -57,6 +58,7 @@ setup(
             'pitot_dynamic_pressure_node = sim_car.pitot_dynamic_pressure_node:main',
             'perception_node = sim_car.perception_node:main',
             'boundary_planner_node = sim_car.boundary_planner_node:main',
+            'pair_midpoint_planner_node = sim_car.pair_midpoint_planner_node:main',
         ],
     },
 )

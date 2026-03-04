@@ -11,8 +11,17 @@
 
     <!-- WORLD SETINGS -->
     <scene>
+      <background>0.68 0.80 0.94 1.0</background>
       <ambient>1.0 1.0 1.0 1.0</ambient>
       <shadows>false</shadows>
+      <sky>
+        <clouds>
+          <speed>6</speed>
+          <direction>0.0</direction>
+          <humidity>0.3</humidity>
+          <mean_size>0.4</mean_size>
+        </clouds>
+      </sky>
     </scene>
 
     <spherical_coordinates>
@@ -50,6 +59,101 @@
       <uri>model://small_track</uri>
       <pose>0 0 0.5 0 0 0</pose>
     </include>
+
+    <model name='small_track_backdrop'>
+      <static>true</static>
+      <link name='visuals'>
+        <visual name='front_wall'>
+          <pose>35 0 13 0 0 0</pose>
+          <geometry>
+            <box>
+              <size>0.2 60 26</size>
+            </box>
+          </geometry>
+          <material>
+            <ambient>0.40 0.56 0.78 1</ambient>
+            <diffuse>0.40 0.56 0.78 1</diffuse>
+            <specular>0.01 0.01 0.01 1</specular>
+          </material>
+          <cast_shadows>false</cast_shadows>
+        </visual>
+
+        <visual name='rear_wall'>
+          <pose>-35 0 13 0 0 0</pose>
+          <geometry>
+            <box>
+              <size>0.2 60 26</size>
+            </box>
+          </geometry>
+          <material>
+            <ambient>0.46 0.60 0.70 1</ambient>
+            <diffuse>0.46 0.60 0.70 1</diffuse>
+            <specular>0.01 0.01 0.01 1</specular>
+          </material>
+          <cast_shadows>false</cast_shadows>
+        </visual>
+
+        <visual name='left_wall'>
+          <pose>0 30 13 0 0 0</pose>
+          <geometry>
+            <box>
+              <size>70 0.2 26</size>
+            </box>
+          </geometry>
+          <material>
+            <ambient>0.34 0.52 0.40 1</ambient>
+            <diffuse>0.34 0.52 0.40 1</diffuse>
+            <specular>0.01 0.01 0.01 1</specular>
+          </material>
+          <cast_shadows>false</cast_shadows>
+        </visual>
+
+        <visual name='right_wall'>
+          <pose>0 -30 13 0 0 0</pose>
+          <geometry>
+            <box>
+              <size>70 0.2 26</size>
+            </box>
+          </geometry>
+          <material>
+            <ambient>0.34 0.52 0.40 1</ambient>
+            <diffuse>0.34 0.52 0.40 1</diffuse>
+            <specular>0.01 0.01 0.01 1</specular>
+          </material>
+          <cast_shadows>false</cast_shadows>
+        </visual>
+
+        <visual name='landmark_tower_left'>
+          <pose>18 22 10 0 0 0</pose>
+          <geometry>
+            <box>
+              <size>8 8 20</size>
+            </box>
+          </geometry>
+          <material>
+            <ambient>0.62 0.46 0.30 1</ambient>
+            <diffuse>0.62 0.46 0.30 1</diffuse>
+            <specular>0.02 0.02 0.02 1</specular>
+          </material>
+          <cast_shadows>false</cast_shadows>
+        </visual>
+
+        <visual name='landmark_tower_right'>
+          <pose>-14 -22 8 0 0 0</pose>
+          <geometry>
+            <box>
+              <size>7 7 16</size>
+            </box>
+          </geometry>
+          <material>
+            <ambient>0.58 0.44 0.34 1</ambient>
+            <diffuse>0.58 0.44 0.34 1</diffuse>
+            <specular>0.02 0.02 0.02 1</specular>
+          </material>
+          <cast_shadows>false</cast_shadows>
+        </visual>
+      </link>
+    </model>
 
   </world>
 </sdf>

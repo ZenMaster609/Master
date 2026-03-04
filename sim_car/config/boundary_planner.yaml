@@ -10,41 +10,47 @@ boundary_planner_node:
     gating:
       min_confidence: 0.35
       x_min_m: 0.5
-      x_max_m: 20.0
+      x_max_m: 12.0
       y_abs_max_m: 8.0
-      max_cone_age_s: 0.25
-      hold_last_valid_s: 0.50
+      max_cone_age_s: 20.0
+      hold_last_valid_s: 2.00
+      startup_delay_s: 10.0
 
     fitting:
       fit_model: "poly2"
-      min_points_per_side: 4
-      max_points_per_side: 15
+      min_points_per_side: 2
+      max_points_per_side: 5
+      allow_single_point_fallback: true
       use_ransac: true
       ransac_iters: 60
-      ransac_inlier_thresh_m: 0.25
+      ransac_inlier_thresh_m: 0.35
 
     path_generation:
-      horizon_m: 15.0
-      sample_count: 25
+      preview_x_max_m: 12.0
+      preview_horizon_m: 9.0
+      control_horizon_m: 5.5
+      horizon_m: 6.5
+      sample_count: 21
       track_width_m: 3.0
       side_offset_m: 0.0
 
     pure_pursuit:
-      lookahead_min_m: 2.5
-      lookahead_gain: 0.6
-      steering_limit_rad: 0.5
+      lookahead_min_m: 3.0
+      lookahead_gain: 0.35
+      steering_limit_rad: 0.32
       wheelbase_m: 1.6
-      stop_if_no_path: true
+      stop_if_no_path: false
 
     speed_control:
-      speed_min_mps: 1.5
-      speed_max_mps: 8.0
-      curvature_speed_gain: 3.0
-      lowpass_speed_alpha: 0.25
+      speed_min_mps: 1.0
+      speed_max_mps: 1.8
+      curvature_speed_gain: 4.0
+      lowpass_speed_alpha: 0.15
 
     debug:
       publish_path: true
       publish_markers: true
+      show_cone_counts_in_status: true
       log_throttle_s: 1.0
 
     frames:
@@ -54,5 +60,21 @@ boundary_planner_node:
     colors:
       left_boundary: ["blue"]
       right_boundary: ["yellow"]
+      split_unmapped_by_y_sign: true
+      enforce_expected_side_sign: false
+      side_sign_min_abs_y_m: 0.10
+
+    cone_axes:
+      forward_axis: "x"
+      lateral_axis: "y"
+      forward_sign: 1.0
+      lateral_sign: 1.0
+
+    validation:
+      reject_crossing_paths: false
+      min_boundary_separation_m: 0.20
+      max_history_frames: 8
+      consistency_horizon_m: 6.0
+      max_centerline_jump_m: 0.0
 
     planner_rate_hz: 30.0

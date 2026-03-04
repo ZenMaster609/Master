@@ -2,6 +2,7 @@
 
 from .debug_view import CameraDebugPublisher
 from .eval_metrics import StereoEvalMetrics, StereoEvaluator
+from .monocular_depth import estimate_axis_depth_from_bbox_height
 from .perf import PerfLogger
 from .stereo_pipeline import StereoPipeline, StereoPipelineConfig, StereoPipelineOutput
 from .yolo_onnx import YoloDetection, YoloOnnxDetector
@@ -12,6 +13,7 @@ __all__ = [
     'PerfLogger',
     'StereoEvalMetrics',
     'StereoEvaluator',
+    'estimate_axis_depth_from_bbox_height',
     'StereoPipeline',
     'StereoPipelineConfig',
     'StereoPipelineOutput',

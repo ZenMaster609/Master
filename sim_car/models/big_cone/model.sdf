@@ -24,10 +24,12 @@
       </visual>
       <collision name='collision'>
         <max_contacts>3</max_contacts>
+        <pose frame=''>0 0 0.255 0 0 0</pose>
         <geometry>
-          <mesh>
-            <uri>file://cone_big.dae</uri>
-          </mesh>
+          <cylinder>
+            <radius>0.14</radius>
+            <length>0.51</length>
+          </cylinder>
         </geometry>
       </collision>
     </link>

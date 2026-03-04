@@ -72,6 +72,8 @@ class StereoPipeline:
         self._map_r1 = None
         self._map_r2 = None
         self._rectified_size: Optional[Tuple[int, int]] = None
+        self._rectified_p1 = None
+        self._rectify_r1 = None
         self._calib_fx: Optional[float] = None
         self._calib_baseline_m: Optional[float] = None
         self._warned_no_rectification = False
@@ -84,6 +86,39 @@ class StereoPipeline:
     def backend(self) -> str:
         """Current disparity backend name."""
         return self._backend
+
+    def build_rectified_left_camera_info(self, left_info: Optional[CameraInfo]) -> Optional[CameraInfo]:
+        """Return left CameraInfo updated to match the rectified image geometry."""
+        if left_info is None or not self._rectify_ready or self._rectified_p1 is None or self._rectified_size is None:
+            return left_info
+
+        rectified = CameraInfo()
+        rectified.header = left_info.header
+        rectified.height = int(self._rectified_size[1])
+        rectified.width = int(self._rectified_size[0])
+        rectified.distortion_model = left_info.distortion_model
+        rectified.d = [0.0] * len(left_info.d)
+        rectified.r = [1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0]
+        rectified.k = [
+            float(self._rectified_p1[0, 0]), 0.0, float(self._rectified_p1[0, 2]),
+            0.0, float(self._rectified_p1[1, 1]), float(self._rectified_p1[1, 2]),
+            0.0, 0.0, 1.0,
+        ]
+        rectified.p = [
+            float(self._rectified_p1[0, 0]), 0.0, float(self._rectified_p1[0, 2]), float(self._rectified_p1[0, 3]),
+            0.0, float(self._rectified_p1[1, 1]), float(self._rectified_p1[1, 2]), float(self._rectified_p1[1, 3]),
+            0.0, 0.0, 1.0, 0.0,
+        ]
+        rectified.binning_x = left_info.binning_x
+        rectified.binning_y = left_info.binning_y
+        rectified.roi = left_info.roi
+        return rectified
+
+    def left_rectification_rotation(self) -> Optional[np.ndarray]:
+        """Return the left-camera rectification rotation matrix, if available."""
+        if self._rectify_r1 is None:
+            return None
+        return self._rectify_r1.copy()
 
     def process(
         self,
@@ -379,6 +414,8 @@ class StereoPipeline:
             k_right, d_right, r2, p2, image_size, cv2.CV_16SC2
         )
         self._rectified_size = image_size
+        self._rectified_p1 = p1.copy()
+        self._rectify_r1 = r1.copy()
         self._rectify_ready = True
         return p1, p2
 

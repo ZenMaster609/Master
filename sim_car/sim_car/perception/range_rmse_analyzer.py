@@ -1,10 +1,16 @@
-"""Range-binned RMSE analyzer for cone depth position errors."""
+"""Range-binned RMSE analyzer for cone position errors."""
+
+from __future__ import annotations
 
 from dataclasses import dataclass
 import math
 import threading
+from typing import Dict, Optional
 
 import numpy as np
+
+
+_SOURCE_ORDER = ('monocular', 'stereo', 'lidar')
 
 
 @dataclass(frozen=True)
@@ -12,13 +18,16 @@ class RangeRMSEBinStats:
     """Binned RMSE summary over fixed radial distance bins."""
 
     bin_centers: np.ndarray
-    rmse_x: np.ndarray
-    rmse_y: np.ndarray
-    counts: np.ndarray
+    total_counts: np.ndarray
+    source_rmse: Dict[str, np.ndarray]
+    correct_class_count: int
+    incorrect_class_count: int
 
 
 class RangeRMSEAnalyzer:
     """Accumulate cone error samples and compute fixed range-binned RMSE."""
+
+    SOURCE_ORDER = _SOURCE_ORDER
 
     def __init__(
         self,
@@ -34,77 +43,115 @@ class RangeRMSEAnalyzer:
         self.num_bins = max(1, int(round(span / self.bin_width_m)))
         self._bin_centers = self.range_min_m + (np.arange(self.num_bins, dtype=np.float32) + 0.5) * self.bin_width_m
 
-        self.gt_ranges = []
-        self.ex_list = []
-        self.ey_list = []
+        self._samples: list[tuple[str, float, float]] = []
+        self.correct_class_count = 0
+        self.incorrect_class_count = 0
         self._lock = threading.Lock()
 
-    def add_sample(self, gt_range_m: float, ex_m: float, ey_m: float) -> None:
+    def add_sample(
+        self,
+        source: str,
+        gt_range_m: float,
+        error_m: float,
+        predicted_class_id: Optional[int] = None,
+        ground_truth_class_id: Optional[int] = None,
+    ) -> None:
         """Store one valid detection sample for later binning."""
-        if not (
-            math.isfinite(gt_range_m)
-            and math.isfinite(ex_m)
-            and math.isfinite(ey_m)
-        ):
+        if not math.isfinite(gt_range_m) or not math.isfinite(error_m):
             return
 
+        source_name = str(source).strip().lower()
+        if not source_name:
+            return
+
+        in_range = self.range_min_m <= float(gt_range_m) <= self.range_max_m
         with self._lock:
-            self.gt_ranges.append(float(gt_range_m))
-            self.ex_list.append(float(ex_m))
-            self.ey_list.append(float(ey_m))
+            self._samples.append((source_name, float(gt_range_m), float(error_m)))
+            if (
+                in_range
+                and predicted_class_id is not None
+                and ground_truth_class_id is not None
+            ):
+                if int(predicted_class_id) == int(ground_truth_class_id):
+                    self.correct_class_count += 1
+                else:
+                    self.incorrect_class_count += 1
 
     def compute_binned_rmse(self) -> RangeRMSEBinStats:
-        """Compute RMSE_x/RMSE_y and counts for fixed 0-20m, 1m bins."""
-        rmse_x = np.full(self.num_bins, np.nan, dtype=np.float32)
-        rmse_y = np.full(self.num_bins, np.nan, dtype=np.float32)
-        counts = np.zeros(self.num_bins, dtype=np.int32)
+        """Compute combined RMSE and counts for fixed 0-20m, 1m bins."""
+        total_counts = np.zeros(self.num_bins, dtype=np.int32)
 
         with self._lock:
-            if not self.gt_ranges:
-                return RangeRMSEBinStats(
-                    bin_centers=self._bin_centers,
-                    rmse_x=rmse_x,
-                    rmse_y=rmse_y,
-                    counts=counts,
-                )
-            gt = np.asarray(self.gt_ranges, dtype=np.float32)
-            ex = np.asarray(self.ex_list, dtype=np.float32)
-            ey = np.asarray(self.ey_list, dtype=np.float32)
+            samples = list(self._samples)
+            correct_class_count = int(self.correct_class_count)
+            incorrect_class_count = int(self.incorrect_class_count)
+
+        present_sources = self._ordered_sources({sample[0] for sample in samples})
+        source_rmse = {
+            source: np.full(self.num_bins, np.nan, dtype=np.float32)
+            for source in present_sources
+        }
+
+        if not samples:
+            return RangeRMSEBinStats(
+                bin_centers=self._bin_centers,
+                total_counts=total_counts,
+                source_rmse=source_rmse,
+                correct_class_count=correct_class_count,
+                incorrect_class_count=incorrect_class_count,
+            )
+
+        gt = np.asarray([sample[1] for sample in samples], dtype=np.float32)
+        error = np.asarray([sample[2] for sample in samples], dtype=np.float32)
+        source_arr = np.asarray([sample[0] for sample in samples], dtype=object)
 
         valid = (
             np.isfinite(gt)
-            & np.isfinite(ex)
-            & np.isfinite(ey)
+            & np.isfinite(error)
             & (gt >= self.range_min_m)
             & (gt <= self.range_max_m)
         )
         if not np.any(valid):
             return RangeRMSEBinStats(
                 bin_centers=self._bin_centers,
-                rmse_x=rmse_x,
-                rmse_y=rmse_y,
-                counts=counts,
+                total_counts=total_counts,
+                source_rmse=source_rmse,
+                correct_class_count=correct_class_count,
+                incorrect_class_count=incorrect_class_count,
             )
 
         gt_valid = gt[valid]
-        ex_valid = ex[valid]
-        ey_valid = ey[valid]
+        error_valid = error[valid]
+        source_valid = source_arr[valid]
 
-        # Clamp exact upper bound (20.0m) into the final [19, 20] bin.
         bin_indices = np.floor((gt_valid - self.range_min_m) / self.bin_width_m).astype(np.int32)
         bin_indices = np.clip(bin_indices, 0, self.num_bins - 1)
 
-        counts = np.bincount(bin_indices, minlength=self.num_bins).astype(np.int32)
-        ex_sq_sum = np.bincount(bin_indices, weights=np.square(ex_valid), minlength=self.num_bins)
-        ey_sq_sum = np.bincount(bin_indices, weights=np.square(ey_valid), minlength=self.num_bins)
+        total_counts = np.bincount(bin_indices, minlength=self.num_bins).astype(np.int32)
 
-        non_empty = counts > 0
-        rmse_x[non_empty] = np.sqrt(ex_sq_sum[non_empty] / counts[non_empty]).astype(np.float32)
-        rmse_y[non_empty] = np.sqrt(ey_sq_sum[non_empty] / counts[non_empty]).astype(np.float32)
+        for source in self._ordered_sources(set(source_valid.tolist())):
+            mask = source_valid == source
+            if not np.any(mask):
+                continue
+            source_bins = bin_indices[mask]
+            source_error = error_valid[mask]
+            counts = np.bincount(source_bins, minlength=self.num_bins).astype(np.int32)
+            error_sq_sum = np.bincount(source_bins, weights=np.square(source_error), minlength=self.num_bins)
+            rmse = np.full(self.num_bins, np.nan, dtype=np.float32)
+            non_empty = counts > 0
+            rmse[non_empty] = np.sqrt(error_sq_sum[non_empty] / counts[non_empty]).astype(np.float32)
+            source_rmse[source] = rmse
 
         return RangeRMSEBinStats(
             bin_centers=self._bin_centers,
-            rmse_x=rmse_x,
-            rmse_y=rmse_y,
-            counts=counts,
+            total_counts=total_counts,
+            source_rmse=source_rmse,
+            correct_class_count=correct_class_count,
+            incorrect_class_count=incorrect_class_count,
         )
+
+    @classmethod
+    def _ordered_sources(cls, sources: set[str]) -> list[str]:
+        ordered = [source for source in cls.SOURCE_ORDER if source in sources]
+        extras = sorted(source for source in sources if source not in cls.SOURCE_ORDER)
+        return ordered + extras
