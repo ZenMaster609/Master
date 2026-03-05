@@ -80,12 +80,6 @@ def generate_launch_description():
         description='Enable live plotting'
     )
 
-    cone_plotting_arg = DeclareLaunchArgument(
-        'cone_plotting',
-        default_value='false',
-        description='Enable live cone depth plotting'
-    )
-
     cone_plotting_2_arg = DeclareLaunchArgument(
         'cone_plotting_2',
         default_value='false',
@@ -164,12 +158,6 @@ def generate_launch_description():
         description='Path to RViz display config file'
     )
 
-    perf_log_hz_arg = DeclareLaunchArgument(
-        'perf_log_hz',
-        default_value='0.0',
-        description='Perception debug/eval publish frequency in Hz'
-    )
-
     perception_queue_size_arg = DeclareLaunchArgument(
         'perception_queue_size',
         default_value='8',
@@ -194,12 +182,6 @@ def generate_launch_description():
         description='Enable LiDAR cone detection/evaluation node'
     )
 
-    lidar_cone_plotting_arg = DeclareLaunchArgument(
-        'lidar_cone_plotting',
-        default_value='false',
-        description='Enable live cone depth plotting for LiDAR eval stream'
-    )
-
     lidar_cone_plotting_2_arg = DeclareLaunchArgument(
         'lidar_cone_plotting_2',
         default_value='false',
@@ -209,7 +191,7 @@ def generate_launch_description():
     camera_debug_arg = DeclareLaunchArgument(
         'camera_debug',
         default_value='true',
-        description='Enable perception debug image stream (old mode values still act as enabled for compatibility)'
+        description='Enable perception debug image stream'
     )
 
     camera_debug_n_frames_arg = DeclareLaunchArgument(
@@ -258,18 +240,6 @@ def generate_launch_description():
         'yolo_prefer_cuda',
         default_value='true',
         description='Prefer OpenCV DNN CUDA backend for YOLO ONNX'
-    )
-
-    cone_eval_track_match_threshold_arg = DeclareLaunchArgument(
-        'cone_eval_track_match_threshold_m',
-        default_value='1.5',
-        description='Strict cone-to-track match radius in meters'
-    )
-
-    cone_eval_track_match_relaxed_threshold_arg = DeclareLaunchArgument(
-        'cone_eval_track_match_relaxed_threshold_m',
-        default_value='3.0',
-        description='Relaxed cone-to-track match radius in meters (ambiguity-guarded fallback)'
     )
 
     opencv_pythonpath_arg = DeclareLaunchArgument(
@@ -366,12 +336,10 @@ def generate_launch_description():
         launch_arguments={
             'adapter': 'gazebo',
             'enable_plot': LaunchConfiguration('plotting'),
-            'enable_cone_plot': LaunchConfiguration('cone_plotting'),
+            'enable_cone_plot': 'false',
             'enable_log': PythonExpression([
                 "'true' if ('",
                 LaunchConfiguration('logging'),
-                "'.lower() == 'true' or '",
-                LaunchConfiguration('cone_plotting'),
                 "'.lower() == 'true' or '",
                 LaunchConfiguration('cone_plotting_2'),
                 "'.lower() == 'true') else 'false'"
@@ -389,8 +357,6 @@ def generate_launch_description():
     lidar_plotter_launch = GroupAction(
         condition=IfCondition(PythonExpression([
             "'",
-            LaunchConfiguration('lidar_cone_plotting'),
-            "'.lower() == 'true' or '",
             LaunchConfiguration('lidar_cone_plotting_2'),
             "'.lower() == 'true'"
         ])),
@@ -403,12 +369,10 @@ def generate_launch_description():
                 launch_arguments={
                     'adapter': 'gazebo',
                     'enable_plot': 'false',
-                    'enable_cone_plot': LaunchConfiguration('lidar_cone_plotting'),
+                    'enable_cone_plot': 'false',
                     'enable_log': PythonExpression([
                         "'true' if ('",
                         LaunchConfiguration('logging'),
-                        "'.lower() == 'true' or '",
-                        LaunchConfiguration('lidar_cone_plotting'),
                         "'.lower() == 'true' or '",
                         LaunchConfiguration('lidar_cone_plotting_2'),
                         "'.lower() == 'true') else 'false'"
@@ -479,11 +443,12 @@ def generate_launch_description():
         ]))
     )
 
-    perception_node = Node(
+    stereo_perception_node = Node(
         package='sim_car',
-        executable='perception_node',
+        executable='stereo_perception_node',
         name='perception_node',
         output='screen',
+        condition=IfCondition(PythonExpression(["'", LaunchConfiguration('stereo'), "'.lower() == 'true'"])),
         additional_env={
             'PYTHONNOUSERSITE': '1',
             'PYTHONPATH': [
@@ -510,10 +475,6 @@ def generate_launch_description():
             'right_image_topic': PythonExpression(["'", topic_prefix, "' + '/stereo/right/image_raw'"]),
             'left_camera_info_topic': PythonExpression(["'", topic_prefix, "' + '/stereo/left/camera_info'"]),
             'right_camera_info_topic': PythonExpression(["'", topic_prefix, "' + '/stereo/right/camera_info'"]),
-            'stereo_enabled': ParameterValue(
-                LaunchConfiguration('stereo'),
-                value_type=bool,
-            ),
             'monocular_cone_height_m': 0.3034,
             'monocular_bbox_height_offset_px': ParameterValue(
                 LaunchConfiguration('monocular_bbox_height_offset_px'),
@@ -525,14 +486,12 @@ def generate_launch_description():
             'cone_detections_frame': 'base_footprint',
             'camera_debug': ParameterValue(
                 LaunchConfiguration('camera_debug'),
-                value_type=str,
+                value_type=bool,
             ),
             'camera_debug_n_frames': ParameterValue(
                 LaunchConfiguration('camera_debug_n_frames'),
                 value_type=int,
             ),
-            'planner_path_topic': '/sim/planner/pair_midpoint_path',
-            'planner_markers_topic': '/sim/planner/pair_midpoint_markers',
             'camera_debug_scale': 0.5,
             'camera_debug_mono': True,
             'calibration_file': PathJoinSubstitution([sim_car_share, 'config', 'stereo_calibration.yaml']),
@@ -558,17 +517,92 @@ def generate_launch_description():
                 LaunchConfiguration('yolo_prefer_cuda'),
                 value_type=bool,
             ),
-            'cone_eval_track_match_threshold_m': ParameterValue(
-                LaunchConfiguration('cone_eval_track_match_threshold_m'),
+            'queue_size': ParameterValue(
+                LaunchConfiguration('perception_queue_size'),
+                value_type=int,
+            ),
+            'prefer_cuda': ParameterValue(
+                LaunchConfiguration('cuda'),
+                value_type=bool,
+            ),
+            # Gazebo cameras can be phase-shifted; allow a bit more slack so rectified outputs stay live.
+            'max_time_diff_sec': 0.08,
+        }],
+    )
+
+    mono_perception_node = Node(
+        package='sim_car',
+        executable='mono_perception_node',
+        name='perception_node',
+        output='screen',
+        condition=IfCondition(PythonExpression(["'", LaunchConfiguration('stereo'), "'.lower() != 'true'"])),
+        additional_env={
+            'PYTHONNOUSERSITE': '1',
+            'PYTHONPATH': [
+                LaunchConfiguration('opencv_pythonpath'),
+                ':',
+                LaunchConfiguration('yolo_ultralytics_pythonpath'),
+                ':',
+                EnvironmentVariable('PYTHONPATH', default_value=''),
+            ],
+            'LD_LIBRARY_PATH': [
+                LaunchConfiguration('opencv_ld_library_path'),
+                ':',
+                LaunchConfiguration('cudnn_ld_library_path'),
+                ':',
+                EnvironmentVariable('LD_LIBRARY_PATH', default_value=''),
+            ],
+        },
+        parameters=[{
+            'use_sim_time': ParameterValue(
+                LaunchConfiguration('use_sim_time'),
+                value_type=bool,
+            ),
+            'left_image_topic': PythonExpression(["'", topic_prefix, "' + '/stereo/left/image_raw'"]),
+            'right_image_topic': PythonExpression(["'", topic_prefix, "' + '/stereo/right/image_raw'"]),
+            'left_camera_info_topic': PythonExpression(["'", topic_prefix, "' + '/stereo/left/camera_info'"]),
+            'right_camera_info_topic': PythonExpression(["'", topic_prefix, "' + '/stereo/right/camera_info'"]),
+            'monocular_cone_height_m': 0.3034,
+            'monocular_bbox_height_offset_px': ParameterValue(
+                LaunchConfiguration('monocular_bbox_height_offset_px'),
                 value_type=float,
             ),
-            'cone_eval_track_match_relaxed_threshold_m': ParameterValue(
-                LaunchConfiguration('cone_eval_track_match_relaxed_threshold_m'),
+            'eval_topic_prefix': PythonExpression(["'", topic_prefix, "' + '/stereo/eval'"]),
+            'camera_debug_topic': PythonExpression(["'", topic_prefix, "' + '/stereo/camera_debug'"]),
+            'cone_detections_topic': PythonExpression(["'", topic_prefix, "' + '/stereo/perception/cones_3d'"]),
+            'cone_detections_frame': 'base_footprint',
+            'camera_debug': ParameterValue(
+                LaunchConfiguration('camera_debug'),
+                value_type=bool,
+            ),
+            'camera_debug_n_frames': ParameterValue(
+                LaunchConfiguration('camera_debug_n_frames'),
+                value_type=int,
+            ),
+            'camera_debug_scale': 0.5,
+            'camera_debug_mono': True,
+            'calibration_file': PathJoinSubstitution([sim_car_share, 'config', 'stereo_calibration.yaml']),
+            'baseline_m': 0.12,
+            'yolo_enabled': ParameterValue(
+                LaunchConfiguration('yolo_enabled'),
+                value_type=bool,
+            ),
+            'yolo_model_path': LaunchConfiguration('yolo_model_path'),
+            'yolo_input_size': ParameterValue(
+                LaunchConfiguration('yolo_input_size'),
+                value_type=int,
+            ),
+            'yolo_conf_threshold': ParameterValue(
+                LaunchConfiguration('yolo_conf_threshold'),
                 value_type=float,
             ),
-            'perf_log_hz': ParameterValue(
-                LaunchConfiguration('perf_log_hz'),
+            'yolo_iou_threshold': ParameterValue(
+                LaunchConfiguration('yolo_iou_threshold'),
                 value_type=float,
+            ),
+            'yolo_prefer_cuda': ParameterValue(
+                LaunchConfiguration('yolo_prefer_cuda'),
+                value_type=bool,
             ),
             'queue_size': ParameterValue(
                 LaunchConfiguration('perception_queue_size'),
@@ -578,12 +612,32 @@ def generate_launch_description():
                 LaunchConfiguration('cuda'),
                 value_type=bool,
             ),
+            'max_time_diff_sec': 0.08,
+        }],
+    )
+
+    camera_cone_evaluator_node = Node(
+        package='sim_car',
+        executable='cone_evaluator_node',
+        name='camera_cone_evaluator_node',
+        output='screen',
+        parameters=[{
+            'use_sim_time': ParameterValue(
+                LaunchConfiguration('use_sim_time'),
+                value_type=bool,
+            ),
+            'predicted_cones_topic': PythonExpression(["'", topic_prefix, "' + '/stereo/perception/cones_3d'"]),
+            'ground_truth_cones_topic': '/ground_truth/cones',
+            'eval_topic_prefix': PythonExpression(["'", topic_prefix, "' + '/stereo/eval'"]),
+            'source_name': PythonExpression([
+                "'stereo' if '",
+                LaunchConfiguration('stereo'),
+                "'.lower() == 'true' else 'monocular'"
+            ]),
             'cone_plotting_2': ParameterValue(
                 LaunchConfiguration('cone_plotting_2'),
                 value_type=bool,
             ),
-            # Gazebo cameras can be phase-shifted; allow a bit more slack so rectified outputs stay live.
-            'max_time_diff_sec': 0.08,
         }],
     )
 
@@ -599,19 +653,29 @@ def generate_launch_description():
                 value_type=bool,
             ),
             'scan_topic': PythonExpression(["'", topic_prefix, "' + '/lidar'"]),
-            'eval_topic_prefix': PythonExpression(["'", topic_prefix, "' + '/lidar/eval'"]),
             'cone_detections_topic': PythonExpression(["'", topic_prefix, "' + '/lidar/perception/cones_3d'"]),
             'cone_detections_frame': 'base_footprint',
+        }],
+    )
+
+    lidar_cone_evaluator_node = Node(
+        package='sim_car',
+        executable='cone_evaluator_node',
+        name='lidar_cone_evaluator_node',
+        output='screen',
+        condition=IfCondition(LaunchConfiguration('lidar_enabled')),
+        parameters=[{
+            'use_sim_time': ParameterValue(
+                LaunchConfiguration('use_sim_time'),
+                value_type=bool,
+            ),
+            'predicted_cones_topic': PythonExpression(["'", topic_prefix, "' + '/lidar/perception/cones_3d'"]),
             'ground_truth_cones_topic': '/ground_truth/cones',
-            'ground_truth_track_topic': '/ground_truth/track',
-            'cone_eval_odom_topic': '/sim/odom',
+            'eval_topic_prefix': PythonExpression(["'", topic_prefix, "' + '/lidar/eval'"]),
+            'source_name': 'lidar',
             'cone_plotting_2': ParameterValue(
                 LaunchConfiguration('lidar_cone_plotting_2'),
                 value_type=bool,
-            ),
-            'perf_log_hz': ParameterValue(
-                LaunchConfiguration('perf_log_hz'),
-                value_type=float,
             ),
         }],
     )
@@ -697,7 +761,6 @@ def generate_launch_description():
         spawn_z_arg,
         spawn_yaw_arg,
         plotting_arg,
-        cone_plotting_arg,
         cone_plotting_2_arg,
         logging_arg,
         close_plots_on_shutdown_arg,
@@ -711,12 +774,10 @@ def generate_launch_description():
         planner_arg,
         rviz_arg,
         rviz_config_arg,
-        perf_log_hz_arg,
         perception_queue_size_arg,
         cuda_arg,
         stereo_arg,
         lidar_enabled_arg,
-        lidar_cone_plotting_arg,
         lidar_cone_plotting_2_arg,
         camera_debug_arg,
         camera_debug_n_frames_arg,
@@ -727,8 +788,6 @@ def generate_launch_description():
         yolo_conf_threshold_arg,
         yolo_iou_threshold_arg,
         yolo_prefer_cuda_arg,
-        cone_eval_track_match_threshold_arg,
-        cone_eval_track_match_relaxed_threshold_arg,
         opencv_pythonpath_arg,
         opencv_ld_library_path_arg,
         cudnn_ld_library_path_arg,
@@ -741,8 +800,11 @@ def generate_launch_description():
         lidar_plotter_launch,
         throttle_bridge_node,
         steering_bridge_node,
-        perception_node,
+        stereo_perception_node,
+        mono_perception_node,
+        camera_cone_evaluator_node,
         lidar_node,
+        lidar_cone_evaluator_node,
         boundary_planner_node,
         pair_midpoint_planner_node,
         camera_debug_viewer_node,
