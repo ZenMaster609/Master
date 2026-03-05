@@ -214,6 +214,10 @@ def _launch_simulation(context, *args, **kwargs):
         sensor_config,
         topics=[f'{topic_prefix}/odom', '/sim/odom', '/sim/raw/odom'],
     )
+    lidar_enabled = _any_signal_enabled(
+        sensor_config,
+        topics=[f'{topic_prefix}/lidar', '/sim/lidar', '/sim/raw/lidar'],
+    )
 
     bridge_args = [
         f'{topic_prefix}/joint_states@sensor_msgs/msg/JointState[gz.msgs.Model',
@@ -229,6 +233,8 @@ def _launch_simulation(context, *args, **kwargs):
         bridge_args.append(f'{topic_prefix}/imu@sensor_msgs/msg/Imu[gz.msgs.IMU')
     if navsat_enabled:
         bridge_args.append(f'{topic_prefix}/navsat@sensor_msgs/msg/NavSatFix[gz.msgs.NavSat')
+    if lidar_enabled:
+        bridge_args.append(f'{topic_prefix}/lidar@sensor_msgs/msg/LaserScan[gz.msgs.LaserScan')
 
     bridge = Node(
         package='ros_gz_bridge',

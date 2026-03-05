@@ -74,6 +74,7 @@ class LoggerNode(Node):
         self.declare_parameter('adapter', 'gazebo')  # Determines directory prefix
         self.declare_parameter('auto_plot_on_shutdown', True)
         self.declare_parameter('cone_eval_topic', '/sim/stereo/eval/cone_depth_per_cone')
+        self.declare_parameter('cone_log_suffix', '')
 
         # Get parameters
         self._log_format = self.get_parameter('format').value
@@ -90,6 +91,10 @@ class LoggerNode(Node):
         self._auto_plot = self.get_parameter('auto_plot_on_shutdown').value
         self._cone_eval_topic = str(self.get_parameter('cone_eval_topic').value).strip()
         self._cone_metrics_prefix = self._derive_cone_metrics_prefix(self._cone_eval_topic)
+        self._cone_log_suffix = self._derive_cone_log_suffix(
+            str(self.get_parameter('cone_log_suffix').value).strip(),
+            self._cone_eval_topic,
+        )
 
         # Parse base path
         if base_path_str:
@@ -757,7 +762,7 @@ class LoggerNode(Node):
     def _save_cone_metrics_csv(self) -> None:
         if self._run_session is None or not self._cone_records:
             return
-        out_path = self._run_session.logs_path / 'cone_metrics.csv'
+        out_path = self._run_session.logs_path / self._cone_output_filename('cone_metrics', 'csv')
         fieldnames = list(self._cone_records[0].keys())
         with open(out_path, 'w', newline='') as handle:
             writer = csv.DictWriter(handle, fieldnames=fieldnames)
@@ -768,7 +773,7 @@ class LoggerNode(Node):
     def _save_cone_range_rmse_samples_csv(self) -> None:
         if self._run_session is None or not self._cone_range_rmse_samples:
             return
-        out_path = self._run_session.logs_path / 'cone_range_rmse_samples.csv'
+        out_path = self._run_session.logs_path / self._cone_output_filename('cone_range_rmse_samples', 'csv')
         fieldnames = [
             'timestamp',
             'source',
@@ -786,7 +791,7 @@ class LoggerNode(Node):
     def _save_monocular_fit_samples_csv(self) -> None:
         if self._run_session is None or not self._monocular_fit_samples:
             return
-        out_path = self._run_session.logs_path / 'monocular_fit_samples.csv'
+        out_path = self._run_session.logs_path / self._cone_output_filename('monocular_fit_samples', 'csv')
         fieldnames = list(self._monocular_fit_samples[0].keys())
         with open(out_path, 'w', newline='') as handle:
             writer = csv.DictWriter(handle, fieldnames=fieldnames)
@@ -811,7 +816,12 @@ class LoggerNode(Node):
 
         try:
             from ..plotting.offline_cone_plotter import OfflineConePlotter
-            cone_plotter = OfflineConePlotter(self._run_session.session_path)
+            cone_plotter = OfflineConePlotter(
+                self._run_session.session_path,
+                metrics_filename=self._cone_output_filename('cone_metrics', 'csv'),
+                range_rmse_filename=self._cone_output_filename('cone_range_rmse_samples', 'csv'),
+                output_suffix=self._cone_log_suffix,
+            )
             cone_generated = cone_plotter.generate_plot()
             if cone_generated is not None:
                 total += 1
@@ -836,6 +846,23 @@ class LoggerNode(Node):
             self._safe_log_warn(f"Failed to generate cone offline plots: {e}")
 
         self._safe_log_info(f"Generated {total} plots in {self._run_session.plots_path}")
+
+    @staticmethod
+    def _derive_cone_log_suffix(configured_suffix: str, cone_eval_topic: str) -> str:
+        suffix = configured_suffix.strip().lower()
+        if suffix:
+            return ''.join(ch if (ch.isalnum() or ch in {'_', '-'}) else '_' for ch in suffix).strip('_')
+        topic = cone_eval_topic.strip().lower()
+        if '/lidar/' in topic:
+            return 'lidar'
+        return ''
+
+    def _cone_output_filename(self, stem: str, ext: str) -> str:
+        clean_stem = stem.strip()
+        clean_ext = ext.strip().lstrip('.')
+        if self._cone_log_suffix:
+            return f'{clean_stem}_{self._cone_log_suffix}.{clean_ext}'
+        return f'{clean_stem}.{clean_ext}'
 
     def _safe_log_info(self, message: str) -> None:
         try:

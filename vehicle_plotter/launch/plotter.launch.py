@@ -98,6 +98,12 @@ def generate_launch_description():
         description='Per-cone depth CSV topic to visualize'
     )
 
+    cone_log_suffix_arg = DeclareLaunchArgument(
+        'cone_log_suffix',
+        default_value='',
+        description='Optional suffix for cone CSV/plot outputs (e.g. lidar)'
+    )
+
     # Logging options
     enable_log_arg = DeclareLaunchArgument(
         'enable_log',
@@ -232,6 +238,7 @@ def generate_launch_description():
             'adapter': LaunchConfiguration('adapter'),  # For directory prefix (sim_ or jetson_)
             'auto_plot_on_shutdown': True,  # Generate plots when logger shuts down
             'cone_eval_topic': LaunchConfiguration('cone_eval_topic'),
+            'cone_log_suffix': LaunchConfiguration('cone_log_suffix'),
             'use_sim_time': False,  # Use wall clock for timers
         }],
     )
@@ -264,6 +271,7 @@ def generate_launch_description():
         close_plots_on_shutdown_arg,
         cone_plot_config_arg,
         cone_eval_topic_arg,
+        cone_log_suffix_arg,
         enable_log_arg,
         log_format_arg,
         log_path_arg,

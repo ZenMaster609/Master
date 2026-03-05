@@ -104,6 +104,26 @@
     <origin xyz="1.71 -0.06 0.2" rpy="0 0 0"/>
   </joint>
 
+  <!-- 2D LiDAR Sensor Link -->
+  <link name="lidar_link">
+    <visual>
+      <geometry>
+        <cylinder radius="0.04" length="0.05"/>
+      </geometry>
+      <material name="silver"/>
+    </visual>
+    <inertial>
+      <mass value="0.12"/>
+      <inertia ixx="0.00005" ixy="0.0" ixz="0.0" iyy="0.00005" iyz="0.0" izz="0.00005"/>
+    </inertial>
+  </link>
+
+  <joint name="lidar_joint" type="fixed">
+    <parent link="chassis"/>
+    <child link="lidar_link"/>
+    <origin xyz="1.45 0 -0.09" rpy="0 0 0"/>
+  </joint>
+
   <!-- EUFS dynamics plugin (gz-sim) -->
   <gazebo>
     <plugin filename="libeufs_gz_dynamics.so" name="eufs_gz_dynamics::EufsRaceCarModel">
@@ -302,6 +322,41 @@
           <far>20.0</far>
         </clip>
       </camera>
+    </sensor>
+  </gazebo>
+
+  <!-- Front 270-degree 2D LiDAR Sensor -->
+  <gazebo reference="lidar_link">
+    <sensor name="front_lidar" type="gpu_lidar">
+      <topic>$(arg topic_prefix)/lidar</topic>
+      <update_rate>15</update_rate>
+      <always_on>true</always_on>
+      <visualize>false</visualize>
+      <lidar>
+        <scan>
+          <horizontal>
+            <samples>1080</samples>
+            <resolution>1</resolution>
+            <min_angle>-2.35619449</min_angle>
+            <max_angle>2.35619449</max_angle>
+          </horizontal>
+          <vertical>
+            <samples>1</samples>
+            <resolution>1</resolution>
+            <min_angle>0.0</min_angle>
+            <max_angle>0.0</max_angle>
+          </vertical>
+        </scan>
+        <range>
+          <min>0.10</min>
+          <max>30.0</max>
+          <resolution>0.01</resolution>
+        </range>
+        <noise type="gaussian">
+          <mean>0.0</mean>
+          <stddev>0.02</stddev>
+        </noise>
+      </lidar>
     </sensor>
   </gazebo>
 </robot>

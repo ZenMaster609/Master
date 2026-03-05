@@ -21,8 +21,18 @@ from ament_index_python.packages import get_package_share_directory
 class OfflineConePlotter:
     """Generate static cone-depth plots from recorded cone metric CSV data."""
 
-    def __init__(self, session_path: Path):
+    def __init__(
+        self,
+        session_path: Path,
+        *,
+        metrics_filename: str = 'cone_metrics.csv',
+        range_rmse_filename: str = 'cone_range_rmse_samples.csv',
+        output_suffix: str = '',
+    ):
         self.session_path = Path(session_path)
+        self.metrics_filename = str(metrics_filename).strip() or 'cone_metrics.csv'
+        self.range_rmse_filename = str(range_rmse_filename).strip() or 'cone_range_rmse_samples.csv'
+        self.output_suffix = str(output_suffix).strip()
 
     def _default_config_path(self) -> Path:
         share = Path(get_package_share_directory('vehicle_plotter'))
@@ -37,7 +47,7 @@ class OfflineConePlotter:
         return config
 
     def _load_data(self) -> Optional[List[Dict[str, float]]]:
-        csv_path = self.session_path / 'logs' / 'cone_metrics.csv'
+        csv_path = self.session_path / 'logs' / self.metrics_filename
         if not csv_path.exists():
             return None
         rows: List[Dict[str, float]] = []
@@ -65,7 +75,7 @@ class OfflineConePlotter:
         return rows
 
     def _load_range_rmse_samples(self) -> Optional[Dict[str, np.ndarray]]:
-        csv_path = self.session_path / 'logs' / 'cone_range_rmse_samples.csv'
+        csv_path = self.session_path / 'logs' / self.range_rmse_filename
         if not csv_path.exists():
             return None
 
@@ -231,7 +241,11 @@ class OfflineConePlotter:
         fig.tight_layout()
         plots_path = self.session_path / 'plots'
         plots_path.mkdir(parents=True, exist_ok=True)
-        final_path = output_path if output_path is not None else plots_path / 'cone_depth_validation.png'
+        if output_path is not None:
+            final_path = output_path
+        else:
+            suffix = f'_{self.output_suffix}' if self.output_suffix else ''
+            final_path = plots_path / f'cone_depth_validation{suffix}.png'
         fig.savefig(final_path, dpi=dpi, bbox_inches='tight')
         plt.close(fig)
         return final_path
@@ -442,7 +456,11 @@ class OfflineConePlotter:
         fig.tight_layout()
         plots_path = self.session_path / 'plots'
         plots_path.mkdir(parents=True, exist_ok=True)
-        final_path = output_path if output_path is not None else plots_path / 'cone_range_binned_rmse.png'
+        if output_path is not None:
+            final_path = output_path
+        else:
+            suffix = f'_{self.output_suffix}' if self.output_suffix else ''
+            final_path = plots_path / f'cone_range_binned_rmse{suffix}.png'
         fig.savefig(final_path, dpi=dpi, bbox_inches='tight')
         plt.close(fig)
         return final_path

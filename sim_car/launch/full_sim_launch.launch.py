@@ -10,11 +10,12 @@ Launches:
 """
 
 from launch import LaunchDescription
-from launch.actions import DeclareLaunchArgument, IncludeLaunchDescription
+from launch.actions import DeclareLaunchArgument, GroupAction, IncludeLaunchDescription
 from launch.conditions import IfCondition
 from launch.launch_description_sources import PythonLaunchDescriptionSource
 from launch.substitutions import EnvironmentVariable, LaunchConfiguration, PathJoinSubstitution, PythonExpression
 from launch_ros.actions import Node
+from launch_ros.actions import PushRosNamespace
 from launch_ros.parameter_descriptions import ParameterValue
 from launch_ros.substitutions import FindPackageShare
 from ament_index_python.packages import get_package_share_directory
@@ -185,6 +186,24 @@ def generate_launch_description():
         'stereo',
         default_value='true',
         description='Enable stereo depth processing for RMSE plotting'
+    )
+
+    lidar_enabled_arg = DeclareLaunchArgument(
+        'lidar_enabled',
+        default_value='false',
+        description='Enable LiDAR cone detection/evaluation node'
+    )
+
+    lidar_cone_plotting_arg = DeclareLaunchArgument(
+        'lidar_cone_plotting',
+        default_value='false',
+        description='Enable live cone depth plotting for LiDAR eval stream'
+    )
+
+    lidar_cone_plotting_2_arg = DeclareLaunchArgument(
+        'lidar_cone_plotting_2',
+        default_value='false',
+        description='Enable aggregated range-binned RMSE plotting for LiDAR eval stream'
     )
 
     camera_debug_arg = DeclareLaunchArgument(
@@ -367,6 +386,46 @@ def generate_launch_description():
         }.items(),
     )
 
+    lidar_plotter_launch = GroupAction(
+        condition=IfCondition(PythonExpression([
+            "'",
+            LaunchConfiguration('lidar_cone_plotting'),
+            "'.lower() == 'true' or '",
+            LaunchConfiguration('lidar_cone_plotting_2'),
+            "'.lower() == 'true'"
+        ])),
+        actions=[
+            PushRosNamespace('lidar_eval'),
+            IncludeLaunchDescription(
+                PythonLaunchDescriptionSource(
+                    PathJoinSubstitution([vehicle_plotter_share, 'launch', 'plotter.launch.py'])
+                ),
+                launch_arguments={
+                    'adapter': 'gazebo',
+                    'enable_plot': 'false',
+                    'enable_cone_plot': LaunchConfiguration('lidar_cone_plotting'),
+                    'enable_log': PythonExpression([
+                        "'true' if ('",
+                        LaunchConfiguration('logging'),
+                        "'.lower() == 'true' or '",
+                        LaunchConfiguration('lidar_cone_plotting'),
+                        "'.lower() == 'true' or '",
+                        LaunchConfiguration('lidar_cone_plotting_2'),
+                        "'.lower() == 'true') else 'false'"
+                    ]),
+                    'enable_rosbag': 'false',
+                    'enable_data_collector': 'false',
+                    'sensor_config': LaunchConfiguration('measurement_config'),
+                    'use_sim_time': LaunchConfiguration('use_sim_time'),
+                    'close_plots': LaunchConfiguration('close_plots'),
+                    'cone_eval_topic': PythonExpression(["'", topic_prefix, "' + '/lidar/eval/cone_depth_per_cone'"]),
+                    'cone_log_suffix': 'lidar',
+                    'cone_plot_config': PathJoinSubstitution([vehicle_plotter_share, 'config', 'cone_plots.yaml']),
+                }.items(),
+            ),
+        ],
+    )
+
     steering_gui_node = Node(
         name='eufs_robot_steering_gui',
         package='steering_gui',
@@ -528,6 +587,35 @@ def generate_launch_description():
         }],
     )
 
+    lidar_node = Node(
+        package='sim_car',
+        executable='lidar_node',
+        name='lidar_node',
+        output='screen',
+        condition=IfCondition(LaunchConfiguration('lidar_enabled')),
+        parameters=[{
+            'use_sim_time': ParameterValue(
+                LaunchConfiguration('use_sim_time'),
+                value_type=bool,
+            ),
+            'scan_topic': PythonExpression(["'", topic_prefix, "' + '/lidar'"]),
+            'eval_topic_prefix': PythonExpression(["'", topic_prefix, "' + '/lidar/eval'"]),
+            'cone_detections_topic': PythonExpression(["'", topic_prefix, "' + '/lidar/perception/cones_3d'"]),
+            'cone_detections_frame': 'base_footprint',
+            'ground_truth_cones_topic': '/ground_truth/cones',
+            'ground_truth_track_topic': '/ground_truth/track',
+            'cone_eval_odom_topic': '/sim/odom',
+            'cone_plotting_2': ParameterValue(
+                LaunchConfiguration('lidar_cone_plotting_2'),
+                value_type=bool,
+            ),
+            'perf_log_hz': ParameterValue(
+                LaunchConfiguration('perf_log_hz'),
+                value_type=float,
+            ),
+        }],
+    )
+
     boundary_planner_node = Node(
         package='sim_car',
         executable='boundary_planner_node',
@@ -627,6 +715,9 @@ def generate_launch_description():
         perception_queue_size_arg,
         cuda_arg,
         stereo_arg,
+        lidar_enabled_arg,
+        lidar_cone_plotting_arg,
+        lidar_cone_plotting_2_arg,
         camera_debug_arg,
         camera_debug_n_frames_arg,
         monocular_bbox_height_offset_px_arg,
@@ -647,9 +738,11 @@ def generate_launch_description():
         sim_nodes_launch,
         measurement_node,
         plotter_launch,
+        lidar_plotter_launch,
         throttle_bridge_node,
         steering_bridge_node,
         perception_node,
+        lidar_node,
         boundary_planner_node,
         pair_midpoint_planner_node,
         camera_debug_viewer_node,
