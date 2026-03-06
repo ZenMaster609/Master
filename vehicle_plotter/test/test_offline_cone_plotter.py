@@ -80,3 +80,37 @@ def test_generate_range_rmse_plot_writes_png(tmp_path):
     assert output_path is not None
     assert output_path.exists()
     assert output_path.suffix == '.png'
+
+
+def test_generate_combined_range_rmse_plot_writes_png(tmp_path):
+    session_path = tmp_path / 'session'
+    logs_path = session_path / 'logs'
+    logs_path.mkdir(parents=True)
+    (session_path / 'plots').mkdir(parents=True)
+
+    (logs_path / 'cone_range_rmse_samples.csv').write_text(
+        '\n'.join(
+            [
+                'timestamp,source,gt_range_m,error_m,predicted_class_id,ground_truth_class_id',
+                '1.0,stereo,2.2,0.1,1,1',
+                '1.1,stereo,4.2,0.2,0,1',
+            ]
+        ),
+        encoding='utf-8',
+    )
+    (logs_path / 'cone_range_rmse_samples_lidar.csv').write_text(
+        '\n'.join(
+            [
+                'timestamp,source,gt_range_m,error_m,predicted_class_id,ground_truth_class_id',
+                '1.0,lidar,2.2,0.05,1,1',
+                '1.1,lidar,4.2,0.08,0,0',
+            ]
+        ),
+        encoding='utf-8',
+    )
+
+    output_path = OfflineConePlotter(session_path).generate_combined_range_rmse_plot()
+
+    assert output_path is not None
+    assert output_path.exists()
+    assert output_path.name == 'cone_range_binned_rmse_camera_lidar.png'

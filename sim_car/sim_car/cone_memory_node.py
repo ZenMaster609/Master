@@ -1,0 +1,1079 @@
+#!/usr/bin/env python3
+"""Local cone memory tracker with optional global track-belief plotting."""
+
+from __future__ import annotations
+
+import csv
+from dataclasses import dataclass
+import math
+from pathlib import Path
+import time
+from typing import Optional
+
+import rclpy
+from geometry_msgs.msg import Point
+from nav_msgs.msg import Odometry
+from rclpy.duration import Duration
+from rclpy.executors import ExternalShutdownException
+from rclpy.node import Node
+from rclpy.qos import qos_profile_sensor_data
+from rclpy.time import Time
+from tf2_ros import Buffer, TransformException, TransformListener
+from vehicle_plotter_msgs.msg import ConeDetection, ConeDetectionArray, RunSession
+from visualization_msgs.msg import Marker, MarkerArray
+
+from sim_car.cone_fusion import FusedObservation, choose_position_source, clamp_camera_range, normalize_color
+from sim_car.cone_tracker import ConeTrack, GlobalConeMemory, LocalConeTracker, TrackUpdate
+
+
+@dataclass
+class SensorDetection:
+    x_odom: float
+    y_odom: float
+    z_odom: float
+    x_base: float
+    y_base: float
+    z_base: float
+    range_m: float
+    color: str
+    confidence: float
+
+
+class ConeMemoryNode(Node):
+    """Fuse lidar+camera cone detections into stable local tracks."""
+
+    def __init__(self) -> None:
+        super().__init__('cone_memory_node')
+        self._declare_parameters()
+        self._read_parameters()
+
+        self._tf_buffer = Buffer(cache_time=Duration(seconds=10.0))
+        self._tf_listener = TransformListener(self._tf_buffer, self)
+        self._last_throttled_log_sec: dict[str, float] = {}
+
+        self._local_tracker = LocalConeTracker()
+        self._global_memory = GlobalConeMemory()
+        self._latest_lidar: list[SensorDetection] = []
+        self._latest_camera: list[SensorDetection] = []
+        self._latest_odom_msg: Optional[Odometry] = None
+        self._last_plot_save_attempted = False
+        self._run_session_run_id = ''
+        self._run_session_base_path = ''
+
+        self._tracked_pub = self.create_publisher(ConeDetectionArray, self.tracked_cones_topic, 10)
+        self._viz_pub = self.create_publisher(MarkerArray, self.viz_topic, 10)
+        self._track_viz_pub = self.create_publisher(MarkerArray, self.believed_track_viz_topic, 10)
+        self._raw_lidar_viz_pub = self.create_publisher(MarkerArray, f'{self.viz_topic}/raw_lidar', 10)
+        self._raw_camera_viz_pub = self.create_publisher(MarkerArray, f'{self.viz_topic}/raw_camera', 10)
+
+        self.create_subscription(
+            ConeDetectionArray,
+            self.lidar_cones_topic,
+            self._lidar_cb,
+            qos_profile_sensor_data,
+        )
+        self.create_subscription(
+            ConeDetectionArray,
+            self.camera_cones_topic,
+            self._camera_cb,
+            qos_profile_sensor_data,
+        )
+        self.create_subscription(
+            RunSession,
+            self.run_session_topic,
+            self._run_session_cb,
+            10,
+        )
+        self.create_subscription(
+            Odometry,
+            self.odom_topic,
+            self._odom_cb,
+            10,
+        )
+
+        self.create_timer(1.0 / max(1.0, self.publish_rate_hz), self._on_timer)
+
+        self._plot_enabled = False
+        self._plot_ready = False
+        self._plt = None
+        self._fig = None
+        self._ax = None
+        if self.enable_track_live_plot:
+            self._init_live_plot()
+            if self._plot_enabled:
+                self.create_timer(1.0 / max(0.1, self.track_plot_update_hz), self._update_live_plot)
+
+        self.get_logger().info(
+            'cone_memory_node ready '
+            f'lidar={self.lidar_cones_topic} camera={self.camera_cones_topic} tracked={self.tracked_cones_topic} '
+            f'viz={self.viz_topic} track_viz={self.believed_track_viz_topic} '
+            f'camera_range_m={self.camera_range_m:.2f}'
+        )
+
+    def _declare_parameters(self) -> None:
+        self.declare_parameter('odom_frame', 'odom')
+        self.declare_parameter('base_frame', 'base_link')
+        self.declare_parameter('tf_timeout_s', 0.03)
+
+        self.declare_parameter('max_range_m', 25.0)
+        self.declare_parameter('behind_drop_m', 8.0)
+        self.declare_parameter('ttl_sec', 2.0)
+        self.declare_parameter('unknown_drop_frames', 15)
+        self.declare_parameter('gate_radius_m', 0.5)
+        self.declare_parameter('min_seen_count', 2)
+        self.declare_parameter('alpha_lidar', 0.4)
+        self.declare_parameter('alpha_camera', 0.2)
+
+        self.declare_parameter('camera_range_m', 0.0)
+        self.declare_parameter('prefer_lidar_if_camera_missing_far', True)
+        self.declare_parameter('allow_camera_fallback_near', False)
+
+        self.declare_parameter('publish_rate_hz', 20.0)
+        self.declare_parameter('enable_id_text', False)
+        self.declare_parameter('enable_tentative_viz', False)
+        self.declare_parameter('enable_raw_debug_viz', False)
+
+        self.declare_parameter('enable_global_track_memory', True)
+        self.declare_parameter('global_merge_radius_m', 0.6)
+        self.declare_parameter('global_min_hits_for_track', 2)
+        self.declare_parameter('global_max_cones', 2000)
+
+        self.declare_parameter('enable_track_live_plot', True)
+        self.declare_parameter('track_plot_update_hz', 2.0)
+        self.declare_parameter('save_track_plot_on_shutdown', True)
+        self.declare_parameter('track_plot_filename', 'cone_memory_track.png')
+        self.declare_parameter('track_plot_data_filename', 'cone_memory_track_data.csv')
+
+        self.declare_parameter('lidar_cones_topic', '/sim/lidar/perception/cones_3d')
+        self.declare_parameter('camera_cones_topic', '/sim/stereo/perception/cones_3d')
+        self.declare_parameter('tracked_cones_topic', '/tracked_cones')
+        self.declare_parameter('viz_topic', '/local_cone_map_viz')
+        self.declare_parameter('believed_track_viz_topic', '/cone_memory/believed_track_viz')
+        self.declare_parameter('run_session_topic', '/run_session')
+        self.declare_parameter('odom_topic', '/sim/odom')
+
+    def _read_parameters(self) -> None:
+        self.odom_frame = str(self.get_parameter('odom_frame').value).strip() or 'odom'
+        self.base_frame = str(self.get_parameter('base_frame').value).strip() or 'base_link'
+        self.tf_timeout_s = max(0.0, float(self.get_parameter('tf_timeout_s').value))
+
+        self.max_range_m = max(1.0, float(self.get_parameter('max_range_m').value))
+        self.behind_drop_m = max(0.0, float(self.get_parameter('behind_drop_m').value))
+        self.ttl_sec = max(0.05, float(self.get_parameter('ttl_sec').value))
+        self.unknown_drop_frames = max(0, int(self.get_parameter('unknown_drop_frames').value))
+        self.gate_radius_m = max(0.05, float(self.get_parameter('gate_radius_m').value))
+        self.min_seen_count = max(1, int(self.get_parameter('min_seen_count').value))
+        self.alpha_lidar = max(0.0, min(1.0, float(self.get_parameter('alpha_lidar').value)))
+        self.alpha_camera = max(0.0, min(1.0, float(self.get_parameter('alpha_camera').value)))
+
+        self.camera_range_m = clamp_camera_range(float(self.get_parameter('camera_range_m').value))
+        self.prefer_lidar_if_camera_missing_far = bool(self.get_parameter('prefer_lidar_if_camera_missing_far').value)
+        self.allow_camera_fallback_near = bool(self.get_parameter('allow_camera_fallback_near').value)
+
+        self.publish_rate_hz = max(1.0, float(self.get_parameter('publish_rate_hz').value))
+        self.enable_id_text = bool(self.get_parameter('enable_id_text').value)
+        self.enable_tentative_viz = bool(self.get_parameter('enable_tentative_viz').value)
+        self.enable_raw_debug_viz = bool(self.get_parameter('enable_raw_debug_viz').value)
+
+        self.enable_global_track_memory = bool(self.get_parameter('enable_global_track_memory').value)
+        self.global_merge_radius_m = max(0.05, float(self.get_parameter('global_merge_radius_m').value))
+        self.global_min_hits_for_track = max(1, int(self.get_parameter('global_min_hits_for_track').value))
+        self.global_max_cones = max(10, int(self.get_parameter('global_max_cones').value))
+
+        self.enable_track_live_plot = bool(self.get_parameter('enable_track_live_plot').value)
+        self.track_plot_update_hz = max(0.1, float(self.get_parameter('track_plot_update_hz').value))
+        self.save_track_plot_on_shutdown = bool(self.get_parameter('save_track_plot_on_shutdown').value)
+        self.track_plot_filename = str(self.get_parameter('track_plot_filename').value).strip() or 'cone_memory_track.png'
+        self.track_plot_data_filename = str(self.get_parameter('track_plot_data_filename').value).strip()
+
+        self.lidar_cones_topic = str(self.get_parameter('lidar_cones_topic').value)
+        self.camera_cones_topic = str(self.get_parameter('camera_cones_topic').value)
+        self.tracked_cones_topic = str(self.get_parameter('tracked_cones_topic').value)
+        self.viz_topic = str(self.get_parameter('viz_topic').value)
+        self.believed_track_viz_topic = str(self.get_parameter('believed_track_viz_topic').value)
+        self.run_session_topic = str(self.get_parameter('run_session_topic').value)
+        self.odom_topic = str(self.get_parameter('odom_topic').value)
+
+    def _lidar_cb(self, msg: ConeDetectionArray) -> None:
+        self._latest_lidar = self._convert_msg_to_detections(msg)
+
+    def _camera_cb(self, msg: ConeDetectionArray) -> None:
+        self._latest_camera = self._convert_msg_to_detections(msg)
+
+    def _run_session_cb(self, msg: RunSession) -> None:
+        self._run_session_run_id = str(msg.run_id).strip()
+        self._run_session_base_path = str(msg.base_path).strip()
+
+    def _odom_cb(self, msg: Odometry) -> None:
+        self._latest_odom_msg = msg
+
+    def _convert_msg_to_detections(self, msg: ConeDetectionArray) -> list[SensorDetection]:
+        source_frame = str(msg.header.frame_id).strip()
+        if not source_frame:
+            return []
+
+        to_odom, _resolved_odom, _resolved_source_odom = self._lookup_transform_with_alias(
+            self.odom_frame,
+            source_frame,
+            msg.header.stamp,
+        )
+        to_base, _resolved_base, _resolved_source_base = self._lookup_transform_with_alias(
+            self.base_frame,
+            source_frame,
+            msg.header.stamp,
+        )
+        source_is_base = self._is_alias(source_frame, self.base_frame)
+        odom_fallback_ok = to_odom is None and source_is_base and self._latest_odom_msg is not None
+        base_identity_ok = to_base is None and source_is_base
+        if (to_odom is None and not odom_fallback_ok) or (to_base is None and not base_identity_ok):
+            self._warn_throttled(
+                'cone_tf_missing',
+                f'cone transform unavailable source={source_frame} target={self.odom_frame}/{self.base_frame}',
+            )
+            return []
+
+        detections: list[SensorDetection] = []
+        for cone in msg.cones:
+            x_src = float(cone.position.x)
+            y_src = float(cone.position.y)
+            z_src = float(cone.position.z)
+            if to_odom is not None:
+                x_odom, y_odom, z_odom = self._transform_point(to_odom, x_src, y_src, z_src)
+            else:
+                x_odom, y_odom, z_odom = self._base_point_to_odom(x_src, y_src, z_src)
+
+            if to_base is not None:
+                x_base, y_base, z_base = self._transform_point(to_base, x_src, y_src, z_src)
+            else:
+                x_base, y_base, z_base = x_src, y_src, z_src
+            detections.append(
+                SensorDetection(
+                    x_odom=x_odom,
+                    y_odom=y_odom,
+                    z_odom=z_odom,
+                    x_base=x_base,
+                    y_base=y_base,
+                    z_base=z_base,
+                    range_m=float(math.hypot(x_base, y_base)),
+                    color=normalize_color(cone.color),
+                    confidence=float(max(0.0, min(1.0, float(cone.confidence)))),
+                )
+            )
+        return detections
+
+    def _on_timer(self) -> None:
+        now = self.get_clock().now()
+        now_sec = float(now.nanoseconds) * 1e-9
+
+        base_in_odom, _resolved_odom, _resolved_base = self._lookup_transform_with_alias(
+            self.odom_frame,
+            self.base_frame,
+            now.to_msg(),
+        )
+        base_pose = self._resolve_base_pose(now.to_msg(), base_in_odom)
+        if base_pose is None:
+            self._warn_throttled('base_pose_tf', f'missing tf/odom pose for {self.odom_frame}<-{self.base_frame}')
+            return
+        veh_x, veh_y, veh_yaw = base_pose
+
+        fused = self._build_fused_observations(self._latest_lidar, self._latest_camera)
+        updates = [
+            TrackUpdate(
+                assoc_x=o.assoc_x,
+                assoc_y=o.assoc_y,
+                update_x=o.update_x,
+                update_y=o.update_y,
+                update_z=o.update_z,
+                update_source=o.update_source,
+                has_lidar=o.has_lidar,
+                has_camera=o.has_camera,
+                camera_label=o.camera_label,
+                camera_confidence=o.camera_confidence,
+                range_m=o.range_m,
+            )
+            for o in fused
+        ]
+
+        stats = self._local_tracker.update(
+            updates=updates,
+            now_sec=now_sec,
+            gate_radius_m=self.gate_radius_m,
+            alpha_lidar=self.alpha_lidar,
+            alpha_camera=self.alpha_camera,
+            min_seen_count=self.min_seen_count,
+        )
+
+        track_positions_in_base = [
+            self._odom_point_to_base(track.x, track.y, veh_x, veh_y, veh_yaw)
+            for track in self._local_tracker.tracks
+        ]
+        pruned = self._local_tracker.prune(
+            now_sec=now_sec,
+            ttl_sec=self.ttl_sec,
+            max_range_m=self.max_range_m,
+            behind_drop_m=self.behind_drop_m,
+            unknown_drop_frames=self.unknown_drop_frames,
+            track_positions_in_base=track_positions_in_base,
+        )
+
+        confirmed = self._local_tracker.confirmed_tracks(self.min_seen_count)
+        tentative = self._local_tracker.tentative_tracks(self.min_seen_count)
+
+        if self.enable_global_track_memory:
+            self._global_memory.update_from_tracks(
+                tracks=confirmed,
+                now_sec=now_sec,
+                merge_radius_m=self.global_merge_radius_m,
+                max_cones=self.global_max_cones,
+            )
+
+        heading_x = math.cos(veh_yaw)
+        heading_y = math.sin(veh_yaw)
+
+        left, right, center = self._global_memory.infer_boundaries_and_centerline(
+            min_hits=self.global_min_hits_for_track,
+            vehicle_x=veh_x,
+            vehicle_y=veh_y,
+            heading_x=heading_x,
+            heading_y=heading_y,
+        )
+
+        self._publish_tracked_cones(confirmed, now)
+        self._publish_local_markers(confirmed=confirmed, tentative=tentative, now=now)
+        self._publish_track_markers(left=left, right=right, center=center, now=now)
+        if self.enable_raw_debug_viz:
+            self._publish_raw_markers(now=now)
+
+        self._info_throttled(
+            'cone_memory_status',
+            f'tracks total={len(self._local_tracker.tracks)} confirmed={len(confirmed)} '
+            f'tentative={len(tentative)} pruned={pruned} global={len(self._global_memory.cones)}',
+        )
+
+    def _build_fused_observations(
+        self,
+        lidar: list[SensorDetection],
+        camera: list[SensorDetection],
+    ) -> list[FusedObservation]:
+        pairs, unmatched_lidar_idx, unmatched_camera_idx = self._pair_detections(lidar, camera, self.gate_radius_m)
+        out: list[FusedObservation] = []
+
+        for l_idx, c_idx in pairs:
+            out.append(self._make_observation(lidar_det=lidar[l_idx], camera_det=camera[c_idx]))
+        for l_idx in unmatched_lidar_idx:
+            out.append(self._make_observation(lidar_det=lidar[l_idx], camera_det=None))
+        for c_idx in unmatched_camera_idx:
+            out.append(self._make_observation(lidar_det=None, camera_det=camera[c_idx]))
+
+        return out
+
+    def _make_observation(
+        self,
+        *,
+        lidar_det: Optional[SensorDetection],
+        camera_det: Optional[SensorDetection],
+    ) -> FusedObservation:
+        has_lidar = lidar_det is not None
+        has_camera = camera_det is not None
+
+        range_candidates = []
+        if lidar_det is not None:
+            range_candidates.append(lidar_det.range_m)
+        if camera_det is not None:
+            range_candidates.append(camera_det.range_m)
+        range_m = min(range_candidates) if range_candidates else 999.0
+
+        source = choose_position_source(
+            range_m=range_m,
+            camera_range_m=self.camera_range_m,
+            has_lidar_position=has_lidar,
+            has_camera_position=has_camera,
+            prefer_lidar_if_camera_missing_far=self.prefer_lidar_if_camera_missing_far,
+            allow_camera_fallback_near=self.allow_camera_fallback_near,
+        )
+
+        update_x = None
+        update_y = None
+        update_z = None
+        if source == 'lidar' and lidar_det is not None:
+            update_x = lidar_det.x_odom
+            update_y = lidar_det.y_odom
+            update_z = lidar_det.z_odom
+        elif source == 'camera' and camera_det is not None:
+            update_x = camera_det.x_odom
+            update_y = camera_det.y_odom
+            update_z = camera_det.z_odom
+
+        if update_x is not None and update_y is not None:
+            assoc_x = float(update_x)
+            assoc_y = float(update_y)
+        elif camera_det is not None:
+            assoc_x = float(camera_det.x_odom)
+            assoc_y = float(camera_det.y_odom)
+        elif lidar_det is not None:
+            assoc_x = float(lidar_det.x_odom)
+            assoc_y = float(lidar_det.y_odom)
+        else:
+            assoc_x = 0.0
+            assoc_y = 0.0
+
+        camera_label = camera_det.color if camera_det is not None else None
+        camera_conf = camera_det.confidence if camera_det is not None else 0.0
+
+        return FusedObservation(
+            assoc_x=assoc_x,
+            assoc_y=assoc_y,
+            update_x=update_x,
+            update_y=update_y,
+            update_z=update_z,
+            update_source=source,
+            has_lidar=has_lidar,
+            has_camera=has_camera,
+            camera_label=camera_label,
+            camera_confidence=camera_conf,
+            range_m=range_m,
+        )
+
+    @staticmethod
+    def _pair_detections(
+        lidar: list[SensorDetection],
+        camera: list[SensorDetection],
+        gate_radius_m: float,
+    ) -> tuple[list[tuple[int, int]], list[int], list[int]]:
+        gate_sq = gate_radius_m * gate_radius_m
+        candidates: list[tuple[float, int, int]] = []
+        for l_idx, l_det in enumerate(lidar):
+            for c_idx, c_det in enumerate(camera):
+                dx = l_det.x_odom - c_det.x_odom
+                dy = l_det.y_odom - c_det.y_odom
+                d2 = dx * dx + dy * dy
+                if d2 <= gate_sq:
+                    candidates.append((d2 ** 0.5, l_idx, c_idx))
+
+        candidates.sort(key=lambda item: item[0])
+        taken_lidar: set[int] = set()
+        taken_camera: set[int] = set()
+        pairs: list[tuple[int, int]] = []
+        for _dist, l_idx, c_idx in candidates:
+            if l_idx in taken_lidar or c_idx in taken_camera:
+                continue
+            taken_lidar.add(l_idx)
+            taken_camera.add(c_idx)
+            pairs.append((l_idx, c_idx))
+
+        unmatched_lidar = [idx for idx in range(len(lidar)) if idx not in taken_lidar]
+        unmatched_camera = [idx for idx in range(len(camera)) if idx not in taken_camera]
+        return pairs, unmatched_lidar, unmatched_camera
+
+    def _publish_tracked_cones(self, tracks: list[ConeTrack], now: Time) -> None:
+        msg = ConeDetectionArray()
+        msg.header.stamp = now.to_msg()
+        msg.header.frame_id = self.odom_frame
+        for track in tracks:
+            label, class_conf = track.class_label()
+            cone = ConeDetection()
+            cone.color = label
+            cone.confidence = float(max(0.0, min(1.0, class_conf)))
+            cone.position.x = float(track.x)
+            cone.position.y = float(track.y)
+            cone.position.z = float(track.z)
+            msg.cones.append(cone)
+        self._tracked_pub.publish(msg)
+
+    def _publish_local_markers(self, *, confirmed: list[ConeTrack], tentative: list[ConeTrack], now: Time) -> None:
+        arr = MarkerArray()
+
+        clear = Marker()
+        clear.header.frame_id = self.odom_frame
+        clear.header.stamp = now.to_msg()
+        clear.action = Marker.DELETEALL
+        arr.markers.append(clear)
+
+        for track in confirmed:
+            arr.markers.append(self._make_cone_marker(track, now, tentative=False))
+            if self.enable_id_text:
+                arr.markers.append(self._make_id_marker(track, now, tentative=False))
+
+        if self.enable_tentative_viz:
+            for track in tentative:
+                arr.markers.append(self._make_cone_marker(track, now, tentative=True))
+                if self.enable_id_text:
+                    arr.markers.append(self._make_id_marker(track, now, tentative=True))
+
+        self._viz_pub.publish(arr)
+
+    def _publish_track_markers(
+        self,
+        *,
+        left: list[tuple[float, float]],
+        right: list[tuple[float, float]],
+        center: list[tuple[float, float]],
+        now: Time,
+    ) -> None:
+        arr = MarkerArray()
+
+        clear = Marker()
+        clear.header.frame_id = self.odom_frame
+        clear.header.stamp = now.to_msg()
+        clear.action = Marker.DELETEALL
+        arr.markers.append(clear)
+
+        arr.markers.append(self._make_line_marker(now, marker_id=1, ns='track_left', points=left, rgb=(0.2, 0.4, 1.0)))
+        arr.markers.append(self._make_line_marker(now, marker_id=2, ns='track_right', points=right, rgb=(1.0, 0.9, 0.2)))
+        arr.markers.append(self._make_line_marker(now, marker_id=3, ns='track_center', points=center, rgb=(0.0, 0.0, 0.0)))
+
+        cones_marker = Marker()
+        cones_marker.header.frame_id = self.odom_frame
+        cones_marker.header.stamp = now.to_msg()
+        cones_marker.ns = 'global_cones'
+        cones_marker.id = 4
+        cones_marker.type = Marker.SPHERE_LIST
+        cones_marker.action = Marker.ADD
+        cones_marker.scale.x = 0.20
+        cones_marker.scale.y = 0.20
+        cones_marker.scale.z = 0.20
+        cones_marker.color.a = 0.7
+        cones_marker.color.r = 0.8
+        cones_marker.color.g = 0.8
+        cones_marker.color.b = 0.8
+        for cone in self._global_memory.cones:
+            if cone.hits < self.global_min_hits_for_track:
+                continue
+            pt = Point()
+            pt.x = float(cone.x)
+            pt.y = float(cone.y)
+            pt.z = float(cone.z)
+            cones_marker.points.append(pt)
+        arr.markers.append(cones_marker)
+
+        self._track_viz_pub.publish(arr)
+
+    def _publish_raw_markers(self, *, now: Time) -> None:
+        lidar_arr = MarkerArray()
+        camera_arr = MarkerArray()
+
+        for arr in (lidar_arr, camera_arr):
+            clear = Marker()
+            clear.header.frame_id = self.odom_frame
+            clear.header.stamp = now.to_msg()
+            clear.action = Marker.DELETEALL
+            arr.markers.append(clear)
+
+        for idx, det in enumerate(self._latest_lidar):
+            marker = Marker()
+            marker.header.frame_id = self.odom_frame
+            marker.header.stamp = now.to_msg()
+            marker.ns = 'raw_lidar'
+            marker.id = idx
+            marker.type = Marker.SPHERE
+            marker.action = Marker.ADD
+            marker.pose.position.x = det.x_odom
+            marker.pose.position.y = det.y_odom
+            marker.pose.position.z = det.z_odom + 0.1
+            marker.pose.orientation.w = 1.0
+            marker.scale.x = 0.14
+            marker.scale.y = 0.14
+            marker.scale.z = 0.14
+            marker.color.a = 0.7
+            marker.color.r = 0.2
+            marker.color.g = 0.9
+            marker.color.b = 1.0
+            lidar_arr.markers.append(marker)
+
+        for idx, det in enumerate(self._latest_camera):
+            marker = Marker()
+            marker.header.frame_id = self.odom_frame
+            marker.header.stamp = now.to_msg()
+            marker.ns = 'raw_camera'
+            marker.id = idx
+            marker.type = Marker.SPHERE
+            marker.action = Marker.ADD
+            marker.pose.position.x = det.x_odom
+            marker.pose.position.y = det.y_odom
+            marker.pose.position.z = det.z_odom + 0.1
+            marker.pose.orientation.w = 1.0
+            marker.scale.x = 0.12
+            marker.scale.y = 0.12
+            marker.scale.z = 0.12
+            marker.color.a = 0.65
+            marker.color.r = 1.0
+            marker.color.g = 0.3
+            marker.color.b = 0.8
+            camera_arr.markers.append(marker)
+
+        self._raw_lidar_viz_pub.publish(lidar_arr)
+        self._raw_camera_viz_pub.publish(camera_arr)
+
+    def _make_cone_marker(self, track: ConeTrack, now: Time, *, tentative: bool) -> Marker:
+        label, _conf = track.class_label()
+        r, g, b = self._color_rgb(label)
+        marker = Marker()
+        marker.header.frame_id = self.odom_frame
+        marker.header.stamp = now.to_msg()
+        marker.ns = 'tentative' if tentative else 'confirmed'
+        marker.id = track.track_id
+        marker.type = Marker.CYLINDER
+        marker.action = Marker.ADD
+        marker.pose.position.x = float(track.x)
+        marker.pose.position.y = float(track.y)
+        marker.pose.position.z = float(track.z) + 0.15
+        marker.pose.orientation.w = 1.0
+        scale = 0.22 if tentative else 0.30
+        marker.scale.x = scale
+        marker.scale.y = scale
+        marker.scale.z = 0.30
+        marker.color.a = 0.35 if tentative else 0.95
+        marker.color.r = r
+        marker.color.g = g
+        marker.color.b = b
+        marker.lifetime = Duration(seconds=1.0 / self.publish_rate_hz * 2.0).to_msg()
+        return marker
+
+    def _make_id_marker(self, track: ConeTrack, now: Time, *, tentative: bool) -> Marker:
+        marker = Marker()
+        marker.header.frame_id = self.odom_frame
+        marker.header.stamp = now.to_msg()
+        marker.ns = 'tentative_id' if tentative else 'confirmed_id'
+        marker.id = track.track_id + (100_000 if tentative else 50_000)
+        marker.type = Marker.TEXT_VIEW_FACING
+        marker.action = Marker.ADD
+        marker.pose.position.x = float(track.x)
+        marker.pose.position.y = float(track.y)
+        marker.pose.position.z = float(track.z) + 0.55
+        marker.pose.orientation.w = 1.0
+        marker.scale.z = 0.18
+        marker.color.a = 0.55 if tentative else 1.0
+        marker.color.r = 1.0
+        marker.color.g = 1.0
+        marker.color.b = 1.0
+        marker.text = str(track.track_id)
+        marker.lifetime = Duration(seconds=1.0 / self.publish_rate_hz * 2.0).to_msg()
+        return marker
+
+    def _make_line_marker(
+        self,
+        now: Time,
+        *,
+        marker_id: int,
+        ns: str,
+        points: list[tuple[float, float]],
+        rgb: tuple[float, float, float],
+    ) -> Marker:
+        marker = Marker()
+        marker.header.frame_id = self.odom_frame
+        marker.header.stamp = now.to_msg()
+        marker.ns = ns
+        marker.id = marker_id
+        marker.type = Marker.LINE_STRIP
+        marker.action = Marker.ADD
+        marker.scale.x = 0.10
+        marker.color.a = 0.95
+        marker.color.r = float(rgb[0])
+        marker.color.g = float(rgb[1])
+        marker.color.b = float(rgb[2])
+        marker.pose.orientation.w = 1.0
+        for x, y in points:
+            pt = Point()
+            pt.x = float(x)
+            pt.y = float(y)
+            pt.z = 0.02
+            marker.points.append(pt)
+        return marker
+
+    @staticmethod
+    def _color_rgb(label: str) -> tuple[float, float, float]:
+        if label == 'blue':
+            return 0.15, 0.45, 1.0
+        if label == 'yellow':
+            return 1.0, 0.92, 0.15
+        if label == 'orange':
+            return 1.0, 0.45, 0.05
+        return 0.75, 0.75, 0.75
+
+    def _init_live_plot(self) -> None:
+        try:
+            import matplotlib.pyplot as plt
+
+            self._plt = plt
+            self._plt.ion()
+            self._fig, self._ax = self._plt.subplots(figsize=(9, 7))
+            self._fig.suptitle('Cone Memory Track Belief')
+            self._plot_enabled = True
+            self._plot_ready = True
+            self.get_logger().info('cone memory live plot enabled')
+        except Exception as exc:  # pylint: disable=broad-except
+            self._plot_enabled = False
+            self._plot_ready = False
+            self.get_logger().warn(f'failed to initialize live plot ({exc}); continuing without live window')
+
+    def _update_live_plot(self) -> None:
+        if not self._plot_enabled or not self._plot_ready or self._ax is None or self._plt is None:
+            return
+        try:
+            base_in_odom, _resolved_odom, _resolved_base = self._lookup_transform_with_alias(
+                self.odom_frame,
+                self.base_frame,
+                Time().to_msg(),
+            )
+            pose = self._resolve_base_pose(Time().to_msg(), base_in_odom)
+            if pose is None:
+                veh_x, veh_y, veh_yaw = 0.0, 0.0, 0.0
+            else:
+                veh_x, veh_y, veh_yaw = pose
+            heading_x, heading_y = (math.cos(veh_yaw), math.sin(veh_yaw))
+
+            left, right, center = self._global_memory.infer_boundaries_and_centerline(
+                min_hits=self.global_min_hits_for_track,
+                vehicle_x=veh_x,
+                vehicle_y=veh_y,
+                heading_x=heading_x,
+                heading_y=heading_y,
+            )
+
+            self._ax.clear()
+            blue_x = [c.x for c in self._global_memory.cones if c.class_label == 'blue' and c.hits >= self.global_min_hits_for_track]
+            blue_y = [c.y for c in self._global_memory.cones if c.class_label == 'blue' and c.hits >= self.global_min_hits_for_track]
+            yellow_x = [c.x for c in self._global_memory.cones if c.class_label == 'yellow' and c.hits >= self.global_min_hits_for_track]
+            yellow_y = [c.y for c in self._global_memory.cones if c.class_label == 'yellow' and c.hits >= self.global_min_hits_for_track]
+            other_x = [c.x for c in self._global_memory.cones if c.class_label not in {'blue', 'yellow'} and c.hits >= self.global_min_hits_for_track]
+            other_y = [c.y for c in self._global_memory.cones if c.class_label not in {'blue', 'yellow'} and c.hits >= self.global_min_hits_for_track]
+
+            if blue_x:
+                self._ax.scatter(blue_x, blue_y, s=20, c='tab:blue', label='blue cones')
+            if yellow_x:
+                self._ax.scatter(yellow_x, yellow_y, s=20, c='gold', label='yellow cones')
+            if other_x:
+                self._ax.scatter(other_x, other_y, s=16, c='gray', label='other cones')
+
+            if left:
+                self._ax.plot([p[0] for p in left], [p[1] for p in left], color='tab:blue', linewidth=2.0, label='left boundary')
+            if right:
+                self._ax.plot([p[0] for p in right], [p[1] for p in right], color='goldenrod', linewidth=2.0, label='right boundary')
+            if center:
+                self._ax.plot([p[0] for p in center], [p[1] for p in center], color='black', linewidth=2.0, label='centerline')
+
+            self._ax.scatter([veh_x], [veh_y], s=80, c='red', marker='x', label='vehicle')
+            self._ax.set_xlabel('odom x [m]')
+            self._ax.set_ylabel('odom y [m]')
+            self._ax.set_aspect('equal', adjustable='box')
+            self._ax.grid(True, alpha=0.25)
+            self._ax.legend(loc='best', fontsize=8)
+            self._fig.tight_layout()
+            self._fig.canvas.draw_idle()
+            self._plt.pause(0.001)
+        except Exception:
+            self._plot_ready = False
+
+    def _save_track_plot_and_data(self) -> None:
+        if self._last_plot_save_attempted:
+            return
+        self._last_plot_save_attempted = True
+
+        if not self.save_track_plot_on_shutdown:
+            return
+
+        plots_dir = self._resolve_plots_dir()
+        if plots_dir is None:
+            self.get_logger().warn('could not resolve plots output directory for cone memory plot')
+            return
+
+        plots_dir.mkdir(parents=True, exist_ok=True)
+        png_path = plots_dir / self.track_plot_filename
+
+        base_in_odom, _resolved_odom, _resolved_base = self._lookup_transform_with_alias(
+            self.odom_frame,
+            self.base_frame,
+            Time().to_msg(),
+        )
+        pose = self._resolve_base_pose(Time().to_msg(), base_in_odom)
+        if pose is None:
+            veh_x, veh_y, veh_yaw = 0.0, 0.0, 0.0
+        else:
+            veh_x, veh_y, veh_yaw = pose
+        heading_x, heading_y = (math.cos(veh_yaw), math.sin(veh_yaw))
+        left, right, center = self._global_memory.infer_boundaries_and_centerline(
+            min_hits=self.global_min_hits_for_track,
+            vehicle_x=veh_x,
+            vehicle_y=veh_y,
+            heading_x=heading_x,
+            heading_y=heading_y,
+        )
+
+        try:
+            if self._fig is not None:
+                self._fig.savefig(str(png_path), dpi=180)
+            else:
+                import matplotlib.pyplot as plt
+
+                fig, ax = plt.subplots(figsize=(9, 7))
+                self._render_static_plot(ax=ax, veh_x=veh_x, veh_y=veh_y, left=left, right=right, center=center)
+                fig.savefig(str(png_path), dpi=180)
+                plt.close(fig)
+            self.get_logger().info(f'saved cone memory track plot: {png_path}')
+        except Exception as exc:  # pylint: disable=broad-except
+            self.get_logger().warn(f'failed to save cone memory track plot: {exc}')
+
+        if self.track_plot_data_filename:
+            csv_path = plots_dir / self.track_plot_data_filename
+            try:
+                with csv_path.open('w', newline='') as f:
+                    writer = csv.writer(f)
+                    writer.writerow(['section', 'id', 'x', 'y', 'z', 'label', 'hits', 'confidence'])
+                    for cone in self._global_memory.cones:
+                        writer.writerow([
+                            'global_cone',
+                            cone.cone_id,
+                            f'{cone.x:.6f}',
+                            f'{cone.y:.6f}',
+                            f'{cone.z:.6f}',
+                            cone.class_label,
+                            cone.hits,
+                            f'{cone.confidence:.6f}',
+                        ])
+                    for idx, (x, y) in enumerate(center):
+                        writer.writerow(['centerline', idx, f'{x:.6f}', f'{y:.6f}', '0.0', '', '', ''])
+                self.get_logger().info(f'saved cone memory track data: {csv_path}')
+            except Exception as exc:  # pylint: disable=broad-except
+                self.get_logger().warn(f'failed to save cone memory track data csv: {exc}')
+
+    def _render_static_plot(
+        self,
+        *,
+        ax,
+        veh_x: float,
+        veh_y: float,
+        left: list[tuple[float, float]],
+        right: list[tuple[float, float]],
+        center: list[tuple[float, float]],
+    ) -> None:
+        blue_x = [c.x for c in self._global_memory.cones if c.class_label == 'blue' and c.hits >= self.global_min_hits_for_track]
+        blue_y = [c.y for c in self._global_memory.cones if c.class_label == 'blue' and c.hits >= self.global_min_hits_for_track]
+        yellow_x = [c.x for c in self._global_memory.cones if c.class_label == 'yellow' and c.hits >= self.global_min_hits_for_track]
+        yellow_y = [c.y for c in self._global_memory.cones if c.class_label == 'yellow' and c.hits >= self.global_min_hits_for_track]
+        other_x = [c.x for c in self._global_memory.cones if c.class_label not in {'blue', 'yellow'} and c.hits >= self.global_min_hits_for_track]
+        other_y = [c.y for c in self._global_memory.cones if c.class_label not in {'blue', 'yellow'} and c.hits >= self.global_min_hits_for_track]
+
+        if blue_x:
+            ax.scatter(blue_x, blue_y, s=20, c='tab:blue', label='blue cones')
+        if yellow_x:
+            ax.scatter(yellow_x, yellow_y, s=20, c='gold', label='yellow cones')
+        if other_x:
+            ax.scatter(other_x, other_y, s=16, c='gray', label='other cones')
+        if left:
+            ax.plot([p[0] for p in left], [p[1] for p in left], color='tab:blue', linewidth=2.0, label='left boundary')
+        if right:
+            ax.plot([p[0] for p in right], [p[1] for p in right], color='goldenrod', linewidth=2.0, label='right boundary')
+        if center:
+            ax.plot([p[0] for p in center], [p[1] for p in center], color='black', linewidth=2.0, label='centerline')
+        ax.scatter([veh_x], [veh_y], s=80, c='red', marker='x', label='vehicle')
+        ax.set_xlabel('odom x [m]')
+        ax.set_ylabel('odom y [m]')
+        ax.set_aspect('equal', adjustable='box')
+        ax.grid(True, alpha=0.25)
+        ax.legend(loc='best', fontsize=8)
+
+    def _resolve_plots_dir(self) -> Optional[Path]:
+        if self._run_session_run_id:
+            if self._run_session_base_path:
+                base_path = Path(self._run_session_base_path).expanduser()
+            else:
+                base_path = self._default_multidata_root()
+            return base_path / self._run_session_run_id / 'plots'
+
+        root = self._default_multidata_root()
+        if not root.exists():
+            return None
+
+        run_dirs = [p for p in root.iterdir() if p.is_dir()]
+        if not run_dirs:
+            return None
+        latest = max(run_dirs, key=lambda p: p.stat().st_mtime)
+        return latest / 'plots'
+
+    @staticmethod
+    def _default_multidata_root() -> Path:
+        candidate = Path.home() / 'ros2_ws' / 'src' / 'Master' / 'multidata'
+        if candidate.exists():
+            return candidate
+        return Path.cwd() / 'multidata'
+
+    def _odom_point_to_base(self, x_odom: float, y_odom: float, tx: float, ty: float, yaw: float) -> tuple[float, float]:
+        dx = x_odom - tx
+        dy = y_odom - ty
+        cos_y = math.cos(yaw)
+        sin_y = math.sin(yaw)
+        x_base = cos_y * dx + sin_y * dy
+        y_base = -sin_y * dx + cos_y * dy
+        return x_base, y_base
+
+    def _base_point_to_odom(self, x_base: float, y_base: float, z_base: float) -> tuple[float, float, float]:
+        pose = self._resolve_base_pose(Time().to_msg(), tf_msg=None)
+        if pose is None:
+            return x_base, y_base, z_base
+        tx, ty, yaw = pose
+        cos_y = math.cos(yaw)
+        sin_y = math.sin(yaw)
+        x_odom = tx + cos_y * x_base - sin_y * y_base
+        y_odom = ty + sin_y * x_base + cos_y * y_base
+        return x_odom, y_odom, z_base
+
+    def _resolve_base_pose(self, stamp, tf_msg) -> Optional[tuple[float, float, float]]:
+        if tf_msg is not None:
+            tx = float(tf_msg.transform.translation.x)
+            ty = float(tf_msg.transform.translation.y)
+            q = tf_msg.transform.rotation
+            yaw = self._yaw_from_quat(float(q.x), float(q.y), float(q.z), float(q.w))
+            return tx, ty, yaw
+
+        odom = self._latest_odom_msg
+        if odom is None:
+            return None
+        frame_ok = self._is_alias(odom.header.frame_id, self.odom_frame)
+        child_ok = self._is_alias(odom.child_frame_id, self.base_frame)
+        if not (frame_ok and child_ok):
+            return None
+        pose = odom.pose.pose
+        tx = float(pose.position.x)
+        ty = float(pose.position.y)
+        q = pose.orientation
+        yaw = self._yaw_from_quat(float(q.x), float(q.y), float(q.z), float(q.w))
+        return tx, ty, yaw
+
+    def _lookup_transform(self, target_frame: str, source_frame: str, stamp):
+        timeout = Duration(seconds=self.tf_timeout_s)
+        try:
+            stamp_time = Time.from_msg(stamp)
+            return self._tf_buffer.lookup_transform(target_frame, source_frame, stamp_time, timeout=timeout)
+        except (TransformException, ValueError):
+            pass
+        try:
+            return self._tf_buffer.lookup_transform(target_frame, source_frame, Time(), timeout=timeout)
+        except TransformException:
+            return None
+
+    def _lookup_transform_with_alias(self, target_frame: str, source_frame: str, stamp):
+        for target_candidate in self._frame_aliases(target_frame):
+            for source_candidate in self._frame_aliases(source_frame):
+                tf_msg = self._lookup_transform(target_candidate, source_candidate, stamp)
+                if tf_msg is not None:
+                    return tf_msg, target_candidate, source_candidate
+        return None, target_frame, source_frame
+
+    def _frame_aliases(self, frame: str) -> list[str]:
+        token = str(frame).strip()
+        out: list[str] = []
+
+        def add(candidate: str) -> None:
+            c = candidate.strip()
+            if c and c not in out:
+                out.append(c)
+
+        add(token)
+        leaf = token.split('/')[-1] if token else ''
+        add(leaf)
+
+        if token in {'base_link', 'base_footprint'} or leaf in {'base_link', 'base_footprint'}:
+            add(token.replace('base_link', 'base_footprint'))
+            add(token.replace('base_footprint', 'base_link'))
+            if '/' in token:
+                prefix = token.rsplit('/', 1)[0]
+                add(f'{prefix}/base_link')
+                add(f'{prefix}/base_footprint')
+            add('base_link')
+            add('base_footprint')
+        return out
+
+    def _is_alias(self, frame_a: str, frame_b: str) -> bool:
+        a = set(self._frame_aliases(frame_a))
+        b = set(self._frame_aliases(frame_b))
+        return bool(a.intersection(b))
+
+    @staticmethod
+    def _transform_point(transform, x: float, y: float, z: float) -> tuple[float, float, float]:
+        t = transform.transform.translation
+        q = transform.transform.rotation
+        qx = float(q.x)
+        qy = float(q.y)
+        qz = float(q.z)
+        qw = float(q.w)
+
+        xx = qx * qx
+        yy = qy * qy
+        zz = qz * qz
+        xy = qx * qy
+        xz = qx * qz
+        yz = qy * qz
+        wx = qw * qx
+        wy = qw * qy
+        wz = qw * qz
+
+        r00 = 1.0 - 2.0 * (yy + zz)
+        r01 = 2.0 * (xy - wz)
+        r02 = 2.0 * (xz + wy)
+        r10 = 2.0 * (xy + wz)
+        r11 = 1.0 - 2.0 * (xx + zz)
+        r12 = 2.0 * (yz - wx)
+        r20 = 2.0 * (xz - wy)
+        r21 = 2.0 * (yz + wx)
+        r22 = 1.0 - 2.0 * (xx + yy)
+
+        tx = float(t.x)
+        ty = float(t.y)
+        tz = float(t.z)
+
+        px = (r00 * x) + (r01 * y) + (r02 * z) + tx
+        py = (r10 * x) + (r11 * y) + (r12 * z) + ty
+        pz = (r20 * x) + (r21 * y) + (r22 * z) + tz
+        return px, py, pz
+
+    @staticmethod
+    def _yaw_from_quat(qx: float, qy: float, qz: float, qw: float) -> float:
+        siny_cosp = 2.0 * (qw * qz + qx * qy)
+        cosy_cosp = 1.0 - 2.0 * (qy * qy + qz * qz)
+        return math.atan2(siny_cosp, cosy_cosp)
+
+    @classmethod
+    def _heading_from_quat(cls, tf_msg) -> tuple[float, float]:
+        q = tf_msg.transform.rotation
+        yaw = cls._yaw_from_quat(float(q.x), float(q.y), float(q.z), float(q.w))
+        return math.cos(yaw), math.sin(yaw)
+
+    def _warn_throttled(self, key: str, message: str, period_sec: float = 1.0) -> None:
+        now_sec = time.monotonic()
+        last_sec = self._last_throttled_log_sec.get(key, -1.0)
+        if (now_sec - last_sec) >= period_sec:
+            self.get_logger().warn(message)
+            self._last_throttled_log_sec[key] = now_sec
+
+    def _info_throttled(self, key: str, message: str, period_sec: float = 1.0) -> None:
+        now_sec = time.monotonic()
+        last_sec = self._last_throttled_log_sec.get(key, -1.0)
+        if (now_sec - last_sec) >= period_sec:
+            self.get_logger().info(message)
+            self._last_throttled_log_sec[key] = now_sec
+
+    def destroy_node(self):
+        self._save_track_plot_and_data()
+        if self._plot_enabled and self._plt is not None and self._fig is not None:
+            try:
+                self._plt.close(self._fig)
+            except Exception:
+                pass
+        return super().destroy_node()
+
+
+def main(args=None) -> None:
+    rclpy.init(args=args)
+    node = ConeMemoryNode()
+    try:
+        rclpy.spin(node)
+    except (KeyboardInterrupt, ExternalShutdownException):
+        pass
+    finally:
+        node.destroy_node()
+        if rclpy.ok():
+            rclpy.shutdown()
+
+
+if __name__ == '__main__':
+    main()

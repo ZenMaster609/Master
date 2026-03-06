@@ -834,6 +834,14 @@ class LoggerNode(Node):
                 self._safe_log_info(f"Generated cone range RMSE offline plot: {cone_range_generated}")
             else:
                 self._safe_log_warn("Cone range RMSE offline plot skipped: no cone range samples found")
+
+            if self._cone_log_suffix != 'lidar':
+                combined_generated = cone_plotter.generate_combined_range_rmse_plot(
+                    right_range_rmse_filename='cone_range_rmse_samples_lidar.csv',
+                )
+                if combined_generated is not None:
+                    total += 1
+                    self._safe_log_info(f"Generated combined camera/lidar RMSE offline plot: {combined_generated}")
         except ImportError as e:
             self._safe_log_warn(f"Could not import cone offline plotter: {e}")
             msg = str(e).lower()

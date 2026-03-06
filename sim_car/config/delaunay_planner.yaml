@@ -1,0 +1,64 @@
+delaunay_planner_node:
+  ros__parameters:
+    frames:
+      planning_frame: "odom"
+      odom_frame: "odom"
+      base_frame: "base_link"
+      tf_timeout_s: 0.03
+
+    topics:
+      tracked_cones_topic: "/tracked_cones"
+      cmd_topic: "/cmd"
+      centerline_topic: "/planned_centerline"
+      viz_topic: "/planner_viz"
+      points_topic: "/planned_centerline_points"
+      odom_topic: "/sim/odom"
+
+    filtering:
+      max_cone_range_m: 25.0
+      behind_drop_m: 5.0
+      min_confidence: 0.3
+      use_unknown_cones: true
+      infer_unknown_by_side: true
+      include_orange: false
+      min_colored_cones: 4
+      min_required_cones: 4
+
+    edge_selection:
+      min_cross_edge_m: 0.8
+      max_cross_edge_m: 6.0
+      cross_edge_lateral_ratio: 0.6
+      min_cross_edges: 3
+
+    centerline:
+      min_spacing_m: 0.5
+      path_resolution_m: 0.5
+      max_path_length_m: 30.0
+      enable_temporal_smoothing: true
+      smoothing_alpha: 0.3
+
+    runtime:
+      publish_rate_hz: 20.0
+      log_throttle_s: 1.0
+
+    pure_pursuit:
+      lookahead_min_m: 3.0
+      lookahead_gain: 0.35
+      steering_limit_rad: 0.32
+      wheelbase_m: 1.6
+      stop_if_no_path: false
+
+    speed_control:
+      speed_min_mps: 1.0
+      speed_max_mps: 1.8
+      curvature_speed_gain: 4.0
+      lowpass_speed_alpha: 0.15
+
+    debug:
+      enable_markers: true
+      show_raw_cones: false
+      show_delaunay_edges: true
+      show_candidate_edges: true
+      show_selected_edges: true
+      publish_points_topic: false
+      show_lookahead_point: true

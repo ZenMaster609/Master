@@ -1238,7 +1238,11 @@ class BoundaryPlannerNode(Node):
     @staticmethod
     def _normalize_color(token: str) -> str:
         value = str(token).strip().lower().replace('-', '_').replace(' ', '_')
-        if 'big_orange' in value or ('big' in value and 'orange' in value):
+        if (
+            'big_orange' in value
+            or 'large_orange' in value
+            or (('big' in value or 'large' in value) and 'orange' in value)
+        ):
             return 'big_orange'
         if 'orange' in value:
             return 'orange'

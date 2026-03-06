@@ -82,7 +82,7 @@ def generate_launch_description():
 
     cone_plotting_2_arg = DeclareLaunchArgument(
         'cone_plotting_2',
-        default_value='false',
+        default_value='true',
         description='Enable aggregated range-binned RMSE plotting'
     )
 
@@ -142,14 +142,26 @@ def generate_launch_description():
 
     planner_arg = DeclareLaunchArgument(
         'planner',
-        default_value='pair_midpoint',
-        description="Planner to launch: 'boundary', 'pair_midpoint', or 'none'"
+        default_value='delaunay',
+        description="Planner to launch: 'boundary', 'pair_midpoint', 'delaunay', or 'none'"
+    )
+
+    use_delaunay_planner_arg = DeclareLaunchArgument(
+        'use_delaunay_planner',
+        default_value='false',
+        description='Enable Delaunay planner regardless of planner mode'
     )
 
     rviz_arg = DeclareLaunchArgument(
         'rviz',
         default_value='true',
         description='Launch RViz with boundary planner debug config (disabled when headless=true)'
+    )
+
+    use_rviz_arg = DeclareLaunchArgument(
+        'use_rviz',
+        default_value='true',
+        description='Alias switch for RViz launch (must also satisfy rviz:=true)'
     )
 
     rviz_config_arg = DeclareLaunchArgument(
@@ -172,19 +184,54 @@ def generate_launch_description():
 
     stereo_arg = DeclareLaunchArgument(
         'stereo',
-        default_value='true',
+        default_value='false',
         description='Enable stereo depth processing for RMSE plotting'
+    )
+    mono_arg = DeclareLaunchArgument(
+        'mono',
+        default_value='false',
+        description='Alias to force monocular camera source naming for cone plotting'
     )
 
     lidar_enabled_arg = DeclareLaunchArgument(
         'lidar_enabled',
-        default_value='false',
+        default_value='true',
         description='Enable LiDAR cone detection/evaluation node'
+    )
+
+    cone_memory_enabled_arg = DeclareLaunchArgument(
+        'cone_memory_enabled',
+        default_value='true',
+        description='Enable cone memory fusion node and publish /tracked_cones'
+    )
+
+    camera_range_arg = DeclareLaunchArgument(
+        'camera_range_m',
+        default_value='0.0',
+        description='Far-band range (m) where camera overrides lidar for position (0..20)'
+    )
+
+    prefer_lidar_if_camera_missing_far_arg = DeclareLaunchArgument(
+        'prefer_lidar_if_camera_missing_far',
+        default_value='true',
+        description='In far band, use lidar position if camera position is missing'
+    )
+
+    allow_camera_fallback_near_arg = DeclareLaunchArgument(
+        'allow_camera_fallback_near',
+        default_value='false',
+        description='In near band, allow camera position if lidar position is missing'
+    )
+
+    enable_track_live_plot_arg = DeclareLaunchArgument(
+        'enable_track_live_plot',
+        default_value='true',
+        description='Enable live global track-belief plot in cone_memory_node'
     )
 
     lidar_cone_plotting_2_arg = DeclareLaunchArgument(
         'lidar_cone_plotting_2',
-        default_value='false',
+        default_value='true',
         description='Enable aggregated range-binned RMSE plotting for LiDAR eval stream'
     )
 
@@ -281,6 +328,13 @@ def generate_launch_description():
         LaunchConfiguration('measure'),
         "'.lower() == 'true' else '/sim'"
     ])
+    camera_source_name = PythonExpression([
+        "'stereo' if '",
+        LaunchConfiguration('stereo'),
+        "'.lower() == 'true' else ('monocular' if '",
+        LaunchConfiguration('mono'),
+        "'.lower() == 'true' else 'monocular')"
+    ])
     camera_debug_enabled_expr = PythonExpression([
         "'", LaunchConfiguration('camera_debug'),
         "'.strip().lower() in ['true', '1', 'on', 'yes', 'depth', 'disparity', 'left_rect', 'rect_left', 'yolo']"
@@ -356,9 +410,13 @@ def generate_launch_description():
 
     lidar_plotter_launch = GroupAction(
         condition=IfCondition(PythonExpression([
-            "'",
+            "('",
+            LaunchConfiguration('lidar_enabled'),
+            "'.lower() == 'true') and ('",
             LaunchConfiguration('lidar_cone_plotting_2'),
-            "'.lower() == 'true'"
+            "'.lower() == 'true' or '",
+            LaunchConfiguration('cone_plotting_2'),
+            "'.lower() == 'true')"
         ])),
         actions=[
             PushRosNamespace('lidar_eval'),
@@ -375,6 +433,8 @@ def generate_launch_description():
                         LaunchConfiguration('logging'),
                         "'.lower() == 'true' or '",
                         LaunchConfiguration('lidar_cone_plotting_2'),
+                        "'.lower() == 'true' or '",
+                        LaunchConfiguration('cone_plotting_2'),
                         "'.lower() == 'true') else 'false'"
                     ]),
                     'enable_rosbag': 'false',
@@ -476,6 +536,7 @@ def generate_launch_description():
             'left_camera_info_topic': PythonExpression(["'", topic_prefix, "' + '/stereo/left/camera_info'"]),
             'right_camera_info_topic': PythonExpression(["'", topic_prefix, "' + '/stereo/right/camera_info'"]),
             'monocular_cone_height_m': 0.3034,
+            'monocular_big_cone_height_m': 0.51,
             'monocular_bbox_height_offset_px': ParameterValue(
                 LaunchConfiguration('monocular_bbox_height_offset_px'),
                 value_type=float,
@@ -563,6 +624,7 @@ def generate_launch_description():
             'left_camera_info_topic': PythonExpression(["'", topic_prefix, "' + '/stereo/left/camera_info'"]),
             'right_camera_info_topic': PythonExpression(["'", topic_prefix, "' + '/stereo/right/camera_info'"]),
             'monocular_cone_height_m': 0.3034,
+            'monocular_big_cone_height_m': 0.51,
             'monocular_bbox_height_offset_px': ParameterValue(
                 LaunchConfiguration('monocular_bbox_height_offset_px'),
                 value_type=float,
@@ -629,15 +691,12 @@ def generate_launch_description():
             'predicted_cones_topic': PythonExpression(["'", topic_prefix, "' + '/stereo/perception/cones_3d'"]),
             'ground_truth_cones_topic': '/ground_truth/cones',
             'eval_topic_prefix': PythonExpression(["'", topic_prefix, "' + '/stereo/eval'"]),
-            'source_name': PythonExpression([
-                "'stereo' if '",
-                LaunchConfiguration('stereo'),
-                "'.lower() == 'true' else 'monocular'"
-            ]),
+            'source_name': camera_source_name,
             'cone_plotting_2': ParameterValue(
                 LaunchConfiguration('cone_plotting_2'),
                 value_type=bool,
             ),
+            'cone_plotting_2_live_plot': False,
         }],
     )
 
@@ -646,7 +705,13 @@ def generate_launch_description():
         executable='lidar_node',
         name='lidar_node',
         output='screen',
-        condition=IfCondition(LaunchConfiguration('lidar_enabled')),
+        condition=IfCondition(PythonExpression([
+            "'",
+            LaunchConfiguration('lidar_enabled'),
+            "'.lower() == 'true' or '",
+            LaunchConfiguration('cone_memory_enabled'),
+            "'.lower() == 'true'",
+        ])),
         parameters=[{
             'use_sim_time': ParameterValue(
                 LaunchConfiguration('use_sim_time'),
@@ -673,11 +738,101 @@ def generate_launch_description():
             'ground_truth_cones_topic': '/ground_truth/cones',
             'eval_topic_prefix': PythonExpression(["'", topic_prefix, "' + '/lidar/eval'"]),
             'source_name': 'lidar',
-            'cone_plotting_2': ParameterValue(
+            'cone_plotting_2': ParameterValue(PythonExpression([
+                "'true' if ('",
                 LaunchConfiguration('lidar_cone_plotting_2'),
-                value_type=bool,
-            ),
+                "'.lower() == 'true' or '",
+                LaunchConfiguration('cone_plotting_2'),
+                "'.lower() == 'true') else 'false'"
+            ]), value_type=bool),
+            'cone_plotting_2_live_plot': False,
         }],
+    )
+
+    combined_cone_plotting2_node = Node(
+        package='sim_car',
+        executable='cone_plotting2_node',
+        name='cone_plotting2_node',
+        output='screen',
+        condition=IfCondition(PythonExpression([
+            "'",
+            LaunchConfiguration('cone_plotting_2'),
+            "'.lower() == 'true' or '",
+            LaunchConfiguration('lidar_cone_plotting_2'),
+            "'.lower() == 'true'"
+        ])),
+        parameters=[{
+            'camera_eval_prefix': PythonExpression(["'", topic_prefix, "' + '/stereo/eval'"]),
+            'lidar_eval_prefix': PythonExpression(["'", topic_prefix, "' + '/lidar/eval'"]),
+            'camera_source': camera_source_name,
+            'update_period_sec': 0.2,
+        }],
+    )
+
+    cone_memory_node = Node(
+        package='sim_car',
+        executable='cone_memory_node',
+        name='cone_memory_node',
+        output='screen',
+        condition=IfCondition(LaunchConfiguration('cone_memory_enabled')),
+        parameters=[
+            PathJoinSubstitution([sim_car_share, 'config', 'cone_memory.yaml']),
+            {
+                'use_sim_time': ParameterValue(
+                    LaunchConfiguration('use_sim_time'),
+                    value_type=bool,
+                ),
+                'lidar_cones_topic': PythonExpression(["'", topic_prefix, "' + '/lidar/perception/cones_3d'"]),
+                'camera_cones_topic': PythonExpression(["'", topic_prefix, "' + '/stereo/perception/cones_3d'"]),
+                'camera_range_m': ParameterValue(
+                    LaunchConfiguration('camera_range_m'),
+                    value_type=float,
+                ),
+                'prefer_lidar_if_camera_missing_far': ParameterValue(
+                    LaunchConfiguration('prefer_lidar_if_camera_missing_far'),
+                    value_type=bool,
+                ),
+                'allow_camera_fallback_near': ParameterValue(
+                    LaunchConfiguration('allow_camera_fallback_near'),
+                    value_type=bool,
+                ),
+                'enable_track_live_plot': ParameterValue(
+                    LaunchConfiguration('enable_track_live_plot'),
+                    value_type=bool,
+                ),
+            },
+        ],
+    )
+
+    delaunay_planner_node = Node(
+        package='sim_car',
+        executable='delaunay_planner_node',
+        name='delaunay_planner_node',
+        output='screen',
+        parameters=[
+            PathJoinSubstitution([sim_car_share, 'config', 'delaunay_planner.yaml']),
+            {
+                'use_sim_time': ParameterValue(
+                    LaunchConfiguration('use_sim_time'),
+                    value_type=bool,
+                ),
+                'topics.tracked_cones_topic': PythonExpression([
+                    "'/tracked_cones' if '",
+                    LaunchConfiguration('cone_memory_enabled'),
+                    "'.lower() == 'true' else '",
+                    topic_prefix,
+                    "' + '/stereo/perception/cones_3d'",
+                ]),
+                'topics.odom_topic': '/sim/odom',
+            },
+        ],
+        condition=IfCondition(PythonExpression([
+            "'",
+            LaunchConfiguration('use_delaunay_planner'),
+            "'.lower() == 'true' or '",
+            LaunchConfiguration('planner'),
+            "'.lower() == 'delaunay'"
+        ])),
     )
 
     boundary_planner_node = Node(
@@ -692,14 +847,24 @@ def generate_launch_description():
                     LaunchConfiguration('use_sim_time'),
                     value_type=bool,
                 ),
-                'topics.cones_topic': PythonExpression(["'", topic_prefix, "' + '/stereo/perception/cones_3d'"]),
+                'topics.cones_topic': PythonExpression([
+                    "'/tracked_cones' if '",
+                    LaunchConfiguration('cone_memory_enabled'),
+                    "'.lower() == 'true' else '",
+                    topic_prefix,
+                    "' + '/stereo/perception/cones_3d'",
+                ]),
                 'topics.odom_topic': '/sim/odom',
                 'debug.publish_path': True,
                 'debug.publish_markers': True,
             },
         ],
         condition=IfCondition(PythonExpression([
-            "'", LaunchConfiguration('planner'), "'.lower() == 'boundary'"
+            "'",
+            LaunchConfiguration('planner'),
+            "'.lower() == 'boundary' and '",
+            LaunchConfiguration('use_delaunay_planner'),
+            "'.lower() != 'true'"
         ])),
     )
 
@@ -715,12 +880,22 @@ def generate_launch_description():
                     LaunchConfiguration('use_sim_time'),
                     value_type=bool,
                 ),
-                'topics.cones_topic': PythonExpression(["'", topic_prefix, "' + '/stereo/perception/cones_3d'"]),
+                'topics.cones_topic': PythonExpression([
+                    "'/tracked_cones' if '",
+                    LaunchConfiguration('cone_memory_enabled'),
+                    "'.lower() == 'true' else '",
+                    topic_prefix,
+                    "' + '/stereo/perception/cones_3d'",
+                ]),
                 'topics.odom_topic': '/sim/odom',
             },
         ],
         condition=IfCondition(PythonExpression([
-            "'", LaunchConfiguration('planner'), "'.lower() == 'pair_midpoint'"
+            "'",
+            LaunchConfiguration('planner'),
+            "'.lower() == 'pair_midpoint' and '",
+            LaunchConfiguration('use_delaunay_planner'),
+            "'.lower() != 'true'"
         ])),
     )
 
@@ -746,7 +921,8 @@ def generate_launch_description():
             ),
         }],
         condition=IfCondition(PythonExpression([
-            "'", LaunchConfiguration('rviz'), "'.lower() == 'true' and '",
+            "'", LaunchConfiguration('use_rviz'), "'.lower() == 'true' and '",
+            LaunchConfiguration('rviz'), "'.lower() == 'true' and '",
             LaunchConfiguration('headless'), "'.lower() != 'true'"
         ])),
     )
@@ -772,12 +948,20 @@ def generate_launch_description():
         measure_arg,
         sensor_nodes_arg,
         planner_arg,
+        use_delaunay_planner_arg,
         rviz_arg,
+        use_rviz_arg,
         rviz_config_arg,
         perception_queue_size_arg,
         cuda_arg,
         stereo_arg,
+        mono_arg,
         lidar_enabled_arg,
+        cone_memory_enabled_arg,
+        camera_range_arg,
+        prefer_lidar_if_camera_missing_far_arg,
+        allow_camera_fallback_near_arg,
+        enable_track_live_plot_arg,
         lidar_cone_plotting_2_arg,
         camera_debug_arg,
         camera_debug_n_frames_arg,
@@ -805,6 +989,9 @@ def generate_launch_description():
         camera_cone_evaluator_node,
         lidar_node,
         lidar_cone_evaluator_node,
+        combined_cone_plotting2_node,
+        cone_memory_node,
+        delaunay_planner_node,
         boundary_planner_node,
         pair_midpoint_planner_node,
         camera_debug_viewer_node,

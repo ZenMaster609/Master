@@ -67,6 +67,7 @@ class ConeEvaluatorNode(Node):
             self,
             eval_topic_prefix=self.eval_topic_prefix,
             enabled=self.cone_plotting_2,
+            enable_live_plot=self.cone_plotting_2_live_plot,
         )
 
         self.create_subscription(ConeDetectionArray, self.predicted_cones_topic, self._predicted_cb, 10)
@@ -84,6 +85,7 @@ class ConeEvaluatorNode(Node):
         self.declare_parameter('eval_topic_prefix', '/sim/raw/stereo/eval')
         self.declare_parameter('source_name', 'stereo')
         self.declare_parameter('cone_plotting_2', False)
+        self.declare_parameter('cone_plotting_2_live_plot', True)
         self.declare_parameter('cone_eval_sync_slop_sec', 0.10)
         self.declare_parameter('eval_match_threshold_m', 0.75)
         self.declare_parameter('cone_eval_tf_timeout_sec', 0.0)
@@ -95,6 +97,7 @@ class ConeEvaluatorNode(Node):
         self.eval_topic_prefix = str(self.get_parameter('eval_topic_prefix').value)
         self.source_name = str(self.get_parameter('source_name').value).strip().lower() or 'stereo'
         self.cone_plotting_2 = bool(self.get_parameter('cone_plotting_2').value)
+        self.cone_plotting_2_live_plot = bool(self.get_parameter('cone_plotting_2_live_plot').value)
         self.cone_eval_sync_slop_sec = max(0.01, float(self.get_parameter('cone_eval_sync_slop_sec').value))
         self.eval_match_threshold_m = max(0.05, float(self.get_parameter('eval_match_threshold_m').value))
         self.cone_eval_tf_timeout_sec = max(0.0, float(self.get_parameter('cone_eval_tf_timeout_sec').value))
@@ -288,7 +291,11 @@ class ConeEvaluatorNode(Node):
     @classmethod
     def _cone_class_name_to_id(cls, name: str) -> int:
         token = str(name).strip().lower().replace('-', '_').replace(' ', '_')
-        if 'big_orange' in token or ('big' in token and 'orange' in token):
+        if (
+            'big_orange' in token
+            or 'large_orange' in token
+            or (('big' in token or 'large' in token) and 'orange' in token)
+        ):
             token = 'big_orange'
         elif 'orange' in token:
             token = 'orange'

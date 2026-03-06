@@ -126,6 +126,7 @@ class PerceptionNode(Node):
         self.declare_parameter('right_camera_info_topic', '/sim/raw/stereo/right/camera_info')
         self.declare_parameter('stereo_enabled', True)
         self.declare_parameter('monocular_cone_height_m', 0.3034)
+        self.declare_parameter('monocular_big_cone_height_m', 0.51)
         self.declare_parameter('monocular_bbox_height_offset_px', 0.0)
 
         self.declare_parameter('calibration_file', '')
@@ -176,6 +177,10 @@ class PerceptionNode(Node):
         self.stereo_enabled = bool(self.get_parameter('stereo_enabled').value)
 
         self.monocular_cone_height_m = max(1e-6, float(self.get_parameter('monocular_cone_height_m').value))
+        self.monocular_big_cone_height_m = max(
+            1e-6,
+            float(self.get_parameter('monocular_big_cone_height_m').value),
+        )
         self.monocular_bbox_height_offset_px = float(self.get_parameter('monocular_bbox_height_offset_px').value)
 
         self.calibration_file = str(self.get_parameter('calibration_file').value)
@@ -390,9 +395,13 @@ class PerceptionNode(Node):
             det['u_center'] = 0.5 * (x0 + x1)
             det['v_center'] = 0.5 * (y0 + y1)
             bbox_height_px = y1 - y0
+            det_color = self._normalize_detection_color(str(det.get('label', '')))
+            cone_height_m = (
+                self.monocular_big_cone_height_m if det_color == 'big_orange' else self.monocular_cone_height_m
+            )
             depth_m = estimate_axis_depth_from_bbox_height(
                 fy_px=fy,
-                cone_height_m=self.monocular_cone_height_m,
+                cone_height_m=cone_height_m,
                 bbox_height_px=bbox_height_px,
                 bbox_height_offset_px=self.monocular_bbox_height_offset_px,
             )
@@ -828,7 +837,11 @@ class PerceptionNode(Node):
     @staticmethod
     def _normalize_detection_color(label: str) -> str:
         token = str(label).strip().lower().replace('-', '_').replace(' ', '_')
-        if 'big_orange' in token or ('big' in token and 'orange' in token):
+        if (
+            'big_orange' in token
+            or 'large_orange' in token
+            or (('big' in token or 'large' in token) and 'orange' in token)
+        ):
             return 'big_orange'
         if 'orange' in token:
             return 'orange'

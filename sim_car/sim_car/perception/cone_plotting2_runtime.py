@@ -14,9 +14,10 @@ from sim_car.perception.range_rmse_live_plot import RangeRMSELivePlot
 class ConePlotting2Runtime:
     """Holds analyzer, live plot, and sample CSV publisher state."""
 
-    def __init__(self, node, *, eval_topic_prefix: str, enabled: bool):
+    def __init__(self, node, *, eval_topic_prefix: str, enabled: bool, enable_live_plot: bool = True):
         self._node = node
         self.enabled = bool(enabled)
+        self._enable_live_plot = bool(enable_live_plot)
         self._sample_pub = node.create_publisher(String, f"{eval_topic_prefix.rstrip('/')}/cone_depth_samples", 10)
         self._analyzer: Optional[RangeRMSEAnalyzer] = None
         self._plot: Optional[RangeRMSELivePlot] = None
@@ -26,13 +27,13 @@ class ConePlotting2Runtime:
             return
 
         self._analyzer = RangeRMSEAnalyzer(range_min_m=0.0, range_max_m=20.0, bin_width_m=1.0)
+        if not self._enable_live_plot:
+            return
         try:
             self._plot = RangeRMSELivePlot(range_min_m=0.0, range_max_m=20.0, bin_width_m=1.0)
             self._timer = node.create_timer(0.2, self._update_plot)
         except Exception as exc:  # pylint: disable=broad-except
             self._node.get_logger().warn(f'Failed to initialize cone_plotting_2 window ({exc}); disabling live plot.')
-            self.enabled = False
-            self._analyzer = None
             self._plot = None
 
     def record_sample(

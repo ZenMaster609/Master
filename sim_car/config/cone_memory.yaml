@@ -1,0 +1,42 @@
+cone_memory_node:
+  ros__parameters:
+    odom_frame: "odom"
+    base_frame: "base_link"
+    tf_timeout_s: 0.03
+
+    max_range_m: 25.0
+    behind_drop_m: 8.0
+    ttl_sec: 2.0
+    unknown_drop_frames: 15
+    gate_radius_m: 0.5
+    min_seen_count: 2
+    alpha_lidar: 0.4
+    alpha_camera: 0.2
+
+    camera_range_m: 10.0
+    prefer_lidar_if_camera_missing_far: true
+    allow_camera_fallback_near: false
+
+    publish_rate_hz: 20.0
+    enable_id_text: false
+    enable_tentative_viz: false
+    enable_raw_debug_viz: false
+
+    enable_global_track_memory: true
+    global_merge_radius_m: 0.6
+    global_min_hits_for_track: 2
+    global_max_cones: 2000
+
+    enable_track_live_plot: true
+    track_plot_update_hz: 2.0
+    save_track_plot_on_shutdown: true
+    track_plot_filename: "cone_memory_track.png"
+    track_plot_data_filename: "cone_memory_track_data.csv"
+
+    lidar_cones_topic: "/sim/lidar/perception/cones_3d"
+    camera_cones_topic: "/sim/stereo/perception/cones_3d"
+    tracked_cones_topic: "/tracked_cones"
+    viz_topic: "/local_cone_map_viz"
+    believed_track_viz_topic: "/cone_memory/believed_track_viz"
+    run_session_topic: "/run_session"
+    odom_topic: "/sim/odom"
