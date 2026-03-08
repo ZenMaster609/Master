@@ -49,6 +49,7 @@ class LidarNode(Node):
         self.declare_parameter('min_cluster_width_m', 0.03)
         self.declare_parameter('max_cluster_width_m', 0.45)
         self.declare_parameter('max_cluster_depth_m', 0.35)
+        self.declare_parameter('dedup_radius_m', 0.85)
         self.declare_parameter('cone_eval_tf_timeout_sec', 0.0)
 
     def _read_parameters(self) -> None:
@@ -67,6 +68,7 @@ class LidarNode(Node):
         self.min_cluster_width_m = max(0.0, float(self.get_parameter('min_cluster_width_m').value))
         self.max_cluster_width_m = max(self.min_cluster_width_m + 1e-6, float(self.get_parameter('max_cluster_width_m').value))
         self.max_cluster_depth_m = max(0.0, float(self.get_parameter('max_cluster_depth_m').value))
+        self.dedup_radius_m = max(0.01, float(self.get_parameter('dedup_radius_m').value))
         self.cone_eval_tf_timeout_sec = max(0.0, float(self.get_parameter('cone_eval_tf_timeout_sec').value))
 
     def _scan_cb(self, msg: LaserScan) -> None:
@@ -97,7 +99,7 @@ class LidarNode(Node):
             max_cluster_width_m=self.max_cluster_width_m,
             max_cluster_depth_m=self.max_cluster_depth_m,
         )
-        return [(cluster.x_m, cluster.y_m) for cluster in clusters]
+        return self._deduplicate_xy([(cluster.x_m, cluster.y_m) for cluster in clusters], self.dedup_radius_m)
 
     def _transform_detections(self, *, detections_xy: list[tuple[float, float]], source_frame: str, stamp) -> list[tuple[float, float]]:
         if not detections_xy:
@@ -200,6 +202,39 @@ class LidarNode(Node):
         if (now_sec - last_sec) >= 1.0:
             self.get_logger().warn(message)
             self._last_throttled_log_sec[key] = now_sec
+
+    @staticmethod
+    def _deduplicate_xy(points: list[tuple[float, float]], dedup_radius_m: float) -> list[tuple[float, float]]:
+        if len(points) <= 1:
+            return list(points)
+
+        radius_sq = float(dedup_radius_m) * float(dedup_radius_m)
+        merged: list[tuple[float, float, float]] = []
+
+        for x, y in sorted(points, key=lambda item: (item[0] * item[0]) + (item[1] * item[1])):
+            best_idx = -1
+            best_dist_sq = float('inf')
+            for idx, (mx, my, weight) in enumerate(merged):
+                dx = x - mx
+                dy = y - my
+                dist_sq = (dx * dx) + (dy * dy)
+                if dist_sq <= radius_sq and dist_sq < best_dist_sq:
+                    best_idx = idx
+                    best_dist_sq = dist_sq
+
+            if best_idx < 0:
+                merged.append((float(x), float(y), 1.0))
+                continue
+
+            mx, my, weight = merged[best_idx]
+            new_weight = weight + 1.0
+            merged[best_idx] = (
+                ((mx * weight) + float(x)) / new_weight,
+                ((my * weight) + float(y)) / new_weight,
+                new_weight,
+            )
+
+        return [(x, y) for x, y, _weight in merged]
 
     def _source_frame_candidates(self, source_frame: str) -> list[str]:
         source = source_frame.strip()

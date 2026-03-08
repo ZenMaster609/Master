@@ -170,7 +170,7 @@ class PairMidpointPlannerNode(Node):
             'cone_axes.lateral_axis': 'y',
             'cone_axes.forward_sign': 1.0,
             'cone_axes.lateral_sign': 1.0,
-            'planner_rate_hz': 30.0,
+            'planner_rate_hz': 180.0,
         }
         for name, value in defaults.items():
             self.declare_parameter(name, value)

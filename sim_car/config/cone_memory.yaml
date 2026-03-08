@@ -1,14 +1,22 @@
 cone_memory_node:
   ros__parameters:
     odom_frame: "odom"
-    base_frame: "base_footprint"
+    base_frame: "front_axle"
     tf_timeout_s: 0.03
+    odom_pose_sync_tolerance_sec: 0.05
+    base_pose_latest_fallback_tolerance_sec: 0.02
+    wheelbase_m: 1.65
 
     max_range_m: 25.0
     behind_drop_m: 8.0
     ttl_sec: 3.0
     unknown_drop_frames: 15
     gate_radius_m: 0.5
+    spawn_radius_m: 0.85
+    dedup_radius_m: 0.85
+    track_merge_radius_m: 0.85
+    track_merge_longitudinal_tolerance_m: 2.50
+    track_merge_lateral_tolerance_m: 0.55
     min_seen_count: 3
     alpha_lidar: 0.25
     alpha_camera: 0.15
@@ -17,7 +25,7 @@ cone_memory_node:
     prefer_lidar_if_camera_missing_far: true
     allow_camera_fallback_near: false
 
-    publish_rate_hz: 20.0
+    publish_rate_hz: 60.0
     enable_id_text: false
     enable_tentative_viz: false
     enable_raw_debug_viz: false

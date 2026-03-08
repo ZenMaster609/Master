@@ -3,8 +3,10 @@
 
 from __future__ import annotations
 
+from collections import deque
 import csv
 from dataclasses import dataclass
+from builtin_interfaces.msg import Time as TimeMsg
 import math
 from pathlib import Path
 import time
@@ -23,6 +25,7 @@ from vehicle_plotter_msgs.msg import ConeDetection, ConeDetectionArray, RunSessi
 from visualization_msgs.msg import Marker, MarkerArray
 
 from sim_car.cone_fusion import FusedObservation, choose_position_source, clamp_camera_range, normalize_color
+from sim_car.cone_pose import base_point_to_odom, convert_odom_child_pose_to_base_frame, odom_point_to_base
 from sim_car.cone_tracker import ConeTrack, GlobalConeMemory, LocalConeTracker, TrackUpdate
 
 
@@ -55,7 +58,13 @@ class ConeMemoryNode(Node):
         self._global_memory = GlobalConeMemory()
         self._latest_lidar: list[SensorDetection] = []
         self._latest_camera: list[SensorDetection] = []
+        self._latest_lidar_stamp_ns: int = -1
+        self._latest_camera_stamp_ns: int = -1
+        self._last_processed_lidar_stamp_ns: int = -1
+        self._last_processed_camera_stamp_ns: int = -1
+        self._last_tracker_update_stamp: Optional[TimeMsg] = None
         self._latest_odom_msg: Optional[Odometry] = None
+        self._recent_odom_msgs: deque[Odometry] = deque(maxlen=512)
         self._last_plot_save_attempted = False
         self._run_session_run_id = ''
         self._run_session_base_path = ''
@@ -88,7 +97,7 @@ class ConeMemoryNode(Node):
             Odometry,
             self.odom_topic,
             self._odom_cb,
-            10,
+            qos_profile_sensor_data,
         )
 
         self.create_timer(1.0 / max(1.0, self.publish_rate_hz), self._on_timer)
@@ -112,14 +121,22 @@ class ConeMemoryNode(Node):
 
     def _declare_parameters(self) -> None:
         self.declare_parameter('odom_frame', 'odom')
-        self.declare_parameter('base_frame', 'base_footprint')
+        self.declare_parameter('base_frame', 'front_axle')
         self.declare_parameter('tf_timeout_s', 0.03)
+        self.declare_parameter('odom_pose_sync_tolerance_sec', 0.05)
+        self.declare_parameter('base_pose_latest_fallback_tolerance_sec', 0.02)
+        self.declare_parameter('wheelbase_m', 1.65)
 
         self.declare_parameter('max_range_m', 25.0)
         self.declare_parameter('behind_drop_m', 8.0)
         self.declare_parameter('ttl_sec', 2.0)
         self.declare_parameter('unknown_drop_frames', 15)
         self.declare_parameter('gate_radius_m', 0.5)
+        self.declare_parameter('spawn_radius_m', 0.85)
+        self.declare_parameter('dedup_radius_m', 0.85)
+        self.declare_parameter('track_merge_radius_m', 0.85)
+        self.declare_parameter('track_merge_longitudinal_tolerance_m', 2.50)
+        self.declare_parameter('track_merge_lateral_tolerance_m', 0.55)
         self.declare_parameter('min_seen_count', 2)
         self.declare_parameter('alpha_lidar', 0.4)
         self.declare_parameter('alpha_camera', 0.2)
@@ -128,7 +145,7 @@ class ConeMemoryNode(Node):
         self.declare_parameter('prefer_lidar_if_camera_missing_far', True)
         self.declare_parameter('allow_camera_fallback_near', False)
 
-        self.declare_parameter('publish_rate_hz', 20.0)
+        self.declare_parameter('publish_rate_hz', 60.0)
         self.declare_parameter('enable_id_text', False)
         self.declare_parameter('enable_tentative_viz', False)
         self.declare_parameter('enable_raw_debug_viz', False)
@@ -154,14 +171,31 @@ class ConeMemoryNode(Node):
 
     def _read_parameters(self) -> None:
         self.odom_frame = str(self.get_parameter('odom_frame').value).strip() or 'odom'
-        self.base_frame = str(self.get_parameter('base_frame').value).strip() or 'base_footprint'
+        self.base_frame = str(self.get_parameter('base_frame').value).strip() or 'front_axle'
         self.tf_timeout_s = max(0.0, float(self.get_parameter('tf_timeout_s').value))
+        self.odom_pose_sync_tolerance_sec = max(0.0, float(self.get_parameter('odom_pose_sync_tolerance_sec').value))
+        self.base_pose_latest_fallback_tolerance_sec = max(
+            0.0,
+            float(self.get_parameter('base_pose_latest_fallback_tolerance_sec').value),
+        )
+        self.wheelbase_m = max(0.1, float(self.get_parameter('wheelbase_m').value))
 
         self.max_range_m = max(1.0, float(self.get_parameter('max_range_m').value))
         self.behind_drop_m = max(0.0, float(self.get_parameter('behind_drop_m').value))
         self.ttl_sec = max(0.05, float(self.get_parameter('ttl_sec').value))
         self.unknown_drop_frames = max(0, int(self.get_parameter('unknown_drop_frames').value))
         self.gate_radius_m = max(0.05, float(self.get_parameter('gate_radius_m').value))
+        self.spawn_radius_m = max(self.gate_radius_m, float(self.get_parameter('spawn_radius_m').value))
+        self.dedup_radius_m = max(0.01, float(self.get_parameter('dedup_radius_m').value))
+        self.track_merge_radius_m = max(0.01, float(self.get_parameter('track_merge_radius_m').value))
+        self.track_merge_longitudinal_tolerance_m = max(
+            self.track_merge_radius_m,
+            float(self.get_parameter('track_merge_longitudinal_tolerance_m').value),
+        )
+        self.track_merge_lateral_tolerance_m = max(
+            0.01,
+            float(self.get_parameter('track_merge_lateral_tolerance_m').value),
+        )
         self.min_seen_count = max(1, int(self.get_parameter('min_seen_count').value))
         self.alpha_lidar = max(0.0, min(1.0, float(self.get_parameter('alpha_lidar').value)))
         self.alpha_camera = max(0.0, min(1.0, float(self.get_parameter('alpha_camera').value)))
@@ -196,9 +230,11 @@ class ConeMemoryNode(Node):
 
     def _lidar_cb(self, msg: ConeDetectionArray) -> None:
         self._latest_lidar = self._convert_msg_to_detections(msg)
+        self._latest_lidar_stamp_ns = self._stamp_to_ns(msg.header.stamp)
 
     def _camera_cb(self, msg: ConeDetectionArray) -> None:
         self._latest_camera = self._convert_msg_to_detections(msg)
+        self._latest_camera_stamp_ns = self._stamp_to_ns(msg.header.stamp)
 
     def _run_session_cb(self, msg: RunSession) -> None:
         self._run_session_run_id = str(msg.run_id).strip()
@@ -206,6 +242,7 @@ class ConeMemoryNode(Node):
 
     def _odom_cb(self, msg: Odometry) -> None:
         self._latest_odom_msg = msg
+        self._recent_odom_msgs.append(msg)
 
     def _convert_msg_to_detections(self, msg: ConeDetectionArray) -> list[SensorDetection]:
         source_frame = str(msg.header.frame_id).strip()
@@ -216,19 +253,25 @@ class ConeMemoryNode(Node):
             self.odom_frame,
             source_frame,
             msg.header.stamp,
+            allow_latest=False,
         )
         to_base, _resolved_base, _resolved_source_base = self._lookup_transform_with_alias(
             self.base_frame,
             source_frame,
             msg.header.stamp,
+            allow_latest=True,
         )
         source_is_base = self._is_alias(source_frame, self.base_frame)
-        odom_fallback_ok = to_odom is None and source_is_base and self._latest_odom_msg is not None
+        odom_pose_fallback = None
+        if to_odom is None:
+            odom_pose_fallback = self._nearest_odom_pose(msg.header.stamp)
+            if odom_pose_fallback is None:
+                odom_pose_fallback = self._current_base_pose_if_stamp_is_fresh(msg.header.stamp)
         base_identity_ok = to_base is None and source_is_base
-        if (to_odom is None and not odom_fallback_ok) or (to_base is None and not base_identity_ok):
+        if (to_odom is None and odom_pose_fallback is None) or (to_base is None and not base_identity_ok):
             self._warn_throttled(
                 'cone_tf_missing',
-                f'cone transform unavailable source={source_frame} target={self.odom_frame}/{self.base_frame}',
+                f'cone transform unavailable at stamp source={source_frame} target={self.odom_frame}/{self.base_frame}; dropping frame',
             )
             return []
 
@@ -237,15 +280,19 @@ class ConeMemoryNode(Node):
             x_src = float(cone.position.x)
             y_src = float(cone.position.y)
             z_src = float(cone.position.z)
-            if to_odom is not None:
-                x_odom, y_odom, z_odom = self._transform_point(to_odom, x_src, y_src, z_src)
-            else:
-                x_odom, y_odom, z_odom = self._base_point_to_odom(x_src, y_src, z_src)
-
             if to_base is not None:
                 x_base, y_base, z_base = self._transform_point(to_base, x_src, y_src, z_src)
             else:
                 x_base, y_base, z_base = x_src, y_src, z_src
+            if to_odom is not None:
+                x_odom, y_odom, z_odom = self._transform_point(to_odom, x_src, y_src, z_src)
+            else:
+                x_odom, y_odom, z_odom = base_point_to_odom(
+                    x_base,
+                    y_base,
+                    z_base,
+                    odom_pose_fallback,
+                )
             detections.append(
                 SensorDetection(
                     x_odom=x_odom,
@@ -260,6 +307,50 @@ class ConeMemoryNode(Node):
                 )
             )
         return detections
+
+    def _nearest_odom_pose(self, stamp) -> Optional[tuple[float, float, float]]:
+        if not self._recent_odom_msgs:
+            return None
+
+        target_ns = self._stamp_to_ns(stamp)
+        tolerance_ns = int(self.odom_pose_sync_tolerance_sec * 1e9)
+        best_pose: Optional[tuple[float, float, float]] = None
+        best_dt_ns: Optional[int] = None
+
+        for odom in self._recent_odom_msgs:
+            pose = self._base_pose_from_odom_msg(odom)
+            if pose is None:
+                continue
+            odom_ns = self._stamp_to_ns(odom.header.stamp)
+            dt_ns = abs(odom_ns - target_ns)
+            if best_dt_ns is None or dt_ns < best_dt_ns:
+                best_dt_ns = dt_ns
+                best_pose = pose
+
+        if best_pose is None:
+            return None
+        if tolerance_ns > 0 and (best_dt_ns is None or best_dt_ns > tolerance_ns):
+            return None
+
+        return best_pose
+
+    def _current_base_pose_if_stamp_is_fresh(self, stamp) -> Optional[tuple[float, float, float]]:
+        tolerance_sec = float(self.base_pose_latest_fallback_tolerance_sec)
+        if tolerance_sec <= 0.0:
+            return None
+
+        stamp_ns = self._stamp_to_ns(stamp)
+        now_ns = int(self.get_clock().now().nanoseconds)
+        if abs(now_ns - stamp_ns) > int(tolerance_sec * 1e9):
+            return None
+
+        base_in_odom, _resolved_odom, _resolved_base = self._lookup_transform_with_alias(
+            self.odom_frame,
+            self.base_frame,
+            Time().to_msg(),
+            allow_latest=True,
+        )
+        return self._resolve_base_pose(Time().to_msg(), base_in_odom)
 
     def _on_timer(self) -> None:
         now = self.get_clock().now()
@@ -276,35 +367,60 @@ class ConeMemoryNode(Node):
             return
         veh_x, veh_y, veh_yaw = base_pose
 
-        fused = self._build_fused_observations(self._latest_lidar, self._latest_camera)
-        updates = [
-            TrackUpdate(
-                assoc_x=o.assoc_x,
-                assoc_y=o.assoc_y,
-                update_x=o.update_x,
-                update_y=o.update_y,
-                update_z=o.update_z,
-                update_source=o.update_source,
-                has_lidar=o.has_lidar,
-                has_camera=o.has_camera,
-                camera_label=o.camera_label,
-                camera_confidence=o.camera_confidence,
-                range_m=o.range_m,
-            )
-            for o in fused
-        ]
-
-        stats = self._local_tracker.update(
-            updates=updates,
-            now_sec=now_sec,
-            gate_radius_m=self.gate_radius_m,
-            alpha_lidar=self.alpha_lidar,
-            alpha_camera=self.alpha_camera,
-            min_seen_count=self.min_seen_count,
+        lidar_is_new = (
+            self._latest_lidar_stamp_ns >= 0
+            and self._latest_lidar_stamp_ns != self._last_processed_lidar_stamp_ns
+        )
+        camera_is_new = (
+            self._latest_camera_stamp_ns >= 0
+            and self._latest_camera_stamp_ns != self._last_processed_camera_stamp_ns
         )
 
+        stats = None
+        if lidar_is_new or camera_is_new:
+            fused = self._build_fused_observations(
+                self._latest_lidar if lidar_is_new else [],
+                self._latest_camera if camera_is_new else [],
+            )
+            updates = [
+                TrackUpdate(
+                    assoc_x=o.assoc_x,
+                    assoc_y=o.assoc_y,
+                    update_x=o.update_x,
+                    update_y=o.update_y,
+                    update_z=o.update_z,
+                    update_source=o.update_source,
+                    has_lidar=o.has_lidar,
+                    has_camera=o.has_camera,
+                    camera_label=o.camera_label,
+                    camera_confidence=o.camera_confidence,
+                    range_m=o.range_m,
+                )
+                for o in fused
+            ]
+
+            stats = self._local_tracker.update(
+                updates=updates,
+                now_sec=now_sec,
+                gate_radius_m=self.gate_radius_m,
+                spawn_radius_m=self.spawn_radius_m,
+                alpha_lidar=self.alpha_lidar,
+                alpha_camera=self.alpha_camera,
+                min_seen_count=self.min_seen_count,
+            )
+            if lidar_is_new:
+                self._last_processed_lidar_stamp_ns = self._latest_lidar_stamp_ns
+            if camera_is_new:
+                self._last_processed_camera_stamp_ns = self._latest_camera_stamp_ns
+            latest_update_ns = max(
+                self._latest_lidar_stamp_ns if lidar_is_new else -1,
+                self._latest_camera_stamp_ns if camera_is_new else -1,
+            )
+            if latest_update_ns >= 0:
+                self._last_tracker_update_stamp = self._ns_to_stamp(latest_update_ns)
+
         track_positions_in_base = [
-            self._odom_point_to_base(track.x, track.y, veh_x, veh_y, veh_yaw)
+            odom_point_to_base(track.x, track.y, (veh_x, veh_y, veh_yaw))
             for track in self._local_tracker.tracks
         ]
         pruned = self._local_tracker.prune(
@@ -315,6 +431,18 @@ class ConeMemoryNode(Node):
             unknown_drop_frames=self.unknown_drop_frames,
             track_positions_in_base=track_positions_in_base,
         )
+        track_positions_in_base = [
+            odom_point_to_base(track.x, track.y, (veh_x, veh_y, veh_yaw))
+            for track in self._local_tracker.tracks
+        ]
+        merged_tracks = self._local_tracker.merge_nearby_tracks(
+            merge_radius_m=self.track_merge_radius_m,
+            track_positions_in_base=track_positions_in_base,
+            longitudinal_tolerance_m=self.track_merge_longitudinal_tolerance_m,
+            lateral_tolerance_m=self.track_merge_lateral_tolerance_m,
+        )
+        if stats is not None:
+            stats.merged_tracks += merged_tracks
 
         confirmed = self._local_tracker.confirmed_tracks(self.min_seen_count)
         tentative = self._local_tracker.tentative_tracks(self.min_seen_count)
@@ -344,10 +472,14 @@ class ConeMemoryNode(Node):
         if self.enable_raw_debug_viz:
             self._publish_raw_markers(now=now)
 
+        status_suffix = ''
+        if stats is None:
+            status_suffix = ' inputs=reused'
         self._info_throttled(
             'cone_memory_status',
             f'tracks total={len(self._local_tracker.tracks)} confirmed={len(confirmed)} '
-            f'tentative={len(tentative)} pruned={pruned} global={len(self._global_memory.cones)}',
+            f'tentative={len(tentative)} pruned={pruned} merged={merged_tracks} '
+            f'global={len(self._global_memory.cones)}{status_suffix}',
         )
 
     def _build_fused_observations(
@@ -355,6 +487,8 @@ class ConeMemoryNode(Node):
         lidar: list[SensorDetection],
         camera: list[SensorDetection],
     ) -> list[FusedObservation]:
+        lidar = self._deduplicate_sensor_detections(lidar, self.dedup_radius_m)
+        camera = self._deduplicate_sensor_detections(camera, self.dedup_radius_m)
         pairs, unmatched_lidar_idx, unmatched_camera_idx = self._pair_detections(lidar, camera, self.gate_radius_m)
         out: list[FusedObservation] = []
 
@@ -366,6 +500,71 @@ class ConeMemoryNode(Node):
             out.append(self._make_observation(lidar_det=None, camera_det=camera[c_idx]))
 
         return out
+
+    @staticmethod
+    def _deduplicate_sensor_detections(
+        detections: list[SensorDetection],
+        dedup_radius_m: float,
+    ) -> list[SensorDetection]:
+        if len(detections) <= 1:
+            return list(detections)
+
+        radius_sq = float(dedup_radius_m) * float(dedup_radius_m)
+        merged: list[SensorDetection] = []
+        total_weight: list[float] = []
+
+        for det in sorted(detections, key=lambda item: (item.range_m, -item.confidence)):
+            best_idx = -1
+            best_dist_sq = float('inf')
+            for idx, existing in enumerate(merged):
+                if (
+                    det.color != existing.color
+                    and det.color != 'unknown'
+                    and existing.color != 'unknown'
+                ):
+                    continue
+                dx = det.x_base - existing.x_base
+                dy = det.y_base - existing.y_base
+                dist_sq = (dx * dx) + (dy * dy)
+                if dist_sq <= radius_sq and dist_sq < best_dist_sq:
+                    best_idx = idx
+                    best_dist_sq = dist_sq
+
+            if best_idx < 0:
+                merged.append(det)
+                total_weight.append(max(0.1, det.confidence))
+                continue
+
+            prev = merged[best_idx]
+            prev_weight = total_weight[best_idx]
+            add_weight = max(0.1, det.confidence)
+            weight_sum = prev_weight + add_weight
+            merged_det = SensorDetection(
+                x_odom=((prev.x_odom * prev_weight) + (det.x_odom * add_weight)) / weight_sum,
+                y_odom=((prev.y_odom * prev_weight) + (det.y_odom * add_weight)) / weight_sum,
+                z_odom=((prev.z_odom * prev_weight) + (det.z_odom * add_weight)) / weight_sum,
+                x_base=((prev.x_base * prev_weight) + (det.x_base * add_weight)) / weight_sum,
+                y_base=((prev.y_base * prev_weight) + (det.y_base * add_weight)) / weight_sum,
+                z_base=((prev.z_base * prev_weight) + (det.z_base * add_weight)) / weight_sum,
+                range_m=0.0,
+                color=det.color if det.confidence >= prev.confidence else prev.color,
+                confidence=max(prev.confidence, det.confidence),
+            )
+            merged_det = SensorDetection(
+                x_odom=merged_det.x_odom,
+                y_odom=merged_det.y_odom,
+                z_odom=merged_det.z_odom,
+                x_base=merged_det.x_base,
+                y_base=merged_det.y_base,
+                z_base=merged_det.z_base,
+                range_m=float(math.hypot(merged_det.x_base, merged_det.y_base)),
+                color=merged_det.color,
+                confidence=merged_det.confidence,
+            )
+            merged[best_idx] = merged_det
+            total_weight[best_idx] = weight_sum
+
+        return merged
 
     def _make_observation(
         self,
@@ -467,7 +666,7 @@ class ConeMemoryNode(Node):
 
     def _publish_tracked_cones(self, tracks: list[ConeTrack], now: Time) -> None:
         msg = ConeDetectionArray()
-        msg.header.stamp = now.to_msg()
+        msg.header.stamp = self._last_tracker_update_stamp if self._last_tracker_update_stamp is not None else now.to_msg()
         msg.header.frame_id = self.odom_frame
         for track in tracks:
             label, class_conf = track.class_label()
@@ -479,6 +678,17 @@ class ConeMemoryNode(Node):
             cone.position.z = float(track.z)
             msg.cones.append(cone)
         self._tracked_pub.publish(msg)
+
+    @staticmethod
+    def _stamp_to_ns(stamp) -> int:
+        return (int(stamp.sec) * 1_000_000_000) + int(stamp.nanosec)
+
+    @staticmethod
+    def _ns_to_stamp(stamp_ns: int) -> TimeMsg:
+        msg = TimeMsg()
+        msg.sec = int(stamp_ns // 1_000_000_000)
+        msg.nanosec = int(stamp_ns % 1_000_000_000)
+        return msg
 
     def _publish_local_markers(self, *, confirmed: list[ConeTrack], tentative: list[ConeTrack], now: Time) -> None:
         arr = MarkerArray()
@@ -920,25 +1130,9 @@ class ConeMemoryNode(Node):
             return candidate
         return Path.cwd() / 'multidata'
 
-    def _odom_point_to_base(self, x_odom: float, y_odom: float, tx: float, ty: float, yaw: float) -> tuple[float, float]:
-        dx = x_odom - tx
-        dy = y_odom - ty
-        cos_y = math.cos(yaw)
-        sin_y = math.sin(yaw)
-        x_base = cos_y * dx + sin_y * dy
-        y_base = -sin_y * dx + cos_y * dy
-        return x_base, y_base
-
     def _base_point_to_odom(self, x_base: float, y_base: float, z_base: float) -> tuple[float, float, float]:
         pose = self._resolve_base_pose(Time().to_msg(), tf_msg=None)
-        if pose is None:
-            return x_base, y_base, z_base
-        tx, ty, yaw = pose
-        cos_y = math.cos(yaw)
-        sin_y = math.sin(yaw)
-        x_odom = tx + cos_y * x_base - sin_y * y_base
-        y_odom = ty + sin_y * x_base + cos_y * y_base
-        return x_odom, y_odom, z_base
+        return base_point_to_odom(x_base, y_base, z_base, pose)
 
     def _resolve_base_pose(self, stamp, tf_msg) -> Optional[tuple[float, float, float]]:
         if tf_msg is not None:
@@ -951,33 +1145,49 @@ class ConeMemoryNode(Node):
         odom = self._latest_odom_msg
         if odom is None:
             return None
-        frame_ok = self._is_alias(odom.header.frame_id, self.odom_frame)
-        child_ok = self._is_alias(odom.child_frame_id, self.base_frame)
-        if not (frame_ok and child_ok):
+        return self._base_pose_from_odom_msg(odom)
+
+    def _base_pose_from_odom_msg(self, odom: Odometry) -> Optional[tuple[float, float, float]]:
+        if not self._is_alias(odom.header.frame_id, self.odom_frame):
             return None
         pose = odom.pose.pose
         tx = float(pose.position.x)
         ty = float(pose.position.y)
         q = pose.orientation
         yaw = self._yaw_from_quat(float(q.x), float(q.y), float(q.z), float(q.w))
-        return tx, ty, yaw
+        return convert_odom_child_pose_to_base_frame(
+            child_frame=str(odom.child_frame_id).strip(),
+            base_frame=self.base_frame,
+            tx=tx,
+            ty=ty,
+            yaw=yaw,
+            wheelbase_m=self.wheelbase_m,
+            is_alias=self._is_alias,
+        )
 
-    def _lookup_transform(self, target_frame: str, source_frame: str, stamp):
+    def _lookup_transform(self, target_frame: str, source_frame: str, stamp, *, allow_latest: bool = True):
         timeout = Duration(seconds=self.tf_timeout_s)
         try:
             stamp_time = Time.from_msg(stamp)
             return self._tf_buffer.lookup_transform(target_frame, source_frame, stamp_time, timeout=timeout)
         except (TransformException, ValueError):
             pass
+        if not allow_latest:
+            return None
         try:
             return self._tf_buffer.lookup_transform(target_frame, source_frame, Time(), timeout=timeout)
         except TransformException:
             return None
 
-    def _lookup_transform_with_alias(self, target_frame: str, source_frame: str, stamp):
+    def _lookup_transform_with_alias(self, target_frame: str, source_frame: str, stamp, *, allow_latest: bool = True):
         for target_candidate in self._frame_aliases(target_frame):
             for source_candidate in self._frame_aliases(source_frame):
-                tf_msg = self._lookup_transform(target_candidate, source_candidate, stamp)
+                tf_msg = self._lookup_transform(
+                    target_candidate,
+                    source_candidate,
+                    stamp,
+                    allow_latest=allow_latest,
+                )
                 if tf_msg is not None:
                     return tf_msg, target_candidate, source_candidate
         return None, target_frame, source_frame
@@ -1004,6 +1214,11 @@ class ConeMemoryNode(Node):
                 add(f'{prefix}/base_footprint')
             add('base_link')
             add('base_footprint')
+        if token == 'front_axle' or leaf == 'front_axle':
+            if '/' in token:
+                prefix = token.rsplit('/', 1)[0]
+                add(f'{prefix}/front_axle')
+            add('front_axle')
         return out
 
     def _is_alias(self, frame_a: str, frame_b: str) -> bool:

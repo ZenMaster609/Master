@@ -165,6 +165,7 @@ class PerceptionNode(Node):
 
         self.declare_parameter('cone_detections_topic', '/sim/raw/stereo/perception/cones_3d')
         self.declare_parameter('cone_detections_frame', 'base_footprint')
+        self.declare_parameter('cone_dedup_radius_m', 0.85)
         self.declare_parameter('cone_eval_tf_timeout_sec', 0.0)
 
     def _read_parameters(self):
@@ -219,6 +220,7 @@ class PerceptionNode(Node):
 
         self.cone_detections_topic = str(self.get_parameter('cone_detections_topic').value)
         self.cone_detections_frame = str(self.get_parameter('cone_detections_frame').value).strip() or 'base_footprint'
+        self.cone_dedup_radius_m = max(0.01, float(self.get_parameter('cone_dedup_radius_m').value))
         self.cone_eval_tf_timeout_sec = max(0.0, float(self.get_parameter('cone_eval_tf_timeout_sec').value))
 
     def _left_info_cb(self, msg: CameraInfo):
@@ -635,6 +637,7 @@ class PerceptionNode(Node):
                 )
 
         reconstruction_model = self._projection_model_for_frame(transform_source_frame)
+        cone_candidates: list[tuple[float, float, float, str, float]] = []
 
         for det in yolo_detections:
             axis_depth = det.get('depth_m')
@@ -670,16 +673,75 @@ class PerceptionNode(Node):
             if cam_to_output is not None:
                 x_out, y_out, z_out = self._transform_point(cam_to_output, x_out, y_out, z_out)
 
-            cone = ConeDetection()
-            cone.color = self._normalize_detection_color(str(det.get('label', '')))
             confidence = det.get('confidence')
-            cone.confidence = float(max(0.0, min(1.0, float(confidence)))) if confidence is not None else 0.0
-            cone.position.x = float(x_out)
-            cone.position.y = float(y_out)
-            cone.position.z = float(z_out)
+            cone_candidates.append(
+                (
+                    float(x_out),
+                    float(y_out),
+                    float(z_out),
+                    self._normalize_detection_color(str(det.get('label', ''))),
+                    float(max(0.0, min(1.0, float(confidence)))) if confidence is not None else 0.0,
+                )
+            )
+
+        for x_out, y_out, z_out, color, confidence in self._deduplicate_cone_candidates(
+            cone_candidates,
+            self.cone_dedup_radius_m,
+        ):
+            cone = ConeDetection()
+            cone.color = color
+            cone.confidence = confidence
+            cone.position.x = x_out
+            cone.position.y = y_out
+            cone.position.z = z_out
             msg.cones.append(cone)
 
         self._cone_detections_pub.publish(msg)
+
+    @staticmethod
+    def _deduplicate_cone_candidates(
+        candidates: list[tuple[float, float, float, str, float]],
+        dedup_radius_m: float,
+    ) -> list[tuple[float, float, float, str, float]]:
+        if len(candidates) <= 1:
+            return list(candidates)
+
+        radius_sq = float(dedup_radius_m) * float(dedup_radius_m)
+        merged: list[tuple[float, float, float, str, float, float]] = []
+
+        for x, y, z, color, confidence in sorted(
+            candidates,
+            key=lambda item: (-item[4], (item[0] * item[0]) + (item[1] * item[1])),
+        ):
+            best_idx = -1
+            best_dist_sq = float('inf')
+            for idx, (mx, my, _mz, mcolor, _mconf, _weight) in enumerate(merged):
+                if color != mcolor and color != 'unknown' and mcolor != 'unknown':
+                    continue
+                dx = x - mx
+                dy = y - my
+                dist_sq = (dx * dx) + (dy * dy)
+                if dist_sq <= radius_sq and dist_sq < best_dist_sq:
+                    best_idx = idx
+                    best_dist_sq = dist_sq
+
+            weight = max(0.1, confidence)
+            if best_idx < 0:
+                merged.append((x, y, z, color, confidence, weight))
+                continue
+
+            mx, my, mz, mcolor, mconf, mweight = merged[best_idx]
+            total_weight = mweight + weight
+            merged[best_idx] = (
+                ((mx * mweight) + (x * weight)) / total_weight,
+                ((my * mweight) + (y * weight)) / total_weight,
+                ((mz * mweight) + (z * weight)) / total_weight,
+                color if confidence >= mconf else mcolor,
+                max(mconf, confidence),
+                total_weight,
+            )
+
+        return [(x, y, z, color, confidence) for x, y, z, color, confidence, _weight in merged]
 
     def _lookup_transform(self, target_frame: str, source_frame: str, stamp):
         cache_key = (target_frame, source_frame)

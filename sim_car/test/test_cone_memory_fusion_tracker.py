@@ -3,6 +3,7 @@ from sim_car.cone_fusion import (
     class_from_probs,
     update_class_probs,
 )
+from sim_car.cone_pose import convert_odom_child_pose_to_base_frame
 from sim_car.cone_tracker import (
     GlobalConeMemory,
     LocalConeTracker,
@@ -90,6 +91,7 @@ def test_local_tracker_association_and_confirmation():
         updates=[_u(assoc_x=1.0, assoc_y=2.0, update_x=1.0, update_y=2.0)],
         now_sec=1.0,
         gate_radius_m=0.5,
+        spawn_radius_m=0.5,
         alpha_lidar=0.4,
         alpha_camera=0.2,
         min_seen_count=2,
@@ -101,6 +103,7 @@ def test_local_tracker_association_and_confirmation():
         updates=[_u(assoc_x=1.1, assoc_y=2.1, update_x=1.1, update_y=2.1)],
         now_sec=1.1,
         gate_radius_m=0.5,
+        spawn_radius_m=0.5,
         alpha_lidar=0.4,
         alpha_camera=0.2,
         min_seen_count=2,
@@ -119,6 +122,7 @@ def test_local_tracker_pruning_by_ttl_and_range_and_behind():
         ],
         now_sec=1.0,
         gate_radius_m=0.01,
+        spawn_radius_m=0.01,
         alpha_lidar=0.4,
         alpha_camera=0.2,
         min_seen_count=1,
@@ -149,6 +153,7 @@ def test_local_tracker_pruning_unknown_filter():
         updates=[_u(assoc_x=0.0, assoc_y=0.0, update_x=0.0, update_y=0.0, source='lidar', has_lidar=True, has_camera=False)],
         now_sec=1.0,
         gate_radius_m=0.5,
+        spawn_radius_m=0.5,
         alpha_lidar=0.4,
         alpha_camera=0.2,
         min_seen_count=1,
@@ -159,6 +164,7 @@ def test_local_tracker_pruning_unknown_filter():
             updates=[_u(assoc_x=0.0, assoc_y=0.0, update_x=0.0, update_y=0.0, source='lidar', has_lidar=True, has_camera=False)],
             now_sec=float(i),
             gate_radius_m=0.5,
+            spawn_radius_m=0.5,
             alpha_lidar=0.4,
             alpha_camera=0.2,
             min_seen_count=1,
@@ -185,6 +191,7 @@ def test_global_cone_memory_merge_and_centerline():
         ],
         now_sec=1.0,
         gate_radius_m=0.2,
+        spawn_radius_m=0.2,
         alpha_lidar=0.4,
         alpha_camera=0.2,
         min_seen_count=1,
@@ -205,6 +212,7 @@ def test_global_cone_memory_merge_and_centerline():
         ],
         now_sec=2.0,
         gate_radius_m=0.5,
+        spawn_radius_m=0.5,
         alpha_lidar=0.4,
         alpha_camera=0.2,
         min_seen_count=1,
@@ -239,6 +247,7 @@ def test_local_tracker_alpha_reduces_step_size():
         updates=init,
         now_sec=1.0,
         gate_radius_m=1.0,
+        spawn_radius_m=1.0,
         alpha_lidar=0.4,
         alpha_camera=0.2,
         min_seen_count=1,
@@ -247,6 +256,7 @@ def test_local_tracker_alpha_reduces_step_size():
         updates=init,
         now_sec=1.0,
         gate_radius_m=1.0,
+        spawn_radius_m=1.0,
         alpha_lidar=0.25,
         alpha_camera=0.15,
         min_seen_count=1,
@@ -257,6 +267,7 @@ def test_local_tracker_alpha_reduces_step_size():
         updates=step,
         now_sec=2.0,
         gate_radius_m=1.0,
+        spawn_radius_m=1.0,
         alpha_lidar=0.4,
         alpha_camera=0.2,
         min_seen_count=1,
@@ -265,9 +276,101 @@ def test_local_tracker_alpha_reduces_step_size():
         updates=step,
         now_sec=2.0,
         gate_radius_m=1.0,
+        spawn_radius_m=1.0,
         alpha_lidar=0.25,
         alpha_camera=0.15,
         min_seen_count=1,
     )
 
     assert tracker_fast.tracks[0].x > tracker_slow.tracks[0].x
+
+
+def test_local_tracker_suppresses_near_duplicate_track_creation_outside_gate():
+    tracker = LocalConeTracker()
+
+    tracker.update(
+        updates=[_u(assoc_x=10.0, assoc_y=1.5, update_x=10.0, update_y=1.5, camera_label='blue', has_camera=True)],
+        now_sec=1.0,
+        gate_radius_m=0.5,
+        spawn_radius_m=0.85,
+        alpha_lidar=0.25,
+        alpha_camera=0.15,
+        min_seen_count=1,
+    )
+
+    stats = tracker.update(
+        updates=[_u(assoc_x=10.58, assoc_y=1.62, update_x=10.58, update_y=1.62, camera_label='blue', has_camera=True)],
+        now_sec=2.0,
+        gate_radius_m=0.5,
+        spawn_radius_m=0.85,
+        alpha_lidar=0.25,
+        alpha_camera=0.15,
+        min_seen_count=1,
+    )
+
+    assert len(tracker.tracks) == 1
+    assert stats.new_tracks == 0
+    assert stats.suppressed_new_tracks == 1
+
+
+def test_local_tracker_merges_nearby_same_color_tracks():
+    tracker = LocalConeTracker()
+    tracker.update(
+        updates=[
+            _u(assoc_x=5.0, assoc_y=1.2, update_x=5.0, update_y=1.2, camera_label='yellow', has_camera=True),
+            _u(assoc_x=5.65, assoc_y=1.0, update_x=5.65, update_y=1.0, camera_label='yellow', has_camera=True),
+        ],
+        now_sec=1.0,
+        gate_radius_m=0.2,
+        spawn_radius_m=0.2,
+        alpha_lidar=0.25,
+        alpha_camera=0.15,
+        min_seen_count=1,
+    )
+
+    merged = tracker.merge_nearby_tracks(merge_radius_m=0.85)
+
+    assert merged == 1
+    assert len(tracker.tracks) == 1
+
+
+def test_local_tracker_merges_longitudinal_same_side_aliases_in_base_frame():
+    tracker = LocalConeTracker()
+    tracker.update(
+        updates=[
+            _u(assoc_x=10.0, assoc_y=1.50, update_x=10.0, update_y=1.50, camera_label='blue', has_camera=True),
+            _u(assoc_x=11.45, assoc_y=1.56, update_x=11.45, update_y=1.56, camera_label='blue', has_camera=True),
+        ],
+        now_sec=1.0,
+        gate_radius_m=0.2,
+        spawn_radius_m=0.2,
+        alpha_lidar=0.25,
+        alpha_camera=0.15,
+        min_seen_count=1,
+    )
+
+    merged = tracker.merge_nearby_tracks(
+        merge_radius_m=0.85,
+        track_positions_in_base=[(10.0, 1.50), (11.45, 1.56)],
+        longitudinal_tolerance_m=1.75,
+        lateral_tolerance_m=0.25,
+    )
+
+    assert merged == 1
+    assert len(tracker.tracks) == 1
+
+
+def test_convert_odom_child_pose_to_front_axle_applies_wheelbase_offset():
+    pose = convert_odom_child_pose_to_base_frame(
+        child_frame='base_footprint',
+        base_frame='front_axle',
+        tx=-20.0,
+        ty=1.0,
+        yaw=0.0,
+        wheelbase_m=1.65,
+        is_alias=lambda a, b: a == b,
+    )
+
+    assert pose is not None
+    assert abs(pose[0] - (-19.175)) < 1e-9
+    assert abs(pose[1] - 1.0) < 1e-9

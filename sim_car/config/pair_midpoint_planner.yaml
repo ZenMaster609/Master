@@ -76,4 +76,4 @@ pair_midpoint_planner_node:
       forward_sign: 1.0
       lateral_sign: 1.0
 
-    planner_rate_hz: 30.0
+    planner_rate_hz: 180.0

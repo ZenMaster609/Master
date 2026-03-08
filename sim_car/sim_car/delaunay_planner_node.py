@@ -80,7 +80,7 @@ class DelaunayPlannerNode(Node):
             Odometry,
             self.odom_topic,
             self._odom_cb,
-            10,
+            qos_profile_sensor_data,
         )
 
         loop_hz = max(1.0, float(self.publish_rate_hz))
@@ -122,7 +122,7 @@ class DelaunayPlannerNode(Node):
             'centerline.max_path_length_m': 30.0,
             'centerline.enable_temporal_smoothing': True,
             'centerline.smoothing_alpha': 0.3,
-            'runtime.publish_rate_hz': 20.0,
+            'runtime.publish_rate_hz': 180.0,
             'runtime.log_throttle_s': 1.0,
             'control.controller_type': 'pure_pursuit',
             'pure_pursuit.lookahead_min_m': 3.0,

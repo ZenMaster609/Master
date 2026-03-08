@@ -73,8 +73,8 @@ boundary_planner_node:
     validation:
       reject_crossing_paths: false
       min_boundary_separation_m: 0.20
-      max_history_frames: 8
+      max_history_frames: 48
       consistency_horizon_m: 6.0
       max_centerline_jump_m: 0.0
 
-    planner_rate_hz: 30.0
+    planner_rate_hz: 180.0

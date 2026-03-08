@@ -14,7 +14,7 @@ from launch import LaunchDescription
 from launch.actions import DeclareLaunchArgument, IncludeLaunchDescription, OpaqueFunction, SetEnvironmentVariable
 from launch.conditions import IfCondition, UnlessCondition
 from launch.launch_description_sources import PythonLaunchDescriptionSource
-from launch.substitutions import LaunchConfiguration
+from launch.substitutions import LaunchConfiguration, PythonExpression
 from launch_ros.actions import Node
 
 
@@ -38,6 +38,8 @@ def generate_launch_description():
     world = LaunchConfiguration('world', default=world_file)
     headless = LaunchConfiguration('headless', default='false')
     update_rate_hz = LaunchConfiguration('update_rate_hz', default='100.0')
+    perception_rate_hz = LaunchConfiguration('perception_rate_hz', default='33.3333333333')
+    planner_rate_hz = LaunchConfiguration('planner_rate_hz', default='100.0')
     topic_prefix = LaunchConfiguration('topic_prefix', default='/sim/raw')
     sensors_render_engine = LaunchConfiguration('sensors_render_engine', default='ogre')
 
@@ -87,6 +89,16 @@ def generate_launch_description():
             'update_rate_hz',
             default_value='100.0',
             description='Dynamics + joint state update rate (Hz)'
+        ),
+        DeclareLaunchArgument(
+            'perception_rate_hz',
+            default_value=PythonExpression([LaunchConfiguration('update_rate_hz'), ' / 3.0']),
+            description='Perception sensor target rate in Hz (defaults to update_rate_hz / 3)'
+        ),
+        DeclareLaunchArgument(
+            'planner_rate_hz',
+            default_value=LaunchConfiguration('update_rate_hz'),
+            description='Planner/controller/odom target rate in Hz'
         ),
         DeclareLaunchArgument(
             'topic_prefix',
@@ -142,13 +154,25 @@ def _launch_simulation(context, *args, **kwargs):
     updated_world = _write_updated_world(world_path, max_step_size, sensors_render_engine)
     eufs_config_path = os.path.join(pkg_sim_car, 'config', 'eufs_config.yaml')
     update_rate_value = float(LaunchConfiguration('update_rate_hz').perform(context))
+    perception_rate_value = float(LaunchConfiguration('perception_rate_hz').perform(context))
+    planner_rate_value = float(LaunchConfiguration('planner_rate_hz').perform(context))
     updated_eufs_config = _write_updated_eufs_config(eufs_config_path, update_rate_value)
     spawn_x = LaunchConfiguration('spawn_x').perform(context)
     spawn_y = LaunchConfiguration('spawn_y').perform(context)
     spawn_z = LaunchConfiguration('spawn_z').perform(context)
     spawn_yaw = LaunchConfiguration('spawn_yaw').perform(context)
     robot_desc = _build_robot_description(
-        urdf_path, imu_rate, gnss_rate, updated_eufs_config, topic_prefix, spawn_x, spawn_y, spawn_z, spawn_yaw
+        urdf_path,
+        imu_rate,
+        gnss_rate,
+        perception_rate_value,
+        planner_rate_value,
+        updated_eufs_config,
+        topic_prefix,
+        spawn_x,
+        spawn_y,
+        spawn_z,
+        spawn_yaw,
     )
 
     use_sim_time = LaunchConfiguration('use_sim_time')
@@ -372,9 +396,25 @@ def _write_updated_eufs_config(config_path, update_rate_hz):
 
 
 def _build_robot_description(
-    urdf_path, imu_rate, gnss_rate, eufs_config_path, topic_prefix, spawn_x, spawn_y, spawn_z, spawn_yaw
+    urdf_path,
+    imu_rate,
+    gnss_rate,
+    perception_rate_hz,
+    planner_rate_hz,
+    eufs_config_path,
+    topic_prefix,
+    spawn_x,
+    spawn_y,
+    spawn_z,
+    spawn_yaw,
 ):
-    robot_xml = _load_robot_xml(urdf_path, eufs_config_path, topic_prefix)
+    robot_xml = _load_robot_xml(
+        urdf_path,
+        eufs_config_path,
+        topic_prefix,
+        perception_rate_hz,
+        planner_rate_hz,
+    )
     try:
         root = ET.fromstring(robot_xml)
     except ET.ParseError:
@@ -406,19 +446,27 @@ def _build_robot_description(
     return ET.tostring(root, encoding='unicode')
 
 
-def _load_robot_xml(urdf_path, eufs_config_path, topic_prefix):
+def _load_robot_xml(urdf_path, eufs_config_path, topic_prefix, perception_rate_hz, planner_rate_hz):
     if urdf_path.endswith('.xacro'):
-        return _run_xacro(urdf_path, eufs_config_path, topic_prefix)
+        return _run_xacro(
+            urdf_path,
+            eufs_config_path,
+            topic_prefix,
+            perception_rate_hz,
+            planner_rate_hz,
+        )
     with open(urdf_path, 'r') as urdf_file:
         return urdf_file.read()
 
 
-def _run_xacro(urdf_path, eufs_config_path, topic_prefix):
+def _run_xacro(urdf_path, eufs_config_path, topic_prefix, perception_rate_hz, planner_rate_hz):
     cmd = [
         'xacro',
         urdf_path,
         f'config_file:={eufs_config_path}',
         f'topic_prefix:={topic_prefix}',
+        f'perception_rate_hz:={perception_rate_hz}',
+        f'planner_rate_hz:={planner_rate_hz}',
     ]
     result = subprocess.run(cmd, capture_output=True, text=True, check=False)
     if result.returncode != 0:

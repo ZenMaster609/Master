@@ -3,6 +3,8 @@
   <xacro:arg name="config_file" default=""/>
   <xacro:arg name="chassis_mesh" default="file://$(find sim_car)/meshes/sisu-20d.dae"/>
   <xacro:arg name="topic_prefix" default="/sim/raw"/>
+  <xacro:arg name="perception_rate_hz" default="15.0"/>
+  <xacro:arg name="planner_rate_hz" default="50.0"/>
   <xacro:arg name="publish_track_cones" default="true"/>
   <xacro:arg name="enable_cone_miscoloring" default="false"/>
   <xacro:arg name="cone_confusion_yaml" default="$(find gazebo_cone_plugins)/config/cone_confusion_matrix.yaml"/>
@@ -195,7 +197,7 @@
       <odom_topic>$(arg topic_prefix)/odom</odom_topic>
       <odom_frame>odom</odom_frame>
       <robot_base_frame>base_footprint</robot_base_frame>
-      <odom_publish_frequency>50</odom_publish_frequency>
+      <odom_publish_frequency>$(arg planner_rate_hz)</odom_publish_frequency>
       <dimensions>3</dimensions>
     </plugin>
   </gazebo>
@@ -282,7 +284,7 @@
     <sensor name="stereo_left_camera" type="camera">
       <topic>$(arg topic_prefix)/stereo/left/image_raw</topic>
       <camera_info_topic>$(arg topic_prefix)/stereo/left/camera_info</camera_info_topic>
-      <update_rate>15</update_rate>
+      <update_rate>$(arg perception_rate_hz)</update_rate>
       <always_on>true</always_on>
       <visualize>false</visualize>
       <camera>
@@ -306,7 +308,7 @@
     <sensor name="stereo_right_camera" type="camera">
       <topic>$(arg topic_prefix)/stereo/right/image_raw</topic>
       <camera_info_topic>$(arg topic_prefix)/stereo/right/camera_info</camera_info_topic>
-      <update_rate>15</update_rate>
+      <update_rate>$(arg perception_rate_hz)</update_rate>
       <always_on>true</always_on>
       <visualize>false</visualize>
       <camera>
@@ -329,7 +331,7 @@
   <gazebo reference="lidar_link">
     <sensor name="front_lidar" type="gpu_lidar">
       <topic>$(arg topic_prefix)/lidar</topic>
-      <update_rate>15</update_rate>
+      <update_rate>$(arg perception_rate_hz)</update_rate>
       <always_on>true</always_on>
       <visualize>false</visualize>
       <lidar>

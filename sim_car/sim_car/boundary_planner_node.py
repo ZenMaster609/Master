@@ -165,7 +165,7 @@ class BoundaryPlannerNode(Node):
             'validation.max_history_frames': 8,
             'validation.consistency_horizon_m': 6.0,
             'validation.max_centerline_jump_m': 1.25,
-            'planner_rate_hz': 30.0,
+            'planner_rate_hz': 180.0,
         }
         for name, value in defaults.items():
             self.declare_parameter(name, value)

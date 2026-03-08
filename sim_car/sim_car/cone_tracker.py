@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import math
 from typing import Optional
 
 from sim_car.cone_fusion import class_from_probs, normalize_color, update_class_probs
@@ -64,6 +65,8 @@ class TrackFrameStats:
     pruned_tracks: int = 0
     matched_updates: int = 0
     new_tracks: int = 0
+    suppressed_new_tracks: int = 0
+    merged_tracks: int = 0
 
 
 class LocalConeTracker:
@@ -79,6 +82,7 @@ class LocalConeTracker:
         updates: list[TrackUpdate],
         now_sec: float,
         gate_radius_m: float,
+        spawn_radius_m: float,
         alpha_lidar: float,
         alpha_camera: float,
         min_seen_count: int,
@@ -104,6 +108,21 @@ class LocalConeTracker:
         for update_idx in unmatched_update_idx:
             update = updates[update_idx]
             if update.update_x is None or update.update_y is None:
+                continue
+            fallback_track_idx = self._find_nearby_track_for_update(
+                update=update,
+                radius_m=max(gate_radius_m, spawn_radius_m),
+            )
+            if fallback_track_idx is not None:
+                self._apply_update(
+                    track=self.tracks[fallback_track_idx],
+                    update=update,
+                    now_sec=now_sec,
+                    alpha_lidar=alpha_lidar,
+                    alpha_camera=alpha_camera,
+                )
+                stats.matched_updates += 1
+                stats.suppressed_new_tracks += 1
                 continue
             self.tracks.append(
                 ConeTrack(
@@ -131,6 +150,119 @@ class LocalConeTracker:
         stats.total_tracks = len(self.tracks)
         stats.confirmed_tracks = sum(1 for t in self.tracks if t.is_confirmed(min_seen_count))
         return stats
+
+    def merge_nearby_tracks(
+        self,
+        *,
+        merge_radius_m: float,
+        track_positions_in_base: Optional[list[tuple[float, float]]] = None,
+        longitudinal_tolerance_m: float = 0.0,
+        lateral_tolerance_m: float = 0.0,
+    ) -> int:
+        if len(self.tracks) <= 1:
+            return 0
+
+        merge_sq = merge_radius_m * merge_radius_m
+        merged_count = 0
+        keep: list[ConeTrack] = []
+        base_positions_by_track_id = {
+            track.track_id: track_positions_in_base[idx]
+            for idx, track in enumerate(self.tracks)
+        } if track_positions_in_base is not None and len(track_positions_in_base) == len(self.tracks) else {}
+
+        for candidate in sorted(
+            self.tracks,
+            key=lambda track: (track.last_seen_sec, track.seen_count, track.camera_class_confirmed),
+            reverse=True,
+        ):
+            best_idx = None
+            best_dist_sq = float('inf')
+            candidate_label, candidate_conf = candidate.class_label()
+
+            for idx, existing in enumerate(keep):
+                if not self._track_labels_compatible(existing, candidate_label):
+                    continue
+                dx = candidate.x - existing.x
+                dy = candidate.y - existing.y
+                dist_sq = dx * dx + dy * dy
+                if not self._tracks_are_merge_compatible(
+                    candidate=candidate,
+                    existing=existing,
+                    dist_sq=dist_sq,
+                    merge_sq=merge_sq,
+                    base_positions_by_track_id=base_positions_by_track_id,
+                    longitudinal_tolerance_m=longitudinal_tolerance_m,
+                    lateral_tolerance_m=lateral_tolerance_m,
+                ):
+                    continue
+                if dist_sq < best_dist_sq:
+                    best_idx = idx
+                    best_dist_sq = dist_sq
+
+            if best_idx is None:
+                keep.append(candidate)
+                continue
+
+            existing = keep[best_idx]
+            existing_label, existing_conf = existing.class_label()
+            existing_weight = max(1.0, float(existing.seen_count))
+            candidate_weight = max(1.0, float(candidate.seen_count))
+            weight_sum = existing_weight + candidate_weight
+
+            existing.x = ((existing.x * existing_weight) + (candidate.x * candidate_weight)) / weight_sum
+            existing.y = ((existing.y * existing_weight) + (candidate.y * candidate_weight)) / weight_sum
+            existing.z = ((existing.z * existing_weight) + (candidate.z * candidate_weight)) / weight_sum
+            existing.variance = min(existing.variance, candidate.variance)
+            existing.last_seen_sec = max(existing.last_seen_sec, candidate.last_seen_sec)
+            existing.seen_count = max(existing.seen_count, candidate.seen_count)
+            existing.lidar_seen_recently = existing.lidar_seen_recently or candidate.lidar_seen_recently
+            existing.camera_seen_recently = existing.camera_seen_recently or candidate.camera_seen_recently
+            existing.camera_class_confirmed = existing.camera_class_confirmed or candidate.camera_class_confirmed
+            existing.unknown_streak = min(existing.unknown_streak, candidate.unknown_streak)
+            if candidate_conf > existing_conf and candidate_label != 'unknown':
+                existing.class_probs = list(candidate.class_probs)
+            elif existing_label == 'unknown' and candidate_label == 'unknown':
+                existing.class_probs = [
+                    (a + b) * 0.5 for a, b in zip(existing.class_probs, candidate.class_probs)
+                ]
+            merged_count += 1
+
+        self.tracks = keep
+        return merged_count
+
+    @staticmethod
+    def _tracks_are_merge_compatible(
+        *,
+        candidate: ConeTrack,
+        existing: ConeTrack,
+        dist_sq: float,
+        merge_sq: float,
+        base_positions_by_track_id: dict[int, tuple[float, float]],
+        longitudinal_tolerance_m: float,
+        lateral_tolerance_m: float,
+    ) -> bool:
+        if dist_sq <= merge_sq:
+            return True
+
+        if longitudinal_tolerance_m <= 0.0 or lateral_tolerance_m <= 0.0:
+            return False
+
+        candidate_base = base_positions_by_track_id.get(candidate.track_id)
+        existing_base = base_positions_by_track_id.get(existing.track_id)
+        if candidate_base is None or existing_base is None:
+            return False
+
+        dx_base = abs(candidate_base[0] - existing_base[0])
+        dy_base = abs(candidate_base[1] - existing_base[1])
+        if dy_base > lateral_tolerance_m or dx_base > longitudinal_tolerance_m:
+            return False
+
+        # Prevent same-color cones on opposite sides of the car from collapsing
+        # if the color estimate is still uncertain.
+        if candidate_base[1] * existing_base[1] < 0.0 and max(abs(candidate_base[1]), abs(existing_base[1])) > 0.2:
+            return False
+
+        return True
 
     def prune(
         self,
@@ -192,6 +324,45 @@ class LocalConeTracker:
 
         unmatched_update_idx = [i for i in range(len(updates)) if i not in taken_updates]
         return assignments, unmatched_update_idx
+
+    def _find_nearby_track_for_update(
+        self,
+        *,
+        update: TrackUpdate,
+        radius_m: float,
+    ) -> Optional[int]:
+        if not self.tracks:
+            return None
+
+        radius_sq = radius_m * radius_m
+        update_label = normalize_color(update.camera_label or 'unknown')
+        best_idx: Optional[int] = None
+        best_score = float('inf')
+
+        for idx, track in enumerate(self.tracks):
+            if not self._track_labels_compatible(track, update_label):
+                continue
+            dx = update.assoc_x - track.x
+            dy = update.assoc_y - track.y
+            dist_sq = dx * dx + dy * dy
+            if dist_sq > radius_sq:
+                continue
+            # Prefer the closest track; break ties toward more stable tracks.
+            score = math.sqrt(dist_sq) - (0.02 * min(track.seen_count, 20))
+            if score < best_score:
+                best_score = score
+                best_idx = idx
+
+        return best_idx
+
+    @staticmethod
+    def _track_labels_compatible(track: ConeTrack, update_label: str) -> bool:
+        track_label, _track_conf = track.class_label()
+        track_norm = normalize_color(track_label)
+        update_norm = normalize_color(update_label)
+        if track_norm == 'unknown' or update_norm == 'unknown':
+            return True
+        return track_norm == update_norm
 
     @staticmethod
     def _apply_update(

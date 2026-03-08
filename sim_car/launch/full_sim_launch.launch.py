@@ -10,7 +10,9 @@ Launches:
 """
 
 from launch import LaunchDescription
-from launch.actions import DeclareLaunchArgument, GroupAction, IncludeLaunchDescription
+import tempfile
+
+from launch.actions import DeclareLaunchArgument, GroupAction, IncludeLaunchDescription, OpaqueFunction, SetLaunchConfiguration
 from launch.conditions import IfCondition
 from launch.launch_description_sources import PythonLaunchDescriptionSource
 from launch.substitutions import EnvironmentVariable, LaunchConfiguration, PathJoinSubstitution, PythonExpression
@@ -36,6 +38,18 @@ def generate_launch_description():
         'update_rate_hz',
         default_value='180.0',
         description='Dynamics + joint state update rate (Hz)'
+    )
+
+    perception_rate_arg = DeclareLaunchArgument(
+        'perception_rate_hz',
+        default_value=PythonExpression([LaunchConfiguration('update_rate_hz'), ' / 3.0']),
+        description='Perception sensor + fusion target rate in Hz (defaults to update_rate_hz / 3)'
+    )
+
+    planner_rate_arg = DeclareLaunchArgument(
+        'planner_rate_hz',
+        default_value=LaunchConfiguration('update_rate_hz'),
+        description='Planner/controller/odom target rate in Hz (defaults to update_rate_hz)'
     )
 
     sensors_render_engine_arg = DeclareLaunchArgument(
@@ -338,6 +352,8 @@ def generate_launch_description():
     launch_argument_names = [
         'headless',
         'update_rate_hz',
+        'perception_rate_hz',
+        'planner_rate_hz',
         'sensors_render_engine',
         'world',
         'spawn_x',
@@ -391,6 +407,9 @@ def generate_launch_description():
         name: LaunchConfiguration(name) for name in launch_argument_names
     }
 
+    resolved_measurement_config = LaunchConfiguration('resolved_measurement_config')
+    measurement_config_setup = OpaqueFunction(function=_configure_measurement_config)
+
     topic_prefix = PythonExpression([
         "'/sim/raw' if '",
         LaunchConfiguration('measure'),
@@ -407,6 +426,21 @@ def generate_launch_description():
         "'", LaunchConfiguration('camera_debug'),
         "'.strip().lower() in ['true', '1', 'on', 'yes', 'depth', 'disparity', 'left_rect', 'rect_left', 'yolo']"
     ])
+    stereo_pair_slack_sec = PythonExpression([
+        "max(0.02, 1.2 / float(",
+        LaunchConfiguration('perception_rate_hz'),
+        "))"
+    ])
+    delaunay_history_frames = PythonExpression([
+        "max(8, int((float(",
+        LaunchConfiguration('planner_rate_hz'),
+        ") * 0.2) + 0.999))"
+    ])
+    boundary_history_frames = PythonExpression([
+        "max(8, int((float(",
+        LaunchConfiguration('planner_rate_hz'),
+        ") * (8.0 / 30.0)) + 0.999))"
+    ])
 
     gazebo_launch = IncludeLaunchDescription(
         PythonLaunchDescriptionSource(
@@ -417,6 +451,8 @@ def generate_launch_description():
             'world': LaunchConfiguration('world'),
             'use_sim_time': LaunchConfiguration('use_sim_time'),
             'update_rate_hz': LaunchConfiguration('update_rate_hz'),
+            'perception_rate_hz': LaunchConfiguration('perception_rate_hz'),
+            'planner_rate_hz': LaunchConfiguration('planner_rate_hz'),
             'sensors_render_engine': LaunchConfiguration('sensors_render_engine'),
             'topic_prefix': topic_prefix,
             'spawn_x': LaunchConfiguration('spawn_x'),
@@ -432,7 +468,7 @@ def generate_launch_description():
         ),
         launch_arguments={
             'topic_prefix': topic_prefix,
-            'sensor_config': LaunchConfiguration('measurement_config'),
+            'sensor_config': resolved_measurement_config,
         }.items(),
         condition=IfCondition(LaunchConfiguration('sensor_nodes')),
     )
@@ -447,7 +483,7 @@ def generate_launch_description():
         ])),
         parameters=[{
             'use_sim_time': LaunchConfiguration('use_sim_time'),
-            'config_path': LaunchConfiguration('measurement_config'),
+            'config_path': resolved_measurement_config,
         }],
     )
 
@@ -468,7 +504,7 @@ def generate_launch_description():
             ]),
             'enable_rosbag': LaunchConfiguration('rosbagging'),
             'enable_data_collector': 'false',
-            'sensor_config': LaunchConfiguration('measurement_config'),
+            'sensor_config': resolved_measurement_config,
             'use_sim_time': LaunchConfiguration('use_sim_time'),
             'close_plots': LaunchConfiguration('close_plots'),
             'cone_eval_topic': PythonExpression(["'", topic_prefix, "' + '/stereo/eval/cone_depth_per_cone'"]),
@@ -511,7 +547,7 @@ def generate_launch_description():
                     ]),
                     'enable_rosbag': 'false',
                     'enable_data_collector': 'false',
-                    'sensor_config': LaunchConfiguration('measurement_config'),
+                    'sensor_config': resolved_measurement_config,
                     'use_sim_time': LaunchConfiguration('use_sim_time'),
                     'close_plots': LaunchConfiguration('close_plots'),
                     'cone_eval_topic': PythonExpression(["'", topic_prefix, "' + '/lidar/eval/cone_depth_per_cone'"]),
@@ -547,6 +583,14 @@ def generate_launch_description():
             'max_speed': control_config['max_speed'],
             'accel_limit': control_config['accel_limit'],
             'brake_decel_limit': control_config['brake_decel_limit'],
+            'control_rate': ParameterValue(
+                LaunchConfiguration('planner_rate_hz'),
+                value_type=float,
+            ),
+            'publish_rate': ParameterValue(
+                LaunchConfiguration('planner_rate_hz'),
+                value_type=float,
+            ),
         }],
         condition=IfCondition(PythonExpression([
             "'", LaunchConfiguration('bridge'), "'.lower() == 'throttle'"
@@ -570,6 +614,10 @@ def generate_launch_description():
             'max_speed': control_config['max_speed'],
             'accel_limit': control_config['accel_limit'],
             'brake_decel_limit': control_config['brake_decel_limit'],
+            'control_rate': ParameterValue(
+                LaunchConfiguration('planner_rate_hz'),
+                value_type=float,
+            ),
         }],
         condition=IfCondition(PythonExpression([
             "'", LaunchConfiguration('bridge'), "'.lower() == 'ackermann'"
@@ -617,7 +665,7 @@ def generate_launch_description():
             'eval_topic_prefix': PythonExpression(["'", topic_prefix, "' + '/stereo/eval'"]),
             'camera_debug_topic': PythonExpression(["'", topic_prefix, "' + '/stereo/camera_debug'"]),
             'cone_detections_topic': PythonExpression(["'", topic_prefix, "' + '/stereo/perception/cones_3d'"]),
-            'cone_detections_frame': 'base_footprint',
+            'cone_detections_frame': 'front_axle',
             'camera_debug': ParameterValue(
                 LaunchConfiguration('camera_debug'),
                 value_type=bool,
@@ -659,8 +707,11 @@ def generate_launch_description():
                 LaunchConfiguration('cuda'),
                 value_type=bool,
             ),
-            # Gazebo cameras can be phase-shifted; allow a bit more slack so rectified outputs stay live.
-            'max_time_diff_sec': 0.08,
+            # Keep stereo matching within roughly one frame period at the selected perception rate.
+            'max_time_diff_sec': ParameterValue(
+                stereo_pair_slack_sec,
+                value_type=float,
+            ),
         }],
     )
 
@@ -705,7 +756,7 @@ def generate_launch_description():
             'eval_topic_prefix': PythonExpression(["'", topic_prefix, "' + '/stereo/eval'"]),
             'camera_debug_topic': PythonExpression(["'", topic_prefix, "' + '/stereo/camera_debug'"]),
             'cone_detections_topic': PythonExpression(["'", topic_prefix, "' + '/stereo/perception/cones_3d'"]),
-            'cone_detections_frame': 'base_footprint',
+            'cone_detections_frame': 'front_axle',
             'camera_debug': ParameterValue(
                 LaunchConfiguration('camera_debug'),
                 value_type=bool,
@@ -747,7 +798,10 @@ def generate_launch_description():
                 LaunchConfiguration('cuda'),
                 value_type=bool,
             ),
-            'max_time_diff_sec': 0.08,
+            'max_time_diff_sec': ParameterValue(
+                stereo_pair_slack_sec,
+                value_type=float,
+            ),
         }],
     )
 
@@ -792,7 +846,7 @@ def generate_launch_description():
             ),
             'scan_topic': PythonExpression(["'", topic_prefix, "' + '/lidar'"]),
             'cone_detections_topic': PythonExpression(["'", topic_prefix, "' + '/lidar/perception/cones_3d'"]),
-            'cone_detections_frame': 'base_footprint',
+            'cone_detections_frame': 'front_axle',
         }],
     )
 
@@ -857,6 +911,7 @@ def generate_launch_description():
                 ),
                 'lidar_cones_topic': PythonExpression(["'", topic_prefix, "' + '/lidar/perception/cones_3d'"]),
                 'camera_cones_topic': PythonExpression(["'", topic_prefix, "' + '/stereo/perception/cones_3d'"]),
+                'base_frame': 'front_axle',
                 'camera_range_m': ParameterValue(
                     LaunchConfiguration('camera_range_m'),
                     value_type=float,
@@ -868,6 +923,10 @@ def generate_launch_description():
                 'allow_camera_fallback_near': ParameterValue(
                     LaunchConfiguration('allow_camera_fallback_near'),
                     value_type=bool,
+                ),
+                'publish_rate_hz': ParameterValue(
+                    LaunchConfiguration('perception_rate_hz'),
+                    value_type=float,
                 ),
                 'enable_track_live_plot': ParameterValue(
                     LaunchConfiguration('enable_track_live_plot'),
@@ -898,6 +957,14 @@ def generate_launch_description():
                 ]),
                 'topics.odom_topic': '/sim/odom',
                 'control.controller_type': LaunchConfiguration('controller'),
+                'runtime.publish_rate_hz': ParameterValue(
+                    LaunchConfiguration('planner_rate_hz'),
+                    value_type=float,
+                ),
+                'validation.max_history_frames': ParameterValue(
+                    delaunay_history_frames,
+                    value_type=int,
+                ),
             },
         ],
         condition=IfCondition(PythonExpression([
@@ -929,6 +996,14 @@ def generate_launch_description():
                     "' + '/stereo/perception/cones_3d'",
                 ]),
                 'topics.odom_topic': '/sim/odom',
+                'planner_rate_hz': ParameterValue(
+                    LaunchConfiguration('planner_rate_hz'),
+                    value_type=float,
+                ),
+                'validation.max_history_frames': ParameterValue(
+                    boundary_history_frames,
+                    value_type=int,
+                ),
                 'debug.publish_path': True,
                 'debug.publish_markers': True,
             },
@@ -962,6 +1037,10 @@ def generate_launch_description():
                     "' + '/stereo/perception/cones_3d'",
                 ]),
                 'topics.odom_topic': '/sim/odom',
+                'planner_rate_hz': ParameterValue(
+                    LaunchConfiguration('planner_rate_hz'),
+                    value_type=float,
+                ),
             },
         ],
         condition=IfCondition(PythonExpression([
@@ -1019,6 +1098,8 @@ def generate_launch_description():
     return LaunchDescription([
         headless_arg,
         update_rate_arg,
+        perception_rate_arg,
+        planner_rate_arg,
         sensors_render_engine_arg,
         world_arg,
         spawn_x_arg,
@@ -1068,6 +1149,7 @@ def generate_launch_description():
         cudnn_ld_library_path_arg,
         yolo_ultralytics_pythonpath_arg,
         measurement_config_arg,
+        measurement_config_setup,
         gazebo_launch,
         sim_nodes_launch,
         measurement_node,
@@ -1112,6 +1194,54 @@ def _load_control_config():
         'accel_limit': float(control.get('accel_limit', 12.5)),
         'brake_decel_limit': float(control.get('brake_decel_limit', 25.0)),
     }
+
+
+def _configure_measurement_config(context, *_args, **_kwargs):
+    config_path = LaunchConfiguration('measurement_config').perform(context)
+    planner_rate_hz = float(LaunchConfiguration('planner_rate_hz').perform(context))
+    resolved_config = _write_rate_adjusted_measurement_config(config_path, planner_rate_hz)
+    return [SetLaunchConfiguration('resolved_measurement_config', resolved_config)]
+
+
+def _write_rate_adjusted_measurement_config(config_path: str, planner_rate_hz: float) -> str:
+    if not config_path:
+        return config_path
+
+    try:
+        with open(config_path, 'r') as config_file:
+            config = yaml.safe_load(config_file) or {}
+    except (OSError, yaml.YAMLError):
+        return config_path
+
+    signals = config.get('signals')
+    if not isinstance(signals, dict):
+        return config_path
+
+    changed = False
+    target_rate_hz = max(1.0, float(planner_rate_hz))
+    for signal_name, signal_cfg in signals.items():
+        if not isinstance(signal_cfg, dict):
+            continue
+
+        input_topic = str(signal_cfg.get('input_topic', '')).strip()
+        output_topic = str(signal_cfg.get('output_topic', '')).strip()
+        msg_type = str(signal_cfg.get('msg_type', '')).strip()
+        if (
+            signal_name == 'odom'
+            or input_topic == '/sim/raw/odom'
+            or output_topic == '/sim/odom'
+            or msg_type == 'nav_msgs/msg/Odometry'
+        ):
+            signal_cfg['rate_hz'] = target_rate_hz
+            changed = True
+            break
+
+    if not changed:
+        return config_path
+
+    with tempfile.NamedTemporaryFile(mode='w', delete=False, suffix='.yaml') as tmp:
+        yaml.safe_dump(config, tmp, default_flow_style=False, sort_keys=False)
+        return tmp.name
 
 
 def _default_control_config():
