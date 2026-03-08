@@ -34,7 +34,7 @@ def generate_launch_description():
 
     update_rate_arg = DeclareLaunchArgument(
         'update_rate_hz',
-        default_value='100.0',
+        default_value='180.0',
         description='Dynamics + joint state update rate (Hz)'
     )
 
@@ -84,6 +84,12 @@ def generate_launch_description():
         'cone_plotting_2',
         default_value='true',
         description='Enable aggregated range-binned RMSE plotting'
+    )
+
+    steering_diagnostics_arg = DeclareLaunchArgument(
+        'steering_diagnostics',
+        default_value='true',
+        description='Enable steering-vs-path diagnostics CSV logging in the main logger'
     )
 
     logging_arg = DeclareLaunchArgument(
@@ -144,6 +150,12 @@ def generate_launch_description():
         'planner',
         default_value='delaunay',
         description="Planner to launch: 'boundary', 'pair_midpoint', 'delaunay', or 'none'"
+    )
+
+    controller_arg = DeclareLaunchArgument(
+        'controller',
+        default_value='stanley',
+        description='Controller to use: pure_pursuit or stanley'
     )
 
     use_delaunay_planner_arg = DeclareLaunchArgument(
@@ -225,7 +237,7 @@ def generate_launch_description():
 
     enable_track_live_plot_arg = DeclareLaunchArgument(
         'enable_track_live_plot',
-        default_value='true',
+        default_value='false',
         description='Enable live global track-belief plot in cone_memory_node'
     )
 
@@ -323,6 +335,62 @@ def generate_launch_description():
         description='Measurement config YAML path'
     )
 
+    launch_argument_names = [
+        'headless',
+        'update_rate_hz',
+        'sensors_render_engine',
+        'world',
+        'spawn_x',
+        'spawn_y',
+        'spawn_z',
+        'spawn_yaw',
+        'plotting',
+        'cone_plotting_2',
+        'logging',
+        'close_plots',
+        'rosbagging',
+        'steering',
+        'bridge',
+        'ackermann_steering_sign',
+        'use_sim_time',
+        'measure',
+        'sensor_nodes',
+        'planner',
+        'controller',
+        'use_delaunay_planner',
+        'rviz',
+        'use_rviz',
+        'rviz_config',
+        'perception_queue_size',
+        'cuda',
+        'stereo',
+        'mono',
+        'lidar_enabled',
+        'cone_memory_enabled',
+        'camera_range_m',
+        'prefer_lidar_if_camera_missing_far',
+        'allow_camera_fallback_near',
+        'enable_track_live_plot',
+        'lidar_cone_plotting_2',
+        'camera_debug',
+        'camera_debug_n_frames',
+        'monocular_bbox_height_offset_px',
+        'yolo_enabled',
+        'yolo_model_path',
+        'yolo_input_size',
+        'yolo_conf_threshold',
+        'yolo_iou_threshold',
+        'yolo_prefer_cuda',
+        'opencv_pythonpath',
+        'opencv_ld_library_path',
+        'cudnn_ld_library_path',
+        'yolo_ultralytics_pythonpath',
+        'measurement_config',
+    ]
+    launch_parameters_snapshot = {
+        name: LaunchConfiguration(name) for name in launch_argument_names
+    }
+
     topic_prefix = PythonExpression([
         "'/sim/raw' if '",
         LaunchConfiguration('measure'),
@@ -404,6 +472,10 @@ def generate_launch_description():
             'use_sim_time': LaunchConfiguration('use_sim_time'),
             'close_plots': LaunchConfiguration('close_plots'),
             'cone_eval_topic': PythonExpression(["'", topic_prefix, "' + '/stereo/eval/cone_depth_per_cone'"]),
+            'steering_diag_enabled': LaunchConfiguration('steering_diagnostics'),
+            'steering_diag_rate_hz': '50.0',
+            'steering_diag_steering_topic': '/sim/steering_angle',
+            'steering_diag_joint_states_topic': '/sim/joint_states',
             'cone_plot_config': PathJoinSubstitution([vehicle_plotter_share, 'config', 'cone_plots.yaml']),
         }.items(),
     )
@@ -444,6 +516,7 @@ def generate_launch_description():
                     'close_plots': LaunchConfiguration('close_plots'),
                     'cone_eval_topic': PythonExpression(["'", topic_prefix, "' + '/lidar/eval/cone_depth_per_cone'"]),
                     'cone_log_suffix': 'lidar',
+                    'steering_diag_enabled': 'false',
                     'cone_plot_config': PathJoinSubstitution([vehicle_plotter_share, 'config', 'cone_plots.yaml']),
                 }.items(),
             ),
@@ -469,7 +542,7 @@ def generate_launch_description():
         parameters=[{
             'input_topic': '/cmd',
             'output_topic': '/cmd_vel',
-            'wheelbase': 1.6,
+            'wheelbase': 1.65,
             'input_mode': 'throttle',
             'max_speed': control_config['max_speed'],
             'accel_limit': control_config['accel_limit'],
@@ -488,7 +561,7 @@ def generate_launch_description():
         parameters=[{
             'input_topic': '/cmd',
             'output_topic': '/cmd_vel',
-            'wheelbase': 1.6,
+            'wheelbase': 1.65,
             'command_mode': 'velocity',
             'steering_sign': ParameterValue(
                 LaunchConfiguration('ackermann_steering_sign'),
@@ -824,6 +897,7 @@ def generate_launch_description():
                     "' + '/stereo/perception/cones_3d'",
                 ]),
                 'topics.odom_topic': '/sim/odom',
+                'control.controller_type': LaunchConfiguration('controller'),
             },
         ],
         condition=IfCondition(PythonExpression([
@@ -927,6 +1001,21 @@ def generate_launch_description():
         ])),
     )
 
+    run_artifacts_node = Node(
+        package='sim_car',
+        executable='run_artifacts_node',
+        name='run_artifacts_node',
+        output='screen',
+        parameters=[{
+            'run_session_topic': '/run_session',
+            'config_source_dir': PathJoinSubstitution([sim_car_share, 'config']),
+            'copy_glob': '*.yaml',
+            'write_once': True,
+            'session_timeout_sec': 10.0,
+            'launch_parameters': launch_parameters_snapshot,
+        }],
+    )
+
     return LaunchDescription([
         headless_arg,
         update_rate_arg,
@@ -938,6 +1027,7 @@ def generate_launch_description():
         spawn_yaw_arg,
         plotting_arg,
         cone_plotting_2_arg,
+        steering_diagnostics_arg,
         logging_arg,
         close_plots_on_shutdown_arg,
         rosbagging_arg,
@@ -948,6 +1038,7 @@ def generate_launch_description():
         measure_arg,
         sensor_nodes_arg,
         planner_arg,
+        controller_arg,
         use_delaunay_planner_arg,
         rviz_arg,
         use_rviz_arg,
@@ -997,6 +1088,7 @@ def generate_launch_description():
         camera_debug_viewer_node,
         rviz_node,
         steering_gui_node,
+        run_artifacts_node,
     ])
 
 

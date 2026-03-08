@@ -22,7 +22,7 @@ class ThrottleCmdBridge(Node):
         self.declare_parameter('brake_cmd_topic', '/sim/brake_cmd')
 
         # Vehicle geometry
-        self.declare_parameter('wheelbase', 1.6)
+        self.declare_parameter('wheelbase', 1.65)
 
         # Input mode: 'throttle' (u in [0,1]) or 'accel' (m/s^2)
         self.declare_parameter('input_mode', 'throttle')

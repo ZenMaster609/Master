@@ -39,8 +39,8 @@ pair_midpoint_planner_node:
     pure_pursuit:
       lookahead_min_m: 3.0
       lookahead_gain: 0.35
-      steering_limit_rad: 0.32
-      wheelbase_m: 1.6
+      steering_limit_rad: 0.52
+      wheelbase_m: 1.65
       stop_if_no_path: false
 
     wall_avoidance:

@@ -62,8 +62,6 @@ class PerceptionNode(Node):
         self._tf_cache_lock = threading.Lock()
         self._tf_cache = {}
         self._last_throttled_log_sec: dict[str, float] = {}
-        self._warned_projection_override = False
-
         self._pipeline: Optional[StereoPipeline] = None
         if self.stereo_enabled:
             self._pipeline = StereoPipeline(
@@ -637,13 +635,6 @@ class PerceptionNode(Node):
                 )
 
         reconstruction_model = self._projection_model_for_frame(transform_source_frame)
-        if reconstruction_model != projection_model:
-            if not self._warned_projection_override:
-                self.get_logger().warn(
-                    f'cone detections projection model override {projection_model}->{reconstruction_model} '
-                    f'because transform source frame is "{transform_source_frame}"'
-                )
-                self._warned_projection_override = True
 
         for det in yolo_detections:
             axis_depth = det.get('depth_m')

@@ -3,7 +3,7 @@ delaunay_planner_node:
     frames:
       planning_frame: "odom"
       odom_frame: "odom"
-      base_frame: "base_link"
+      base_frame: "front_axle"
       tf_timeout_s: 0.03
 
     topics:
@@ -35,24 +35,60 @@ delaunay_planner_node:
       path_resolution_m: 0.5
       max_path_length_m: 30.0
       enable_temporal_smoothing: true
-      smoothing_alpha: 0.3
+      smoothing_alpha: 0.2
 
     runtime:
-      publish_rate_hz: 20.0
+      publish_rate_hz: 40.0
       log_throttle_s: 1.0
+
+    control:
+      controller_type: "pure_pursuit"  # Supported values: pure_pursuit, stanley
 
     pure_pursuit:
       lookahead_min_m: 3.0
       lookahead_gain: 0.35
-      steering_limit_rad: 0.32
-      wheelbase_m: 1.6
+      steering_limit_rad: 0.52
+      steering_lowpass_alpha: 0.6
+      steering_rate_limit_rad_s: 10.0
+      yaw_rate_damping_gain: 0.0
+      cross_track_deadband_m: 0.0
+      feedback_k_cte_rad_per_m: 0.04
+      feedback_k_heading: 0.35
+      wheelbase_m: 1.65
       stop_if_no_path: false
+
+    stanley:
+      k_gain: 1.2
+      softening_speed_mps: 1.0
+      heading_gain: 0.8
+      lookahead_idx_offset: 0
+      steering_limit_rad: 0.52
+      steering_lowpass_alpha: 0.3
+      steering_rate_limit_rad_s: 10.0
+      use_yaw_rate_damping: true
+      yaw_rate_damping_gain: 0.0
+      wheelbase_m: 1.65
+      cross_track_deadband_m: 0.0
 
     speed_control:
       speed_min_mps: 1.0
-      speed_max_mps: 1.8
+      speed_max_mps: 4.0
       curvature_speed_gain: 4.0
       lowpass_speed_alpha: 0.15
+
+    validation:
+      max_centerline_jump_m: 0.8
+      consistency_horizon_m: 8.0
+      max_history_frames: 8
+      hold_last_valid_s: 0.30
+      max_selected_edge_churn_ratio: 0.55
+
+    diagnostics:
+      topic: "/delaunay_planner/diagnostics"
+      centerline_jump_horizon_m: 8.0
+      edge_quantization_m: 0.05
+      jump_warn_threshold_m: 0.8
+      edge_churn_warn_threshold: 0.55
 
     debug:
       enable_markers: true

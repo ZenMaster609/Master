@@ -148,3 +148,80 @@ def test_unknown_side_inference_can_be_toggled():
     assert result_on.filtered_colors.count('unknown') == 0
     assert result_on.filtered_colors.count('blue') == 3
     assert result_on.filtered_colors.count('yellow') == 3
+
+
+def test_selected_edge_churn_ratio_and_key_generation():
+    points = np.array([
+        [2.0, 1.0],
+        [2.0, -1.0],
+        [4.0, 1.0],
+        [4.0, -1.0],
+    ], dtype=np.float64)
+    edges_a = np.array([[0, 1], [2, 3]], dtype=np.int64)
+    edges_b = np.array([[0, 1], [1, 2]], dtype=np.int64)
+
+    keys_a = core.selected_edge_keys(points=points, edges=edges_a, quantization_m=0.05)
+    keys_b = core.selected_edge_keys(points=points, edges=edges_b, quantization_m=0.05)
+    churn = core.edge_churn_ratio(keys_a, keys_b)
+
+    assert len(keys_a) == 2
+    assert len(keys_b) == 2
+    assert abs(churn - (2.0 / 3.0)) < 1e-6
+
+
+def test_centerline_jump_metric_tracks_large_vs_small_shift():
+    prev = np.array([[0.0, 0.0], [2.0, 0.0], [4.0, 0.0], [6.0, 0.0]], dtype=np.float64)
+    smooth = np.array([[0.0, 0.05], [2.0, 0.05], [4.0, 0.05], [6.0, 0.05]], dtype=np.float64)
+    jumpy = np.array([[0.0, 0.0], [2.0, 1.0], [4.0, 1.0], [6.0, 1.0]], dtype=np.float64)
+
+    smooth_jump = core.compute_centerline_jump_max(smooth, prev, horizon_m=8.0)
+    jumpy_jump = core.compute_centerline_jump_max(jumpy, prev, horizon_m=8.0)
+
+    assert smooth_jump < 0.1
+    assert jumpy_jump > 0.9
+
+
+def test_deterministic_centerline_under_input_permutation():
+    points = np.array([
+        [3.0, 1.8],
+        [3.0, -1.8],
+        [6.0, 2.0],
+        [6.0, -2.0],
+        [9.0, 2.2],
+        [9.0, -2.2],
+        [12.0, 2.4],
+        [12.0, -2.4],
+    ], dtype=np.float64)
+    colors = ['blue', 'yellow', 'blue', 'yellow', 'blue', 'yellow', 'blue', 'yellow']
+    conf = np.ones((8,), dtype=np.float64)
+    cfg = core.CoreConfig(min_required_cones=6)
+
+    base = core.compute_centerline(points, colors, conf, (0.0, 0.0), 0.0, cfg)
+
+    perm = np.array([6, 1, 4, 3, 0, 5, 2, 7], dtype=np.int64)
+    perm_points = points[perm]
+    perm_colors = [colors[idx] for idx in perm]
+    perm_conf = conf[perm]
+    permuted = core.compute_centerline(perm_points, perm_colors, perm_conf, (0.0, 0.0), 0.0, cfg)
+
+    assert base.centerline.shape == permuted.centerline.shape
+    assert np.allclose(base.centerline, permuted.centerline)
+
+
+def test_steering_lowpass_step_response_is_bounded():
+    alpha = 0.35
+    previous = 0.0
+    commanded = []
+    for _ in range(5):
+        previous = (alpha * 1.0) + ((1.0 - alpha) * previous)
+        commanded.append(previous)
+    assert 0.0 < commanded[0] < 1.0
+    assert commanded[-1] < 1.0
+    assert commanded[-1] > commanded[0]
+
+
+def test_tracked_cones_frame_delta_p95_reflects_motion():
+    prev = np.array([[0.0, 0.0], [1.0, 1.0], [2.0, 2.0]], dtype=np.float64)
+    curr = np.array([[0.1, 0.0], [1.1, 1.0], [2.1, 2.0]], dtype=np.float64)
+    delta = core.tracked_cones_frame_delta_p95(prev, curr)
+    assert 0.09 <= delta <= 0.11

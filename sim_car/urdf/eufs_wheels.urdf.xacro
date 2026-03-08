@@ -10,6 +10,14 @@
     <xacro:property name="wheel_friction_kp" value="1e8"/>
     <xacro:property name="steering_hinge_mass" value="1"/>
 
+    <link name="front_axle"/>
+
+    <joint name="front_axle_joint" type="fixed">
+      <parent link="chassis"/>
+      <child link="front_axle"/>
+      <origin xyz="${wheelbase / 2} 0 0" rpy="0 0 0"/>
+    </joint>
+
     <xacro:macro name="wheel" params="lr_prefix fr_prefix">
       <link name="${lr_prefix}_${fr_prefix}_wheel">
         <inertial>

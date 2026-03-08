@@ -27,8 +27,6 @@ class LidarNode(Node):
         self._tf_buffer = Buffer(cache_time=Duration(seconds=10.0))
         self._tf_listener = TransformListener(self._tf_buffer, self)
         self._last_throttled_log_sec: dict[str, float] = {}
-        self._warned_tf_alias = False
-
         self._cone_detections_pub = self.create_publisher(ConeDetectionArray, self.cone_detections_topic, 10)
         self.create_subscription(LaserScan, self.scan_topic, self._scan_cb, 10)
 
@@ -125,13 +123,6 @@ class LidarNode(Node):
                 f'lidar detection transform unavailable {source_frame}->{self.cone_detections_frame}; dropping frame',
             )
             return []
-
-        if resolved_source != source_frame:
-            if not self._warned_tf_alias:
-                self.get_logger().warn(
-                    f'lidar detection frame alias {source_frame}->{resolved_source} for transform to {self.cone_detections_frame}'
-                )
-                self._warned_tf_alias = True
 
         transformed = []
         for x, y in detections_xy:

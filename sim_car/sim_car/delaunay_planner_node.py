@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+from collections import deque
 import math
 import time
 from typing import Optional
@@ -10,6 +11,7 @@ from typing import Optional
 import numpy as np
 import rclpy
 from ackermann_msgs.msg import AckermannDriveStamped
+from diagnostic_msgs.msg import DiagnosticArray, DiagnosticStatus, KeyValue
 from geometry_msgs.msg import Point, PoseArray, PoseStamped
 from nav_msgs.msg import Odometry, Path
 from rclpy.duration import Duration
@@ -22,7 +24,18 @@ from vehicle_plotter_msgs.msg import ConeDetectionArray
 from visualization_msgs.msg import Marker, MarkerArray
 
 from sim_car.cone_fusion import normalize_color
-from sim_car.delaunay_planner_core import CoreConfig, CoreResult, compute_centerline
+from sim_car.controllers.factory import create_steering_controller
+from sim_car.controllers.pure_pursuit_controller import PurePursuitConfig
+from sim_car.controllers.stanley_controller import StanleyConfig
+from sim_car.delaunay_planner_core import (
+    CoreConfig,
+    CoreResult,
+    compute_centerline,
+    compute_centerline_jump_max,
+    edge_churn_ratio,
+    selected_edge_keys,
+    tracked_cones_frame_delta_p95,
+)
 
 
 class DelaunayPlannerNode(Node):
@@ -39,8 +52,15 @@ class DelaunayPlannerNode(Node):
         self._latest_cones_msg: Optional[ConeDetectionArray] = None
         self._latest_odom_msg: Optional[Odometry] = None
         self._latest_speed_mps: float = 0.0
+        self._latest_yaw_rate_rps: float = 0.0
         self._last_throttled_log_sec: dict[str, float] = {}
         self._previous_centerline: Optional[np.ndarray] = None
+        self._previous_raw_centerline: Optional[np.ndarray] = None
+        self._previous_tracked_points: Optional[np.ndarray] = None
+        self._previous_edge_keys: set[tuple[int, int, int, int]] = set()
+        self._last_valid_centerline: Optional[np.ndarray] = None
+        self._last_valid_time_sec: float = -1.0
+        self._recent_valid_centerlines: deque[tuple[float, np.ndarray]] = deque()
         self._last_speed_cmd: Optional[float] = None
         self._last_steering_cmd: Optional[float] = None
 
@@ -48,6 +68,7 @@ class DelaunayPlannerNode(Node):
         self._path_pub = self.create_publisher(Path, self.centerline_topic, 10)
         self._viz_pub = self.create_publisher(MarkerArray, self.viz_topic, 10)
         self._points_pub = self.create_publisher(PoseArray, self.points_topic, 10)
+        self._diag_pub = self.create_publisher(DiagnosticArray, self.diagnostics_topic, 10)
 
         self.create_subscription(
             ConeDetectionArray,
@@ -69,14 +90,14 @@ class DelaunayPlannerNode(Node):
             'delaunay_planner_node ready '
             f'cones={self.tracked_cones_topic} odom={self.odom_topic} '
             f'cmd={self.cmd_topic} path={self.centerline_topic} viz={self.viz_topic} '
-            f'planning_frame={self.planning_frame}'
+            f'planning_frame={self.planning_frame} controller={self.controller_type}'
         )
 
     def _declare_parameters(self) -> None:
         defaults = {
             'frames.planning_frame': 'odom',
             'frames.odom_frame': 'odom',
-            'frames.base_frame': 'base_link',
+            'frames.base_frame': 'front_axle',
             'frames.tf_timeout_s': 0.03,
             'topics.tracked_cones_topic': '/tracked_cones',
             'topics.cmd_topic': '/cmd',
@@ -103,15 +124,43 @@ class DelaunayPlannerNode(Node):
             'centerline.smoothing_alpha': 0.3,
             'runtime.publish_rate_hz': 20.0,
             'runtime.log_throttle_s': 1.0,
+            'control.controller_type': 'pure_pursuit',
             'pure_pursuit.lookahead_min_m': 3.0,
             'pure_pursuit.lookahead_gain': 0.35,
-            'pure_pursuit.steering_limit_rad': 0.32,
-            'pure_pursuit.wheelbase_m': 1.6,
+            'pure_pursuit.steering_limit_rad': 0.52,
+            'pure_pursuit.steering_lowpass_alpha': 0.6,
+            'pure_pursuit.steering_rate_limit_rad_s': 10.0,
+            'pure_pursuit.yaw_rate_damping_gain': 0.0,
+            'pure_pursuit.cross_track_deadband_m': 0.0,
+            'pure_pursuit.feedback_k_cte_rad_per_m': 0.04,
+            'pure_pursuit.feedback_k_heading': 0.35,
+            'pure_pursuit.wheelbase_m': 1.65,
             'pure_pursuit.stop_if_no_path': False,
+            'stanley.k_gain': 1.25,
+            'stanley.softening_speed_mps': 0.5,
+            'stanley.heading_gain': 1.0,
+            'stanley.lookahead_idx_offset': 1,
+            'stanley.steering_limit_rad': 0.52,
+            'stanley.steering_lowpass_alpha': 0.6,
+            'stanley.steering_rate_limit_rad_s': 10.0,
+            'stanley.use_yaw_rate_damping': True,
+            'stanley.yaw_rate_damping_gain': 0.0,
+            'stanley.wheelbase_m': 1.65,
+            'stanley.cross_track_deadband_m': 0.0,
             'speed_control.speed_min_mps': 1.0,
             'speed_control.speed_max_mps': 1.8,
             'speed_control.curvature_speed_gain': 4.0,
             'speed_control.lowpass_speed_alpha': 0.15,
+            'validation.max_centerline_jump_m': 0.8,
+            'validation.consistency_horizon_m': 8.0,
+            'validation.max_history_frames': 8,
+            'validation.hold_last_valid_s': 0.30,
+            'validation.max_selected_edge_churn_ratio': 0.55,
+            'diagnostics.topic': '/delaunay_planner/diagnostics',
+            'diagnostics.centerline_jump_horizon_m': 8.0,
+            'diagnostics.edge_quantization_m': 0.05,
+            'diagnostics.jump_warn_threshold_m': 0.8,
+            'diagnostics.edge_churn_warn_threshold': 0.55,
             'debug.enable_markers': True,
             'debug.show_raw_cones': False,
             'debug.show_delaunay_edges': True,
@@ -126,7 +175,7 @@ class DelaunayPlannerNode(Node):
     def _read_parameters(self) -> None:
         self.planning_frame = str(self.get_parameter('frames.planning_frame').value).strip() or 'odom'
         self.odom_frame = str(self.get_parameter('frames.odom_frame').value).strip() or 'odom'
-        self.base_frame = str(self.get_parameter('frames.base_frame').value).strip() or 'base_link'
+        self.base_frame = str(self.get_parameter('frames.base_frame').value).strip() or 'front_axle'
         self.tf_timeout_s = max(0.0, float(self.get_parameter('frames.tf_timeout_s').value))
 
         self.tracked_cones_topic = str(self.get_parameter('topics.tracked_cones_topic').value)
@@ -144,10 +193,66 @@ class DelaunayPlannerNode(Node):
         self.publish_rate_hz = max(1.0, float(self.get_parameter('runtime.publish_rate_hz').value))
         self.log_throttle_s = max(0.1, float(self.get_parameter('runtime.log_throttle_s').value))
 
-        self.lookahead_min_m = max(0.5, float(self.get_parameter('pure_pursuit.lookahead_min_m').value))
-        self.lookahead_gain = max(0.0, float(self.get_parameter('pure_pursuit.lookahead_gain').value))
-        self.steering_limit_rad = max(0.01, float(self.get_parameter('pure_pursuit.steering_limit_rad').value))
-        self.wheelbase_m = max(0.1, float(self.get_parameter('pure_pursuit.wheelbase_m').value))
+        self.controller_type = (
+            str(self.get_parameter('control.controller_type').value).strip().lower() or 'pure_pursuit'
+        )
+        pure_pursuit_config = PurePursuitConfig(
+            lookahead_min_m=max(0.5, float(self.get_parameter('pure_pursuit.lookahead_min_m').value)),
+            lookahead_gain=max(0.0, float(self.get_parameter('pure_pursuit.lookahead_gain').value)),
+            steering_limit_rad=max(0.01, float(self.get_parameter('pure_pursuit.steering_limit_rad').value)),
+            steering_lowpass_alpha=float(
+                np.clip(float(self.get_parameter('pure_pursuit.steering_lowpass_alpha').value), 0.0, 1.0)
+            ),
+            steering_rate_limit_rad_s=max(
+                0.0,
+                float(self.get_parameter('pure_pursuit.steering_rate_limit_rad_s').value),
+            ),
+            yaw_rate_damping_gain=max(
+                0.0,
+                float(self.get_parameter('pure_pursuit.yaw_rate_damping_gain').value),
+            ),
+            cross_track_deadband_m=max(
+                0.0,
+                float(self.get_parameter('pure_pursuit.cross_track_deadband_m').value),
+            ),
+            feedback_k_cte_rad_per_m=float(
+                self.get_parameter('pure_pursuit.feedback_k_cte_rad_per_m').value
+            ),
+            feedback_k_heading=float(
+                self.get_parameter('pure_pursuit.feedback_k_heading').value
+            ),
+            wheelbase_m=max(0.1, float(self.get_parameter('pure_pursuit.wheelbase_m').value)),
+        )
+        stanley_config = StanleyConfig(
+            k_gain=max(0.0, float(self.get_parameter('stanley.k_gain').value)),
+            softening_speed_mps=max(0.0, float(self.get_parameter('stanley.softening_speed_mps').value)),
+            heading_gain=float(self.get_parameter('stanley.heading_gain').value),
+            lookahead_idx_offset=max(0, int(self.get_parameter('stanley.lookahead_idx_offset').value)),
+            steering_limit_rad=max(0.01, float(self.get_parameter('stanley.steering_limit_rad').value)),
+            steering_lowpass_alpha=float(
+                np.clip(float(self.get_parameter('stanley.steering_lowpass_alpha').value), 0.0, 1.0)
+            ),
+            steering_rate_limit_rad_s=max(
+                0.0,
+                float(self.get_parameter('stanley.steering_rate_limit_rad_s').value),
+            ),
+            use_yaw_rate_damping=bool(self.get_parameter('stanley.use_yaw_rate_damping').value),
+            yaw_rate_damping_gain=max(
+                0.0,
+                float(self.get_parameter('stanley.yaw_rate_damping_gain').value),
+            ),
+            wheelbase_m=max(0.1, float(self.get_parameter('stanley.wheelbase_m').value)),
+            cross_track_deadband_m=max(
+                0.0,
+                float(self.get_parameter('stanley.cross_track_deadband_m').value),
+            ),
+        )
+        self._controller = create_steering_controller(
+            controller_type=self.controller_type,
+            pure_pursuit_config=pure_pursuit_config,
+            stanley_config=stanley_config,
+            publish_rate_hz=self.publish_rate_hz,
+        )
         self.stop_if_no_path = bool(self.get_parameter('pure_pursuit.stop_if_no_path').value)
 
         self.speed_min_mps = max(0.0, float(self.get_parameter('speed_control.speed_min_mps').value))
@@ -155,6 +260,37 @@ class DelaunayPlannerNode(Node):
         self.curvature_speed_gain = max(0.0, float(self.get_parameter('speed_control.curvature_speed_gain').value))
         self.lowpass_speed_alpha = float(
             np.clip(float(self.get_parameter('speed_control.lowpass_speed_alpha').value), 0.0, 1.0)
+        )
+        self.max_centerline_jump_m = max(
+            0.0,
+            float(self.get_parameter('validation.max_centerline_jump_m').value),
+        )
+        self.consistency_horizon_m = max(
+            0.5,
+            float(self.get_parameter('validation.consistency_horizon_m').value),
+        )
+        self.max_history_frames = max(1, int(self.get_parameter('validation.max_history_frames').value))
+        self.hold_last_valid_s = max(0.0, float(self.get_parameter('validation.hold_last_valid_s').value))
+        self.max_selected_edge_churn_ratio = max(
+            0.0,
+            float(self.get_parameter('validation.max_selected_edge_churn_ratio').value),
+        )
+        self.diagnostics_topic = str(self.get_parameter('diagnostics.topic').value).strip() or '/delaunay_planner/diagnostics'
+        self.centerline_jump_horizon_m = max(
+            0.5,
+            float(self.get_parameter('diagnostics.centerline_jump_horizon_m').value),
+        )
+        self.edge_quantization_m = max(
+            1e-6,
+            float(self.get_parameter('diagnostics.edge_quantization_m').value),
+        )
+        self.jump_warn_threshold_m = max(
+            0.0,
+            float(self.get_parameter('diagnostics.jump_warn_threshold_m').value),
+        )
+        self.edge_churn_warn_threshold = max(
+            0.0,
+            float(self.get_parameter('diagnostics.edge_churn_warn_threshold').value),
         )
 
         self.enable_debug_markers = bool(self.get_parameter('debug.enable_markers').value)
@@ -193,8 +329,10 @@ class DelaunayPlannerNode(Node):
         frame_tokens = f'{msg.header.frame_id}/{msg.child_frame_id}'.lower()
         if 'base_link' in frame_tokens or 'base_footprint' in frame_tokens:
             self._latest_speed_mps = abs(vx)
+            self._latest_yaw_rate_rps = float(msg.twist.twist.angular.z)
         else:
             self._latest_speed_mps = float(math.hypot(vx, vy))
+            self._latest_yaw_rate_rps = float(msg.twist.twist.angular.z)
 
     def _on_timer(self) -> None:
         control_target_base: Optional[np.ndarray] = None
@@ -289,10 +427,71 @@ class DelaunayPlannerNode(Node):
             vehicle_yaw=vehicle_yaw,
             config=self._core_config,
         )
+        now_sec = float(self.get_clock().now().nanoseconds) * 1e-9
+        tracked_delta_p95_m = tracked_cones_frame_delta_p95(self._previous_tracked_points, points_xy)
+        self._previous_tracked_points = np.array(points_xy, copy=True)
 
-        centerline = result.centerline
+        selected_keys = selected_edge_keys(
+            points=result.filtered_points,
+            edges=result.selected_edges,
+            quantization_m=self.edge_quantization_m,
+        )
+        selected_edge_churn = edge_churn_ratio(self._previous_edge_keys, selected_keys)
+        self._previous_edge_keys = set(selected_keys)
+
+        raw_centerline = result.centerline
+        centerline_jump_max_m = compute_centerline_jump_max(
+            raw_centerline,
+            self._previous_raw_centerline,
+            self.centerline_jump_horizon_m,
+        )
+        self._previous_raw_centerline = np.array(raw_centerline, copy=True) if raw_centerline.shape[0] > 0 else None
+
+        if centerline_jump_max_m > self.jump_warn_threshold_m:
+            self._warn_throttled(
+                'centerline_jump_warn',
+                f'centerline jump {centerline_jump_max_m:.3f} m exceeded threshold {self.jump_warn_threshold_m:.3f} m',
+            )
+        if selected_edge_churn > self.edge_churn_warn_threshold:
+            self._warn_throttled(
+                'edge_churn_warn',
+                f'selected edge churn {selected_edge_churn:.3f} exceeded threshold {self.edge_churn_warn_threshold:.3f}',
+            )
+
+        centerline = raw_centerline
+        status = result.status
+        if centerline.shape[0] > 0:
+            plan_ok = self._validate_plan(centerline, selected_edge_churn, now_sec)
+            if plan_ok:
+                self._record_valid_centerline(now_sec, centerline)
+                self._last_valid_centerline = np.array(centerline, copy=True)
+                self._last_valid_time_sec = now_sec
+            else:
+                held_centerline = self._held_centerline(now_sec)
+                if held_centerline is not None:
+                    centerline = held_centerline
+                    status = f'{status}; holding previous valid centerline'
+                else:
+                    centerline = np.empty((0, 2), dtype=np.float64)
+                    status = f'{status}; rejected unstable centerline'
+        else:
+            held_centerline = self._held_centerline(now_sec)
+            if held_centerline is not None:
+                centerline = held_centerline
+                status = f'{status}; holding previous valid centerline'
+
         if self.enable_temporal_smoothing:
             centerline = self._apply_temporal_smoothing(centerline)
+
+        self._publish_diagnostics(
+            frame_id=target_frame,
+            centerline_jump_max_m=centerline_jump_max_m,
+            selected_edge_churn_ratio=selected_edge_churn,
+            tracked_cones_frame_delta_p95_m=tracked_delta_p95_m,
+            centerline_point_count=int(centerline.shape[0]),
+            selected_edge_count=int(result.selected_edges.shape[0]),
+            status=status,
+        )
 
         control_path = self._centerline_to_vehicle_frame(
             centerline=centerline,
@@ -302,9 +501,28 @@ class DelaunayPlannerNode(Node):
             vehicle_yaw=vehicle_yaw,
         )
         if control_path.shape[0] >= 1:
-            cmd_steering, cmd_speed, _kappa, lookahead, control_target_base = self._compute_control(control_path)
-            self._publish_cmd(cmd_speed, cmd_steering)
-            if control_target_base is not None:
+            try:
+                controller_output = self._controller.compute(
+                    control_path=control_path,
+                    speed_mps=self._latest_speed_mps,
+                    yaw_rate_rps=self._latest_yaw_rate_rps,
+                )
+            except ValueError as exc:
+                self._warn_throttled('controller_compute_error', f'controller compute failed: {exc}')
+                self._apply_no_path_behavior()
+                if self._last_speed_cmd is not None:
+                    cmd_speed = float(self._last_speed_cmd)
+                if self._last_steering_cmd is not None:
+                    cmd_steering = float(self._last_steering_cmd)
+            else:
+                cmd_steering = float(controller_output.steering_rad)
+                cmd_speed = self._compute_speed_command(float(controller_output.kappa))
+                lookahead = float(controller_output.lookahead_m)
+                control_target_base = np.asarray(controller_output.target_point_base, dtype=np.float64)
+                self._last_speed_cmd = cmd_speed
+                self._last_steering_cmd = cmd_steering
+                self._publish_cmd(cmd_speed, cmd_steering)
+
                 if self._is_alias(target_frame, self.base_frame):
                     control_target_frame = np.array(control_target_base, copy=True)
                 elif self._is_alias(target_frame, self.odom_frame):
@@ -327,7 +545,7 @@ class DelaunayPlannerNode(Node):
             frame_id=target_frame,
             centerline=centerline,
             result=result,
-            status=result.status,
+            status=status,
             control_target_frame=control_target_frame,
             cmd_speed=cmd_speed,
             cmd_steering=cmd_steering,
@@ -356,35 +574,13 @@ class DelaunayPlannerNode(Node):
             out[idx, 1] = yb
         return out
 
-    def _compute_control(self, control_path: np.ndarray) -> tuple[float, float, float, float, np.ndarray]:
-        speed = max(0.0, float(self._latest_speed_mps))
-        lookahead = max(self.lookahead_min_m, self.lookahead_min_m + self.lookahead_gain * speed)
-
-        if control_path.shape[0] <= 1:
-            target = control_path[0]
-        else:
-            segment_lengths = np.hypot(np.diff(control_path[:, 0]), np.diff(control_path[:, 1]))
-            arc_lengths = np.concatenate((np.array([0.0], dtype=np.float64), np.cumsum(segment_lengths)))
-            idx = int(np.searchsorted(arc_lengths, lookahead, side='left'))
-            idx = min(max(idx, 0), control_path.shape[0] - 1)
-            target = control_path[idx]
-
-        target_distance = max(float(np.hypot(target[0], target[1])), 1e-3)
-        kappa = 2.0 * float(target[1]) / max(target_distance * target_distance, 1e-6)
-        steering = math.atan(self.wheelbase_m * kappa)
-        steering = float(np.clip(steering, -self.steering_limit_rad, self.steering_limit_rad))
-
+    def _compute_speed_command(self, kappa: float) -> float:
         v_des = self.speed_max_mps / (1.0 + self.curvature_speed_gain * abs(kappa))
         v_des = float(np.clip(v_des, self.speed_min_mps, self.speed_max_mps))
         if self._last_speed_cmd is None:
-            v_cmd = v_des
-        else:
-            alpha = self.lowpass_speed_alpha
-            v_cmd = alpha * v_des + (1.0 - alpha) * float(self._last_speed_cmd)
-
-        self._last_speed_cmd = v_cmd
-        self._last_steering_cmd = steering
-        return steering, v_cmd, kappa, lookahead, target
+            return v_des
+        alpha = self.lowpass_speed_alpha
+        return float((alpha * v_des) + ((1.0 - alpha) * float(self._last_speed_cmd)))
 
     def _apply_no_path_behavior(self) -> None:
         if self.stop_if_no_path:
@@ -436,15 +632,46 @@ class DelaunayPlannerNode(Node):
             return None
         if not self._is_alias(odom.header.frame_id, self.odom_frame):
             return None
-        if not self._is_alias(odom.child_frame_id, self.base_frame):
-            return None
 
         pose = odom.pose.pose
         tx = float(pose.position.x)
         ty = float(pose.position.y)
         q = pose.orientation
         yaw = self._yaw_from_quat(float(q.x), float(q.y), float(q.z), float(q.w))
-        return tx, ty, yaw
+        return self._convert_odom_child_pose_to_base_frame(
+            child_frame=str(odom.child_frame_id).strip(),
+            tx=tx,
+            ty=ty,
+            yaw=yaw,
+        )
+
+    def _convert_odom_child_pose_to_base_frame(
+        self,
+        *,
+        child_frame: str,
+        tx: float,
+        ty: float,
+        yaw: float,
+    ) -> Optional[tuple[float, float, float]]:
+        if self._is_alias(child_frame, self.base_frame):
+            return tx, ty, yaw
+
+        child_is_body_center = self._is_alias(child_frame, 'base_footprint') or self._is_alias(child_frame, 'base_link')
+        base_is_front_axle = self._is_alias(self.base_frame, 'front_axle')
+        if child_is_body_center and base_is_front_axle:
+            front_axle_offset_m = 0.5 * self._configured_wheelbase_m()
+            x_front, y_front = self._base_point_to_odom(front_axle_offset_m, 0.0, tx, ty, yaw)
+            return x_front, y_front, yaw
+
+        if self._is_alias(child_frame, 'front_axle') and child_is_body_center:
+            return tx, ty, yaw
+
+        return None
+
+    def _configured_wheelbase_m(self) -> float:
+        pure_pursuit_wheelbase = float(self.get_parameter('pure_pursuit.wheelbase_m').value)
+        stanley_wheelbase = float(self.get_parameter('stanley.wheelbase_m').value)
+        return max(0.1, pure_pursuit_wheelbase, stanley_wheelbase)
 
     def _convert_cones_to_frame(
         self,
@@ -566,6 +793,122 @@ class DelaunayPlannerNode(Node):
         x = np.interp(samples, cum, points[:, 0])
         y = np.interp(samples, cum, points[:, 1])
         return np.column_stack((x, y)).astype(np.float64)
+
+    def _validate_plan(self, centerline: np.ndarray, selected_edge_churn: float, now_sec: float) -> bool:
+        if centerline.shape[0] < 2:
+            return True
+        if (
+            self.max_selected_edge_churn_ratio > 0.0
+            and selected_edge_churn > self.max_selected_edge_churn_ratio
+        ):
+            self._warn_throttled(
+                'reject_edge_churn',
+                'rejecting plan because selected edge churn exceeds limit',
+            )
+            return False
+        if self.max_centerline_jump_m <= 0.0:
+            return True
+        if self._plan_has_large_jump(centerline, now_sec):
+            self._warn_throttled(
+                'reject_centerline_jump',
+                'rejecting plan because centerline contradicts recent valid history',
+            )
+            return False
+        return True
+
+    def _plan_has_large_jump(self, centerline: np.ndarray, now_sec: float) -> bool:
+        self._prune_centerline_history(now_sec)
+        if not self._recent_valid_centerlines:
+            return False
+        if centerline.shape[0] < 2:
+            return False
+
+        horizon_limit = min(self.consistency_horizon_m, float(centerline[-1, 0]))
+        if horizon_limit <= 0.25:
+            return False
+
+        sample_mask = centerline[:, 0] <= horizon_limit
+        if not np.any(sample_mask):
+            return False
+        sample_x = centerline[sample_mask, 0]
+        current_y = centerline[sample_mask, 1]
+
+        reference_rows: list[np.ndarray] = []
+        for _, previous_centerline in self._recent_valid_centerlines:
+            if previous_centerline.shape[0] < 2:
+                continue
+            overlap_limit = min(horizon_limit, float(previous_centerline[-1, 0]))
+            if overlap_limit <= 0.25:
+                continue
+            overlap_mask = sample_x <= overlap_limit
+            if not np.any(overlap_mask):
+                continue
+            interp_y = np.interp(sample_x[overlap_mask], previous_centerline[:, 0], previous_centerline[:, 1])
+            row = np.full(sample_x.shape, np.nan, dtype=np.float64)
+            row[overlap_mask] = interp_y
+            reference_rows.append(row)
+
+        if not reference_rows:
+            return False
+
+        stacked = np.vstack(reference_rows)
+        reference_y = np.nanmedian(stacked, axis=0)
+        valid_mask = np.isfinite(reference_y)
+        if not np.any(valid_mask):
+            return False
+
+        deviation = np.abs(current_y[valid_mask] - reference_y[valid_mask])
+        return bool(np.max(deviation) > self.max_centerline_jump_m)
+
+    def _record_valid_centerline(self, now_sec: float, centerline: np.ndarray) -> None:
+        if centerline.shape[0] == 0:
+            return
+        self._recent_valid_centerlines.append((now_sec, np.array(centerline, copy=True)))
+        self._prune_centerline_history(now_sec)
+
+    def _prune_centerline_history(self, now_sec: float) -> None:
+        del now_sec  # kept for symmetry with other planner implementations.
+        while len(self._recent_valid_centerlines) > self.max_history_frames:
+            self._recent_valid_centerlines.popleft()
+
+    def _held_centerline(self, now_sec: float) -> Optional[np.ndarray]:
+        if self._last_valid_centerline is None:
+            return None
+        if self._last_valid_time_sec < 0.0:
+            return None
+        if (now_sec - self._last_valid_time_sec) > self.hold_last_valid_s:
+            return None
+        return np.array(self._last_valid_centerline, copy=True)
+
+    def _publish_diagnostics(
+        self,
+        *,
+        frame_id: str,
+        centerline_jump_max_m: float,
+        selected_edge_churn_ratio: float,
+        tracked_cones_frame_delta_p95_m: float,
+        centerline_point_count: int,
+        selected_edge_count: int,
+        status: str,
+    ) -> None:
+        msg = DiagnosticArray()
+        msg.header.stamp = self.get_clock().now().to_msg()
+        msg.header.frame_id = frame_id
+
+        diag = DiagnosticStatus()
+        diag.name = 'delaunay_planner/stability'
+        diag.hardware_id = 'sim_car.delaunay_planner'
+        diag.level = DiagnosticStatus.OK
+        diag.message = status
+        diag.values = [
+            KeyValue(key='centerline_jump_max_m', value=f'{centerline_jump_max_m:.6f}'),
+            KeyValue(key='selected_edge_churn_ratio', value=f'{selected_edge_churn_ratio:.6f}'),
+            KeyValue(key='tracked_cones_frame_delta_p95_m', value=f'{tracked_cones_frame_delta_p95_m:.6f}'),
+            KeyValue(key='centerline_point_count', value=str(int(centerline_point_count))),
+            KeyValue(key='selected_edge_count', value=str(int(selected_edge_count))),
+        ]
+        msg.status.append(diag)
+        self._diag_pub.publish(msg)
 
     def _publish_outputs(
         self,

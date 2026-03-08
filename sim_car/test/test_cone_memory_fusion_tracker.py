@@ -228,3 +228,46 @@ def test_global_cone_memory_merge_and_centerline():
     assert len(left) == 1
     assert len(right) == 1
     assert len(center) == 1
+
+
+def test_local_tracker_alpha_reduces_step_size():
+    tracker_fast = LocalConeTracker()
+    tracker_slow = LocalConeTracker()
+
+    init = [_u(assoc_x=0.0, assoc_y=0.0, update_x=0.0, update_y=0.0)]
+    tracker_fast.update(
+        updates=init,
+        now_sec=1.0,
+        gate_radius_m=1.0,
+        alpha_lidar=0.4,
+        alpha_camera=0.2,
+        min_seen_count=1,
+    )
+    tracker_slow.update(
+        updates=init,
+        now_sec=1.0,
+        gate_radius_m=1.0,
+        alpha_lidar=0.25,
+        alpha_camera=0.15,
+        min_seen_count=1,
+    )
+
+    step = [_u(assoc_x=1.0, assoc_y=0.0, update_x=1.0, update_y=0.0)]
+    tracker_fast.update(
+        updates=step,
+        now_sec=2.0,
+        gate_radius_m=1.0,
+        alpha_lidar=0.4,
+        alpha_camera=0.2,
+        min_seen_count=1,
+    )
+    tracker_slow.update(
+        updates=step,
+        now_sec=2.0,
+        gate_radius_m=1.0,
+        alpha_lidar=0.25,
+        alpha_camera=0.15,
+        min_seen_count=1,
+    )
+
+    assert tracker_fast.tracks[0].x > tracker_slow.tracks[0].x

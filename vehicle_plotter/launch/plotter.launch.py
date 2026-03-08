@@ -104,6 +104,54 @@ def generate_launch_description():
         description='Optional suffix for cone CSV/plot outputs (e.g. lidar)'
     )
 
+    steering_diag_enabled_arg = DeclareLaunchArgument(
+        'steering_diag_enabled',
+        default_value='false',
+        description='Enable steering/path diagnostics CSV + summary outputs'
+    )
+
+    steering_diag_rate_hz_arg = DeclareLaunchArgument(
+        'steering_diag_rate_hz',
+        default_value='50.0',
+        description='Steering diagnostics sampling rate in Hz'
+    )
+
+    steering_diag_cmd_topic_arg = DeclareLaunchArgument(
+        'steering_diag_cmd_topic',
+        default_value='/cmd',
+        description='Ackermann command topic for desired steering'
+    )
+
+    steering_diag_steering_topic_arg = DeclareLaunchArgument(
+        'steering_diag_steering_topic',
+        default_value='/sim/steering_angle',
+        description='Measured steering angle topic (degrees)'
+    )
+
+    steering_diag_joint_states_topic_arg = DeclareLaunchArgument(
+        'steering_diag_joint_states_topic',
+        default_value='/sim/raw/joint_states',
+        description='Joint states topic used as fallback steering source'
+    )
+
+    steering_diag_odom_topic_arg = DeclareLaunchArgument(
+        'steering_diag_odom_topic',
+        default_value='/sim/odom',
+        description='Odometry topic for vehicle pose/yaw'
+    )
+
+    steering_diag_path_topic_arg = DeclareLaunchArgument(
+        'steering_diag_path_topic',
+        default_value='/planned_centerline',
+        description='Path topic used as desired trajectory'
+    )
+
+    steering_diag_planner_diag_topic_arg = DeclareLaunchArgument(
+        'steering_diag_planner_diag_topic',
+        default_value='/delaunay_planner/diagnostics',
+        description='Planner diagnostics topic for jump/churn context'
+    )
+
     # Logging options
     enable_log_arg = DeclareLaunchArgument(
         'enable_log',
@@ -239,6 +287,14 @@ def generate_launch_description():
             'auto_plot_on_shutdown': True,  # Generate plots when logger shuts down
             'cone_eval_topic': LaunchConfiguration('cone_eval_topic'),
             'cone_log_suffix': LaunchConfiguration('cone_log_suffix'),
+            'steering_diag_enabled': LaunchConfiguration('steering_diag_enabled'),
+            'steering_diag_rate_hz': LaunchConfiguration('steering_diag_rate_hz'),
+            'steering_diag_cmd_topic': LaunchConfiguration('steering_diag_cmd_topic'),
+            'steering_diag_steering_topic': LaunchConfiguration('steering_diag_steering_topic'),
+            'steering_diag_joint_states_topic': LaunchConfiguration('steering_diag_joint_states_topic'),
+            'steering_diag_odom_topic': LaunchConfiguration('steering_diag_odom_topic'),
+            'steering_diag_path_topic': LaunchConfiguration('steering_diag_path_topic'),
+            'steering_diag_planner_diag_topic': LaunchConfiguration('steering_diag_planner_diag_topic'),
             'use_sim_time': False,  # Use wall clock for timers
         }],
     )
@@ -272,6 +328,14 @@ def generate_launch_description():
         cone_plot_config_arg,
         cone_eval_topic_arg,
         cone_log_suffix_arg,
+        steering_diag_enabled_arg,
+        steering_diag_rate_hz_arg,
+        steering_diag_cmd_topic_arg,
+        steering_diag_steering_topic_arg,
+        steering_diag_joint_states_topic_arg,
+        steering_diag_odom_topic_arg,
+        steering_diag_path_topic_arg,
+        steering_diag_planner_diag_topic_arg,
         enable_log_arg,
         log_format_arg,
         log_path_arg,

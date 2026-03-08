@@ -92,6 +92,10 @@ def compute_centerline(
 
     filtered_points = points_xy[selected_mask]
     filtered_colors = [normalized[idx] for idx in np.where(selected_mask)[0]]
+    if filtered_points.shape[0] > 1:
+        order = _deterministic_point_order(filtered_points, filtered_colors)
+        filtered_points = filtered_points[order]
+        filtered_colors = [filtered_colors[idx] for idx in order]
 
     if filtered_points.shape[0] < int(config.min_required_cones):
         return _empty_result(
@@ -203,6 +207,78 @@ def _empty_result(
     )
 
 
+def compute_centerline_jump_max(
+    current_centerline: np.ndarray,
+    previous_centerline: Optional[np.ndarray],
+    horizon_m: float,
+) -> float:
+    if previous_centerline is None:
+        return 0.0
+    if current_centerline.shape[0] < 2 or previous_centerline.shape[0] < 2:
+        return 0.0
+    limit = min(float(horizon_m), float(current_centerline[-1, 0]), float(previous_centerline[-1, 0]))
+    if limit <= 0.25:
+        return 0.0
+    sample_x = current_centerline[current_centerline[:, 0] <= limit, 0]
+    if sample_x.size == 0:
+        return 0.0
+    current_y = np.interp(sample_x, current_centerline[:, 0], current_centerline[:, 1])
+    previous_y = np.interp(sample_x, previous_centerline[:, 0], previous_centerline[:, 1])
+    return float(np.max(np.abs(current_y - previous_y)))
+
+
+def selected_edge_keys(
+    *,
+    points: np.ndarray,
+    edges: np.ndarray,
+    quantization_m: float,
+) -> set[tuple[int, int, int, int]]:
+    keys: set[tuple[int, int, int, int]] = set()
+    q = max(1e-6, float(quantization_m))
+    if points.shape[0] == 0 or edges.shape[0] == 0:
+        return keys
+    for edge in edges:
+        a = int(edge[0])
+        b = int(edge[1])
+        if a < 0 or b < 0 or a >= points.shape[0] or b >= points.shape[0]:
+            continue
+        ax = int(round(float(points[a, 0]) / q))
+        ay = int(round(float(points[a, 1]) / q))
+        bx = int(round(float(points[b, 0]) / q))
+        by = int(round(float(points[b, 1]) / q))
+        if (bx, by) < (ax, ay):
+            ax, ay, bx, by = bx, by, ax, ay
+        keys.add((ax, ay, bx, by))
+    return keys
+
+
+def edge_churn_ratio(
+    previous_keys: set[tuple[int, int, int, int]],
+    current_keys: set[tuple[int, int, int, int]],
+) -> float:
+    if not previous_keys and not current_keys:
+        return 0.0
+    union_size = len(previous_keys.union(current_keys))
+    if union_size == 0:
+        return 0.0
+    inter_size = len(previous_keys.intersection(current_keys))
+    return 1.0 - (float(inter_size) / float(union_size))
+
+
+def tracked_cones_frame_delta_p95(
+    previous_points: Optional[np.ndarray],
+    current_points: np.ndarray,
+) -> float:
+    if previous_points is None:
+        return 0.0
+    if previous_points.shape[0] == 0 or current_points.shape[0] == 0:
+        return 0.0
+    dxy = current_points[:, None, :] - previous_points[None, :, :]
+    dist = np.hypot(dxy[:, :, 0], dxy[:, :, 1])
+    nearest = np.min(dist, axis=1)
+    return float(np.percentile(nearest, 95.0))
+
+
 def _geometry_filter(
     points_xy: np.ndarray,
     vehicle_xy: tuple[float, float],
@@ -213,6 +289,13 @@ def _geometry_filter(
     ranges = np.hypot(rel[:, 0], rel[:, 1])
     vx, _ = _rotate_into_vehicle(rel, vehicle_yaw)
     return (ranges <= float(config.max_cone_range_m)) & (vx >= -float(config.behind_drop_m))
+
+
+def _deterministic_point_order(points: np.ndarray, colors: list[str]) -> np.ndarray:
+    color_index = {'blue': 0, 'yellow': 1, 'orange': 2, 'unknown': 3}
+    color_rank = np.asarray([color_index.get(color, 9) for color in colors], dtype=np.int64)
+    order = np.lexsort((color_rank, points[:, 1], points[:, 0]))
+    return np.asarray(order, dtype=np.int64)
 
 
 def _infer_unknown_by_side(

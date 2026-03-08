@@ -6,18 +6,10 @@ across Jetson and Windows machines.
 
 Storage Layout:
     ./multidata/<run_id>/
-      linux/
-        logs/           # Parquet/CSV vehicle state data
-        rosbags/        # ros2 bag recordings
-        plots/          # PNG exports from plotter
-        plot_data/      # CSV of plotted data points
-        ground_truth/   # ros2 node/topic snapshots
-      windows/
-        logs/
-        rosbags/
-        plots/
-        plot_data/
-        ground_truth/
+      logs/             # Parquet/CSV and other text artifacts
+      rosbags/          # ros2 bag recordings
+      plots/            # PNG exports from plotter
+      configs/          # Run config snapshot (YAMLs + launch parameters)
 """
 
 from dataclasses import dataclass, field
@@ -93,11 +85,10 @@ class RunSession:
 
     Directory Structure:
         ./multidata/<prefix>_<timestamp>/
-            logs/           # Parquet/CSV vehicle state data
+            logs/           # Parquet/CSV and other text artifacts
             rosbags/        # ros2 bag recordings
             plots/          # PNG exports from plotter
-            plot_data/      # CSV of plotted data points
-            ground_truth/   # ros2 node/topic snapshots
+            configs/        # Run config snapshot (YAMLs + launch parameters)
 
     Where <prefix> is 'sim' for simulation or 'jetson' for real hardware.
 
@@ -195,13 +186,18 @@ class RunSession:
         return self.session_path / 'plots'
 
     @property
+    def configs_path(self) -> Path:
+        """Path for run config snapshots."""
+        return self.session_path / 'configs'
+
+    @property
     def plot_data_path(self) -> Path:
-        """Path for plot data CSV exports."""
+        """Legacy path for plot data CSV exports (kept for compatibility)."""
         return self.session_path / 'plot_data'
 
     @property
     def ground_truth_path(self) -> Path:
-        """Path for runtime ground truth snapshots."""
+        """Legacy path for runtime ground truth snapshots (kept for compatibility)."""
         return self.session_path / 'ground_truth'
 
     def ensure_directories(self) -> None:
@@ -210,8 +206,7 @@ class RunSession:
             self.logs_path,
             self.rosbags_path,
             self.plots_path,
-            self.plot_data_path,
-            self.ground_truth_path,
+            self.configs_path,
         ]:
             path.mkdir(parents=True, exist_ok=True)
 
@@ -243,8 +238,9 @@ class RunSession:
                 'logs_path': str(self.logs_path),
                 'rosbags_path': str(self.rosbags_path),
                 'plots_path': str(self.plots_path),
-                'plot_data_path': str(self.plot_data_path),
-                'ground_truth_path': str(self.ground_truth_path),
+                'configs_path': str(self.configs_path),
+                'legacy_plot_data_path': str(self.plot_data_path),
+                'legacy_ground_truth_path': str(self.ground_truth_path),
             },
         }
 

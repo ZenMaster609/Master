@@ -359,7 +359,7 @@ class PlotterNode(Node):
 
         self.get_logger().info(f'  Run ID: {self._run_session.run_id}')
         self.get_logger().info(f'  Plots path: {self._run_session.plots_path}')
-        self.get_logger().info(f'  Plot data path: {self._run_session.plot_data_path}')
+        self.get_logger().info(f'  Plot data path: {self._run_session.logs_path}')
 
         self._session_initialized = True
 
@@ -427,8 +427,8 @@ class PlotterNode(Node):
         # Save plot data
         if self._save_plot_data:
             try:
-                exported = self.plot_manager.export_data(self._run_session.plot_data_path)
-                self.get_logger().info(f'Plot data saved: {len(exported)} files to {self._run_session.plot_data_path}')
+                exported = self.plot_manager.export_data(self._run_session.logs_path)
+                self.get_logger().info(f'Plot data saved: {len(exported)} files to {self._run_session.logs_path}')
             except Exception as e:
                 self.get_logger().error(f'Failed to save plot data: {e}')
 

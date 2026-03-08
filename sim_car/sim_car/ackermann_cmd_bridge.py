@@ -18,7 +18,7 @@ class AckermannCmdBridge(Node):
 
         self.declare_parameter('input_topic', '/cmd')
         self.declare_parameter('output_topic', '/cmd_vel')
-        self.declare_parameter('wheelbase', 1.6)
+        self.declare_parameter('wheelbase', 1.65)
         self.declare_parameter('command_mode', 'acceleration')
         self.declare_parameter('max_speed', 75.0)
         self.declare_parameter('accel_limit', 12.5)

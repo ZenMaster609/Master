@@ -1,17 +1,17 @@
 cone_memory_node:
   ros__parameters:
     odom_frame: "odom"
-    base_frame: "base_link"
+    base_frame: "base_footprint"
     tf_timeout_s: 0.03
 
     max_range_m: 25.0
     behind_drop_m: 8.0
-    ttl_sec: 2.0
+    ttl_sec: 3.0
     unknown_drop_frames: 15
     gate_radius_m: 0.5
-    min_seen_count: 2
-    alpha_lidar: 0.4
-    alpha_camera: 0.2
+    min_seen_count: 3
+    alpha_lidar: 0.25
+    alpha_camera: 0.15
 
     camera_range_m: 10.0
     prefer_lidar_if_camera_missing_far: true

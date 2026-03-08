@@ -112,7 +112,7 @@ class ConeMemoryNode(Node):
 
     def _declare_parameters(self) -> None:
         self.declare_parameter('odom_frame', 'odom')
-        self.declare_parameter('base_frame', 'base_link')
+        self.declare_parameter('base_frame', 'base_footprint')
         self.declare_parameter('tf_timeout_s', 0.03)
 
         self.declare_parameter('max_range_m', 25.0)
@@ -154,7 +154,7 @@ class ConeMemoryNode(Node):
 
     def _read_parameters(self) -> None:
         self.odom_frame = str(self.get_parameter('odom_frame').value).strip() or 'odom'
-        self.base_frame = str(self.get_parameter('base_frame').value).strip() or 'base_link'
+        self.base_frame = str(self.get_parameter('base_frame').value).strip() or 'base_footprint'
         self.tf_timeout_s = max(0.0, float(self.get_parameter('tf_timeout_s').value))
 
         self.max_range_m = max(1.0, float(self.get_parameter('max_range_m').value))
@@ -814,7 +814,12 @@ class ConeMemoryNode(Node):
             self.get_logger().warn(f'failed to save cone memory track plot: {exc}')
 
         if self.track_plot_data_filename:
-            csv_path = plots_dir / self.track_plot_data_filename
+            logs_dir = self._resolve_logs_dir()
+            if logs_dir is None:
+                self.get_logger().warn('could not resolve logs output directory for cone memory csv data')
+                return
+            logs_dir.mkdir(parents=True, exist_ok=True)
+            csv_path = logs_dir / self.track_plot_data_filename
             try:
                 with csv_path.open('w', newline='') as f:
                     writer = csv.writer(f)
@@ -889,6 +894,24 @@ class ConeMemoryNode(Node):
             return None
         latest = max(run_dirs, key=lambda p: p.stat().st_mtime)
         return latest / 'plots'
+
+    def _resolve_logs_dir(self) -> Optional[Path]:
+        if self._run_session_run_id:
+            if self._run_session_base_path:
+                base_path = Path(self._run_session_base_path).expanduser()
+            else:
+                base_path = self._default_multidata_root()
+            return base_path / self._run_session_run_id / 'logs'
+
+        root = self._default_multidata_root()
+        if not root.exists():
+            return None
+
+        run_dirs = [p for p in root.iterdir() if p.is_dir()]
+        if not run_dirs:
+            return None
+        latest = max(run_dirs, key=lambda p: p.stat().st_mtime)
+        return latest / 'logs'
 
     @staticmethod
     def _default_multidata_root() -> Path:
