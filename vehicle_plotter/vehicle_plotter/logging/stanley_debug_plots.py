@@ -41,6 +41,25 @@ def _series(rows: list[dict[str, float]], key: str) -> np.ndarray:
     return np.asarray([_safe_float(row.get(key, float('nan'))) for row in rows], dtype=np.float64)
 
 
+_PLOT_STATE_KEYS = (
+    'raw_steering_cmd_rad',
+    'final_steering_cmd_rad',
+    'actual_steering_rad',
+    'heading_error_rad',
+    'heading_contribution_rad',
+    'cte_m',
+    'cross_track_contribution_rad',
+    'vehicle_speed_mps',
+    'speed_term_mps',
+    'vehicle_x_m',
+    'vehicle_y_m',
+    'nearest_path_point_x_m',
+    'nearest_path_point_y_m',
+    'target_point_x_frame_m',
+    'target_point_y_frame_m',
+)
+
+
 def _relative_time(rows: list[dict[str, float]]) -> np.ndarray:
     t = _series(rows, 'timestamp_sec')
     finite = t[np.isfinite(t)]
@@ -69,8 +88,55 @@ def _plot_if_finite(ax, x: np.ndarray, y: np.ndarray, *, label: str, color: str,
     ax.plot(x[mask], y[mask], style, label=label, color=color, linewidth=1.5)
 
 
-def _draw_stanley_debug_figure(fig, rows: list[dict[str, float]], title: str) -> None:
+def _legend_if_labeled(ax, **kwargs) -> None:
+    handles, _ = ax.get_legend_handles_labels()
+    if handles:
+        ax.legend(**kwargs)
+
+
+def _rows_for_plotting(rows: list[dict[str, float]], *, collapse_holds: bool) -> list[dict[str, float]]:
+    if not collapse_holds or len(rows) <= 2:
+        return rows
+
+    filtered: list[dict[str, float]] = [rows[0]]
+    last_kept = rows[0]
+
+    def _same_value(a: float, b: float) -> bool:
+        if math.isnan(a) and math.isnan(b):
+            return True
+        if not math.isfinite(a) or not math.isfinite(b):
+            return False
+        return abs(a - b) <= 1e-9
+
+    for idx in range(1, len(rows) - 1):
+        row = rows[idx]
+        next_row = rows[idx + 1]
+        same_as_last = all(
+            _same_value(_safe_float(row.get(key, float('nan'))), _safe_float(last_kept.get(key, float('nan'))))
+            for key in _PLOT_STATE_KEYS
+        )
+        same_as_next = all(
+            _same_value(_safe_float(row.get(key, float('nan'))), _safe_float(next_row.get(key, float('nan'))))
+            for key in _PLOT_STATE_KEYS
+        )
+        if same_as_last and same_as_next:
+            continue
+        filtered.append(row)
+        last_kept = row
+
+    filtered.append(rows[-1])
+    return filtered
+
+
+def _draw_stanley_debug_figure(
+    fig,
+    rows: list[dict[str, float]],
+    title: str,
+    *,
+    collapse_holds: bool = False,
+) -> None:
     fig.clf()
+    rows = _rows_for_plotting(rows, collapse_holds=collapse_holds)
     axes = fig.subplots(3, 2)
     t = _relative_time(rows)
 
@@ -93,7 +159,7 @@ def _draw_stanley_debug_figure(fig, rows: list[dict[str, float]], title: str) ->
     ax.set_xlabel('Time (s)')
     ax.set_ylabel('Steering (rad)')
     ax.grid(True, alpha=0.3)
-    ax.legend(loc='upper right', fontsize='small')
+    _legend_if_labeled(ax, loc='upper right', fontsize='small')
 
     # Row 1, Col 2: Near-zero zoom
     ax = axes[0, 1]
@@ -105,7 +171,7 @@ def _draw_stanley_debug_figure(fig, rows: list[dict[str, float]], title: str) ->
     ax.set_xlabel('Time (s)')
     ax.set_ylabel('Steering (rad)')
     ax.grid(True, alpha=0.3)
-    ax.legend(loc='upper right', fontsize='small')
+    _legend_if_labeled(ax, loc='upper right', fontsize='small')
 
     # Row 2, Col 1: Heading error + contribution
     ax = axes[1, 0]
@@ -115,7 +181,7 @@ def _draw_stanley_debug_figure(fig, rows: list[dict[str, float]], title: str) ->
     ax.set_xlabel('Time (s)')
     ax.set_ylabel('Radians')
     ax.grid(True, alpha=0.3)
-    ax.legend(loc='upper right', fontsize='small')
+    _legend_if_labeled(ax, loc='upper right', fontsize='small')
 
     # Row 2, Col 2: Cross-track error + contribution
     ax = axes[1, 1]
@@ -179,7 +245,7 @@ def _draw_stanley_debug_figure(fig, rows: list[dict[str, float]], title: str) ->
     ax.set_ylabel('Y (m)')
     ax.grid(True, alpha=0.3)
     ax.set_aspect('equal', adjustable='datalim')
-    ax.legend(loc='best', fontsize='small')
+    _legend_if_labeled(ax, loc='best', fontsize='small')
 
     fig.suptitle(title, fontsize=13)
     fig.tight_layout()
@@ -203,7 +269,7 @@ def generate_stanley_debug_plot(
     import matplotlib.pyplot as plt
 
     fig = plt.figure(figsize=(16.0, 11.0))
-    _draw_stanley_debug_figure(fig, rows, title=title)
+    _draw_stanley_debug_figure(fig, rows, title=title, collapse_holds=True)
     output_path.parent.mkdir(parents=True, exist_ok=True)
     fig.savefig(output_path, dpi=dpi, bbox_inches='tight')
     plt.close(fig)

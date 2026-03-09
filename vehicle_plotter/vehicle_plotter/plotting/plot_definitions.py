@@ -20,6 +20,12 @@ import numpy as np
 # Import happens inside create_plot methods
 
 
+def _add_legend_if_labeled(ax) -> None:
+    handles, _ = ax.get_legend_handles_labels()
+    if handles:
+        ax.legend()
+
+
 @dataclass
 class PlotDefinition(ABC):
     """Base class for plot definitions."""
@@ -92,7 +98,7 @@ class XYPlotDefinition(PlotDefinition):
         if len(x_data) > 0:
             ax.scatter([x_data[0]], [y_data[0]], color='green', s=100, zorder=5, label='Start')
             ax.scatter([x_data[-1]], [y_data[-1]], color='red', s=100, zorder=5, label='End')
-            ax.legend()
+            _add_legend_if_labeled(ax)
 
         ax.set_xlabel(self.x_label)
         ax.set_ylabel(self.y_label)
@@ -131,7 +137,7 @@ class TimeSeriesPlotDefinition(PlotDefinition):
         ax.set_xlabel('Time (s)')
         ax.set_ylabel(self.y_label)
         ax.set_title(self.title_template.format(source=source_label))
-        ax.legend()
+        _add_legend_if_labeled(ax)
         ax.grid(True, alpha=0.3)
 
         fig.tight_layout()

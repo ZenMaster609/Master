@@ -46,7 +46,7 @@ delaunay_planner_node:
       log_throttle_s: 1.0
 
     control:
-      controller_type: "pure_pursuit"  # Supported values: pure_pursuit, stanley
+      controller_type: "stanley"  # Supported values: pure_pursuit, stanley
 
     pure_pursuit:
       lookahead_min_m: 3.0
@@ -63,11 +63,11 @@ delaunay_planner_node:
 
     stanley:
       k_gain: 1.2
-      softening_speed_mps: 1.0
+      softening_speed_mps: 0.0
       heading_gain: 1.0
       lookahead_idx_offset: 0
       steering_limit_rad: 0.52
-      steering_lowpass_alpha: 0.3
+      steering_lowpass_alpha: 1.0
       steering_rate_limit_rad_s: 10.0
       use_yaw_rate_damping: true
       yaw_rate_damping_gain: 0.0
@@ -85,7 +85,7 @@ delaunay_planner_node:
       consistency_horizon_m: 8.0
       max_history_frames: 36
       hold_last_valid_s: 0.5
-      max_selected_edge_churn_ratio: 1.0
+      max_selected_edge_churn_ratio: 0.55
 
     diagnostics:
       topic: "/delaunay_planner/diagnostics"
