@@ -150,6 +150,89 @@ def test_unknown_side_inference_can_be_toggled():
     assert result_on.filtered_colors.count('yellow') == 3
 
 
+def test_orange_side_inference_uses_clear_lateral_separation():
+    points = np.array([
+        [3.0, 1.8],
+        [3.0, -1.8],
+        [6.0, 2.0],
+        [6.0, -2.0],
+        [5.0, 1.4],
+        [5.0, -1.4],
+    ], dtype=np.float64)
+    colors = ['blue', 'yellow', 'blue', 'yellow', 'orange', 'orange']
+    conf = np.ones((6,), dtype=np.float64)
+
+    cfg = core.CoreConfig(
+        use_unknown_cones=False,
+        include_orange=False,
+        infer_unknown_by_side=True,
+        infer_orange_by_side=True,
+        min_required_cones=4,
+    )
+    result = core.compute_centerline(points, colors, conf, (0.0, 0.0), 0.0, cfg)
+
+    assert result.filtered_points.shape[0] == 6
+    assert result.filtered_colors.count('orange') == 0
+    assert result.filtered_colors.count('blue') == 3
+    assert result.filtered_colors.count('yellow') == 3
+
+
+def test_orange_near_center_is_left_unmapped_when_side_is_ambiguous():
+    points = np.array([
+        [3.0, 1.8],
+        [3.0, -1.8],
+        [6.0, 2.0],
+        [6.0, -2.0],
+        [5.0, 0.15],
+        [5.0, -0.15],
+    ], dtype=np.float64)
+    colors = ['blue', 'yellow', 'blue', 'yellow', 'orange', 'orange']
+    conf = np.ones((6,), dtype=np.float64)
+
+    cfg = core.CoreConfig(
+        use_unknown_cones=False,
+        include_orange=False,
+        infer_unknown_by_side=True,
+        infer_orange_by_side=True,
+        min_required_cones=4,
+    )
+    result = core.compute_centerline(points, colors, conf, (0.0, 0.0), 0.0, cfg)
+
+    assert result.filtered_points.shape[0] == 4
+    assert result.filtered_colors.count('orange') == 0
+    assert result.filtered_colors.count('blue') == 2
+    assert result.filtered_colors.count('yellow') == 2
+
+
+def test_inferred_orange_pair_cannot_become_the_only_cross_edge_reference():
+    points = np.array([
+        [2.0, 1.8],
+        [2.0, -1.8],
+        [5.0, 1.4],
+        [5.0, -1.4],
+    ], dtype=np.float64)
+    colors = ['blue', 'yellow', 'orange', 'orange']
+    conf = np.ones((4,), dtype=np.float64)
+
+    cfg = core.CoreConfig(
+        use_unknown_cones=False,
+        infer_unknown_by_side=True,
+        infer_orange_by_side=True,
+        include_orange=False,
+        min_required_cones=4,
+        min_cross_edges=1,
+    )
+    result = core.compute_centerline(points, colors, conf, (0.0, 0.0), 0.0, cfg)
+
+    assert result.filtered_points.shape[0] == 4
+    selected_edges = {
+        tuple(sorted((int(edge[0]), int(edge[1]))))
+        for edge in result.selected_edges
+    }
+    assert (0, 1) in selected_edges
+    assert (2, 3) not in selected_edges
+
+
 def test_selected_edge_churn_ratio_and_key_generation():
     points = np.array([
         [2.0, 1.0],

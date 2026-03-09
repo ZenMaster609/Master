@@ -6,7 +6,12 @@ from dataclasses import dataclass
 import math
 from typing import Optional
 
-from sim_car.cone_fusion import class_from_probs, normalize_color, update_class_probs
+from sim_car.cone_fusion import (
+    class_from_probs,
+    normalize_color,
+    resolve_boundary_color_by_lateral_position,
+    update_class_probs,
+)
 
 
 @dataclass
@@ -471,14 +476,32 @@ class GlobalConeMemory:
         self,
         *,
         min_hits: int,
+        min_confidence: float = 0.0,
         vehicle_x: float,
         vehicle_y: float,
         heading_x: float,
         heading_y: float,
     ) -> tuple[list[tuple[float, float]], list[tuple[float, float]], list[tuple[float, float]]]:
-        cones = [c for c in self.cones if c.hits >= int(min_hits)]
-        left = [(c.x, c.y) for c in cones if c.class_label == 'blue']
-        right = [(c.x, c.y) for c in cones if c.class_label == 'yellow']
+        cones = [
+            c for c in self.cones
+            if c.hits >= int(min_hits) and float(c.confidence) >= float(min_confidence)
+        ]
+        left: list[tuple[float, float]] = []
+        right: list[tuple[float, float]] = []
+        for cone in cones:
+            dx = cone.x - vehicle_x
+            dy = cone.y - vehicle_y
+            lateral_y = (-heading_y * dx) + (heading_x * dy)
+            resolved_label = resolve_boundary_color_by_lateral_position(
+                cone.class_label,
+                lateral_y,
+                infer_unknown=True,
+                infer_orange=True,
+            )
+            if resolved_label == 'blue':
+                left.append((cone.x, cone.y))
+            elif resolved_label == 'yellow':
+                right.append((cone.x, cone.y))
 
         left_sorted = self._order_side(left, vehicle_x, vehicle_y, heading_x, heading_y)
         right_sorted = self._order_side(right, vehicle_x, vehicle_y, heading_x, heading_y)

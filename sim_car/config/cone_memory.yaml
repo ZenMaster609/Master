@@ -34,6 +34,11 @@ cone_memory_node:
     global_merge_radius_m: 0.6
     global_min_hits_for_track: 2
     global_max_cones: 2000
+    believed_track_viz_min_hits: 3
+    believed_track_viz_min_confidence: 0.45
+    believed_track_viz_max_gap_m: 6.0
+    believed_track_viz_show_center: false
+    believed_track_viz_show_cones: false
 
     enable_track_live_plot: true
     track_plot_update_hz: 2.0

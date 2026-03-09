@@ -152,6 +152,24 @@ def generate_launch_description():
         description='Planner diagnostics topic for jump/churn context'
     )
 
+    steering_diag_live_plot_enabled_arg = DeclareLaunchArgument(
+        'steering_diag_live_plot_enabled',
+        default_value='false',
+        description='Enable live Stanley steering diagnostics plot window'
+    )
+
+    steering_diag_live_plot_rate_hz_arg = DeclareLaunchArgument(
+        'steering_diag_live_plot_rate_hz',
+        default_value='10.0',
+        description='Refresh rate for live Stanley steering diagnostics plot'
+    )
+
+    steering_diag_live_buffer_sec_arg = DeclareLaunchArgument(
+        'steering_diag_live_buffer_sec',
+        default_value='30.0',
+        description='History window in seconds for live Stanley diagnostics plot'
+    )
+
     # Logging options
     enable_log_arg = DeclareLaunchArgument(
         'enable_log',
@@ -295,6 +313,9 @@ def generate_launch_description():
             'steering_diag_odom_topic': LaunchConfiguration('steering_diag_odom_topic'),
             'steering_diag_path_topic': LaunchConfiguration('steering_diag_path_topic'),
             'steering_diag_planner_diag_topic': LaunchConfiguration('steering_diag_planner_diag_topic'),
+            'steering_diag_live_plot_enabled': LaunchConfiguration('steering_diag_live_plot_enabled'),
+            'steering_diag_live_plot_rate_hz': LaunchConfiguration('steering_diag_live_plot_rate_hz'),
+            'steering_diag_live_buffer_sec': LaunchConfiguration('steering_diag_live_buffer_sec'),
             'use_sim_time': False,  # Use wall clock for timers
         }],
     )
@@ -336,6 +357,9 @@ def generate_launch_description():
         steering_diag_odom_topic_arg,
         steering_diag_path_topic_arg,
         steering_diag_planner_diag_topic_arg,
+        steering_diag_live_plot_enabled_arg,
+        steering_diag_live_plot_rate_hz_arg,
+        steering_diag_live_buffer_sec_arg,
         enable_log_arg,
         log_format_arg,
         log_path_arg,

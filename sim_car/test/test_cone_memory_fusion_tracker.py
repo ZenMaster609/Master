@@ -1,6 +1,7 @@
 from sim_car.cone_fusion import (
     choose_position_source,
     class_from_probs,
+    resolve_boundary_color_by_lateral_position,
     update_class_probs,
 )
 from sim_car.cone_pose import convert_odom_child_pose_to_base_frame
@@ -82,6 +83,13 @@ def test_class_probability_update_from_camera_label():
     label, conf = class_from_probs(probs)
     assert label == 'blue'
     assert conf > 0.5
+
+
+def test_resolve_boundary_color_by_lateral_position_maps_orange_to_track_side():
+    assert resolve_boundary_color_by_lateral_position('orange', 1.0) == 'blue'
+    assert resolve_boundary_color_by_lateral_position('orange', -1.0) == 'yellow'
+    assert resolve_boundary_color_by_lateral_position('unknown', 1.0) == 'blue'
+    assert resolve_boundary_color_by_lateral_position('unknown', -1.0) == 'yellow'
 
 
 def test_local_tracker_association_and_confirmation():
@@ -236,6 +244,117 @@ def test_global_cone_memory_merge_and_centerline():
     assert len(left) == 1
     assert len(right) == 1
     assert len(center) == 1
+
+
+def test_global_cone_memory_infers_orange_cones_by_vehicle_side():
+    tracker = LocalConeTracker()
+    tracker.update(
+        updates=[
+            _u(
+                assoc_x=0.0,
+                assoc_y=2.0,
+                update_x=0.0,
+                update_y=2.0,
+                source='camera',
+                has_lidar=False,
+                has_camera=True,
+                camera_label='orange',
+                camera_confidence=0.9,
+            ),
+            _u(
+                assoc_x=0.0,
+                assoc_y=-2.0,
+                update_x=0.0,
+                update_y=-2.0,
+                source='camera',
+                has_lidar=False,
+                has_camera=True,
+                camera_label='orange',
+                camera_confidence=0.9,
+            ),
+        ],
+        now_sec=1.0,
+        gate_radius_m=0.2,
+        spawn_radius_m=0.2,
+        alpha_lidar=0.4,
+        alpha_camera=0.2,
+        min_seen_count=1,
+    )
+
+    memory = GlobalConeMemory()
+    memory.update_from_tracks(
+        tracks=tracker.confirmed_tracks(1),
+        now_sec=1.0,
+        merge_radius_m=0.6,
+        max_cones=2000,
+    )
+
+    left, right, center = memory.infer_boundaries_and_centerline(
+        min_hits=1,
+        vehicle_x=0.0,
+        vehicle_y=0.0,
+        heading_x=1.0,
+        heading_y=0.0,
+    )
+    assert len(left) == 1
+    assert len(right) == 1
+    assert len(center) == 1
+
+
+def test_global_cone_memory_can_filter_boundary_hypothesis_by_confidence():
+    tracker = LocalConeTracker()
+    tracker.update(
+        updates=[
+            _u(
+                assoc_x=0.0,
+                assoc_y=2.0,
+                update_x=0.0,
+                update_y=2.0,
+                source='camera',
+                has_lidar=False,
+                has_camera=True,
+                camera_label='blue',
+                camera_confidence=0.95,
+            ),
+            _u(
+                assoc_x=0.0,
+                assoc_y=-2.0,
+                update_x=0.0,
+                update_y=-2.0,
+                source='camera',
+                has_lidar=False,
+                has_camera=True,
+                camera_label='yellow',
+                camera_confidence=0.55,
+            ),
+        ],
+        now_sec=1.0,
+        gate_radius_m=0.2,
+        spawn_radius_m=0.2,
+        alpha_lidar=0.4,
+        alpha_camera=0.2,
+        min_seen_count=1,
+    )
+
+    memory = GlobalConeMemory()
+    memory.update_from_tracks(
+        tracks=tracker.confirmed_tracks(1),
+        now_sec=1.0,
+        merge_radius_m=0.6,
+        max_cones=2000,
+    )
+
+    left, right, center = memory.infer_boundaries_and_centerline(
+        min_hits=1,
+        min_confidence=0.6,
+        vehicle_x=0.0,
+        vehicle_y=0.0,
+        heading_x=1.0,
+        heading_y=0.0,
+    )
+    assert len(left) == 1
+    assert len(right) == 0
+    assert len(center) == 0
 
 
 def test_local_tracker_alpha_reduces_step_size():

@@ -38,8 +38,9 @@ def generate_launch_description():
     world = LaunchConfiguration('world', default=world_file)
     headless = LaunchConfiguration('headless', default='false')
     update_rate_hz = LaunchConfiguration('update_rate_hz', default='100.0')
-    perception_rate_hz = LaunchConfiguration('perception_rate_hz', default='33.3333333333')
-    planner_rate_hz = LaunchConfiguration('planner_rate_hz', default='100.0')
+    camera_rate_hz = LaunchConfiguration('camera_rate_hz', default='15.0')
+    perception_rate_hz = LaunchConfiguration('perception_rate_hz', default='60.0')
+    planner_rate_hz = LaunchConfiguration('planner_rate_hz', default='60.0')
     topic_prefix = LaunchConfiguration('topic_prefix', default='/sim/raw')
     sensors_render_engine = LaunchConfiguration('sensors_render_engine', default='ogre')
 
@@ -91,13 +92,18 @@ def generate_launch_description():
             description='Dynamics + joint state update rate (Hz)'
         ),
         DeclareLaunchArgument(
+            'camera_rate_hz',
+            default_value='15.0',
+            description='Camera sensor update rate in Hz'
+        ),
+        DeclareLaunchArgument(
             'perception_rate_hz',
-            default_value=PythonExpression([LaunchConfiguration('update_rate_hz'), ' / 3.0']),
-            description='Perception sensor target rate in Hz (defaults to update_rate_hz / 3)'
+            default_value='60.0',
+            description='LiDAR sensor target rate in Hz'
         ),
         DeclareLaunchArgument(
             'planner_rate_hz',
-            default_value=LaunchConfiguration('update_rate_hz'),
+            default_value='60.0',
             description='Planner/controller/odom target rate in Hz'
         ),
         DeclareLaunchArgument(
@@ -154,6 +160,7 @@ def _launch_simulation(context, *args, **kwargs):
     updated_world = _write_updated_world(world_path, max_step_size, sensors_render_engine)
     eufs_config_path = os.path.join(pkg_sim_car, 'config', 'eufs_config.yaml')
     update_rate_value = float(LaunchConfiguration('update_rate_hz').perform(context))
+    camera_rate_value = float(LaunchConfiguration('camera_rate_hz').perform(context))
     perception_rate_value = float(LaunchConfiguration('perception_rate_hz').perform(context))
     planner_rate_value = float(LaunchConfiguration('planner_rate_hz').perform(context))
     updated_eufs_config = _write_updated_eufs_config(eufs_config_path, update_rate_value)
@@ -165,6 +172,7 @@ def _launch_simulation(context, *args, **kwargs):
         urdf_path,
         imu_rate,
         gnss_rate,
+        camera_rate_value,
         perception_rate_value,
         planner_rate_value,
         updated_eufs_config,
@@ -399,6 +407,7 @@ def _build_robot_description(
     urdf_path,
     imu_rate,
     gnss_rate,
+    camera_rate_hz,
     perception_rate_hz,
     planner_rate_hz,
     eufs_config_path,
@@ -412,6 +421,7 @@ def _build_robot_description(
         urdf_path,
         eufs_config_path,
         topic_prefix,
+        camera_rate_hz,
         perception_rate_hz,
         planner_rate_hz,
     )
@@ -446,12 +456,13 @@ def _build_robot_description(
     return ET.tostring(root, encoding='unicode')
 
 
-def _load_robot_xml(urdf_path, eufs_config_path, topic_prefix, perception_rate_hz, planner_rate_hz):
+def _load_robot_xml(urdf_path, eufs_config_path, topic_prefix, camera_rate_hz, perception_rate_hz, planner_rate_hz):
     if urdf_path.endswith('.xacro'):
         return _run_xacro(
             urdf_path,
             eufs_config_path,
             topic_prefix,
+            camera_rate_hz,
             perception_rate_hz,
             planner_rate_hz,
         )
@@ -459,12 +470,13 @@ def _load_robot_xml(urdf_path, eufs_config_path, topic_prefix, perception_rate_h
         return urdf_file.read()
 
 
-def _run_xacro(urdf_path, eufs_config_path, topic_prefix, perception_rate_hz, planner_rate_hz):
+def _run_xacro(urdf_path, eufs_config_path, topic_prefix, camera_rate_hz, perception_rate_hz, planner_rate_hz):
     cmd = [
         'xacro',
         urdf_path,
         f'config_file:={eufs_config_path}',
         f'topic_prefix:={topic_prefix}',
+        f'camera_rate_hz:={camera_rate_hz}',
         f'perception_rate_hz:={perception_rate_hz}',
         f'planner_rate_hz:={planner_rate_hz}',
     ]

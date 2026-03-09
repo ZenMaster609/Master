@@ -18,6 +18,7 @@ from vehicle_plotter.logging.steering_diagnostics import (  # noqa: E402
     parse_planner_diag,
     signed_cross_track_error,
 )
+from vehicle_plotter.logging.stanley_debug_plots import generate_stanley_debug_plot  # noqa: E402
 
 
 def test_signed_cte_on_straight_line():
@@ -74,12 +75,34 @@ def test_parse_planner_diag_with_keys():
     assert abs(out['tracked_cones_frame_delta_p95_m'] - 0.3) < 1e-9
 
 
+def test_parse_planner_diag_with_control_debug_keys():
+    msg = _Diag([
+        _Status(
+            'delaunay_planner/control_debug',
+            [
+                _KV('raw_steering_cmd_rad', '0.12'),
+                _KV('final_steering_cmd_rad', '0.10'),
+                _KV('heading_contribution_rad', '-0.02'),
+                _KV('cross_track_contribution_rad', '0.14'),
+                _KV('speed_term_mps', '2.2'),
+            ],
+        )
+    ])
+    out = parse_planner_diag(msg)
+    assert abs(out['raw_steering_cmd_rad'] - 0.12) < 1e-9
+    assert abs(out['final_steering_cmd_rad'] - 0.10) < 1e-9
+    assert abs(out['heading_contribution_rad'] + 0.02) < 1e-9
+    assert abs(out['cross_track_contribution_rad'] - 0.14) < 1e-9
+    assert abs(out['speed_term_mps'] - 2.2) < 1e-9
+
+
 def test_parse_planner_diag_missing_keys_returns_nan():
     msg = _Diag([_Status('other_status', [])])
     out = parse_planner_diag(msg)
     assert np.isnan(out['centerline_jump_max_m'])
     assert np.isnan(out['selected_edge_churn_ratio'])
     assert np.isnan(out['tracked_cones_frame_delta_p95_m'])
+    assert np.isnan(out['raw_steering_cmd_rad'])
 
 
 def test_analyze_csv_recovers_known_lag(tmp_path):
@@ -122,3 +145,54 @@ def test_analyze_csv_recovers_known_lag(tmp_path):
     assert summary['sample_count'] == float(n)
     assert abs(summary['lag_samples'] - lag_samples) <= 1.0
     assert np.isfinite(summary['steering_error_rms_rad'])
+
+
+def test_generate_stanley_debug_plot_smoke(tmp_path):
+    csv_path = tmp_path / 'steering_tracking_diagnostics.csv'
+    fieldnames = [
+        'timestamp_sec',
+        'raw_steering_cmd_rad',
+        'final_steering_cmd_rad',
+        'actual_steering_rad',
+        'heading_error_rad',
+        'heading_contribution_rad',
+        'cte_m',
+        'cross_track_contribution_rad',
+        'vehicle_speed_mps',
+        'speed_term_mps',
+        'vehicle_x_m',
+        'vehicle_y_m',
+        'target_point_x_frame_m',
+        'target_point_y_frame_m',
+        'nearest_path_point_x_m',
+        'nearest_path_point_y_m',
+    ]
+    with open(csv_path, 'w', newline='', encoding='utf-8') as handle:
+        writer = csv.DictWriter(handle, fieldnames=fieldnames)
+        writer.writeheader()
+        for i in range(120):
+            t = i * 0.02
+            writer.writerow({
+                'timestamp_sec': t,
+                'raw_steering_cmd_rad': 0.01 * np.sin(10.0 * t),
+                'final_steering_cmd_rad': 0.008 * np.sin(10.0 * t + 0.2),
+                'actual_steering_rad': 0.007 * np.sin(10.0 * t + 0.3),
+                'heading_error_rad': 0.03 * np.sin(2.0 * t),
+                'heading_contribution_rad': 0.03 * np.sin(2.0 * t),
+                'cte_m': 0.2 * np.sin(1.5 * t),
+                'cross_track_contribution_rad': 0.05 * np.sin(1.5 * t),
+                'vehicle_speed_mps': 2.5,
+                'speed_term_mps': 3.0,
+                'vehicle_x_m': 0.2 * i,
+                'vehicle_y_m': 0.2 * np.sin(0.1 * i),
+                'target_point_x_frame_m': 0.2 * i + 1.0,
+                'target_point_y_frame_m': 0.2 * np.sin(0.1 * i) + 0.1,
+                'nearest_path_point_x_m': 0.2 * i,
+                'nearest_path_point_y_m': 0.0,
+            })
+
+    out_path = tmp_path / 'stanley_debug_plots.png'
+    generated = generate_stanley_debug_plot(csv_path, out_path)
+    assert generated == out_path
+    assert out_path.exists()
+    assert out_path.stat().st_size > 0

@@ -37,12 +37,15 @@ from ..core.qos_profiles import PLOTTER_QOS, RELIABLE_SENSOR_QOS
 from ..logging.log_writer import LogWriter
 from ..logging.log_config import LogConfig
 from ..logging.steering_diagnostics import (
+    PLANNER_DIAG_DEFAULTS,
     analyze_csv,
     heading_error,
+    nearest_point_on_polyline,
     parse_planner_diag,
     signed_cross_track_error,
     write_summary_files,
 )
+from ..logging.stanley_debug_plots import StanleyDebugLivePlot, generate_stanley_debug_plot
 
 
 class LoggerNode(Node):
@@ -98,6 +101,9 @@ class LoggerNode(Node):
         self.declare_parameter('steering_diag_filename', 'steering_tracking_diagnostics.csv')
         self.declare_parameter('steering_diag_summary_json', 'steering_tracking_summary.json')
         self.declare_parameter('steering_diag_summary_txt', 'steering_tracking_summary.txt')
+        self.declare_parameter('steering_diag_live_plot_enabled', False)
+        self.declare_parameter('steering_diag_live_plot_rate_hz', 10.0)
+        self.declare_parameter('steering_diag_live_buffer_sec', 30.0)
 
         # Get parameters
         self._log_format = self.get_parameter('format').value
@@ -135,6 +141,17 @@ class LoggerNode(Node):
         self._steering_diag_filename = str(self.get_parameter('steering_diag_filename').value).strip() or 'steering_tracking_diagnostics.csv'
         self._steering_diag_summary_json = str(self.get_parameter('steering_diag_summary_json').value).strip() or 'steering_tracking_summary.json'
         self._steering_diag_summary_txt = str(self.get_parameter('steering_diag_summary_txt').value).strip() or 'steering_tracking_summary.txt'
+        self._steering_diag_live_plot_enabled = bool(
+            self.get_parameter('steering_diag_live_plot_enabled').value
+        )
+        self._steering_diag_live_plot_rate_hz = max(
+            0.1,
+            float(self.get_parameter('steering_diag_live_plot_rate_hz').value),
+        )
+        self._steering_diag_live_buffer_sec = max(
+            2.0,
+            float(self.get_parameter('steering_diag_live_buffer_sec').value),
+        )
 
         # Parse base path
         if base_path_str:
@@ -191,15 +208,17 @@ class LoggerNode(Node):
         self._diag_vehicle_yaw_rate_rps = float('nan')
         self._diag_vehicle_speed_mps = float('nan')
         self._diag_centerline_xy = np.empty((0, 2), dtype=np.float64)
-        self._diag_planner_metrics: Dict[str, float] = {
-            'centerline_jump_max_m': float('nan'),
-            'selected_edge_churn_ratio': float('nan'),
-            'tracked_cones_frame_delta_p95_m': float('nan'),
-        }
+        self._diag_planner_metrics: Dict[str, float] = dict(PLANNER_DIAG_DEFAULTS)
         self._diag_file_handle = None
         self._diag_csv_writer: Optional[csv.DictWriter] = None
         self._diag_flush_counter = 0
         self._diag_flush_stride = max(1, int(self._steering_diag_rate_hz * 2.0))
+        self._diag_live_plot_stride = max(
+            1,
+            int(round(self._steering_diag_rate_hz / self._steering_diag_live_plot_rate_hz)),
+        )
+        self._diag_live_plot_counter = 0
+        self._diag_live_plot: Optional[StanleyDebugLivePlot] = None
         self._diag_timer = None
 
         if enable_logging:
@@ -902,17 +921,35 @@ class LoggerNode(Node):
             'actual_steering_rad',
             'steering_error_rad',
             'steering_error_abs_rad',
+            'raw_steering_cmd_rad',
+            'final_steering_cmd_rad',
+            'steering_after_clamp_rad',
+            'steering_after_filter_rad',
+            'steering_after_rate_limit_rad',
+            'steering_saturated_flag',
             'vehicle_x_m',
             'vehicle_y_m',
             'vehicle_yaw_rad',
             'vehicle_yaw_rate_rps',
             'vehicle_speed_mps',
+            'speed_term_mps',
             'centerline_available',
             'centerline_point_count',
             'cte_m',
             'cte_abs_m',
             'heading_error_rad',
             'heading_error_abs_rad',
+            'heading_contribution_rad',
+            'cross_track_contribution_rad',
+            'yaw_rate_damping_contribution_rad',
+            'nearest_path_index',
+            'heading_path_index',
+            'target_point_x_base_m',
+            'target_point_y_base_m',
+            'target_point_x_frame_m',
+            'target_point_y_frame_m',
+            'nearest_path_point_x_m',
+            'nearest_path_point_y_m',
             'planner_centerline_jump_max_m',
             'planner_selected_edge_churn_ratio',
             'planner_tracked_cones_frame_delta_p95_m',
@@ -920,7 +957,18 @@ class LoggerNode(Node):
         self._diag_csv_writer = csv.DictWriter(self._diag_file_handle, fieldnames=fieldnames)
         self._diag_csv_writer.writeheader()
         self._diag_flush_counter = 0
+        self._diag_live_plot_counter = 0
         self._diag_timer = self.create_timer(1.0 / self._steering_diag_rate_hz, self._steering_diag_sample)
+        if self._steering_diag_live_plot_enabled:
+            try:
+                self._diag_live_plot = StanleyDebugLivePlot(
+                    buffer_sec=self._steering_diag_live_buffer_sec,
+                    sample_rate_hz=self._steering_diag_live_plot_rate_hz,
+                )
+                self.get_logger().info('Steering diagnostics live plot enabled')
+            except Exception as exc:
+                self._diag_live_plot = None
+                self._safe_log_warn(f'Failed to initialize steering diagnostics live plot: {exc}')
         self.get_logger().info(f'Steering diagnostics CSV: {diag_path}')
 
     def _steering_diag_sample(self) -> None:
@@ -931,27 +979,49 @@ class LoggerNode(Node):
         desired = float(self._diag_desired_steering_rad)
         actual_deg = float(self._diag_actual_steering_deg)
         actual_rad = math.radians(actual_deg) if math.isfinite(actual_deg) else float('nan')
-        err = (actual_rad - desired) if math.isfinite(actual_rad) and math.isfinite(desired) else float('nan')
         cmd_age_sec = now_sec - self._diag_cmd_recv_sec if math.isfinite(self._diag_cmd_recv_sec) else float('nan')
 
         centerline_count = int(self._diag_centerline_xy.shape[0])
         centerline_available = 1 if centerline_count >= 2 else 0
-        cte_m = float('nan')
-        heading_err = float('nan')
+        cte_geom = float('nan')
+        heading_geom = float('nan')
+        nearest_idx_geom = float('nan')
+        nearest_path_point = np.array([float('nan'), float('nan')], dtype=np.float64)
         if centerline_available and math.isfinite(self._diag_vehicle_x_m) and math.isfinite(self._diag_vehicle_y_m):
-            cte_m, tangent_yaw = signed_cross_track_error(
+            nearest_idx_int, nearest_path_point = nearest_point_on_polyline(
+                self._diag_vehicle_x_m,
+                self._diag_vehicle_y_m,
+                self._diag_centerline_xy,
+            )
+            nearest_idx_geom = float(nearest_idx_int)
+            cte_geom, tangent_yaw = signed_cross_track_error(
                 self._diag_vehicle_x_m,
                 self._diag_vehicle_y_m,
                 self._diag_centerline_xy,
             )
             if math.isfinite(tangent_yaw) and math.isfinite(self._diag_vehicle_yaw_rad):
-                heading_err = heading_error(self._diag_vehicle_yaw_rad, tangent_yaw)
+                heading_geom = heading_error(self._diag_vehicle_yaw_rad, tangent_yaw)
 
         planner_jump = float(self._diag_planner_metrics.get('centerline_jump_max_m', float('nan')))
         planner_churn = float(self._diag_planner_metrics.get('selected_edge_churn_ratio', float('nan')))
-        planner_tracked_delta = float(
-            self._diag_planner_metrics.get('tracked_cones_frame_delta_p95_m', float('nan'))
-        )
+        planner_tracked_delta = float(self._diag_planner_metrics.get('tracked_cones_frame_delta_p95_m', float('nan')))
+        cte_ctrl = float(self._diag_planner_metrics.get('cross_track_error_m', float('nan')))
+        heading_ctrl = float(self._diag_planner_metrics.get('heading_error_rad', float('nan')))
+        cte_m = cte_ctrl if math.isfinite(cte_ctrl) else cte_geom
+        heading_err = heading_ctrl if math.isfinite(heading_ctrl) else heading_geom
+
+        raw_cmd = float(self._diag_planner_metrics.get('raw_steering_cmd_rad', float('nan')))
+        final_cmd = float(self._diag_planner_metrics.get('final_steering_cmd_rad', float('nan')))
+        if not math.isfinite(final_cmd):
+            final_cmd = desired
+        steering_ref = final_cmd if math.isfinite(final_cmd) else desired
+        err = (actual_rad - steering_ref) if math.isfinite(actual_rad) and math.isfinite(steering_ref) else float('nan')
+
+        vehicle_speed_dbg = float(self._diag_planner_metrics.get('vehicle_speed_mps', float('nan')))
+        vehicle_speed = vehicle_speed_dbg if math.isfinite(vehicle_speed_dbg) else self._diag_vehicle_speed_mps
+        nearest_path_index = float(self._diag_planner_metrics.get('nearest_path_index', float('nan')))
+        if not math.isfinite(nearest_path_index):
+            nearest_path_index = nearest_idx_geom
 
         row = {
             'timestamp_sec': now_sec,
@@ -963,17 +1033,49 @@ class LoggerNode(Node):
             'actual_steering_rad': actual_rad,
             'steering_error_rad': err,
             'steering_error_abs_rad': abs(err) if math.isfinite(err) else float('nan'),
+            'raw_steering_cmd_rad': raw_cmd,
+            'final_steering_cmd_rad': final_cmd,
+            'steering_after_clamp_rad': float(
+                self._diag_planner_metrics.get('steering_after_clamp_rad', float('nan'))
+            ),
+            'steering_after_filter_rad': float(
+                self._diag_planner_metrics.get('steering_after_filter_rad', float('nan'))
+            ),
+            'steering_after_rate_limit_rad': float(
+                self._diag_planner_metrics.get('steering_after_rate_limit_rad', float('nan'))
+            ),
+            'steering_saturated_flag': float(
+                self._diag_planner_metrics.get('steering_saturated_flag', float('nan'))
+            ),
             'vehicle_x_m': self._diag_vehicle_x_m,
             'vehicle_y_m': self._diag_vehicle_y_m,
             'vehicle_yaw_rad': self._diag_vehicle_yaw_rad,
             'vehicle_yaw_rate_rps': self._diag_vehicle_yaw_rate_rps,
-            'vehicle_speed_mps': self._diag_vehicle_speed_mps,
+            'vehicle_speed_mps': vehicle_speed,
+            'speed_term_mps': float(self._diag_planner_metrics.get('speed_term_mps', float('nan'))),
             'centerline_available': centerline_available,
             'centerline_point_count': centerline_count,
             'cte_m': cte_m,
             'cte_abs_m': abs(cte_m) if math.isfinite(cte_m) else float('nan'),
             'heading_error_rad': heading_err,
             'heading_error_abs_rad': abs(heading_err) if math.isfinite(heading_err) else float('nan'),
+            'heading_contribution_rad': float(
+                self._diag_planner_metrics.get('heading_contribution_rad', float('nan'))
+            ),
+            'cross_track_contribution_rad': float(
+                self._diag_planner_metrics.get('cross_track_contribution_rad', float('nan'))
+            ),
+            'yaw_rate_damping_contribution_rad': float(
+                self._diag_planner_metrics.get('yaw_rate_damping_contribution_rad', float('nan'))
+            ),
+            'nearest_path_index': nearest_path_index,
+            'heading_path_index': float(self._diag_planner_metrics.get('heading_path_index', float('nan'))),
+            'target_point_x_base_m': float(self._diag_planner_metrics.get('target_point_x_base_m', float('nan'))),
+            'target_point_y_base_m': float(self._diag_planner_metrics.get('target_point_y_base_m', float('nan'))),
+            'target_point_x_frame_m': float(self._diag_planner_metrics.get('target_point_x_frame_m', float('nan'))),
+            'target_point_y_frame_m': float(self._diag_planner_metrics.get('target_point_y_frame_m', float('nan'))),
+            'nearest_path_point_x_m': float(nearest_path_point[0]),
+            'nearest_path_point_y_m': float(nearest_path_point[1]),
             'planner_centerline_jump_max_m': planner_jump,
             'planner_selected_edge_churn_ratio': planner_churn,
             'planner_tracked_cones_frame_delta_p95_m': planner_tracked_delta,
@@ -983,6 +1085,14 @@ class LoggerNode(Node):
         if self._diag_flush_counter >= self._diag_flush_stride:
             self._diag_file_handle.flush()
             self._diag_flush_counter = 0
+        if self._diag_live_plot is not None:
+            self._diag_live_plot_counter += 1
+            if self._diag_live_plot_counter >= self._diag_live_plot_stride:
+                if not self._diag_live_plot.update(row):
+                    self._safe_log_warn('Steering diagnostics live plot closed')
+                    self._diag_live_plot.close()
+                    self._diag_live_plot = None
+                self._diag_live_plot_counter = 0
 
     def state_callback(self, msg: VehicleStateMsg) -> None:
         """Handle incoming vehicle state message."""
@@ -1047,6 +1157,9 @@ class LoggerNode(Node):
         if self._diag_timer is not None:
             self._diag_timer.cancel()
             self._diag_timer = None
+        if self._diag_live_plot is not None:
+            self._diag_live_plot.close()
+            self._diag_live_plot = None
         if self._diag_file_handle is None:
             return
         self._diag_file_handle.flush()
@@ -1068,6 +1181,16 @@ class LoggerNode(Node):
             )
         except Exception as exc:
             self._safe_log_warn(f'Failed steering diagnostics analysis: {exc}')
+
+        try:
+            debug_plot_path = self._run_session.plots_path / 'stanley_debug_plots.png'
+            generated_path = generate_stanley_debug_plot(csv_path, debug_plot_path)
+            if generated_path is not None:
+                self._safe_log_info(f'Generated Stanley debug plot: {generated_path}')
+            else:
+                self._safe_log_warn('Stanley debug plot skipped: no steering diagnostics rows')
+        except Exception as exc:
+            self._safe_log_warn(f'Failed Stanley debug plot generation: {exc}')
 
     def _save_cone_metrics_csv(self) -> None:
         if self._run_session is None or not self._cone_records:

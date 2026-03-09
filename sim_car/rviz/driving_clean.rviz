@@ -5,7 +5,7 @@ Panels:
       Expanded:
         - /Global Options1
         - /Cone Memory1
-        - /Believed Track1
+        - /Planned Centerline1
       Splitter Ratio: 0.5
     Tree Height: 720
   - Class: rviz_common/Selection
@@ -72,7 +72,7 @@ Visualization Manager:
       Value: true
     - Class: rviz_default_plugins/MarkerArray
       Name: Global Track Hypothesis
-      Enabled: true
+      Enabled: false
       Topic:
         Value: /cone_memory/believed_track_viz
         Depth: 10
@@ -80,10 +80,10 @@ Visualization Manager:
         History Policy: Keep Last
         Reliability Policy: Reliable
       Queue Size: 100
-      Value: true
+      Value: false
     - Class: rviz_default_plugins/MarkerArray
       Name: Planner Debug
-      Enabled: true
+      Enabled: false
       Topic:
         Value: /planner_viz
         Depth: 10
@@ -91,7 +91,7 @@ Visualization Manager:
         History Policy: Keep Last
         Reliability Policy: Reliable
       Queue Size: 100
-      Value: true
+      Value: false
     - Class: rviz_default_plugins/Path
       Name: Planned Centerline
       Enabled: true

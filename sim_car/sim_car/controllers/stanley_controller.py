@@ -8,7 +8,7 @@ from typing import Optional
 
 import numpy as np
 
-from sim_car.controllers.base import ControllerOutput, FloatArray
+from sim_car.controllers.base import ControllerOutput, FloatArray, StanleyDebugInfo
 
 
 @dataclass(frozen=True)
@@ -64,22 +64,35 @@ class StanleyController:
         if abs(cross_track_error) < self._config.cross_track_deadband_m:
             cross_track_error = 0.0
 
-        speed_term = max(1e-6, self._config.softening_speed_mps + max(0.0, float(speed_mps)))
+        vehicle_speed = float(speed_mps)
+        speed_term = max(1e-6, self._config.softening_speed_mps + max(0.0, vehicle_speed))
         cross_track_term = float(math.atan2(self._config.k_gain * cross_track_error, speed_term))
-
-        steering = (self._config.heading_gain * heading_error) + cross_track_term
+        heading_contribution = self._config.heading_gain * heading_error
+        yaw_rate_damping_contribution = 0.0
         if self._config.use_yaw_rate_damping:
-            steering -= self._config.yaw_rate_damping_gain * float(yaw_rate_rps)
-        steering = float(np.clip(steering, -self._config.steering_limit_rad, self._config.steering_limit_rad))
+            yaw_rate_damping_contribution = -self._config.yaw_rate_damping_gain * float(yaw_rate_rps)
+
+        steering_raw = heading_contribution + cross_track_term + yaw_rate_damping_contribution
+        steering_after_clamp = float(
+            np.clip(steering_raw, -self._config.steering_limit_rad, self._config.steering_limit_rad)
+        )
+        steering_after_filter = steering_after_clamp
+        steering_after_rate_limit = steering_after_filter
+        steering_saturated = bool(abs(steering_after_clamp - steering_raw) > 1e-9)
 
         if self._last_steering_cmd is not None:
             alpha = self._config.steering_lowpass_alpha
             previous = float(self._last_steering_cmd)
-            steering = (alpha * steering) + ((1.0 - alpha) * previous)
+            steering_after_filter = (alpha * steering_after_clamp) + ((1.0 - alpha) * previous)
             if self._config.steering_rate_limit_rad_s > 0.0:
                 max_step = self._config.steering_rate_limit_rad_s / self._publish_rate_hz
-                steering = float(np.clip(steering, previous - max_step, previous + max_step))
+                steering_after_rate_limit = float(
+                    np.clip(steering_after_filter, previous - max_step, previous + max_step)
+                )
+            else:
+                steering_after_rate_limit = steering_after_filter
 
+        steering = float(steering_after_rate_limit)
         self._last_steering_cmd = steering
         wheelbase = max(1e-3, self._config.wheelbase_m)
         kappa = float(math.tan(steering) / wheelbase)
@@ -90,6 +103,25 @@ class StanleyController:
             kappa=kappa,
             lookahead_m=lookahead_m,
             target_point_base=np.asarray(target_point, dtype=np.float64),
+            stanley_debug=StanleyDebugInfo(
+                heading_error_rad=float(heading_error),
+                cross_track_error_m=float(cross_track_error),
+                vehicle_speed_mps=float(vehicle_speed),
+                speed_term_mps=float(speed_term),
+                heading_contribution_rad=float(heading_contribution),
+                cross_track_contribution_rad=float(cross_track_term),
+                yaw_rate_damping_contribution_rad=float(yaw_rate_damping_contribution),
+                raw_steering_cmd_rad=float(steering_raw),
+                steering_after_clamp_rad=float(steering_after_clamp),
+                steering_after_filter_rad=float(steering_after_filter),
+                steering_after_rate_limit_rad=float(steering_after_rate_limit),
+                final_steering_cmd_rad=float(steering),
+                steering_saturated_flag=steering_saturated,
+                nearest_path_index=int(nearest_segment_idx),
+                heading_path_index=int(heading_segment_idx),
+                target_point_x_base_m=float(target_point[0]),
+                target_point_y_base_m=float(target_point[1]),
+            ),
         )
 
     @staticmethod

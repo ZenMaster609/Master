@@ -8,7 +8,7 @@ from typing import Optional
 
 import numpy as np
 
-from sim_car.cone_fusion import normalize_color
+from sim_car.cone_fusion import normalize_color, resolve_boundary_color_by_lateral_position
 
 try:
     from scipy.spatial import Delaunay as _ScipyDelaunay
@@ -23,7 +23,11 @@ class CoreConfig:
     min_confidence: float = 0.3
     use_unknown_cones: bool = True
     infer_unknown_by_side: bool = True
+    infer_orange_by_side: bool = True
     include_orange: bool = False
+    orange_min_lateral_m: float = 0.9
+    orange_neighbor_radius_m: float = 3.5
+    orange_neighbor_margin_m: float = 0.75
     min_colored_cones: int = 6
     min_required_cones: int = 6
 
@@ -65,12 +69,18 @@ def compute_centerline(
         return _empty_result('no cones available')
 
     normalized = [normalize_color(c) for c in colors]
-    if config.infer_unknown_by_side:
-        normalized = _infer_unknown_by_side(
+    inferred_orange_mask = np.zeros((len(normalized),), dtype=bool)
+    if config.infer_unknown_by_side or config.infer_orange_by_side:
+        normalized, inferred_orange_mask = _infer_unmapped_by_side(
             points_xy=points_xy,
             colors=normalized,
             vehicle_xy=vehicle_xy,
             vehicle_yaw=vehicle_yaw,
+            infer_unknown=config.infer_unknown_by_side,
+            infer_orange=config.infer_orange_by_side,
+            orange_min_lateral_m=config.orange_min_lateral_m,
+            orange_neighbor_radius_m=config.orange_neighbor_radius_m,
+            orange_neighbor_margin_m=config.orange_neighbor_margin_m,
         )
     mask_geom = _geometry_filter(points_xy, vehicle_xy, vehicle_yaw, config)
     mask_conf = confidences >= float(config.min_confidence)
@@ -109,9 +119,12 @@ def compute_centerline(
     if tri_edges.shape[0] == 0:
         fallback_reason = 'triangulation failed'
 
+    filtered_inferred_orange = inferred_orange_mask[selected_mask]
+
     candidate_edges, selected_edges = _pick_cross_edges(
         points=filtered_points,
         colors=filtered_colors,
+        inferred_orange=filtered_inferred_orange,
         edges=tri_edges,
         yaw=vehicle_yaw,
         config=config,
@@ -121,7 +134,13 @@ def compute_centerline(
     if selected_edges.shape[0] < int(config.min_cross_edges):
         used_fallback = True
         fallback_reason = fallback_reason or 'insufficient blue-yellow cross edges'
-        fallback_pairs = _nearest_blue_yellow_pairs(filtered_points, filtered_colors, vehicle_yaw, config)
+        fallback_pairs = _nearest_blue_yellow_pairs(
+            filtered_points,
+            filtered_colors,
+            filtered_inferred_orange,
+            vehicle_yaw,
+            config,
+        )
         if fallback_pairs.shape[0] > selected_edges.shape[0]:
             selected_edges = fallback_pairs
             candidate_edges = fallback_pairs
@@ -298,25 +317,93 @@ def _deterministic_point_order(points: np.ndarray, colors: list[str]) -> np.ndar
     return np.asarray(order, dtype=np.int64)
 
 
-def _infer_unknown_by_side(
+def _infer_unmapped_by_side(
     *,
     points_xy: np.ndarray,
     colors: list[str],
     vehicle_xy: tuple[float, float],
     vehicle_yaw: float,
+    infer_unknown: bool,
+    infer_orange: bool,
+    orange_min_lateral_m: float,
+    orange_neighbor_radius_m: float,
+    orange_neighbor_margin_m: float,
 ) -> list[str]:
     if points_xy.size == 0 or not colors:
-        return colors
+        return colors, np.zeros((len(colors),), dtype=bool)
 
     rel = points_xy - np.asarray(vehicle_xy, dtype=np.float64).reshape(1, 2)
     vx, vy = _rotate_into_vehicle(rel, vehicle_yaw)
     inferred = list(colors)
+    inferred_orange_mask = np.zeros((len(colors),), dtype=bool)
+    blue_idx = np.asarray([idx for idx, color in enumerate(colors) if color == 'blue'], dtype=np.int64)
+    yellow_idx = np.asarray([idx for idx, color in enumerate(colors) if color == 'yellow'], dtype=np.int64)
     for idx, color in enumerate(colors):
-        if color != 'unknown':
+        if color == 'unknown':
+            inferred[idx] = resolve_boundary_color_by_lateral_position(
+                color,
+                float(vy[idx]),
+                infer_unknown=infer_unknown,
+                infer_orange=False,
+            )
             continue
-        angle = math.atan2(float(vy[idx]), float(vx[idx]))
-        inferred[idx] = 'blue' if angle >= 0.0 else 'yellow'
-    return inferred
+        if color != 'orange' or not infer_orange:
+            continue
+        resolved = _infer_orange_boundary(
+            idx=idx,
+            vx=vx,
+            vy=vy,
+            blue_idx=blue_idx,
+            yellow_idx=yellow_idx,
+            min_lateral_m=orange_min_lateral_m,
+            neighbor_radius_m=orange_neighbor_radius_m,
+            neighbor_margin_m=orange_neighbor_margin_m,
+        )
+        if resolved is not None:
+            inferred[idx] = resolved
+            inferred_orange_mask[idx] = True
+    return inferred, inferred_orange_mask
+
+
+def _infer_orange_boundary(
+    *,
+    idx: int,
+    vx: np.ndarray,
+    vy: np.ndarray,
+    blue_idx: np.ndarray,
+    yellow_idx: np.ndarray,
+    min_lateral_m: float,
+    neighbor_radius_m: float,
+    neighbor_margin_m: float,
+) -> Optional[str]:
+    lateral_y = float(vy[idx])
+    if abs(lateral_y) >= float(min_lateral_m):
+        return 'blue' if lateral_y >= 0.0 else 'yellow'
+
+    d_blue = _nearest_neighbor_distance(idx=idx, vx=vx, vy=vy, candidate_idx=blue_idx)
+    d_yellow = _nearest_neighbor_distance(idx=idx, vx=vx, vy=vy, candidate_idx=yellow_idx)
+    neighbor_radius_m = float(max(0.0, neighbor_radius_m))
+    neighbor_margin_m = float(max(0.0, neighbor_margin_m))
+
+    if math.isfinite(d_blue) and d_blue <= neighbor_radius_m and (d_yellow - d_blue) >= neighbor_margin_m:
+        return 'blue'
+    if math.isfinite(d_yellow) and d_yellow <= neighbor_radius_m and (d_blue - d_yellow) >= neighbor_margin_m:
+        return 'yellow'
+    return None
+
+
+def _nearest_neighbor_distance(
+    *,
+    idx: int,
+    vx: np.ndarray,
+    vy: np.ndarray,
+    candidate_idx: np.ndarray,
+) -> float:
+    if candidate_idx.size == 0:
+        return float('inf')
+    dx = vx[candidate_idx] - float(vx[idx])
+    dy = vy[candidate_idx] - float(vy[idx])
+    return float(np.min(np.hypot(dx, dy)))
 
 
 def _build_edges(points: np.ndarray) -> tuple[np.ndarray, bool]:
@@ -356,6 +443,7 @@ def _pick_cross_edges(
     *,
     points: np.ndarray,
     colors: list[str],
+    inferred_orange: np.ndarray,
     edges: np.ndarray,
     yaw: float,
     config: CoreConfig,
@@ -384,8 +472,13 @@ def _pick_cross_edges(
 
     color_mask = np.array(
         [
-            (colors[int(a)] == 'blue' and colors[int(b)] == 'yellow')
-            or (colors[int(a)] == 'yellow' and colors[int(b)] == 'blue')
+            (
+                (
+                    (colors[int(a)] == 'blue' and colors[int(b)] == 'yellow')
+                    or (colors[int(a)] == 'yellow' and colors[int(b)] == 'blue')
+                )
+                and not (bool(inferred_orange[int(a)]) and bool(inferred_orange[int(b)]))
+            )
             for a, b in geom_edges
         ],
         dtype=bool,
@@ -399,6 +492,7 @@ def _pick_cross_edges(
 def _nearest_blue_yellow_pairs(
     points: np.ndarray,
     colors: list[str],
+    inferred_orange: np.ndarray,
     yaw: float,
     config: CoreConfig,
 ) -> np.ndarray:
@@ -410,6 +504,8 @@ def _nearest_blue_yellow_pairs(
     candidates: list[tuple[float, int, int]] = []
     for b in blue_idx:
         for y in yellow_idx:
+            if bool(inferred_orange[b]) and bool(inferred_orange[y]):
+                continue
             vec = points[y] - points[b]
             dist = float(np.hypot(vec[0], vec[1]))
             if dist < float(config.min_cross_edge_m) or dist > float(config.max_cross_edge_m):

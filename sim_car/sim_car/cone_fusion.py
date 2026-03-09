@@ -44,6 +44,27 @@ def normalize_color(label: str) -> str:
     return 'unknown'
 
 
+def resolve_boundary_color_by_lateral_position(
+    label: str,
+    lateral_y: float,
+    *,
+    infer_unknown: bool = True,
+    infer_orange: bool = True,
+) -> str:
+    """Resolve ambiguous cone colors to a boundary side using lateral position."""
+
+    normalized = normalize_color(label)
+    if normalized == 'unknown':
+        if not infer_unknown:
+            return normalized
+        return 'blue' if float(lateral_y) >= 0.0 else 'yellow'
+    if normalized == 'orange':
+        if not infer_orange:
+            return normalized
+        return 'blue' if float(lateral_y) >= 0.0 else 'yellow'
+    return normalized
+
+
 def clamp_camera_range(camera_range_m: float) -> float:
     return max(0.0, min(20.0, float(camera_range_m)))
 

@@ -24,7 +24,12 @@ from tf2_ros import Buffer, TransformException, TransformListener
 from vehicle_plotter_msgs.msg import ConeDetection, ConeDetectionArray, RunSession
 from visualization_msgs.msg import Marker, MarkerArray
 
-from sim_car.cone_fusion import FusedObservation, choose_position_source, clamp_camera_range, normalize_color
+from sim_car.cone_fusion import (
+    FusedObservation,
+    choose_position_source,
+    clamp_camera_range,
+    normalize_color,
+)
 from sim_car.cone_pose import base_point_to_odom, convert_odom_child_pose_to_base_frame, odom_point_to_base
 from sim_car.cone_tracker import ConeTrack, GlobalConeMemory, LocalConeTracker, TrackUpdate
 
@@ -154,6 +159,11 @@ class ConeMemoryNode(Node):
         self.declare_parameter('global_merge_radius_m', 0.6)
         self.declare_parameter('global_min_hits_for_track', 2)
         self.declare_parameter('global_max_cones', 2000)
+        self.declare_parameter('believed_track_viz_min_hits', 3)
+        self.declare_parameter('believed_track_viz_min_confidence', 0.45)
+        self.declare_parameter('believed_track_viz_max_gap_m', 6.0)
+        self.declare_parameter('believed_track_viz_show_center', False)
+        self.declare_parameter('believed_track_viz_show_cones', False)
 
         self.declare_parameter('enable_track_live_plot', True)
         self.declare_parameter('track_plot_update_hz', 2.0)
@@ -213,6 +223,17 @@ class ConeMemoryNode(Node):
         self.global_merge_radius_m = max(0.05, float(self.get_parameter('global_merge_radius_m').value))
         self.global_min_hits_for_track = max(1, int(self.get_parameter('global_min_hits_for_track').value))
         self.global_max_cones = max(10, int(self.get_parameter('global_max_cones').value))
+        self.believed_track_viz_min_hits = max(1, int(self.get_parameter('believed_track_viz_min_hits').value))
+        self.believed_track_viz_min_confidence = max(
+            0.0,
+            min(1.0, float(self.get_parameter('believed_track_viz_min_confidence').value)),
+        )
+        self.believed_track_viz_max_gap_m = max(
+            0.0,
+            float(self.get_parameter('believed_track_viz_max_gap_m').value),
+        )
+        self.believed_track_viz_show_center = bool(self.get_parameter('believed_track_viz_show_center').value)
+        self.believed_track_viz_show_cones = bool(self.get_parameter('believed_track_viz_show_cones').value)
 
         self.enable_track_live_plot = bool(self.get_parameter('enable_track_live_plot').value)
         self.track_plot_update_hz = max(0.1, float(self.get_parameter('track_plot_update_hz').value))
@@ -460,6 +481,16 @@ class ConeMemoryNode(Node):
 
         left, right, center = self._global_memory.infer_boundaries_and_centerline(
             min_hits=self.global_min_hits_for_track,
+            min_confidence=0.0,
+            vehicle_x=veh_x,
+            vehicle_y=veh_y,
+            heading_x=heading_x,
+            heading_y=heading_y,
+        )
+
+        viz_left, viz_right, viz_center = self._global_memory.infer_boundaries_and_centerline(
+            min_hits=self.believed_track_viz_min_hits,
+            min_confidence=self.believed_track_viz_min_confidence,
             vehicle_x=veh_x,
             vehicle_y=veh_y,
             heading_x=heading_x,
@@ -468,7 +499,7 @@ class ConeMemoryNode(Node):
 
         self._publish_tracked_cones(confirmed, now)
         self._publish_local_markers(confirmed=confirmed, tentative=tentative, now=now)
-        self._publish_track_markers(left=left, right=right, center=center, now=now)
+        self._publish_track_markers(left=viz_left, right=viz_right, center=viz_center, now=now)
         if self.enable_raw_debug_viz:
             self._publish_raw_markers(now=now)
 
@@ -728,35 +759,107 @@ class ConeMemoryNode(Node):
         clear.action = Marker.DELETEALL
         arr.markers.append(clear)
 
-        arr.markers.append(self._make_line_marker(now, marker_id=1, ns='track_left', points=left, rgb=(0.2, 0.4, 1.0)))
-        arr.markers.append(self._make_line_marker(now, marker_id=2, ns='track_right', points=right, rgb=(1.0, 0.9, 0.2)))
-        arr.markers.append(self._make_line_marker(now, marker_id=3, ns='track_center', points=center, rgb=(0.0, 0.0, 0.0)))
+        marker_id = 1
+        marker_id = self._append_polyline_segments(
+            arr,
+            now,
+            marker_id=marker_id,
+            ns='track_left',
+            points=left,
+            rgb=(0.2, 0.4, 1.0),
+        )
+        marker_id = self._append_polyline_segments(
+            arr,
+            now,
+            marker_id=marker_id,
+            ns='track_right',
+            points=right,
+            rgb=(1.0, 0.9, 0.2),
+        )
+        if self.believed_track_viz_show_center:
+            marker_id = self._append_polyline_segments(
+                arr,
+                now,
+                marker_id=marker_id,
+                ns='track_center',
+                points=center,
+                rgb=(0.0, 0.0, 0.0),
+            )
 
-        cones_marker = Marker()
-        cones_marker.header.frame_id = self.odom_frame
-        cones_marker.header.stamp = now.to_msg()
-        cones_marker.ns = 'global_cones'
-        cones_marker.id = 4
-        cones_marker.type = Marker.SPHERE_LIST
-        cones_marker.action = Marker.ADD
-        cones_marker.scale.x = 0.20
-        cones_marker.scale.y = 0.20
-        cones_marker.scale.z = 0.20
-        cones_marker.color.a = 0.7
-        cones_marker.color.r = 0.8
-        cones_marker.color.g = 0.8
-        cones_marker.color.b = 0.8
-        for cone in self._global_memory.cones:
-            if cone.hits < self.global_min_hits_for_track:
-                continue
-            pt = Point()
-            pt.x = float(cone.x)
-            pt.y = float(cone.y)
-            pt.z = float(cone.z)
-            cones_marker.points.append(pt)
-        arr.markers.append(cones_marker)
+        if self.believed_track_viz_show_cones:
+            cones_marker = Marker()
+            cones_marker.header.frame_id = self.odom_frame
+            cones_marker.header.stamp = now.to_msg()
+            cones_marker.ns = 'global_cones'
+            cones_marker.id = marker_id
+            cones_marker.type = Marker.SPHERE_LIST
+            cones_marker.action = Marker.ADD
+            cones_marker.scale.x = 0.20
+            cones_marker.scale.y = 0.20
+            cones_marker.scale.z = 0.20
+            cones_marker.color.a = 0.7
+            cones_marker.color.r = 0.8
+            cones_marker.color.g = 0.8
+            cones_marker.color.b = 0.8
+            for cone in self._global_memory.cones:
+                if cone.hits < self.believed_track_viz_min_hits:
+                    continue
+                if float(cone.confidence) < self.believed_track_viz_min_confidence:
+                    continue
+                pt = Point()
+                pt.x = float(cone.x)
+                pt.y = float(cone.y)
+                pt.z = float(cone.z)
+                cones_marker.points.append(pt)
+            arr.markers.append(cones_marker)
 
         self._track_viz_pub.publish(arr)
+
+    def _append_polyline_segments(
+        self,
+        arr: MarkerArray,
+        now: Time,
+        *,
+        marker_id: int,
+        ns: str,
+        points: list[tuple[float, float]],
+        rgb: tuple[float, float, float],
+    ) -> int:
+        segments = self._split_polyline_by_gap(points, self.believed_track_viz_max_gap_m)
+        for segment in segments:
+            if len(segment) < 2:
+                continue
+            arr.markers.append(self._make_line_marker(now, marker_id=marker_id, ns=ns, points=segment, rgb=rgb))
+            marker_id += 1
+        return marker_id
+
+    @staticmethod
+    def _split_polyline_by_gap(
+        points: list[tuple[float, float]],
+        max_gap_m: float,
+    ) -> list[list[tuple[float, float]]]:
+        if len(points) <= 1:
+            return [list(points)] if points else []
+        if max_gap_m <= 0.0:
+            return [list(points)]
+
+        segments: list[list[tuple[float, float]]] = []
+        current: list[tuple[float, float]] = [points[0]]
+        max_gap_sq = float(max_gap_m) * float(max_gap_m)
+
+        for prev, curr in zip(points, points[1:]):
+            dx = float(curr[0] - prev[0])
+            dy = float(curr[1] - prev[1])
+            if (dx * dx) + (dy * dy) > max_gap_sq:
+                if current:
+                    segments.append(current)
+                current = [curr]
+                continue
+            current.append(curr)
+
+        if current:
+            segments.append(current)
+        return segments
 
     def _publish_raw_markers(self, *, now: Time) -> None:
         lidar_arr = MarkerArray()

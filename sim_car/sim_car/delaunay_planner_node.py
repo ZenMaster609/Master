@@ -110,7 +110,11 @@ class DelaunayPlannerNode(Node):
             'filtering.min_confidence': 0.3,
             'filtering.use_unknown_cones': True,
             'filtering.infer_unknown_by_side': True,
+            'filtering.infer_orange_by_side': True,
             'filtering.include_orange': False,
+            'filtering.orange_min_lateral_m': 0.9,
+            'filtering.orange_neighbor_radius_m': 3.5,
+            'filtering.orange_neighbor_margin_m': 0.75,
             'filtering.min_colored_cones': 6,
             'filtering.min_required_cones': 6,
             'edge_selection.min_cross_edge_m': 0.8,
@@ -151,16 +155,17 @@ class DelaunayPlannerNode(Node):
             'speed_control.speed_max_mps': 1.8,
             'speed_control.curvature_speed_gain': 4.0,
             'speed_control.lowpass_speed_alpha': 0.15,
-            'validation.max_centerline_jump_m': 0.8,
+            'validation.max_centerline_jump_m': 0.0,
             'validation.consistency_horizon_m': 8.0,
             'validation.max_history_frames': 8,
-            'validation.hold_last_valid_s': 0.30,
-            'validation.max_selected_edge_churn_ratio': 0.55,
+            'validation.hold_last_valid_s': 1.25,
+            'validation.max_selected_edge_churn_ratio': 1.0,
             'diagnostics.topic': '/delaunay_planner/diagnostics',
             'diagnostics.centerline_jump_horizon_m': 8.0,
             'diagnostics.edge_quantization_m': 0.05,
             'diagnostics.jump_warn_threshold_m': 0.8,
             'diagnostics.edge_churn_warn_threshold': 0.55,
+            'diagnostics.publish_control_debug': True,
             'debug.enable_markers': True,
             'debug.show_raw_cones': False,
             'debug.show_delaunay_edges': True,
@@ -292,6 +297,9 @@ class DelaunayPlannerNode(Node):
             0.0,
             float(self.get_parameter('diagnostics.edge_churn_warn_threshold').value),
         )
+        self.publish_control_debug = bool(
+            self.get_parameter('diagnostics.publish_control_debug').value
+        )
 
         self.enable_debug_markers = bool(self.get_parameter('debug.enable_markers').value)
         self.show_raw_cones = bool(self.get_parameter('debug.show_raw_cones').value)
@@ -307,7 +315,11 @@ class DelaunayPlannerNode(Node):
             min_confidence=float(self.get_parameter('filtering.min_confidence').value),
             use_unknown_cones=bool(self.get_parameter('filtering.use_unknown_cones').value),
             infer_unknown_by_side=bool(self.get_parameter('filtering.infer_unknown_by_side').value),
+            infer_orange_by_side=bool(self.get_parameter('filtering.infer_orange_by_side').value),
             include_orange=bool(self.get_parameter('filtering.include_orange').value),
+            orange_min_lateral_m=float(self.get_parameter('filtering.orange_min_lateral_m').value),
+            orange_neighbor_radius_m=float(self.get_parameter('filtering.orange_neighbor_radius_m').value),
+            orange_neighbor_margin_m=float(self.get_parameter('filtering.orange_neighbor_margin_m').value),
             min_colored_cones=max(1, int(self.get_parameter('filtering.min_colored_cones').value)),
             min_required_cones=max(2, int(self.get_parameter('filtering.min_required_cones').value)),
             min_cross_edge_m=float(self.get_parameter('edge_selection.min_cross_edge_m').value),
@@ -337,6 +349,7 @@ class DelaunayPlannerNode(Node):
     def _on_timer(self) -> None:
         control_target_base: Optional[np.ndarray] = None
         control_target_frame: Optional[np.ndarray] = None
+        control_debug_metrics: Optional[dict[str, float]] = None
         cmd_speed = 0.0
         cmd_steering = 0.0
         lookahead = 0.0
@@ -483,16 +496,6 @@ class DelaunayPlannerNode(Node):
         if self.enable_temporal_smoothing:
             centerline = self._apply_temporal_smoothing(centerline)
 
-        self._publish_diagnostics(
-            frame_id=target_frame,
-            centerline_jump_max_m=centerline_jump_max_m,
-            selected_edge_churn_ratio=selected_edge_churn,
-            tracked_cones_frame_delta_p95_m=tracked_delta_p95_m,
-            centerline_point_count=int(centerline.shape[0]),
-            selected_edge_count=int(result.selected_edges.shape[0]),
-            status=status,
-        )
-
         control_path = self._centerline_to_vehicle_frame(
             centerline=centerline,
             frame_id=target_frame,
@@ -534,12 +537,59 @@ class DelaunayPlannerNode(Node):
                         vehicle_yaw,
                     )
                     control_target_frame = np.array([tx, ty], dtype=np.float64)
+                if controller_output.stanley_debug is not None:
+                    debug = controller_output.stanley_debug
+                    control_debug_metrics = {
+                        'heading_error_rad': float(debug.heading_error_rad),
+                        'cross_track_error_m': float(debug.cross_track_error_m),
+                        'vehicle_speed_mps': float(debug.vehicle_speed_mps),
+                        'speed_term_mps': float(debug.speed_term_mps),
+                        'heading_contribution_rad': float(debug.heading_contribution_rad),
+                        'cross_track_contribution_rad': float(debug.cross_track_contribution_rad),
+                        'yaw_rate_damping_contribution_rad': float(
+                            debug.yaw_rate_damping_contribution_rad
+                        ),
+                        'yaw_rate_rps': float(self._latest_yaw_rate_rps),
+                        'raw_steering_cmd_rad': float(debug.raw_steering_cmd_rad),
+                        'steering_after_clamp_rad': float(debug.steering_after_clamp_rad),
+                        'steering_after_filter_rad': float(debug.steering_after_filter_rad),
+                        'steering_after_rate_limit_rad': float(debug.steering_after_rate_limit_rad),
+                        'final_steering_cmd_rad': float(debug.final_steering_cmd_rad),
+                        'steering_saturated_flag': (
+                            1.0 if bool(debug.steering_saturated_flag) else 0.0
+                        ),
+                        'nearest_path_index': float(debug.nearest_path_index),
+                        'heading_path_index': float(debug.heading_path_index),
+                        'target_point_x_base_m': float(debug.target_point_x_base_m),
+                        'target_point_y_base_m': float(debug.target_point_y_base_m),
+                        'target_point_x_frame_m': (
+                            float(control_target_frame[0])
+                            if control_target_frame is not None
+                            else float('nan')
+                        ),
+                        'target_point_y_frame_m': (
+                            float(control_target_frame[1])
+                            if control_target_frame is not None
+                            else float('nan')
+                        ),
+                    }
         else:
             self._apply_no_path_behavior()
             if self._last_speed_cmd is not None:
                 cmd_speed = float(self._last_speed_cmd)
             if self._last_steering_cmd is not None:
                 cmd_steering = float(self._last_steering_cmd)
+
+        self._publish_diagnostics(
+            frame_id=target_frame,
+            centerline_jump_max_m=centerline_jump_max_m,
+            selected_edge_churn_ratio=selected_edge_churn,
+            tracked_cones_frame_delta_p95_m=tracked_delta_p95_m,
+            centerline_point_count=int(centerline.shape[0]),
+            selected_edge_count=int(result.selected_edges.shape[0]),
+            status=status,
+            control_debug_metrics=control_debug_metrics,
+        )
 
         self._publish_outputs(
             frame_id=target_frame,
@@ -852,7 +902,13 @@ class DelaunayPlannerNode(Node):
             return False
 
         stacked = np.vstack(reference_rows)
-        reference_y = np.nanmedian(stacked, axis=0)
+        valid_counts = np.sum(np.isfinite(stacked), axis=0)
+        finite_cols = valid_counts > 0
+        if not np.any(finite_cols):
+            return False
+
+        reference_y = np.full(sample_x.shape, np.nan, dtype=np.float64)
+        reference_y[finite_cols] = np.nanmedian(stacked[:, finite_cols], axis=0)
         valid_mask = np.isfinite(reference_y)
         if not np.any(valid_mask):
             return False
@@ -890,6 +946,7 @@ class DelaunayPlannerNode(Node):
         centerline_point_count: int,
         selected_edge_count: int,
         status: str,
+        control_debug_metrics: Optional[dict[str, float]] = None,
     ) -> None:
         msg = DiagnosticArray()
         msg.header.stamp = self.get_clock().now().to_msg()
@@ -908,7 +965,96 @@ class DelaunayPlannerNode(Node):
             KeyValue(key='selected_edge_count', value=str(int(selected_edge_count))),
         ]
         msg.status.append(diag)
+
+        if self.publish_control_debug:
+            merged = self._default_control_debug_metrics()
+            if control_debug_metrics is not None:
+                merged.update(control_debug_metrics)
+            control_diag = DiagnosticStatus()
+            control_diag.name = 'delaunay_planner/control_debug'
+            control_diag.hardware_id = 'sim_car.delaunay_planner'
+            control_diag.level = DiagnosticStatus.OK
+            control_diag.message = 'stanley debug signals'
+            control_diag.values = [
+                KeyValue(key='heading_error_rad', value=f"{merged['heading_error_rad']:.6f}"),
+                KeyValue(key='cross_track_error_m', value=f"{merged['cross_track_error_m']:.6f}"),
+                KeyValue(key='vehicle_speed_mps', value=f"{merged['vehicle_speed_mps']:.6f}"),
+                KeyValue(key='speed_term_mps', value=f"{merged['speed_term_mps']:.6f}"),
+                KeyValue(key='heading_contribution_rad', value=f"{merged['heading_contribution_rad']:.6f}"),
+                KeyValue(
+                    key='cross_track_contribution_rad',
+                    value=f"{merged['cross_track_contribution_rad']:.6f}",
+                ),
+                KeyValue(
+                    key='yaw_rate_damping_contribution_rad',
+                    value=f"{merged['yaw_rate_damping_contribution_rad']:.6f}",
+                ),
+                KeyValue(key='yaw_rate_rps', value=f"{merged['yaw_rate_rps']:.6f}"),
+                KeyValue(key='raw_steering_cmd_rad', value=f"{merged['raw_steering_cmd_rad']:.6f}"),
+                KeyValue(
+                    key='steering_after_clamp_rad',
+                    value=f"{merged['steering_after_clamp_rad']:.6f}",
+                ),
+                KeyValue(
+                    key='steering_after_filter_rad',
+                    value=f"{merged['steering_after_filter_rad']:.6f}",
+                ),
+                KeyValue(
+                    key='steering_after_rate_limit_rad',
+                    value=f"{merged['steering_after_rate_limit_rad']:.6f}",
+                ),
+                KeyValue(key='final_steering_cmd_rad', value=f"{merged['final_steering_cmd_rad']:.6f}"),
+                KeyValue(
+                    key='steering_saturated_flag',
+                    value=str(int(round(merged['steering_saturated_flag']))),
+                ),
+                KeyValue(key='nearest_path_index', value=str(int(round(merged['nearest_path_index'])))),
+                KeyValue(key='heading_path_index', value=str(int(round(merged['heading_path_index'])))),
+                KeyValue(
+                    key='target_point_x_base_m',
+                    value=f"{merged['target_point_x_base_m']:.6f}",
+                ),
+                KeyValue(
+                    key='target_point_y_base_m',
+                    value=f"{merged['target_point_y_base_m']:.6f}",
+                ),
+                KeyValue(
+                    key='target_point_x_frame_m',
+                    value=f"{merged['target_point_x_frame_m']:.6f}",
+                ),
+                KeyValue(
+                    key='target_point_y_frame_m',
+                    value=f"{merged['target_point_y_frame_m']:.6f}",
+                ),
+            ]
+            msg.status.append(control_diag)
         self._diag_pub.publish(msg)
+
+    @staticmethod
+    def _default_control_debug_metrics() -> dict[str, float]:
+        nan = float('nan')
+        return {
+            'heading_error_rad': nan,
+            'cross_track_error_m': nan,
+            'vehicle_speed_mps': nan,
+            'speed_term_mps': nan,
+            'heading_contribution_rad': nan,
+            'cross_track_contribution_rad': nan,
+            'yaw_rate_damping_contribution_rad': nan,
+            'yaw_rate_rps': nan,
+            'raw_steering_cmd_rad': nan,
+            'steering_after_clamp_rad': nan,
+            'steering_after_filter_rad': nan,
+            'steering_after_rate_limit_rad': nan,
+            'final_steering_cmd_rad': nan,
+            'steering_saturated_flag': 0.0,
+            'nearest_path_index': -1.0,
+            'heading_path_index': -1.0,
+            'target_point_x_base_m': nan,
+            'target_point_y_base_m': nan,
+            'target_point_x_frame_m': nan,
+            'target_point_y_frame_m': nan,
+        }
 
     def _publish_outputs(
         self,

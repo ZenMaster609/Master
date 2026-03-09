@@ -11,6 +11,7 @@ Launches:
 
 from launch import LaunchDescription
 import tempfile
+from pathlib import Path
 
 from launch.actions import DeclareLaunchArgument, GroupAction, IncludeLaunchDescription, OpaqueFunction, SetLaunchConfiguration
 from launch.conditions import IfCondition
@@ -40,16 +41,22 @@ def generate_launch_description():
         description='Dynamics + joint state update rate (Hz)'
     )
 
+    camera_rate_arg = DeclareLaunchArgument(
+        'camera_rate_hz',
+        default_value='15.0',
+        description='Camera sensor update rate in Hz'
+    )
+
     perception_rate_arg = DeclareLaunchArgument(
         'perception_rate_hz',
-        default_value=PythonExpression([LaunchConfiguration('update_rate_hz'), ' / 3.0']),
-        description='Perception sensor + fusion target rate in Hz (defaults to update_rate_hz / 3)'
+        default_value='60.0',
+        description='LiDAR + cone-memory target rate in Hz'
     )
 
     planner_rate_arg = DeclareLaunchArgument(
         'planner_rate_hz',
-        default_value=LaunchConfiguration('update_rate_hz'),
-        description='Planner/controller/odom target rate in Hz (defaults to update_rate_hz)'
+        default_value='60.0',
+        description='Planner/controller/odom target rate in Hz'
     )
 
     sensors_render_engine_arg = DeclareLaunchArgument(
@@ -104,6 +111,24 @@ def generate_launch_description():
         'steering_diagnostics',
         default_value='true',
         description='Enable steering-vs-path diagnostics CSV logging in the main logger'
+    )
+
+    steering_diag_live_plot_enabled_arg = DeclareLaunchArgument(
+        'steering_diag_live_plot_enabled',
+        default_value='true',
+        description='Enable live Stanley steering diagnostics plot window'
+    )
+
+    steering_diag_live_plot_rate_hz_arg = DeclareLaunchArgument(
+        'steering_diag_live_plot_rate_hz',
+        default_value='10.0',
+        description='Refresh rate for live Stanley steering diagnostics plot'
+    )
+
+    steering_diag_live_buffer_sec_arg = DeclareLaunchArgument(
+        'steering_diag_live_buffer_sec',
+        default_value='30.0',
+        description='History window in seconds for live Stanley diagnostics plot'
     )
 
     logging_arg = DeclareLaunchArgument(
@@ -181,7 +206,7 @@ def generate_launch_description():
     rviz_arg = DeclareLaunchArgument(
         'rviz',
         default_value='true',
-        description='Launch RViz with boundary planner debug config (disabled when headless=true)'
+        description='Launch RViz (disabled when headless=true)'
     )
 
     use_rviz_arg = DeclareLaunchArgument(
@@ -190,10 +215,16 @@ def generate_launch_description():
         description='Alias switch for RViz launch (must also satisfy rviz:=true)'
     )
 
+    rviz_profile_arg = DeclareLaunchArgument(
+        'rviz_profile',
+        default_value='clean',
+        description="RViz profile to load when rviz_config is not provided: 'clean' or 'debug'"
+    )
+
     rviz_config_arg = DeclareLaunchArgument(
         'rviz_config',
-        default_value=PathJoinSubstitution([sim_car_share, 'rviz', 'boundary_debug.rviz']),
-        description='Path to RViz display config file'
+        default_value='',
+        description='Explicit path to RViz display config file (overrides rviz_profile when set)'
     )
 
     perception_queue_size_arg = DeclareLaunchArgument(
@@ -352,6 +383,7 @@ def generate_launch_description():
     launch_argument_names = [
         'headless',
         'update_rate_hz',
+        'camera_rate_hz',
         'perception_rate_hz',
         'planner_rate_hz',
         'sensors_render_engine',
@@ -376,6 +408,7 @@ def generate_launch_description():
         'use_delaunay_planner',
         'rviz',
         'use_rviz',
+        'rviz_profile',
         'rviz_config',
         'perception_queue_size',
         'cuda',
@@ -408,7 +441,9 @@ def generate_launch_description():
     }
 
     resolved_measurement_config = LaunchConfiguration('resolved_measurement_config')
+    resolved_rviz_config = LaunchConfiguration('resolved_rviz_config')
     measurement_config_setup = OpaqueFunction(function=_configure_measurement_config)
+    rviz_config_setup = OpaqueFunction(function=_configure_rviz_config)
 
     topic_prefix = PythonExpression([
         "'/sim/raw' if '",
@@ -428,7 +463,7 @@ def generate_launch_description():
     ])
     stereo_pair_slack_sec = PythonExpression([
         "max(0.02, 1.2 / float(",
-        LaunchConfiguration('perception_rate_hz'),
+        LaunchConfiguration('camera_rate_hz'),
         "))"
     ])
     delaunay_history_frames = PythonExpression([
@@ -451,6 +486,7 @@ def generate_launch_description():
             'world': LaunchConfiguration('world'),
             'use_sim_time': LaunchConfiguration('use_sim_time'),
             'update_rate_hz': LaunchConfiguration('update_rate_hz'),
+            'camera_rate_hz': LaunchConfiguration('camera_rate_hz'),
             'perception_rate_hz': LaunchConfiguration('perception_rate_hz'),
             'planner_rate_hz': LaunchConfiguration('planner_rate_hz'),
             'sensors_render_engine': LaunchConfiguration('sensors_render_engine'),
@@ -512,6 +548,9 @@ def generate_launch_description():
             'steering_diag_rate_hz': '50.0',
             'steering_diag_steering_topic': '/sim/steering_angle',
             'steering_diag_joint_states_topic': '/sim/joint_states',
+            'steering_diag_live_plot_enabled': LaunchConfiguration('steering_diag_live_plot_enabled'),
+            'steering_diag_live_plot_rate_hz': LaunchConfiguration('steering_diag_live_plot_rate_hz'),
+            'steering_diag_live_buffer_sec': LaunchConfiguration('steering_diag_live_buffer_sec'),
             'cone_plot_config': PathJoinSubstitution([vehicle_plotter_share, 'config', 'cone_plots.yaml']),
         }.items(),
     )
@@ -1066,7 +1105,7 @@ def generate_launch_description():
         executable='rviz2',
         name='boundary_debug_rviz',
         output='screen',
-        arguments=['-d', LaunchConfiguration('rviz_config')],
+        arguments=['-d', resolved_rviz_config],
         parameters=[{
             'use_sim_time': ParameterValue(
                 LaunchConfiguration('use_sim_time'),
@@ -1098,6 +1137,7 @@ def generate_launch_description():
     return LaunchDescription([
         headless_arg,
         update_rate_arg,
+        camera_rate_arg,
         perception_rate_arg,
         planner_rate_arg,
         sensors_render_engine_arg,
@@ -1109,6 +1149,9 @@ def generate_launch_description():
         plotting_arg,
         cone_plotting_2_arg,
         steering_diagnostics_arg,
+        steering_diag_live_plot_enabled_arg,
+        steering_diag_live_plot_rate_hz_arg,
+        steering_diag_live_buffer_sec_arg,
         logging_arg,
         close_plots_on_shutdown_arg,
         rosbagging_arg,
@@ -1123,6 +1166,7 @@ def generate_launch_description():
         use_delaunay_planner_arg,
         rviz_arg,
         use_rviz_arg,
+        rviz_profile_arg,
         rviz_config_arg,
         perception_queue_size_arg,
         cuda_arg,
@@ -1150,6 +1194,7 @@ def generate_launch_description():
         yolo_ultralytics_pythonpath_arg,
         measurement_config_arg,
         measurement_config_setup,
+        rviz_config_setup,
         gazebo_launch,
         sim_nodes_launch,
         measurement_node,
@@ -1201,6 +1246,23 @@ def _configure_measurement_config(context, *_args, **_kwargs):
     planner_rate_hz = float(LaunchConfiguration('planner_rate_hz').perform(context))
     resolved_config = _write_rate_adjusted_measurement_config(config_path, planner_rate_hz)
     return [SetLaunchConfiguration('resolved_measurement_config', resolved_config)]
+
+
+def _configure_rviz_config(context, *_args, **_kwargs):
+    explicit_config = LaunchConfiguration('rviz_config').perform(context).strip()
+    if explicit_config:
+        resolved_config = explicit_config
+    else:
+        sim_car_share = get_package_share_directory('sim_car')
+        rviz_profile = LaunchConfiguration('rviz_profile').perform(context).strip().lower()
+        profile_to_filename = {
+            'clean': 'driving_clean.rviz',
+            'debug': 'boundary_debug.rviz',
+        }
+        resolved_filename = profile_to_filename.get(rviz_profile, 'driving_clean.rviz')
+        resolved_config = str(Path(sim_car_share) / 'rviz' / resolved_filename)
+
+    return [SetLaunchConfiguration('resolved_rviz_config', resolved_config)]
 
 
 def _write_rate_adjusted_measurement_config(config_path: str, planner_rate_hz: float) -> str:

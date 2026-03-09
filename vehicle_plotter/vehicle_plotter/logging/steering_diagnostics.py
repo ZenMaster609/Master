@@ -10,6 +10,32 @@ from typing import Any
 
 import numpy as np
 
+PLANNER_DIAG_DEFAULTS: dict[str, float] = {
+    "centerline_jump_max_m": float("nan"),
+    "selected_edge_churn_ratio": float("nan"),
+    "tracked_cones_frame_delta_p95_m": float("nan"),
+    "heading_error_rad": float("nan"),
+    "cross_track_error_m": float("nan"),
+    "vehicle_speed_mps": float("nan"),
+    "speed_term_mps": float("nan"),
+    "heading_contribution_rad": float("nan"),
+    "cross_track_contribution_rad": float("nan"),
+    "yaw_rate_damping_contribution_rad": float("nan"),
+    "yaw_rate_rps": float("nan"),
+    "raw_steering_cmd_rad": float("nan"),
+    "steering_after_clamp_rad": float("nan"),
+    "steering_after_filter_rad": float("nan"),
+    "steering_after_rate_limit_rad": float("nan"),
+    "final_steering_cmd_rad": float("nan"),
+    "steering_saturated_flag": float("nan"),
+    "nearest_path_index": float("nan"),
+    "heading_path_index": float("nan"),
+    "target_point_x_base_m": float("nan"),
+    "target_point_y_base_m": float("nan"),
+    "target_point_x_frame_m": float("nan"),
+    "target_point_y_frame_m": float("nan"),
+}
+
 
 def normalize_angle(angle_rad: float) -> float:
     """Wrap angle into [-pi, pi]."""
@@ -91,31 +117,22 @@ def signed_cross_track_error(
 
 
 def parse_planner_diag(diag_msg: Any) -> dict[str, float]:
-    """Extract planner stability values from DiagnosticArray-like message."""
-    defaults = {
-        "centerline_jump_max_m": float("nan"),
-        "selected_edge_churn_ratio": float("nan"),
-        "tracked_cones_frame_delta_p95_m": float("nan"),
-    }
+    """Extract planner stability + control-debug values from DiagnosticArray-like message."""
+    defaults = dict(PLANNER_DIAG_DEFAULTS)
     statuses = getattr(diag_msg, "status", None)
     if statuses is None:
         return defaults
 
     for status in statuses:
         name = str(getattr(status, "name", ""))
-        if name != "delaunay_planner/stability":
+        if name not in {"delaunay_planner/stability", "delaunay_planner/control_debug"}:
             continue
         values = getattr(status, "values", [])
         for item in values:
             key = str(getattr(item, "key", ""))
             value = _safe_float(getattr(item, "value", "nan"))
-            if key == "centerline_jump_max_m":
-                defaults["centerline_jump_max_m"] = value
-            elif key == "selected_edge_churn_ratio":
-                defaults["selected_edge_churn_ratio"] = value
-            elif key == "tracked_cones_frame_delta_p95_m":
-                defaults["tracked_cones_frame_delta_p95_m"] = value
-        break
+            if key in defaults:
+                defaults[key] = value
     return defaults
 
 
