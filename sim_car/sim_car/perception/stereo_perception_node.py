@@ -1,6 +1,6 @@
 """Stereo-only wrapper for PerceptionNode."""
 
-from sim_car.perception_node import main as perception_main
+from sim_car.perception.perception_node import main as perception_main
 
 
 def main(args=None):

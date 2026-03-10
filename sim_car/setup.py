@@ -43,7 +43,7 @@ setup(
     entry_points={
         'console_scripts': [
             'wheel_encoder_node = sim_car.wheel_encoder_node:main',
-            'ackermann_cmd_bridge = sim_car.ackermann_cmd_bridge:main',
+            'ackermann_cmd_bridge = sim_car.controllers.ackermann_cmd_bridge:main',
             'suspension_sensor_node = sim_car.suspension_sensor_node:main',
             'steering_sensor_node = sim_car.steering_sensor_node:main',
             'virtual_sensors_node = sim_car.virtual_sensors_node:main',
@@ -55,8 +55,8 @@ setup(
             'brake_temp_fr_node = sim_car.brake_temp_fr_node:main',
             'brake_temp_rl_node = sim_car.brake_temp_rl_node:main',
             'pitot_dynamic_pressure_node = sim_car.pitot_dynamic_pressure_node:main',
-            'stereo_perception_node = sim_car.stereo_perception_node:main',
-            'mono_perception_node = sim_car.mono_perception_node:main',
+            'stereo_perception_node = sim_car.perception.stereo_perception_node:main',
+            'mono_perception_node = sim_car.perception.mono_perception_node:main',
             'cone_evaluator_node = sim_car.cones.nodes.evaluator_node:main',
             'cone_plotting2_node = sim_car.cones.nodes.plotting2_node:main',
             'lidar_node = sim_car.lidar.lidar_node:main',
