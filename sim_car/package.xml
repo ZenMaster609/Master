@@ -17,6 +17,8 @@
   <depend>diagnostic_msgs</depend>
   <depend>sensor_msgs</depend>
   <depend>nav_msgs</depend>
+  <depend>ament_index_python</depend>
+  <depend>rosidl_runtime_py</depend>
   <depend>visualization_msgs</depend>
   <depend>eufs_msgs</depend>
   <depend>vehicle_plotter_msgs</depend>

@@ -1,12 +1,15 @@
 #!/usr/bin/env python3
 """
-Full sim bringup for the EUFS car with sensors and live plotting.
+Full sim bringup for the EUFS car.
 
-Launches:
-1. Gazebo sim with the EUFS car in small_track.world (sim_car)
-2. Control + sensor nodes (sim_car)
-3. Vehicle plotter nodes (vehicle_plotter)
+This launch file keeps the virtual sensor pipeline separate from the
+autonomy stack:
 
+    sensor nodes -> measurement_node -> vehicle_plotter
+
+The top-level ``sensor_pipeline`` argument is the simple on/off switch for
+that path. Per-node toggles are kept for compatibility, but are no longer
+needed for normal use.
 """
 
 from launch import LaunchDescription
@@ -171,6 +174,12 @@ def generate_launch_description():
         'use_sim_time',
         default_value='true',
         description='Use simulation time from /clock topic'
+    )
+
+    sensor_pipeline_arg = DeclareLaunchArgument(
+        'sensor_pipeline',
+        default_value='false',
+        description='Enable sim sensor nodes, measurement_node, and vehicle_plotter together'
     )
 
     measure_arg = DeclareLaunchArgument(
@@ -395,6 +404,7 @@ def generate_launch_description():
         'bridge',
         'ackermann_steering_sign',
         'use_sim_time',
+        'sensor_pipeline',
         'measure',
         'sensor_nodes',
         'planner',
@@ -439,10 +449,24 @@ def generate_launch_description():
     measurement_config_setup = OpaqueFunction(function=_configure_measurement_config)
     rviz_config_setup = OpaqueFunction(function=_configure_rviz_config)
 
+    sensor_nodes_enabled = PythonExpression([
+        "('", LaunchConfiguration('sensor_pipeline'), "'.lower() == 'true') or ('",
+        LaunchConfiguration('sensor_nodes'), "'.lower() == 'true')"
+    ])
+    measurement_enabled = PythonExpression([
+        "('", LaunchConfiguration('sensor_pipeline'), "'.lower() == 'true') or ('",
+        LaunchConfiguration('measure'), "'.lower() == 'true')"
+    ])
+    plotting_enabled = PythonExpression([
+        "('", LaunchConfiguration('sensor_pipeline'), "'.lower() == 'true') or ('",
+        LaunchConfiguration('plotting'), "'.lower() == 'true')"
+    ])
     topic_prefix = PythonExpression([
-        "'/sim/raw' if '",
+        "'/sim/raw' if (('",
+        LaunchConfiguration('sensor_pipeline'),
+        "'.lower() == 'true') or ('",
         LaunchConfiguration('measure'),
-        "'.lower() == 'true' else '/sim'"
+        "'.lower() == 'true')) else '/sim'"
     ])
     camera_source_name = PythonExpression([
         "'stereo' if '",
@@ -495,17 +519,15 @@ def generate_launch_description():
             'topic_prefix': topic_prefix,
             'sensor_config': resolved_measurement_config,
         }.items(),
-        condition=IfCondition(LaunchConfiguration('sensor_nodes')),
+        condition=IfCondition(sensor_nodes_enabled),
     )
 
     measurement_node = Node(
-        package='measurement_node',
+        package='sim_car',
         executable='measurement_node',
         name='measurement_node',
         output='screen',
-        condition=IfCondition(PythonExpression([
-            "'", LaunchConfiguration('measure'), "'.lower() == 'true'"
-        ])),
+        condition=IfCondition(measurement_enabled),
         parameters=[{
             'use_sim_time': LaunchConfiguration('use_sim_time'),
             'config_path': resolved_measurement_config,
@@ -518,7 +540,7 @@ def generate_launch_description():
         ),
         launch_arguments={
             'adapter': 'gazebo',
-            'enable_plot': LaunchConfiguration('plotting'),
+            'enable_plot': plotting_enabled,
             'enable_log': PythonExpression([
                 "'true' if ('",
                 LaunchConfiguration('logging'),
@@ -527,7 +549,7 @@ def generate_launch_description():
                 "'.lower() == 'true') else 'false'"
             ]),
             'enable_rosbag': LaunchConfiguration('rosbagging'),
-            'enable_data_collector': 'false',
+            'enable_data_collector': 'true',
             'sensor_config': resolved_measurement_config,
             'use_sim_time': LaunchConfiguration('use_sim_time'),
             'close_plots': LaunchConfiguration('close_plots'),
@@ -1039,6 +1061,7 @@ def generate_launch_description():
         control_bridge_arg,
         ackermann_steering_sign_arg,
         use_sim_time_arg,
+        sensor_pipeline_arg,
         measure_arg,
         sensor_nodes_arg,
         planner_arg,

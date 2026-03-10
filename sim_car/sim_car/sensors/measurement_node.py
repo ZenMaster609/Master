@@ -146,7 +146,14 @@ class SignalProcessor:
                     setattr(
                         msg.orientation,
                         axis,
-                        float(self._apply_scalar(path, float(getattr(msg.orientation, axis)), dt, base='orientation'))
+                        float(
+                            self._apply_scalar(
+                                path,
+                                float(getattr(msg.orientation, axis)),
+                                dt,
+                                base='orientation',
+                            )
+                        ),
                     )
             return
 
@@ -165,7 +172,14 @@ class SignalProcessor:
                     setattr(
                         msg.pose.pose.orientation,
                         axis,
-                        float(self._apply_scalar(path, float(getattr(msg.pose.pose.orientation, axis)), dt, base='pose'))
+                        float(
+                            self._apply_scalar(
+                                path,
+                                float(getattr(msg.pose.pose.orientation, axis)),
+                                dt,
+                                base='pose',
+                            )
+                        ),
                     )
             for part_name in ('linear', 'angular'):
                 part = getattr(msg.twist.twist, part_name)
@@ -200,18 +214,19 @@ class SignalProcessor:
             if isinstance(value, (float, int)):
                 if isinstance(value, bool) or isinstance(value, int):
                     continue
-                path = field
-                setattr(msg, field, float(self._apply_scalar(path, float(value), dt, base=field)))
+                setattr(msg, field, float(self._apply_scalar(field, float(value), dt, base=field)))
                 continue
             if isinstance(value, (list, tuple)):
                 if not value or not isinstance(value[0], (float, int)):
                     continue
                 new_list = []
-                for i, v in enumerate(value):
-                    if isinstance(v, bool) or isinstance(v, int):
-                        new_list.append(v)
+                for i, val in enumerate(value):
+                    if isinstance(val, bool) or isinstance(val, int):
+                        new_list.append(val)
                         continue
-                    new_list.append(float(self._apply_scalar(f'{field}[{i}]', float(v), dt, index=i, base=field)))
+                    new_list.append(
+                        float(self._apply_scalar(f'{field}[{i}]', float(val), dt, index=i, base=field))
+                    )
                 setattr(msg, field, type(value)(new_list))
                 continue
             if hasattr(value, '__slots__'):

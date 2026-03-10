@@ -18,25 +18,22 @@ This file lists each launch file in the workspace and the arguments it accepts. 
 
 ### `sim_car/launch/full_sim_launch.launch.py`
 
-- `headless` (default: `true`)
-- `update_rate_hz` (default: `100.0`)
+- `headless` (default: `false`)
+- `update_rate_hz` (default: `180.0`)
+- `camera_rate_hz` (default: `15.0`)
+- `perception_rate_hz` (default: `60.0`)
+- `planner_rate_hz` (default: `60.0`)
 - `world` (default: `sim_car/worlds/small_track.world`)
-- `plotting` (default: `true`)
-- `logging` (default: `true`)
+- `plotting` (default: `false`)
+- `logging` (default: `false`)
 - `close_plots` (default: `true`)
-- `rosbagging` (default: `true`)
+- `rosbagging` (default: `false`)
 - `steering` (default: `false`)
 - `use_sim_time` (default: `true`)
-- `measure` (default: `true`)
+- `sensor_pipeline` (default: `false`)
+- `measure` (default: `false`)
+- `sensor_nodes` (default: `false`)
 - `measurement_config` (default: `sim_car/config/sensor_config.yaml`)
-
-## measurement_node
-
-### `measurement_node/launch/measurement.launch.py`
-
-- `headless` (default: `false`)
-- `use_sim_time` (default: `true`)
-- `config_path` (default: `sim_car/config/sensor_config.yaml`)
 
 ## vehicle_plotter
 

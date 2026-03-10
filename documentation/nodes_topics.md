@@ -65,8 +65,6 @@ Common subscriptions and parameters for these nodes:
 - Subscribes: `/sim/raw/odom` (`nav_msgs/Odometry`), `/cmd_vel` (`geometry_msgs/Twist`), and `/sim/brake_cmd` (`std_msgs/Float32`) for brake temperature nodes.
 - Parameters: `publish_rate`, `ambient_temp`, `topic_prefix`, plus one noise parameter (`noise_pressure`, `noise_flow`, `noise_temp`, `noise_brake_temp`, or `noise_pitot`).
 
-## measurement_node
-
 ### `measurement_node`
 
 | Item | Value |

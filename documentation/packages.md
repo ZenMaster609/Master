@@ -45,19 +45,9 @@ This file summarizes each ROS2 package in the workspace, with its nodes, launch 
 - Nodes: none (library built from `src/`).
 - Launch files: none.
 
-## measurement_node (`measurement_node/`)
-
-- Purpose: Apply latency, dropout, noise, bias, and saturation to raw sensor topics.
-- Nodes (console scripts):
-  - `measurement_node`
-- Launch files:
-  - `measurement_node/launch/measurement.launch.py`
-- Configs:
-  - Consumes `sim_car/config/sensor_config.yaml` (path passed via `config_path`).
-
 ## sim_car (`sim_car/`)
 
-- Purpose: Main Gazebo Fortress simulation, control bridge, and virtual sensors.
+- Purpose: Main Gazebo Fortress simulation, control bridge, virtual sensors, and measurement/noise layer.
 - Nodes (console scripts):
   - `ackermann_cmd_bridge`
   - `wheel_encoder_node`
@@ -72,6 +62,7 @@ This file summarizes each ROS2 package in the workspace, with its nodes, launch 
   - `brake_temp_fr_node`
   - `brake_temp_rl_node`
   - `pitot_dynamic_pressure_node`
+  - `measurement_node`
 - Launch files:
   - `sim_car/launch/gazebo_sim.launch.py`
   - `sim_car/launch/nodes.launch.py`

@@ -13,7 +13,6 @@ Master/
 │   ├── gazebo_cone_plugins/      # Gazebo cone plugin (ground-truth/visible/recolor)
 │   ├── eufs_models/              # EUFS vehicle model library (C++)
 │   └── steering_gui/             # RQT steering GUI plugin
-├── measurement_node/             # Measurement noise/latency node
 ├── sim_car/                      # Main Gazebo simulation package
 ├── vectornav_decoder/            # VectorNav VN-200 serial decoder
 ├── vehicle_plotter/              # Plotting/logging/data collection
@@ -36,8 +35,7 @@ Master/
 | `eufs_msgs` | `eufs_remastered/eufs_msgs/` | Interface | EUFS messages/actions used by EUFS simulation stack. |
 | `gazebo_cone_plugins` | `eufs_remastered/gazebo_cone_plugins/` | C++ | Remastered cone plugin: track cones, visible cones, YAML confusion-matrix recoloring. |
 | `eufs_models` | `eufs_remastered/eufs_models/` | C++ | EUFS vehicle model library required by `eufs_gz_dynamics`. |
-| `measurement_node` | `measurement_node/` | Python | Noise/latency/dropout layer between /sim/raw and /sim. |
-| `sim_car` | `sim_car/` | Python | Gazebo Fortress sim, virtual sensors, control bridge. |
+| `sim_car` | `sim_car/` | Python | Gazebo Fortress sim, virtual sensors, measurement/noise layer, control bridge. |
 | `steering_gui` | `eufs_remastered/steering_gui/` | Python | RQT steering GUI for Ackermann commands. |
 | `vectornav_decoder` | `vectornav_decoder/` | Python | VN-200 serial decoder to ROS topics. |
 | `vehicle_plotter` | `vehicle_plotter/` | Python | Data collection, plotting, logging, rosbag control. |

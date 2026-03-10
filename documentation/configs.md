@@ -6,7 +6,7 @@ This file lists the main configuration files used by the packages in this worksp
 
 ### `sim_car/config/sensor_config.yaml`
 
-- Used by `measurement_node` to convert `/sim/raw/*` topics into `/sim/*` topics with optional noise/latency/dropout.
+- Used by `sim_car`'s `measurement_node` to convert `/sim/raw/*` topics into `/sim/*` topics with optional noise/latency/dropout.
 - Top-level keys:
   - `seed`: RNG seed for repeatability.
   - `signals`: per-signal settings including `input_topic`, `output_topic`, `msg_type`, `rate_hz`, `latency_ms`, `dropout_prob`, `noise_std`, `bias_init`, `bias_rw_std`, `saturation_min`, `saturation_max`, `apply_orientation`.
