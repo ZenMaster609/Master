@@ -6,7 +6,7 @@ from dataclasses import dataclass
 import math
 from typing import Optional
 
-from sim_car.cone_fusion import (
+from sim_car.cones.tracking.fusion import (
     class_from_probs,
     normalize_color,
     resolve_boundary_color_by_lateral_position,

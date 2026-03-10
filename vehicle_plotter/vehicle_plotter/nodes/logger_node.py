@@ -88,7 +88,7 @@ class LoggerNode(Node):
         self.declare_parameter('session_timeout_sec', 5.0)
         self.declare_parameter('adapter', 'gazebo')  # Determines directory prefix
         self.declare_parameter('auto_plot_on_shutdown', True)
-        self.declare_parameter('cone_eval_topic', '/sim/stereo/eval/cone_depth_per_cone')
+        self.declare_parameter('cone_eval_topic', '/sim/stereo/eval')
         self.declare_parameter('cone_log_suffix', '')
         self.declare_parameter('steering_diag_enabled', False)
         self.declare_parameter('steering_diag_rate_hz', 50.0)
@@ -170,13 +170,6 @@ class LoggerNode(Node):
         self._session_initialized = False
         self._buffered_states = []  # Buffer states until session is ready
         self._shutdown_called = False
-        self._cone_top_count = 4
-        self._cone_avg_stride = 15
-        self._cone_avg_counter = 0
-        self._cone_total_avg_rmse_sum = 0.0
-        self._cone_total_avg_rmse_count = 0
-        self._cone_total_avg_mae_sum = 0.0
-        self._cone_total_avg_mae_count = 0
         self._cone_latest_metrics: Dict[str, float] = {
             'cone_depth_pairs': float('nan'),
             'cone_depth_yolo_detections': float('nan'),
@@ -193,10 +186,8 @@ class LoggerNode(Node):
             'yolo_detection_count': float('nan'),
             'yolo_inference_ms': float('nan'),
         }
-        self._cone_records: List[Dict[str, float]] = []
         self._cone_range_rmse_samples: List[Dict[str, object]] = []
         self._monocular_fit_samples: List[Dict[str, object]] = []
-        self._cone_slot_rows: List[Optional[Dict[str, object]]] = [None] * self._cone_top_count
         self._diag_cmd_stamp_sec = float('nan')
         self._diag_cmd_recv_sec = float('nan')
         self._diag_desired_steering_rad = float('nan')
@@ -269,12 +260,6 @@ class LoggerNode(Node):
     def _setup_cone_subscriptions(self) -> None:
         if not self._cone_eval_topic:
             return
-        self._cone_per_cone_sub = self.create_subscription(
-            String,
-            self._cone_eval_topic,
-            self._cone_per_cone_callback,
-            10,
-        )
         prefix = self._cone_metrics_prefix.rstrip('/')
         self._cone_pairs_sub = self.create_subscription(
             Int32,
@@ -373,7 +358,7 @@ class LoggerNode(Node):
             10,
         )
         self.get_logger().info(
-            f'Cone logging enabled: table={self._cone_eval_topic}, metrics_prefix={self._cone_metrics_prefix}'
+            f'Cone logging enabled: metrics_prefix={self._cone_metrics_prefix}'
         )
 
     def _setup_steering_diag_subscriptions(self) -> None:
@@ -497,11 +482,7 @@ class LoggerNode(Node):
 
     @staticmethod
     def _derive_cone_metrics_prefix(cone_eval_topic: str) -> str:
-        topic = cone_eval_topic.strip()
-        suffix = '/cone_depth_per_cone'
-        if topic.endswith(suffix):
-            return topic[:-len(suffix)]
-        return topic
+        return cone_eval_topic.strip().rstrip('/')
 
     @staticmethod
     def _parse_float(value: str) -> float:
@@ -515,196 +496,6 @@ class LoggerNode(Node):
         if math.isfinite(number):
             return number
         return float('nan')
-
-    @staticmethod
-    def _safe_mean(values: List[float]) -> float:
-        valid = [v for v in values if math.isfinite(v)]
-        if not valid:
-            return float('nan')
-        return float(sum(valid) / len(valid))
-
-    def _parse_cone_rows(self, payload: str) -> List[Dict[str, object]]:
-        lines = [line.strip() for line in payload.splitlines() if line.strip()]
-        if not lines or lines[0].startswith('no per-cone depth samples'):
-            return []
-
-        header_map: Dict[str, int] = {}
-        start = 0
-        if lines[0].startswith('cone_id,'):
-            start = 1
-            header_parts = [part.strip() for part in lines[0].split(',')]
-            header_map = {name: idx for idx, name in enumerate(header_parts)}
-        rows: List[Dict[str, object]] = []
-        for line in lines[start:]:
-            if line.startswith('...'):
-                continue
-            parts = [part.strip() for part in line.split(',')]
-            if len(parts) < 7:
-                continue
-
-            def get_value(key: str, fallback_idx: Optional[int] = None) -> str:
-                idx = header_map.get(key)
-                if idx is None:
-                    idx = fallback_idx
-                if idx is None or idx < 0 or idx >= len(parts):
-                    return ''
-                return parts[idx]
-            rows.append(
-                {
-                    'cone_id': parts[0],
-                    'mae': self._parse_float(get_value('axis_mae_m', 3)),
-                    'rmse': self._parse_float(get_value('axis_rmse_m', 4)),
-                    'rmse_x': self._parse_float(get_value('axis_rmse_x_m')),
-                    'rmse_y': self._parse_float(get_value('axis_rmse_y_m')),
-                    'dcam_inst': self._parse_float(get_value('dcam_inst')),
-                    'dgt_inst': self._parse_float(get_value('dgt_inst')),
-                    'dcam': self._parse_float(get_value('dcam', 5)),
-                    'dgt': self._parse_float(get_value('dgt', 6)),
-                }
-            )
-        return rows
-
-    @staticmethod
-    def _row_sort_key(row: Dict[str, object]):
-        dgt_inst = row.get('dgt_inst')
-        dcam_inst = row.get('dcam_inst')
-        dgt_avg = row.get('dgt')
-        dcam_avg = row.get('dcam')
-        dgt = (
-            float(dgt_inst)
-            if isinstance(dgt_inst, (int, float)) and math.isfinite(float(dgt_inst))
-            else (
-                float(dgt_avg)
-                if isinstance(dgt_avg, (int, float)) and math.isfinite(float(dgt_avg))
-                else math.inf
-            )
-        )
-        dcam = (
-            float(dcam_inst)
-            if isinstance(dcam_inst, (int, float)) and math.isfinite(float(dcam_inst))
-            else (
-                float(dcam_avg)
-                if isinstance(dcam_avg, (int, float)) and math.isfinite(float(dcam_avg))
-                else math.inf
-            )
-        )
-        cone_id = str(row.get('cone_id', ''))
-        return (dgt, dcam, cone_id)
-
-    def _select_slot_rows(self, rows: List[Dict[str, object]]) -> List[Optional[Dict[str, object]]]:
-        ranked_rows = sorted(rows, key=self._row_sort_key)
-        if not ranked_rows:
-            return [None] * self._cone_top_count
-
-        by_id: Dict[str, Dict[str, object]] = {}
-        for row in ranked_rows:
-            cone_id = str(row.get('cone_id', '')).strip()
-            if not cone_id:
-                continue
-            if cone_id not in by_id:
-                by_id[cone_id] = row
-
-        selected: List[Optional[Dict[str, object]]] = [None] * self._cone_top_count
-        used_ids = set()
-
-        # Keep previous cone-to-column assignment stable when possible.
-        for idx, prev in enumerate(self._cone_slot_rows):
-            if prev is None:
-                continue
-            prev_id = str(prev.get('cone_id', '')).strip()
-            if not prev_id:
-                continue
-            current = by_id.get(prev_id)
-            if current is None:
-                continue
-            selected[idx] = current
-            used_ids.add(prev_id)
-
-        for row in ranked_rows:
-            cone_id = str(row.get('cone_id', '')).strip()
-            if not cone_id or cone_id in used_ids:
-                continue
-            try:
-                target_idx = selected.index(None)
-            except ValueError:
-                break
-            selected[target_idx] = row
-            used_ids.add(cone_id)
-
-        self._cone_slot_rows = selected
-        return selected
-
-    def _cone_per_cone_callback(self, msg: String) -> None:
-        rows = self._parse_cone_rows(msg.data)
-        selected = self._select_slot_rows(rows)
-        timestamp_sec = float(self.get_clock().now().nanoseconds) * 1e-9
-        if timestamp_sec <= 0.0:
-            timestamp_sec = time.monotonic()
-
-        record: Dict[str, float] = {
-            'timestamp': timestamp_sec,
-        }
-        for idx in range(self._cone_top_count):
-            prefix = f'cone_{idx + 1}'
-            row = selected[idx] if idx < len(selected) else None
-            rmse = float(row['rmse']) if row is not None and isinstance(row.get('rmse'), (int, float)) else float('nan')
-            mae = float(row['mae']) if row is not None and isinstance(row.get('mae'), (int, float)) else float('nan')
-            rmse_x = float(row['rmse_x']) if row is not None and isinstance(row.get('rmse_x'), (int, float)) else float('nan')
-            rmse_y = float(row['rmse_y']) if row is not None and isinstance(row.get('rmse_y'), (int, float)) else float('nan')
-            dcam_inst = float(row['dcam_inst']) if row is not None and isinstance(row.get('dcam_inst'), (int, float)) else float('nan')
-            dgt_inst = float(row['dgt_inst']) if row is not None and isinstance(row.get('dgt_inst'), (int, float)) else float('nan')
-            dcam_avg = float(row['dcam']) if row is not None and isinstance(row.get('dcam'), (int, float)) else float('nan')
-            dgt_avg = float(row['dgt']) if row is not None and isinstance(row.get('dgt'), (int, float)) else float('nan')
-            dcam_plot = dcam_inst if math.isfinite(dcam_inst) else dcam_avg
-            dgt_plot = dgt_inst if math.isfinite(dgt_inst) else dgt_avg
-
-            record[f'{prefix}_axis_rmse_m'] = rmse
-            record[f'{prefix}_axis_mae_m'] = mae
-            # Legacy aliases kept for compatibility with older tooling.
-            record[f'{prefix}_rmse'] = record[f'{prefix}_axis_rmse_m']
-            record[f'{prefix}_mae'] = record[f'{prefix}_axis_mae_m']
-            record[f'{prefix}_rmse_x'] = rmse_x
-            record[f'{prefix}_rmse_y'] = rmse_y
-            record[f'{prefix}_dcam'] = dcam_plot
-            record[f'{prefix}_dgt'] = dgt_plot
-            record[f'{prefix}_dcam_inst'] = dcam_inst
-            record[f'{prefix}_dgt_inst'] = dgt_inst
-            record[f'{prefix}_dcam_avg'] = dcam_avg
-            record[f'{prefix}_dgt_avg'] = dgt_avg
-
-        avg_rmse_now = self._safe_mean([float(row['rmse']) for row in rows if isinstance(row.get('rmse'), (int, float))])
-        avg_mae_now = self._safe_mean([float(row['mae']) for row in rows if isinstance(row.get('mae'), (int, float))])
-        self._cone_avg_counter += 1
-        if self._cone_avg_counter % self._cone_avg_stride == 0:
-            if math.isfinite(avg_rmse_now):
-                self._cone_total_avg_rmse_sum += avg_rmse_now
-                self._cone_total_avg_rmse_count += 1
-            if math.isfinite(avg_mae_now):
-                self._cone_total_avg_mae_sum += avg_mae_now
-                self._cone_total_avg_mae_count += 1
-
-        record['avg_axis_rmse_m'] = avg_rmse_now
-        record['avg_axis_mae_m'] = avg_mae_now
-        record['avg_total_axis_rmse_m'] = (
-            self._cone_total_avg_rmse_sum / self._cone_total_avg_rmse_count
-            if self._cone_total_avg_rmse_count > 0
-            else float('nan')
-        )
-        record['avg_total_axis_mae_m'] = (
-            self._cone_total_avg_mae_sum / self._cone_total_avg_mae_count
-            if self._cone_total_avg_mae_count > 0
-            else float('nan')
-        )
-        # Legacy aliases kept for compatibility with older tooling.
-        record['avg_rmse'] = record['avg_axis_rmse_m']
-        record['avg_mae'] = record['avg_axis_mae_m']
-        record['avg_total_rmse'] = record['avg_total_axis_rmse_m']
-        record['avg_total_mae'] = record['avg_total_axis_mae_m']
-
-        for key, value in self._cone_latest_metrics.items():
-            record[key] = value
-
-        self._cone_records.append(record)
 
     def _cone_depth_samples_callback(self, msg: String) -> None:
         payload = str(msg.data)
@@ -1142,7 +933,6 @@ class LoggerNode(Node):
             )
 
             if self._run_session is not None:
-                self._save_cone_metrics_csv()
                 self._save_cone_range_rmse_samples_csv()
                 self._save_monocular_fit_samples_csv()
                 self._finalize_steering_diag_outputs()
@@ -1192,17 +982,6 @@ class LoggerNode(Node):
         except Exception as exc:
             self._safe_log_warn(f'Failed Stanley debug plot generation: {exc}')
 
-    def _save_cone_metrics_csv(self) -> None:
-        if self._run_session is None or not self._cone_records:
-            return
-        out_path = self._run_session.logs_path / self._cone_output_filename('cone_metrics', 'csv')
-        fieldnames = list(self._cone_records[0].keys())
-        with open(out_path, 'w', newline='') as handle:
-            writer = csv.DictWriter(handle, fieldnames=fieldnames)
-            writer.writeheader()
-            writer.writerows(self._cone_records)
-        self._safe_log_info(f'Saved cone metrics log: {out_path}')
-
     def _save_cone_range_rmse_samples_csv(self) -> None:
         if self._run_session is None or not self._cone_range_rmse_samples:
             return
@@ -1251,16 +1030,9 @@ class LoggerNode(Node):
             from ..plotting.offline_cone_plotter import OfflineConePlotter
             cone_plotter = OfflineConePlotter(
                 self._run_session.session_path,
-                metrics_filename=self._cone_output_filename('cone_metrics', 'csv'),
                 range_rmse_filename=self._cone_output_filename('cone_range_rmse_samples', 'csv'),
                 output_suffix=self._cone_log_suffix,
             )
-            cone_generated = cone_plotter.generate_plot()
-            if cone_generated is not None:
-                total += 1
-                self._safe_log_info(f"Generated cone offline plot: {cone_generated}")
-            else:
-                self._safe_log_warn("Cone offline plot skipped: no cone metrics data found")
             cone_range_generated = cone_plotter.generate_range_rmse_plot()
             if cone_range_generated is not None:
                 total += 1
@@ -1281,7 +1053,7 @@ class LoggerNode(Node):
             if 'numpy' in msg or 'multiarray' in msg or '_array_api' in msg:
                 self._safe_log_warn(
                     "Detected NumPy/Matplotlib binary mismatch. "
-                    "Reinstall compatible versions to enable cone_depth_validation.png generation."
+                    "Reinstall compatible versions to enable cone range RMSE plot generation."
                 )
         except Exception as e:
             self._safe_log_warn(f"Failed to generate cone offline plots: {e}")

@@ -46,20 +46,7 @@ delaunay_planner_node:
       log_throttle_s: 1.0
 
     control:
-      controller_type: "stanley"  # Supported values: pure_pursuit, stanley
-
-    pure_pursuit:
-      lookahead_min_m: 3.0
-      lookahead_gain: 0.35
-      steering_limit_rad: 0.52
-      steering_lowpass_alpha: 0.6
-      steering_rate_limit_rad_s: 10.0
-      yaw_rate_damping_gain: 0.0
-      cross_track_deadband_m: 0.0
-      feedback_k_cte_rad_per_m: 0.04
-      feedback_k_heading: 0.35
-      wheelbase_m: 1.65
-      stop_if_no_path: false
+      controller_type: "stanley"  # Supported value: stanley
 
     stanley:
       k_gain: 1.2
@@ -73,6 +60,7 @@ delaunay_planner_node:
       yaw_rate_damping_gain: 0.0
       wheelbase_m: 1.65
       cross_track_deadband_m: 0.0
+      stop_if_no_path: false
 
     speed_control:
       speed_min_mps: 1.0

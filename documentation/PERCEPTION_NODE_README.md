@@ -11,7 +11,7 @@ It is intentionally system-level: it describes behavior and interfaces, not impl
 1. Produce 3D cone detections from stereo + YOLO.
 2. Evaluate depth/detection quality against ground-truth cones and publish metrics.
 
-The main planning/control consumer of its output is `boundary_planner_node`, which subscribes to the cone detections topic.
+The main planning/control consumer of its output is `delaunay_planner_node`, which subscribes to the cone detections topic.
 
 ## Where It Runs
 

@@ -1,11 +1,11 @@
-from sim_car.cone_fusion import (
+from sim_car.cones.tracking.fusion import (
     choose_position_source,
     class_from_probs,
     resolve_boundary_color_by_lateral_position,
     update_class_probs,
 )
-from sim_car.cone_pose import convert_odom_child_pose_to_base_frame
-from sim_car.cone_tracker import (
+from sim_car.cones.tracking.pose import convert_odom_child_pose_to_base_frame
+from sim_car.cones.tracking.tracker import (
     GlobalConeMemory,
     LocalConeTracker,
     TrackUpdate,
@@ -125,8 +125,8 @@ def test_local_tracker_pruning_by_ttl_and_range_and_behind():
     tracker.update(
         updates=[
             _u(assoc_x=0.0, assoc_y=0.0, update_x=0.0, update_y=0.0),
-            _u(assoc_x=0.0, assoc_y=0.0, update_x=0.0, update_y=0.0),
-            _u(assoc_x=0.0, assoc_y=0.0, update_x=0.0, update_y=0.0),
+            _u(assoc_x=30.0, assoc_y=0.0, update_x=30.0, update_y=0.0),
+            _u(assoc_x=-10.0, assoc_y=0.0, update_x=-10.0, update_y=0.0),
         ],
         now_sec=1.0,
         gate_radius_m=0.01,

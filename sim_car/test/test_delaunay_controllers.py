@@ -12,36 +12,7 @@ if str(PACKAGE_ROOT) not in sys.path:
     sys.path.insert(0, str(PACKAGE_ROOT))
 
 from sim_car.controllers.factory import create_steering_controller
-from sim_car.controllers.pure_pursuit_controller import PurePursuitConfig, PurePursuitController
 from sim_car.controllers.stanley_controller import StanleyConfig, StanleyController
-
-
-def test_pure_pursuit_returns_valid_output_on_straight_path():
-    config = PurePursuitConfig()
-    controller = PurePursuitController(config=config, publish_rate_hz=20.0)
-    control_path = np.array([[0.0, 0.0], [6.0, 0.0], [12.0, 0.0]], dtype=np.float64)
-
-    output = controller.compute(control_path=control_path, speed_mps=2.5, yaw_rate_rps=0.0)
-
-    assert np.isfinite(output.steering_rad)
-    assert np.isfinite(output.kappa)
-    assert output.target_point_base.shape == (2,)
-    assert output.lookahead_m >= config.lookahead_min_m
-    assert abs(output.steering_rad) < 1e-3
-
-
-def test_pure_pursuit_curved_path_produces_turn_command():
-    controller = PurePursuitController(config=PurePursuitConfig(), publish_rate_hz=20.0)
-    control_path = np.array(
-        [[0.0, 0.0], [4.0, 0.4], [8.0, 1.1], [12.0, 2.1]],
-        dtype=np.float64,
-    )
-
-    output = controller.compute(control_path=control_path, speed_mps=3.0, yaw_rate_rps=0.0)
-
-    assert output.steering_rad > 0.0
-    assert output.kappa > 0.0
-    assert np.isfinite(output.lookahead_m)
 
 
 def test_stanley_sign_behavior_for_left_and_right_offsets():
@@ -104,21 +75,13 @@ def test_stanley_debug_payload_exposes_stage_outputs_without_changing_command():
     assert debug.target_point_y_base_m < 0.0
 
 
-def test_controller_selection_factory_chooses_correct_module():
-    pure_pursuit = create_steering_controller(
-        controller_type='pure_pursuit',
-        pure_pursuit_config=PurePursuitConfig(),
-        stanley_config=StanleyConfig(),
-        publish_rate_hz=20.0,
-    )
+def test_controller_selection_factory_chooses_stanley_module():
     stanley = create_steering_controller(
         controller_type='stanley',
-        pure_pursuit_config=PurePursuitConfig(),
         stanley_config=StanleyConfig(),
         publish_rate_hz=20.0,
     )
 
-    assert isinstance(pure_pursuit, PurePursuitController)
     assert isinstance(stanley, StanleyController)
 
 
@@ -126,7 +89,6 @@ def test_invalid_controller_type_fails_fast():
     with pytest.raises(ValueError, match='Unsupported control.controller_type'):
         create_steering_controller(
             controller_type='not_a_controller',
-            pure_pursuit_config=PurePursuitConfig(),
             stanley_config=StanleyConfig(),
             publish_rate_hz=20.0,
         )

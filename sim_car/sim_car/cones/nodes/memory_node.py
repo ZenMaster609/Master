@@ -5,7 +5,6 @@ from __future__ import annotations
 
 from collections import deque
 import csv
-from dataclasses import dataclass
 from builtin_interfaces.msg import Time as TimeMsg
 import math
 from pathlib import Path
@@ -24,27 +23,15 @@ from tf2_ros import Buffer, TransformException, TransformListener
 from vehicle_plotter_msgs.msg import ConeDetection, ConeDetectionArray, RunSession
 from visualization_msgs.msg import Marker, MarkerArray
 
-from sim_car.cone_fusion import (
+from sim_car.cones.nodes.memory_types import SensorDetection
+from sim_car.cones.tracking.fusion import (
     FusedObservation,
     choose_position_source,
     clamp_camera_range,
     normalize_color,
 )
-from sim_car.cone_pose import base_point_to_odom, convert_odom_child_pose_to_base_frame, odom_point_to_base
-from sim_car.cone_tracker import ConeTrack, GlobalConeMemory, LocalConeTracker, TrackUpdate
-
-
-@dataclass
-class SensorDetection:
-    x_odom: float
-    y_odom: float
-    z_odom: float
-    x_base: float
-    y_base: float
-    z_base: float
-    range_m: float
-    color: str
-    confidence: float
+from sim_car.cones.tracking.pose import base_point_to_odom, convert_odom_child_pose_to_base_frame, odom_point_to_base
+from sim_car.cones.tracking.tracker import ConeTrack, GlobalConeMemory, LocalConeTracker, TrackUpdate
 
 
 class ConeMemoryNode(Node):

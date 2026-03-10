@@ -17,7 +17,7 @@ from eufs_msgs.msg import ConeArrayWithCovariance
 from tf2_ros import Buffer, TransformException, TransformListener
 from vehicle_plotter_msgs.msg import ConeDetectionArray
 
-from sim_car.perception.cone_plotting2_runtime import ConePlotting2Runtime
+from sim_car.cones.plotting.runtime import ConePlotting2Runtime
 
 # This node does not use 3D plots; suppress non-fatal mixed-site-packages warning.
 warnings.filterwarnings(

@@ -10,7 +10,7 @@ PACKAGE_ROOT = TEST_DIR.parent
 if str(PACKAGE_ROOT) not in sys.path:
     sys.path.insert(0, str(PACKAGE_ROOT))
 
-import sim_car.delaunay_planner_core as core
+import sim_car.planning.delaunay_planner_core as core
 
 
 def test_color_filtering_unknown_gate_behavior():

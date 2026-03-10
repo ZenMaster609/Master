@@ -8,7 +8,7 @@ from typing import Optional
 
 import numpy as np
 
-from sim_car.cone_fusion import normalize_color, resolve_boundary_color_by_lateral_position
+from sim_car.cones.tracking.fusion import normalize_color, resolve_boundary_color_by_lateral_position
 
 try:
     from scipy.spatial import Delaunay as _ScipyDelaunay

@@ -7,11 +7,9 @@ Launches data collector, plotter, and logger nodes with configurable options.
 
 from launch import LaunchDescription
 from launch.actions import DeclareLaunchArgument
-from launch.substitutions import LaunchConfiguration, PathJoinSubstitution, PythonExpression
+from launch.substitutions import LaunchConfiguration, PythonExpression
 from launch.conditions import IfCondition
 from launch_ros.actions import Node
-from launch_ros.substitutions import FindPackageShare
-
 
 def generate_launch_description():
     # Session manager node - creates unified session for plotter and logger
@@ -46,12 +44,6 @@ def generate_launch_description():
         description='Enable live plotting'
     )
 
-    enable_cone_plot_arg = DeclareLaunchArgument(
-        'enable_cone_plot',
-        default_value='false',
-        description='Enable live cone depth plotting'
-    )
-
     plot_rate_arg = DeclareLaunchArgument(
         'plot_rate_hz',
         default_value='30.0',
@@ -82,20 +74,10 @@ def generate_launch_description():
         description='Close plot windows when the plotter node shuts down'
     )
 
-    cone_plot_config_arg = DeclareLaunchArgument(
-        'cone_plot_config',
-        default_value=PathJoinSubstitution([
-            FindPackageShare('vehicle_plotter'),
-            'config',
-            'cone_plots.yaml',
-        ]),
-        description='Path to cone plotting YAML config'
-    )
-
     cone_eval_topic_arg = DeclareLaunchArgument(
         'cone_eval_topic',
-        default_value='/sim/stereo/eval/cone_depth_per_cone',
-        description='Per-cone depth CSV topic to visualize'
+        default_value='/sim/stereo/eval',
+        description='Cone evaluation topic prefix used for logger outputs'
     )
 
     cone_log_suffix_arg = DeclareLaunchArgument(
@@ -270,24 +252,6 @@ def generate_launch_description():
         }],
     )
 
-    cone_plotter_node = Node(
-        package='vehicle_plotter',
-        executable='cone_plotter_node',
-        name='cone_plotter',
-        output='screen',
-        condition=IfCondition(PythonExpression([
-            "'", LaunchConfiguration('enable_cone_plot'), "'.lower() == 'true'"
-        ])),
-        parameters=[{
-            'backend': 'pyqtgraph',
-            'enable_gui': True,
-            'close_plots_on_shutdown': LaunchConfiguration('close_plots'),
-            'config_path': LaunchConfiguration('cone_plot_config'),
-            'cone_topic': LaunchConfiguration('cone_eval_topic'),
-            'use_sim_time': False,
-        }],
-    )
-
     # Logger node (conditional)
     # Use wall clock for flush timer
     logger_node = Node(
@@ -340,13 +304,11 @@ def generate_launch_description():
         adapter_arg,
         output_rate_arg,
         enable_plot_arg,
-        enable_cone_plot_arg,
         plot_rate_arg,
         dark_mode_arg,
         save_plots_on_exit_arg,
         save_plot_data_on_exit_arg,
         close_plots_on_shutdown_arg,
-        cone_plot_config_arg,
         cone_eval_topic_arg,
         cone_log_suffix_arg,
         steering_diag_enabled_arg,
@@ -374,7 +336,6 @@ def generate_launch_description():
         session_manager_node,
         data_collector_node,
         plotter_node,
-        cone_plotter_node,
         logger_node,
         rosbag_controller_node,
     ])

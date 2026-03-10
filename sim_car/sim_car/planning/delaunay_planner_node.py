@@ -23,11 +23,10 @@ from tf2_ros import Buffer, TransformException, TransformListener
 from vehicle_plotter_msgs.msg import ConeDetectionArray
 from visualization_msgs.msg import Marker, MarkerArray
 
-from sim_car.cone_fusion import normalize_color
+from sim_car.cones.tracking.fusion import normalize_color
 from sim_car.controllers.factory import create_steering_controller
-from sim_car.controllers.pure_pursuit_controller import PurePursuitConfig
 from sim_car.controllers.stanley_controller import StanleyConfig
-from sim_car.delaunay_planner_core import (
+from sim_car.planning.delaunay_planner_core import (
     CoreConfig,
     CoreResult,
     compute_centerline,
@@ -128,18 +127,7 @@ class DelaunayPlannerNode(Node):
             'centerline.smoothing_alpha': 0.3,
             'runtime.publish_rate_hz': 180.0,
             'runtime.log_throttle_s': 1.0,
-            'control.controller_type': 'pure_pursuit',
-            'pure_pursuit.lookahead_min_m': 3.0,
-            'pure_pursuit.lookahead_gain': 0.35,
-            'pure_pursuit.steering_limit_rad': 0.52,
-            'pure_pursuit.steering_lowpass_alpha': 0.6,
-            'pure_pursuit.steering_rate_limit_rad_s': 10.0,
-            'pure_pursuit.yaw_rate_damping_gain': 0.0,
-            'pure_pursuit.cross_track_deadband_m': 0.0,
-            'pure_pursuit.feedback_k_cte_rad_per_m': 0.04,
-            'pure_pursuit.feedback_k_heading': 0.35,
-            'pure_pursuit.wheelbase_m': 1.65,
-            'pure_pursuit.stop_if_no_path': False,
+            'control.controller_type': 'stanley',
             'stanley.k_gain': 1.25,
             'stanley.softening_speed_mps': 0.5,
             'stanley.heading_gain': 1.0,
@@ -151,6 +139,7 @@ class DelaunayPlannerNode(Node):
             'stanley.yaw_rate_damping_gain': 0.0,
             'stanley.wheelbase_m': 1.65,
             'stanley.cross_track_deadband_m': 0.0,
+            'stanley.stop_if_no_path': False,
             'speed_control.speed_min_mps': 1.0,
             'speed_control.speed_max_mps': 1.8,
             'speed_control.curvature_speed_gain': 4.0,
@@ -199,35 +188,13 @@ class DelaunayPlannerNode(Node):
         self.log_throttle_s = max(0.1, float(self.get_parameter('runtime.log_throttle_s').value))
 
         self.controller_type = (
-            str(self.get_parameter('control.controller_type').value).strip().lower() or 'pure_pursuit'
+            str(self.get_parameter('control.controller_type').value).strip().lower() or 'stanley'
         )
-        pure_pursuit_config = PurePursuitConfig(
-            lookahead_min_m=max(0.5, float(self.get_parameter('pure_pursuit.lookahead_min_m').value)),
-            lookahead_gain=max(0.0, float(self.get_parameter('pure_pursuit.lookahead_gain').value)),
-            steering_limit_rad=max(0.01, float(self.get_parameter('pure_pursuit.steering_limit_rad').value)),
-            steering_lowpass_alpha=float(
-                np.clip(float(self.get_parameter('pure_pursuit.steering_lowpass_alpha').value), 0.0, 1.0)
-            ),
-            steering_rate_limit_rad_s=max(
-                0.0,
-                float(self.get_parameter('pure_pursuit.steering_rate_limit_rad_s').value),
-            ),
-            yaw_rate_damping_gain=max(
-                0.0,
-                float(self.get_parameter('pure_pursuit.yaw_rate_damping_gain').value),
-            ),
-            cross_track_deadband_m=max(
-                0.0,
-                float(self.get_parameter('pure_pursuit.cross_track_deadband_m').value),
-            ),
-            feedback_k_cte_rad_per_m=float(
-                self.get_parameter('pure_pursuit.feedback_k_cte_rad_per_m').value
-            ),
-            feedback_k_heading=float(
-                self.get_parameter('pure_pursuit.feedback_k_heading').value
-            ),
-            wheelbase_m=max(0.1, float(self.get_parameter('pure_pursuit.wheelbase_m').value)),
-        )
+        if self.controller_type != 'stanley':
+            raise ValueError(
+                "Unsupported control.controller_type '%s'. Supported value: stanley"
+                % self.controller_type
+            )
         stanley_config = StanleyConfig(
             k_gain=max(0.0, float(self.get_parameter('stanley.k_gain').value)),
             softening_speed_mps=max(0.0, float(self.get_parameter('stanley.softening_speed_mps').value)),
@@ -254,11 +221,10 @@ class DelaunayPlannerNode(Node):
         )
         self._controller = create_steering_controller(
             controller_type=self.controller_type,
-            pure_pursuit_config=pure_pursuit_config,
             stanley_config=stanley_config,
             publish_rate_hz=self.publish_rate_hz,
         )
-        self.stop_if_no_path = bool(self.get_parameter('pure_pursuit.stop_if_no_path').value)
+        self.stop_if_no_path = bool(self.get_parameter('stanley.stop_if_no_path').value)
 
         self.speed_min_mps = max(0.0, float(self.get_parameter('speed_control.speed_min_mps').value))
         self.speed_max_mps = max(self.speed_min_mps, float(self.get_parameter('speed_control.speed_max_mps').value))
@@ -719,9 +685,8 @@ class DelaunayPlannerNode(Node):
         return None
 
     def _configured_wheelbase_m(self) -> float:
-        pure_pursuit_wheelbase = float(self.get_parameter('pure_pursuit.wheelbase_m').value)
         stanley_wheelbase = float(self.get_parameter('stanley.wheelbase_m').value)
-        return max(0.1, pure_pursuit_wheelbase, stanley_wheelbase)
+        return max(0.1, stanley_wheelbase)
 
     def _convert_cones_to_frame(
         self,

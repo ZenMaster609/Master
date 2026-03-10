@@ -1,9 +1,4 @@
-"""
-Offline headless cone plotter for cone depth evaluation metrics.
-
-Reads logs/cone_metrics.csv and renders a static plot using the same layout
-defined in config/cone_plots.yaml.
-"""
+"""Offline headless cone plotter for range-binned cone RMSE metrics."""
 
 from pathlib import Path
 from typing import Dict, List, Optional
@@ -14,65 +9,21 @@ import matplotlib
 matplotlib.use('Agg')
 import matplotlib.pyplot as plt
 import numpy as np
-import yaml
-from ament_index_python.packages import get_package_share_directory
 
 
 class OfflineConePlotter:
-    """Generate static cone-depth plots from recorded cone metric CSV data."""
+    """Generate static cone range-RMSE plots from recorded CSV data."""
 
     def __init__(
         self,
         session_path: Path,
         *,
-        metrics_filename: str = 'cone_metrics.csv',
         range_rmse_filename: str = 'cone_range_rmse_samples.csv',
         output_suffix: str = '',
     ):
         self.session_path = Path(session_path)
-        self.metrics_filename = str(metrics_filename).strip() or 'cone_metrics.csv'
         self.range_rmse_filename = str(range_rmse_filename).strip() or 'cone_range_rmse_samples.csv'
         self.output_suffix = str(output_suffix).strip()
-
-    def _default_config_path(self) -> Path:
-        share = Path(get_package_share_directory('vehicle_plotter'))
-        return share / 'config' / 'cone_plots.yaml'
-
-    def _load_config(self, config_path: Optional[Path]) -> Dict:
-        path = config_path if config_path is not None else self._default_config_path()
-        with open(path, 'r', encoding='utf-8') as handle:
-            config = yaml.safe_load(handle) or {}
-        if not isinstance(config, dict):
-            return {}
-        return config
-
-    def _load_data(self) -> Optional[List[Dict[str, float]]]:
-        csv_path = self.session_path / 'logs' / self.metrics_filename
-        if not csv_path.exists():
-            return None
-        rows: List[Dict[str, float]] = []
-        with open(csv_path, 'r', newline='') as handle:
-            reader = csv.DictReader(handle)
-            for row in reader:
-                parsed: Dict[str, float] = {}
-                for key, value in row.items():
-                    if value is None:
-                        parsed[key] = float('nan')
-                        continue
-                    text = str(value).strip()
-                    if text == '':
-                        parsed[key] = float('nan')
-                        continue
-                    try:
-                        number = float(text)
-                    except ValueError:
-                        parsed[key] = float('nan')
-                    else:
-                        parsed[key] = number if math.isfinite(number) else float('nan')
-                rows.append(parsed)
-        if not rows:
-            return None
-        return rows
 
     def _load_range_rmse_samples(self) -> Optional[Dict[str, np.ndarray]]:
         return self._load_range_rmse_samples_from_filename(self.range_rmse_filename)
@@ -231,111 +182,6 @@ class OfflineConePlotter:
         except ValueError:
             return float('nan')
         return parsed if math.isfinite(parsed) else float('nan')
-
-    @staticmethod
-    def _series_present(rows: List[Dict[str, float]], name: str) -> bool:
-        for row in rows:
-            value = row.get(name, float('nan'))
-            if math.isfinite(value):
-                return True
-        return False
-
-    def generate_plot(
-        self,
-        config_path: Optional[Path] = None,
-        output_path: Optional[Path] = None,
-        dpi: int = 150,
-    ) -> Optional[Path]:
-        rows_data = self._load_data()
-        if rows_data is None:
-            return None
-
-        config = self._load_config(config_path)
-        window_cfg = config.get('window', {}) if isinstance(config.get('window'), dict) else {}
-        layout_cfg = config.get('layout', {}) if isinstance(config.get('layout'), dict) else {}
-        plots_cfg = config.get('plots', []) if isinstance(config.get('plots'), list) else []
-
-        rows = max(1, int(layout_cfg.get('rows', 2)))
-        cols = max(1, int(layout_cfg.get('cols', 5)))
-        width_px = max(800, int(window_cfg.get('width', 2200)))
-        height_px = max(500, int(window_cfg.get('height', 950)))
-        fig_w = width_px / 110.0
-        fig_h = height_px / 110.0
-
-        time_sec = [row.get('timestamp', float('nan')) for row in rows_data]
-        valid_times = [t for t in time_sec if math.isfinite(t)]
-        if not valid_times:
-            return None
-        t0 = min(valid_times)
-        rel_t = [t - t0 if math.isfinite(t) else float('nan') for t in time_sec]
-
-        fig, axes = plt.subplots(rows, cols, figsize=(fig_w, fig_h), squeeze=False)
-        fig.suptitle(str(window_cfg.get('title', 'Cone Depth Validation')), fontsize=14)
-
-        for r in range(rows):
-            for c in range(cols):
-                ax = axes[r][c]
-                ax.grid(True, alpha=0.3)
-                ax.set_xlabel('Time (s)')
-
-        for plot in plots_cfg:
-            if not isinstance(plot, dict):
-                continue
-            row = max(0, min(rows - 1, int(plot.get('row', 0))))
-            col = max(0, min(cols - 1, int(plot.get('col', 0))))
-            ax = axes[row][col]
-            ax.set_title(str(plot.get('name', 'plot')))
-
-            y_axis = plot.get('y_axis', {})
-            if isinstance(y_axis, dict):
-                label = str(y_axis.get('label', '')).strip()
-                unit = str(y_axis.get('unit', '')).strip()
-                if label and unit:
-                    ax.set_ylabel(f'{label} ({unit})')
-                elif label:
-                    ax.set_ylabel(label)
-                raw_limits = y_axis.get('limits')
-                if isinstance(raw_limits, list) and len(raw_limits) == 2:
-                    try:
-                        y_min = float(raw_limits[0])
-                        y_max = float(raw_limits[1])
-                        ax.set_ylim(y_min, y_max)
-                    except (TypeError, ValueError):
-                        pass
-
-            series_cfg = plot.get('series', [])
-            if not isinstance(series_cfg, list):
-                continue
-
-            any_series = False
-            for series in series_cfg:
-                if not isinstance(series, dict):
-                    continue
-                variable = str(series.get('variable', '')).strip()
-                if not variable or not self._series_present(rows_data, variable):
-                    continue
-                y = [row.get(variable, float('nan')) for row in rows_data]
-                color = str(series.get('color', '#1f77b4'))
-                label = str(series.get('name', variable))
-                ax.plot(rel_t, y, color=color, linewidth=1.3, label=label)
-                any_series = True
-
-            if any_series:
-                ax.legend(fontsize='small')
-            else:
-                ax.text(0.5, 0.5, 'no data', ha='center', va='center', transform=ax.transAxes)
-
-        fig.tight_layout()
-        plots_path = self.session_path / 'plots'
-        plots_path.mkdir(parents=True, exist_ok=True)
-        if output_path is not None:
-            final_path = output_path
-        else:
-            suffix = f'_{self.output_suffix}' if self.output_suffix else ''
-            final_path = plots_path / f'cone_depth_validation{suffix}.png'
-        fig.savefig(final_path, dpi=dpi, bbox_inches='tight')
-        plt.close(fig)
-        return final_path
 
     def generate_range_rmse_plot(
         self,

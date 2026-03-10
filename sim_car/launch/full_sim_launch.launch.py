@@ -188,19 +188,13 @@ def generate_launch_description():
     planner_arg = DeclareLaunchArgument(
         'planner',
         default_value='delaunay',
-        description="Planner to launch: 'boundary', 'pair_midpoint', 'delaunay', or 'none'"
+        description="Planner to launch: 'delaunay' or 'none'"
     )
 
     controller_arg = DeclareLaunchArgument(
         'controller',
         default_value='stanley',
-        description='Controller to use: pure_pursuit or stanley'
-    )
-
-    use_delaunay_planner_arg = DeclareLaunchArgument(
-        'use_delaunay_planner',
-        default_value='false',
-        description='Enable Delaunay planner regardless of planner mode'
+        description="Controller to use: 'stanley' only"
     )
 
     rviz_arg = DeclareLaunchArgument(
@@ -218,7 +212,7 @@ def generate_launch_description():
     rviz_profile_arg = DeclareLaunchArgument(
         'rviz_profile',
         default_value='clean',
-        description="RViz profile to load when rviz_config is not provided: 'clean' or 'debug'"
+        description="RViz profile to load when rviz_config is not provided: 'clean' or 'planner_debug'"
     )
 
     rviz_config_arg = DeclareLaunchArgument(
@@ -405,7 +399,6 @@ def generate_launch_description():
         'sensor_nodes',
         'planner',
         'controller',
-        'use_delaunay_planner',
         'rviz',
         'use_rviz',
         'rviz_profile',
@@ -442,6 +435,7 @@ def generate_launch_description():
 
     resolved_measurement_config = LaunchConfiguration('resolved_measurement_config')
     resolved_rviz_config = LaunchConfiguration('resolved_rviz_config')
+    launch_args_validation = OpaqueFunction(function=_validate_planner_and_controller_args)
     measurement_config_setup = OpaqueFunction(function=_configure_measurement_config)
     rviz_config_setup = OpaqueFunction(function=_configure_rviz_config)
 
@@ -470,11 +464,6 @@ def generate_launch_description():
         "max(8, int((float(",
         LaunchConfiguration('planner_rate_hz'),
         ") * 0.2) + 0.999))"
-    ])
-    boundary_history_frames = PythonExpression([
-        "max(8, int((float(",
-        LaunchConfiguration('planner_rate_hz'),
-        ") * (8.0 / 30.0)) + 0.999))"
     ])
 
     gazebo_launch = IncludeLaunchDescription(
@@ -530,7 +519,6 @@ def generate_launch_description():
         launch_arguments={
             'adapter': 'gazebo',
             'enable_plot': LaunchConfiguration('plotting'),
-            'enable_cone_plot': 'false',
             'enable_log': PythonExpression([
                 "'true' if ('",
                 LaunchConfiguration('logging'),
@@ -543,7 +531,7 @@ def generate_launch_description():
             'sensor_config': resolved_measurement_config,
             'use_sim_time': LaunchConfiguration('use_sim_time'),
             'close_plots': LaunchConfiguration('close_plots'),
-            'cone_eval_topic': PythonExpression(["'", topic_prefix, "' + '/stereo/eval/cone_depth_per_cone'"]),
+            'cone_eval_topic': PythonExpression(["'", topic_prefix, "' + '/stereo/eval'"]),
             'steering_diag_enabled': LaunchConfiguration('steering_diagnostics'),
             'steering_diag_rate_hz': '50.0',
             'steering_diag_steering_topic': '/sim/steering_angle',
@@ -551,7 +539,6 @@ def generate_launch_description():
             'steering_diag_live_plot_enabled': LaunchConfiguration('steering_diag_live_plot_enabled'),
             'steering_diag_live_plot_rate_hz': LaunchConfiguration('steering_diag_live_plot_rate_hz'),
             'steering_diag_live_buffer_sec': LaunchConfiguration('steering_diag_live_buffer_sec'),
-            'cone_plot_config': PathJoinSubstitution([vehicle_plotter_share, 'config', 'cone_plots.yaml']),
         }.items(),
     )
 
@@ -574,7 +561,6 @@ def generate_launch_description():
                 launch_arguments={
                     'adapter': 'gazebo',
                     'enable_plot': 'false',
-                    'enable_cone_plot': 'false',
                     'enable_log': PythonExpression([
                         "'true' if ('",
                         LaunchConfiguration('logging'),
@@ -589,10 +575,9 @@ def generate_launch_description():
                     'sensor_config': resolved_measurement_config,
                     'use_sim_time': LaunchConfiguration('use_sim_time'),
                     'close_plots': LaunchConfiguration('close_plots'),
-                    'cone_eval_topic': PythonExpression(["'", topic_prefix, "' + '/lidar/eval/cone_depth_per_cone'"]),
+                    'cone_eval_topic': PythonExpression(["'", topic_prefix, "' + '/lidar/eval'"]),
                     'cone_log_suffix': 'lidar',
                     'steering_diag_enabled': 'false',
-                    'cone_plot_config': PathJoinSubstitution([vehicle_plotter_share, 'config', 'cone_plots.yaml']),
                 }.items(),
             ),
         ],
@@ -1008,86 +993,8 @@ def generate_launch_description():
         ],
         condition=IfCondition(PythonExpression([
             "'",
-            LaunchConfiguration('use_delaunay_planner'),
-            "'.lower() == 'true' or '",
             LaunchConfiguration('planner'),
             "'.lower() == 'delaunay'"
-        ])),
-    )
-
-    boundary_planner_node = Node(
-        package='sim_car',
-        executable='boundary_planner_node',
-        name='boundary_planner_node',
-        output='screen',
-        parameters=[
-            PathJoinSubstitution([sim_car_share, 'config', 'boundary_planner.yaml']),
-            {
-                'use_sim_time': ParameterValue(
-                    LaunchConfiguration('use_sim_time'),
-                    value_type=bool,
-                ),
-                'topics.cones_topic': PythonExpression([
-                    "'/tracked_cones' if '",
-                    LaunchConfiguration('cone_memory_enabled'),
-                    "'.lower() == 'true' else '",
-                    topic_prefix,
-                    "' + '/stereo/perception/cones_3d'",
-                ]),
-                'topics.odom_topic': '/sim/odom',
-                'planner_rate_hz': ParameterValue(
-                    LaunchConfiguration('planner_rate_hz'),
-                    value_type=float,
-                ),
-                'validation.max_history_frames': ParameterValue(
-                    boundary_history_frames,
-                    value_type=int,
-                ),
-                'debug.publish_path': True,
-                'debug.publish_markers': True,
-            },
-        ],
-        condition=IfCondition(PythonExpression([
-            "'",
-            LaunchConfiguration('planner'),
-            "'.lower() == 'boundary' and '",
-            LaunchConfiguration('use_delaunay_planner'),
-            "'.lower() != 'true'"
-        ])),
-    )
-
-    pair_midpoint_planner_node = Node(
-        package='sim_car',
-        executable='pair_midpoint_planner_node',
-        name='pair_midpoint_planner_node',
-        output='screen',
-        parameters=[
-            PathJoinSubstitution([sim_car_share, 'config', 'pair_midpoint_planner.yaml']),
-            {
-                'use_sim_time': ParameterValue(
-                    LaunchConfiguration('use_sim_time'),
-                    value_type=bool,
-                ),
-                'topics.cones_topic': PythonExpression([
-                    "'/tracked_cones' if '",
-                    LaunchConfiguration('cone_memory_enabled'),
-                    "'.lower() == 'true' else '",
-                    topic_prefix,
-                    "' + '/stereo/perception/cones_3d'",
-                ]),
-                'topics.odom_topic': '/sim/odom',
-                'planner_rate_hz': ParameterValue(
-                    LaunchConfiguration('planner_rate_hz'),
-                    value_type=float,
-                ),
-            },
-        ],
-        condition=IfCondition(PythonExpression([
-            "'",
-            LaunchConfiguration('planner'),
-            "'.lower() == 'pair_midpoint' and '",
-            LaunchConfiguration('use_delaunay_planner'),
-            "'.lower() != 'true'"
         ])),
     )
 
@@ -1103,7 +1010,7 @@ def generate_launch_description():
     rviz_node = Node(
         package='rviz2',
         executable='rviz2',
-        name='boundary_debug_rviz',
+        name='planner_debug_rviz',
         output='screen',
         arguments=['-d', resolved_rviz_config],
         parameters=[{
@@ -1163,7 +1070,6 @@ def generate_launch_description():
         sensor_nodes_arg,
         planner_arg,
         controller_arg,
-        use_delaunay_planner_arg,
         rviz_arg,
         use_rviz_arg,
         rviz_profile_arg,
@@ -1193,6 +1099,7 @@ def generate_launch_description():
         cudnn_ld_library_path_arg,
         yolo_ultralytics_pythonpath_arg,
         measurement_config_arg,
+        launch_args_validation,
         measurement_config_setup,
         rviz_config_setup,
         gazebo_launch,
@@ -1210,8 +1117,6 @@ def generate_launch_description():
         combined_cone_plotting2_node,
         cone_memory_node,
         delaunay_planner_node,
-        boundary_planner_node,
-        pair_midpoint_planner_node,
         camera_debug_viewer_node,
         rviz_node,
         steering_gui_node,
@@ -1257,12 +1162,33 @@ def _configure_rviz_config(context, *_args, **_kwargs):
         rviz_profile = LaunchConfiguration('rviz_profile').perform(context).strip().lower()
         profile_to_filename = {
             'clean': 'driving_clean.rviz',
-            'debug': 'boundary_debug.rviz',
+            'planner_debug': 'planner_debug.rviz',
+            'debug': 'planner_debug.rviz',
         }
         resolved_filename = profile_to_filename.get(rviz_profile, 'driving_clean.rviz')
         resolved_config = str(Path(sim_car_share) / 'rviz' / resolved_filename)
 
     return [SetLaunchConfiguration('resolved_rviz_config', resolved_config)]
+
+
+def _validate_planner_and_controller_args(context, *_args, **_kwargs):
+    planner = LaunchConfiguration('planner').perform(context).strip().lower()
+    controller = LaunchConfiguration('controller').perform(context).strip().lower()
+
+    supported_planners = {'delaunay', 'none'}
+    supported_controllers = {'stanley'}
+
+    if planner not in supported_planners:
+        raise RuntimeError(
+            "Unsupported launch argument planner='%s'. Supported values: delaunay, none"
+            % planner
+        )
+    if controller not in supported_controllers:
+        raise RuntimeError(
+            "Unsupported launch argument controller='%s'. Supported value: stanley"
+            % controller
+        )
+    return []
 
 
 def _write_rate_adjusted_measurement_config(config_path: str, planner_rate_hz: float) -> str:
