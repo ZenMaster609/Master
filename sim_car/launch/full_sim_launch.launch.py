@@ -240,11 +240,6 @@ def generate_launch_description():
         default_value='false',
         description='Enable stereo depth processing for RMSE plotting'
     )
-    mono_arg = DeclareLaunchArgument(
-        'mono',
-        default_value='false',
-        description='Alias to force monocular camera source naming for cone plotting'
-    )
 
     lidar_enabled_arg = DeclareLaunchArgument(
         'lidar_enabled',
@@ -412,7 +407,6 @@ def generate_launch_description():
         'perception_queue_size',
         'cuda',
         'stereo',
-        'mono',
         'lidar_enabled',
         'cone_memory_enabled',
         'camera_range_m',
@@ -479,9 +473,7 @@ def generate_launch_description():
     camera_source_name = PythonExpression([
         "'stereo' if '",
         LaunchConfiguration('stereo'),
-        "'.lower() == 'true' else ('monocular' if '",
-        LaunchConfiguration('mono'),
-        "'.lower() == 'true' else 'monocular')"
+        "'.lower() == 'true' else 'monocular'"
     ])
     camera_debug_enabled_expr = PythonExpression([
         "'", LaunchConfiguration('camera_debug'),
@@ -643,12 +635,11 @@ def generate_launch_description():
         ]))
     )
 
-    stereo_perception_node = Node(
+    perception_node = Node(
         package='sim_car',
-        executable='stereo_perception_node',
+        executable='perception_node',
         name='perception_node',
         output='screen',
-        condition=IfCondition(PythonExpression(["'", LaunchConfiguration('stereo'), "'.lower() == 'true'"])),
         additional_env={
             'PYTHONNOUSERSITE': '1',
             'PYTHONPATH': [
@@ -671,6 +662,10 @@ def generate_launch_description():
                 LaunchConfiguration('use_sim_time'),
                 value_type=bool,
             ),
+            'stereo_enabled': ParameterValue(
+                LaunchConfiguration('stereo'),
+                value_type=bool,
+            ),
             'left_image_topic': PythonExpression(["'", topic_prefix, "' + '/stereo/left/image_raw'"]),
             'right_image_topic': PythonExpression(["'", topic_prefix, "' + '/stereo/right/image_raw'"]),
             'left_camera_info_topic': PythonExpression(["'", topic_prefix, "' + '/stereo/left/camera_info'"]),
@@ -681,7 +676,6 @@ def generate_launch_description():
                 LaunchConfiguration('monocular_bbox_height_offset_px'),
                 value_type=float,
             ),
-            'eval_topic_prefix': PythonExpression(["'", topic_prefix, "' + '/stereo/eval'"]),
             'camera_debug_topic': PythonExpression(["'", topic_prefix, "' + '/stereo/camera_debug'"]),
             'cone_detections_topic': PythonExpression(["'", topic_prefix, "' + '/stereo/perception/cones_3d'"]),
             'cone_detections_frame': 'front_axle',
@@ -693,8 +687,6 @@ def generate_launch_description():
                 LaunchConfiguration('camera_debug_n_frames'),
                 value_type=int,
             ),
-            'camera_debug_scale': 0.5,
-            'camera_debug_mono': True,
             'calibration_file': PathJoinSubstitution([sim_car_share, 'config', 'stereo_calibration.yaml']),
             'baseline_m': 0.12,
             'yolo_enabled': ParameterValue(
@@ -727,96 +719,6 @@ def generate_launch_description():
                 value_type=bool,
             ),
             # Keep stereo matching within roughly one frame period at the selected perception rate.
-            'max_time_diff_sec': ParameterValue(
-                stereo_pair_slack_sec,
-                value_type=float,
-            ),
-        }],
-    )
-
-    mono_perception_node = Node(
-        package='sim_car',
-        executable='mono_perception_node',
-        name='perception_node',
-        output='screen',
-        condition=IfCondition(PythonExpression(["'", LaunchConfiguration('stereo'), "'.lower() != 'true'"])),
-        additional_env={
-            'PYTHONNOUSERSITE': '1',
-            'PYTHONPATH': [
-                LaunchConfiguration('opencv_pythonpath'),
-                ':',
-                LaunchConfiguration('yolo_ultralytics_pythonpath'),
-                ':',
-                EnvironmentVariable('PYTHONPATH', default_value=''),
-            ],
-            'LD_LIBRARY_PATH': [
-                LaunchConfiguration('opencv_ld_library_path'),
-                ':',
-                LaunchConfiguration('cudnn_ld_library_path'),
-                ':',
-                EnvironmentVariable('LD_LIBRARY_PATH', default_value=''),
-            ],
-        },
-        parameters=[{
-            'use_sim_time': ParameterValue(
-                LaunchConfiguration('use_sim_time'),
-                value_type=bool,
-            ),
-            'left_image_topic': PythonExpression(["'", topic_prefix, "' + '/stereo/left/image_raw'"]),
-            'right_image_topic': PythonExpression(["'", topic_prefix, "' + '/stereo/right/image_raw'"]),
-            'left_camera_info_topic': PythonExpression(["'", topic_prefix, "' + '/stereo/left/camera_info'"]),
-            'right_camera_info_topic': PythonExpression(["'", topic_prefix, "' + '/stereo/right/camera_info'"]),
-            'monocular_cone_height_m': 0.3034,
-            'monocular_big_cone_height_m': 0.51,
-            'monocular_bbox_height_offset_px': ParameterValue(
-                LaunchConfiguration('monocular_bbox_height_offset_px'),
-                value_type=float,
-            ),
-            'eval_topic_prefix': PythonExpression(["'", topic_prefix, "' + '/stereo/eval'"]),
-            'camera_debug_topic': PythonExpression(["'", topic_prefix, "' + '/stereo/camera_debug'"]),
-            'cone_detections_topic': PythonExpression(["'", topic_prefix, "' + '/stereo/perception/cones_3d'"]),
-            'cone_detections_frame': 'front_axle',
-            'camera_debug': ParameterValue(
-                LaunchConfiguration('camera_debug'),
-                value_type=bool,
-            ),
-            'camera_debug_n_frames': ParameterValue(
-                LaunchConfiguration('camera_debug_n_frames'),
-                value_type=int,
-            ),
-            'camera_debug_scale': 0.5,
-            'camera_debug_mono': True,
-            'calibration_file': PathJoinSubstitution([sim_car_share, 'config', 'stereo_calibration.yaml']),
-            'baseline_m': 0.12,
-            'yolo_enabled': ParameterValue(
-                LaunchConfiguration('yolo_enabled'),
-                value_type=bool,
-            ),
-            'yolo_model_path': LaunchConfiguration('yolo_model_path'),
-            'yolo_input_size': ParameterValue(
-                LaunchConfiguration('yolo_input_size'),
-                value_type=int,
-            ),
-            'yolo_conf_threshold': ParameterValue(
-                LaunchConfiguration('yolo_conf_threshold'),
-                value_type=float,
-            ),
-            'yolo_iou_threshold': ParameterValue(
-                LaunchConfiguration('yolo_iou_threshold'),
-                value_type=float,
-            ),
-            'yolo_prefer_cuda': ParameterValue(
-                LaunchConfiguration('yolo_prefer_cuda'),
-                value_type=bool,
-            ),
-            'queue_size': ParameterValue(
-                LaunchConfiguration('perception_queue_size'),
-                value_type=int,
-            ),
-            'prefer_cuda': ParameterValue(
-                LaunchConfiguration('cuda'),
-                value_type=bool,
-            ),
             'max_time_diff_sec': ParameterValue(
                 stereo_pair_slack_sec,
                 value_type=float,
@@ -1057,7 +959,6 @@ def generate_launch_description():
         perception_queue_size_arg,
         cuda_arg,
         stereo_arg,
-        mono_arg,
         lidar_enabled_arg,
         cone_memory_enabled_arg,
         camera_range_arg,
@@ -1087,8 +988,7 @@ def generate_launch_description():
         measurement_node,
         plotter_launch,
         steering_bridge_node,
-        stereo_perception_node,
-        mono_perception_node,
+        perception_node,
         camera_cone_evaluator_node,
         lidar_node,
         lidar_cone_evaluator_node,

@@ -159,13 +159,6 @@ class ConeEvaluatorNode(Node):
             gt_range = math.hypot(gt_x, gt_y)
             error_m = pred_range - gt_range
 
-            self._runtime.record_sample(
-                source=self.source_name,
-                gt_range_m=gt_range,
-                error_m=error_m,
-                predicted_class_id=pred_class_id,
-                ground_truth_class_id=gt_class_id,
-            )
             sample_rows.append((self.source_name, gt_range, error_m, pred_class_id, gt_class_id))
 
         self._runtime.publish_sample_rows(sample_rows)

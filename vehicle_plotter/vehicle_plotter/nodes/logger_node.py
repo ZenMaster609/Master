@@ -29,7 +29,7 @@ from nav_msgs.msg import Odometry, Path as NavPath
 from sensor_msgs.msg import JointState
 from vehicle_plotter_msgs.msg import VehicleState as VehicleStateMsg
 from vehicle_plotter_msgs.msg import RunSession as RunSessionMsg
-from std_msgs.msg import Float32, Int32, String
+from std_msgs.msg import String
 
 from ..core.vehicle_state import VehicleState
 from ..core.run_session import RunSession
@@ -176,27 +176,10 @@ class LoggerNode(Node):
         self._session_initialized = False
         self._buffered_states = []  # Buffer states until session is ready
         self._shutdown_called = False
-        self._cone_latest_metrics: Dict[str, float] = {
-            'cone_depth_pairs': float('nan'),
-            'cone_depth_yolo_detections': float('nan'),
-            'cone_depth_yolo_depth_valid': float('nan'),
-            'cone_depth_gt_projected': float('nan'),
-            'cone_depth_bbox_matches': float('nan'),
-            'cone_depth_cone_id_matches': float('nan'),
-            'cone_depth_axis_mae_m': float('nan'),
-            'cone_depth_axis_rmse_m': float('nan'),
-            'cone_depth_axis_bias_m': float('nan'),
-            'cone_depth_range_mae_m': float('nan'),
-            'cone_depth_range_rmse_m': float('nan'),
-            'cone_depth_sync_dt_ms': float('nan'),
-            'yolo_detection_count': float('nan'),
-            'yolo_inference_ms': float('nan'),
-        }
         self._cone_range_rmse_samples_by_suffix: Dict[str, List[Dict[str, object]]] = {
             '': [],
             'lidar': [],
         }
-        self._monocular_fit_samples: List[Dict[str, object]] = []
         self._diag_cmd_stamp_sec = float('nan')
         self._diag_cmd_recv_sec = float('nan')
         self._diag_desired_steering_rad = float('nan')
@@ -271,13 +254,11 @@ class LoggerNode(Node):
             self._register_cone_stream(
                 self._camera_cone_eval_topic,
                 suffix='',
-                include_monocular_fit=True,
             )
         if self._lidar_cone_eval_topic:
             self._register_cone_stream(
                 self._lidar_cone_eval_topic,
                 suffix='lidar',
-                include_monocular_fit=False,
             )
         if self._cone_subscriptions:
             self.get_logger().info(
@@ -291,7 +272,6 @@ class LoggerNode(Node):
         topic_prefix: str,
         *,
         suffix: str,
-        include_monocular_fit: bool,
     ) -> None:
         prefix = self._derive_cone_metrics_prefix(topic_prefix)
         self._cone_subscriptions.append(
@@ -302,15 +282,6 @@ class LoggerNode(Node):
                 10,
             )
         )
-        if include_monocular_fit:
-            self._cone_subscriptions.append(
-                self.create_subscription(
-                    String,
-                    f'{prefix}/cone_depth_monocular_fit_samples',
-                    self._cone_monocular_fit_samples_callback,
-                    10,
-                )
-            )
 
     def _setup_steering_diag_subscriptions(self) -> None:
         if not self._steering_diag_enabled:
@@ -499,79 +470,6 @@ class LoggerNode(Node):
                     'ground_truth_class_id': ground_truth_class_id,
                 }
             )
-
-    def _cone_monocular_fit_samples_callback(self, msg: String) -> None:
-        payload = str(msg.data).strip()
-        if not payload:
-            return
-        reader = csv.DictReader(payload.splitlines())
-        if reader.fieldnames is None:
-            return
-        for row in reader:
-            if not row:
-                continue
-            parsed: Dict[str, object] = {}
-            for key, value in row.items():
-                if key is None:
-                    continue
-                text = '' if value is None else str(value).strip()
-                if text == '':
-                    parsed[key] = ''
-                    continue
-                lowered = text.lower()
-                if lowered in {'nan', 'n/a', 'none'}:
-                    parsed[key] = ''
-                    continue
-                try:
-                    number = float(text)
-                except ValueError:
-                    parsed[key] = text
-                else:
-                    parsed[key] = number if math.isfinite(number) else ''
-            if parsed:
-                self._monocular_fit_samples.append(parsed)
-
-    def _cone_pairs_callback(self, msg: Int32) -> None:
-        self._cone_latest_metrics['cone_depth_pairs'] = float(msg.data)
-
-    def _cone_yolo_detections_callback(self, msg: Int32) -> None:
-        self._cone_latest_metrics['cone_depth_yolo_detections'] = float(msg.data)
-
-    def _cone_yolo_depth_valid_callback(self, msg: Int32) -> None:
-        self._cone_latest_metrics['cone_depth_yolo_depth_valid'] = float(msg.data)
-
-    def _cone_gt_projected_callback(self, msg: Int32) -> None:
-        self._cone_latest_metrics['cone_depth_gt_projected'] = float(msg.data)
-
-    def _cone_bbox_matches_callback(self, msg: Int32) -> None:
-        self._cone_latest_metrics['cone_depth_bbox_matches'] = float(msg.data)
-
-    def _cone_id_matches_callback(self, msg: Int32) -> None:
-        self._cone_latest_metrics['cone_depth_cone_id_matches'] = float(msg.data)
-
-    def _cone_axis_mae_callback(self, msg: Float32) -> None:
-        self._cone_latest_metrics['cone_depth_axis_mae_m'] = float(msg.data)
-
-    def _cone_axis_rmse_callback(self, msg: Float32) -> None:
-        self._cone_latest_metrics['cone_depth_axis_rmse_m'] = float(msg.data)
-
-    def _cone_axis_bias_callback(self, msg: Float32) -> None:
-        self._cone_latest_metrics['cone_depth_axis_bias_m'] = float(msg.data)
-
-    def _cone_range_mae_callback(self, msg: Float32) -> None:
-        self._cone_latest_metrics['cone_depth_range_mae_m'] = float(msg.data)
-
-    def _cone_range_rmse_callback(self, msg: Float32) -> None:
-        self._cone_latest_metrics['cone_depth_range_rmse_m'] = float(msg.data)
-
-    def _cone_sync_dt_callback(self, msg: Float32) -> None:
-        self._cone_latest_metrics['cone_depth_sync_dt_ms'] = float(msg.data)
-
-    def _yolo_detection_count_callback(self, msg: Int32) -> None:
-        self._cone_latest_metrics['yolo_detection_count'] = float(msg.data)
-
-    def _yolo_inference_ms_callback(self, msg: Float32) -> None:
-        self._cone_latest_metrics['yolo_inference_ms'] = float(msg.data)
 
     def session_callback(self, msg: RunSessionMsg) -> None:
         """Handle incoming run session message."""
@@ -868,7 +766,6 @@ class LoggerNode(Node):
 
             if self._run_session is not None:
                 self._save_cone_range_rmse_samples_csv()
-                self._save_monocular_fit_samples_csv()
                 self._finalize_steering_diag_outputs()
 
             # Auto-generate plots if enabled
@@ -937,20 +834,6 @@ class LoggerNode(Node):
                 writer.writeheader()
                 writer.writerows(rows)
             self._safe_log_info(f'Saved cone range RMSE sample log: {out_path}')
-
-    def _save_monocular_fit_samples_csv(self) -> None:
-        if self._run_session is None or not self._monocular_fit_samples:
-            return
-        out_path = self._run_session.logs_path / self._cone_output_filename(
-            'monocular_fit_samples',
-            'csv',
-        )
-        fieldnames = list(self._monocular_fit_samples[0].keys())
-        with open(out_path, 'w', newline='') as handle:
-            writer = csv.DictWriter(handle, fieldnames=fieldnames)
-            writer.writeheader()
-            writer.writerows(self._monocular_fit_samples)
-        self._safe_log_info(f'Saved monocular fit sample log: {out_path}')
 
     def _generate_offline_plots(self) -> None:
         """Generate offline plots from logged data."""
