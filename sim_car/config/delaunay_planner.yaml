@@ -60,7 +60,7 @@ delaunay_planner_node:
       yaw_rate_damping_gain: 0.0
       wheelbase_m: 1.65
       cross_track_deadband_m: 0.0
-      stop_if_no_path: false
+      stop_if_no_path: true
 
     speed_control:
       speed_min_mps: 1.0
@@ -73,6 +73,7 @@ delaunay_planner_node:
       consistency_horizon_m: 8.0
       max_history_frames: 36
       hold_last_valid_s: 0.5
+      min_stable_frames: 3
       max_selected_edge_churn_ratio: 0.55
 
     diagnostics:

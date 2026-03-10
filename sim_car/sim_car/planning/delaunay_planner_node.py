@@ -139,7 +139,7 @@ class DelaunayPlannerNode(Node):
             'stanley.yaw_rate_damping_gain': 0.0,
             'stanley.wheelbase_m': 1.65,
             'stanley.cross_track_deadband_m': 0.0,
-            'stanley.stop_if_no_path': False,
+            'stanley.stop_if_no_path': True,
             'speed_control.speed_min_mps': 1.0,
             'speed_control.speed_max_mps': 1.8,
             'speed_control.curvature_speed_gain': 4.0,
@@ -148,6 +148,7 @@ class DelaunayPlannerNode(Node):
             'validation.consistency_horizon_m': 8.0,
             'validation.max_history_frames': 8,
             'validation.hold_last_valid_s': 1.25,
+            'validation.min_stable_frames': 3,
             'validation.max_selected_edge_churn_ratio': 1.0,
             'diagnostics.topic': '/delaunay_planner/diagnostics',
             'diagnostics.centerline_jump_horizon_m': 8.0,
@@ -242,6 +243,7 @@ class DelaunayPlannerNode(Node):
         )
         self.max_history_frames = max(1, int(self.get_parameter('validation.max_history_frames').value))
         self.hold_last_valid_s = max(0.0, float(self.get_parameter('validation.hold_last_valid_s').value))
+        self.min_stable_frames = max(1, int(self.get_parameter('validation.min_stable_frames').value))
         self.max_selected_edge_churn_ratio = max(
             0.0,
             float(self.get_parameter('validation.max_selected_edge_churn_ratio').value),
@@ -469,6 +471,9 @@ class DelaunayPlannerNode(Node):
             vehicle_y=vehicle_y,
             vehicle_yaw=vehicle_yaw,
         )
+        if control_path.shape[0] >= 1 and not self._has_stable_history():
+            status = f'{status}; waiting for stable centerline history'
+            control_path = np.empty((0, 2), dtype=np.float64)
         if control_path.shape[0] >= 1:
             try:
                 controller_output = self._controller.compute(
@@ -897,9 +902,14 @@ class DelaunayPlannerNode(Node):
             return None
         if self._last_valid_time_sec < 0.0:
             return None
+        if not self._has_stable_history():
+            return None
         if (now_sec - self._last_valid_time_sec) > self.hold_last_valid_s:
             return None
         return np.array(self._last_valid_centerline, copy=True)
+
+    def _has_stable_history(self) -> bool:
+        return len(self._recent_valid_centerlines) >= self.min_stable_frames
 
     def _publish_diagnostics(
         self,

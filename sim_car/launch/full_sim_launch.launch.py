@@ -158,7 +158,7 @@ def generate_launch_description():
     control_bridge_arg = DeclareLaunchArgument(
         'bridge',
         default_value='ackermann',
-        description="Control bridge to use: 'throttle' or 'ackermann'"
+        description="Control bridge to use. Supported value today: 'ackermann'"
     )
 
     ackermann_steering_sign_arg = DeclareLaunchArgument(
@@ -593,33 +593,6 @@ def generate_launch_description():
     )
 
     control_config = _load_control_config()
-
-    throttle_bridge_node = Node(
-        name='throttle_cmd_bridge',
-        package='sim_car',
-        executable='throttle_cmd_bridge',
-        output='screen',
-        parameters=[{
-            'input_topic': '/cmd',
-            'output_topic': '/cmd_vel',
-            'wheelbase': 1.65,
-            'input_mode': 'throttle',
-            'max_speed': control_config['max_speed'],
-            'accel_limit': control_config['accel_limit'],
-            'brake_decel_limit': control_config['brake_decel_limit'],
-            'control_rate': ParameterValue(
-                LaunchConfiguration('planner_rate_hz'),
-                value_type=float,
-            ),
-            'publish_rate': ParameterValue(
-                LaunchConfiguration('planner_rate_hz'),
-                value_type=float,
-            ),
-        }],
-        condition=IfCondition(PythonExpression([
-            "'", LaunchConfiguration('bridge'), "'.lower() == 'throttle'"
-        ]))
-    )
 
     steering_bridge_node = Node(
         name='ackermann_cmd_bridge',
@@ -1107,7 +1080,6 @@ def generate_launch_description():
         measurement_node,
         plotter_launch,
         lidar_plotter_launch,
-        throttle_bridge_node,
         steering_bridge_node,
         stereo_perception_node,
         mono_perception_node,
@@ -1172,12 +1144,19 @@ def _configure_rviz_config(context, *_args, **_kwargs):
 
 
 def _validate_planner_and_controller_args(context, *_args, **_kwargs):
+    bridge = LaunchConfiguration('bridge').perform(context).strip().lower()
     planner = LaunchConfiguration('planner').perform(context).strip().lower()
     controller = LaunchConfiguration('controller').perform(context).strip().lower()
 
+    supported_bridges = {'ackermann'}
     supported_planners = {'delaunay', 'none'}
     supported_controllers = {'stanley'}
 
+    if bridge not in supported_bridges:
+        raise RuntimeError(
+            "Unsupported launch argument bridge='%s'. Supported value today: ackermann"
+            % bridge
+        )
     if planner not in supported_planners:
         raise RuntimeError(
             "Unsupported launch argument planner='%s'. Supported values: delaunay, none"

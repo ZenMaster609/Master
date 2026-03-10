@@ -279,7 +279,8 @@ class ConeMemoryNode(Node):
         if (to_odom is None and odom_pose_fallback is None) or (to_base is None and not base_identity_ok):
             self._warn_throttled(
                 'cone_tf_missing',
-                f'cone transform unavailable at stamp source={source_frame} target={self.odom_frame}/{self.base_frame}; dropping frame',
+                f'cone transform unavailable at stamp source={source_frame} '
+                f'targets={self.odom_frame} and {self.base_frame}; dropping frame',
             )
             return []
 

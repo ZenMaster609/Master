@@ -44,7 +44,6 @@ setup(
         'console_scripts': [
             'wheel_encoder_node = sim_car.wheel_encoder_node:main',
             'ackermann_cmd_bridge = sim_car.ackermann_cmd_bridge:main',
-            'throttle_cmd_bridge = sim_car.throttle_cmd_bridge:main',
             'suspension_sensor_node = sim_car.suspension_sensor_node:main',
             'steering_sensor_node = sim_car.steering_sensor_node:main',
             'virtual_sensors_node = sim_car.virtual_sensors_node:main',
@@ -60,7 +59,7 @@ setup(
             'mono_perception_node = sim_car.mono_perception_node:main',
             'cone_evaluator_node = sim_car.cones.nodes.evaluator_node:main',
             'cone_plotting2_node = sim_car.cones.nodes.plotting2_node:main',
-            'lidar_node = sim_car.lidar_node:main',
+            'lidar_node = sim_car.lidar.lidar_node:main',
             'delaunay_planner_node = sim_car.planning.delaunay_planner_node:main',
             'cone_memory_node = sim_car.cones.nodes.memory_node:main',
             'run_artifacts_node = sim_car.run_artifacts_node:main',

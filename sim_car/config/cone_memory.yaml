@@ -4,7 +4,7 @@ cone_memory_node:
     base_frame: "front_axle"
     tf_timeout_s: 0.03
     odom_pose_sync_tolerance_sec: 0.05
-    base_pose_latest_fallback_tolerance_sec: 0.02
+    base_pose_latest_fallback_tolerance_sec: 0.10
     wheelbase_m: 1.65
 
     max_range_m: 25.0
