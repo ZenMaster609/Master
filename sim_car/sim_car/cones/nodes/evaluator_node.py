@@ -1,4 +1,4 @@
-"""Evaluate predicted cone detections against GT and feed cone_plotting_2."""
+"""Evaluate predicted cone detections against GT and publish cone RMSE samples."""
 
 from __future__ import annotations
 
@@ -42,7 +42,7 @@ class ConePacket:
 
 
 class ConeEvaluatorNode(Node):
-    """Standalone evaluator node for cone_plotting_2 inputs and plotting."""
+    """Standalone evaluator node for cone RMSE inputs and sample publication."""
 
     _CONE_CLASS_NAME_TO_ID = {
         'blue': 0,
@@ -66,8 +66,7 @@ class ConeEvaluatorNode(Node):
         self._runtime = ConePlotting2Runtime(
             self,
             eval_topic_prefix=self.eval_topic_prefix,
-            enabled=self.cone_plotting_2,
-            enable_live_plot=self.cone_plotting_2_live_plot,
+            enabled=self.cone_rmse_plotting,
         )
 
         self.create_subscription(ConeDetectionArray, self.predicted_cones_topic, self._predicted_cb, 10)
@@ -76,7 +75,7 @@ class ConeEvaluatorNode(Node):
         self.get_logger().info(
             'cone_evaluator_node ready: '
             f'predicted={self.predicted_cones_topic} gt={self.ground_truth_cones_topic} '
-            f'eval_prefix={self.eval_topic_prefix} source={self.source_name} plotting2={self.cone_plotting_2}'
+            f'eval_prefix={self.eval_topic_prefix} source={self.source_name} cone_rmse={self.cone_rmse_plotting}'
         )
 
     def _declare_parameters(self) -> None:
@@ -84,8 +83,7 @@ class ConeEvaluatorNode(Node):
         self.declare_parameter('ground_truth_cones_topic', '/ground_truth/cones')
         self.declare_parameter('eval_topic_prefix', '/sim/raw/stereo/eval')
         self.declare_parameter('source_name', 'stereo')
-        self.declare_parameter('cone_plotting_2', False)
-        self.declare_parameter('cone_plotting_2_live_plot', True)
+        self.declare_parameter('cone_rmse_plotting', False)
         self.declare_parameter('cone_eval_sync_slop_sec', 0.10)
         self.declare_parameter('eval_match_threshold_m', 0.75)
         self.declare_parameter('cone_eval_tf_timeout_sec', 0.0)
@@ -96,8 +94,7 @@ class ConeEvaluatorNode(Node):
         self.ground_truth_cones_topic = str(self.get_parameter('ground_truth_cones_topic').value)
         self.eval_topic_prefix = str(self.get_parameter('eval_topic_prefix').value)
         self.source_name = str(self.get_parameter('source_name').value).strip().lower() or 'stereo'
-        self.cone_plotting_2 = bool(self.get_parameter('cone_plotting_2').value)
-        self.cone_plotting_2_live_plot = bool(self.get_parameter('cone_plotting_2_live_plot').value)
+        self.cone_rmse_plotting = bool(self.get_parameter('cone_rmse_plotting').value)
         self.cone_eval_sync_slop_sec = max(0.01, float(self.get_parameter('cone_eval_sync_slop_sec').value))
         self.eval_match_threshold_m = max(0.05, float(self.get_parameter('eval_match_threshold_m').value))
         self.cone_eval_tf_timeout_sec = max(0.0, float(self.get_parameter('cone_eval_tf_timeout_sec').value))

@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-LoggerNode - Logs vehicle state to files.
+LoggerNode - Logs vehicle state and diagnostics to files.
 
 Subscribes to /vehicle_plotter/state and writes data to
 Parquet or CSV files. Supports multi-machine run synchronization
@@ -45,12 +45,12 @@ from ..logging.steering_diagnostics import (
     signed_cross_track_error,
     write_summary_files,
 )
-from ..logging.stanley_debug_plots import StanleyDebugLivePlot, generate_stanley_debug_plot
+from ..logging.stanley_debug_plots import generate_stanley_debug_plot
 
 
 class LoggerNode(Node):
     """
-    Data logging node for vehicle state.
+    Data logging node for vehicle state and diagnostics.
 
     Subscribes to /vehicle_plotter/state and writes synchronized
     state data to disk in configurable formats (Parquet, CSV).
@@ -84,26 +84,24 @@ class LoggerNode(Node):
         self.declare_parameter('buffer_size', 1000)
         self.declare_parameter('state_topic', 'vehicle_plotter/state')
         self.declare_parameter('enable_logging', True)
+        self.declare_parameter('enable_state_logging', True)
         self.declare_parameter('wait_for_session', True)
         self.declare_parameter('session_timeout_sec', 5.0)
         self.declare_parameter('adapter', 'gazebo')  # Determines directory prefix
         self.declare_parameter('auto_plot_on_shutdown', True)
-        self.declare_parameter('cone_eval_topic', '/sim/stereo/eval')
-        self.declare_parameter('cone_log_suffix', '')
-        self.declare_parameter('steering_diag_enabled', False)
-        self.declare_parameter('steering_diag_rate_hz', 50.0)
-        self.declare_parameter('steering_diag_cmd_topic', '/cmd')
-        self.declare_parameter('steering_diag_steering_topic', '/sim/steering_angle')
-        self.declare_parameter('steering_diag_joint_states_topic', '/sim/raw/joint_states')
-        self.declare_parameter('steering_diag_odom_topic', '/sim/odom')
-        self.declare_parameter('steering_diag_path_topic', '/planned_centerline')
-        self.declare_parameter('steering_diag_planner_diag_topic', '/delaunay_planner/diagnostics')
-        self.declare_parameter('steering_diag_filename', 'steering_tracking_diagnostics.csv')
-        self.declare_parameter('steering_diag_summary_json', 'steering_tracking_summary.json')
-        self.declare_parameter('steering_diag_summary_txt', 'steering_tracking_summary.txt')
-        self.declare_parameter('steering_diag_live_plot_enabled', False)
-        self.declare_parameter('steering_diag_live_plot_rate_hz', 10.0)
-        self.declare_parameter('steering_diag_live_buffer_sec', 30.0)
+        self.declare_parameter('camera_cone_eval_topic', '/sim/stereo/eval')
+        self.declare_parameter('lidar_cone_eval_topic', '/sim/lidar/eval')
+        self.declare_parameter('controller_diagnostics_enabled', False)
+        self.declare_parameter('controller_diagnostics_rate_hz', 50.0)
+        self.declare_parameter('controller_diagnostics_cmd_topic', '/cmd')
+        self.declare_parameter('controller_diagnostics_steering_topic', '/sim/steering_angle')
+        self.declare_parameter('controller_diagnostics_joint_states_topic', '/sim/raw/joint_states')
+        self.declare_parameter('controller_diagnostics_odom_topic', '/sim/odom')
+        self.declare_parameter('controller_diagnostics_path_topic', '/planned_centerline')
+        self.declare_parameter('controller_diagnostics_planner_diag_topic', '/delaunay_planner/diagnostics')
+        self.declare_parameter('controller_diagnostics_filename', 'steering_tracking_diagnostics.csv')
+        self.declare_parameter('controller_diagnostics_summary_json', 'steering_tracking_summary.json')
+        self.declare_parameter('controller_diagnostics_summary_txt', 'steering_tracking_summary.txt')
 
         # Get parameters
         self._log_format = self.get_parameter('format').value
@@ -114,44 +112,51 @@ class LoggerNode(Node):
         self._buffer_size = self.get_parameter('buffer_size').value
         state_topic = self.get_parameter('state_topic').value
         enable_logging = self.get_parameter('enable_logging').value
+        enable_state_logging = self.get_parameter('enable_state_logging').value
         self._wait_for_session = self.get_parameter('wait_for_session').value
         self._session_timeout = self.get_parameter('session_timeout_sec').value
         self._adapter_type = self.get_parameter('adapter').value
         self._auto_plot = self.get_parameter('auto_plot_on_shutdown').value
-        self._cone_eval_topic = str(self.get_parameter('cone_eval_topic').value).strip()
-        self._cone_metrics_prefix = self._derive_cone_metrics_prefix(self._cone_eval_topic)
-        self._cone_log_suffix = self._derive_cone_log_suffix(
-            str(self.get_parameter('cone_log_suffix').value).strip(),
-            self._cone_eval_topic,
+        self._camera_cone_eval_topic = str(
+            self.get_parameter('camera_cone_eval_topic').value
+        ).strip()
+        self._lidar_cone_eval_topic = str(
+            self.get_parameter('lidar_cone_eval_topic').value
+        ).strip()
+        self._steering_diag_enabled = bool(
+            self.get_parameter('controller_diagnostics_enabled').value
         )
-        self._steering_diag_enabled = bool(self.get_parameter('steering_diag_enabled').value)
-        self._steering_diag_rate_hz = max(1.0, float(self.get_parameter('steering_diag_rate_hz').value))
-        self._steering_diag_cmd_topic = str(self.get_parameter('steering_diag_cmd_topic').value).strip() or '/cmd'
+        self._steering_diag_rate_hz = max(
+            1.0,
+            float(self.get_parameter('controller_diagnostics_rate_hz').value),
+        )
+        self._steering_diag_cmd_topic = str(
+            self.get_parameter('controller_diagnostics_cmd_topic').value
+        ).strip() or '/cmd'
         self._steering_diag_steering_topic = str(
-            self.get_parameter('steering_diag_steering_topic').value
+            self.get_parameter('controller_diagnostics_steering_topic').value
         ).strip() or '/sim/steering_angle'
         self._steering_diag_joint_states_topic = str(
-            self.get_parameter('steering_diag_joint_states_topic').value
+            self.get_parameter('controller_diagnostics_joint_states_topic').value
         ).strip() or '/sim/raw/joint_states'
-        self._steering_diag_odom_topic = str(self.get_parameter('steering_diag_odom_topic').value).strip() or '/sim/odom'
-        self._steering_diag_path_topic = str(self.get_parameter('steering_diag_path_topic').value).strip() or '/planned_centerline'
+        self._steering_diag_odom_topic = str(
+            self.get_parameter('controller_diagnostics_odom_topic').value
+        ).strip() or '/sim/odom'
+        self._steering_diag_path_topic = str(
+            self.get_parameter('controller_diagnostics_path_topic').value
+        ).strip() or '/planned_centerline'
         self._steering_diag_planner_diag_topic = str(
-            self.get_parameter('steering_diag_planner_diag_topic').value
+            self.get_parameter('controller_diagnostics_planner_diag_topic').value
         ).strip() or '/delaunay_planner/diagnostics'
-        self._steering_diag_filename = str(self.get_parameter('steering_diag_filename').value).strip() or 'steering_tracking_diagnostics.csv'
-        self._steering_diag_summary_json = str(self.get_parameter('steering_diag_summary_json').value).strip() or 'steering_tracking_summary.json'
-        self._steering_diag_summary_txt = str(self.get_parameter('steering_diag_summary_txt').value).strip() or 'steering_tracking_summary.txt'
-        self._steering_diag_live_plot_enabled = bool(
-            self.get_parameter('steering_diag_live_plot_enabled').value
-        )
-        self._steering_diag_live_plot_rate_hz = max(
-            0.1,
-            float(self.get_parameter('steering_diag_live_plot_rate_hz').value),
-        )
-        self._steering_diag_live_buffer_sec = max(
-            2.0,
-            float(self.get_parameter('steering_diag_live_buffer_sec').value),
-        )
+        self._steering_diag_filename = str(
+            self.get_parameter('controller_diagnostics_filename').value
+        ).strip() or 'steering_tracking_diagnostics.csv'
+        self._steering_diag_summary_json = str(
+            self.get_parameter('controller_diagnostics_summary_json').value
+        ).strip() or 'steering_tracking_summary.json'
+        self._steering_diag_summary_txt = str(
+            self.get_parameter('controller_diagnostics_summary_txt').value
+        ).strip() or 'steering_tracking_summary.txt'
 
         # Parse base path
         if base_path_str:
@@ -165,6 +170,7 @@ class LoggerNode(Node):
         self.get_logger().info(f'  Wait for session: {self._wait_for_session}')
 
         self._enable_logging = enable_logging
+        self._enable_state_logging = bool(enable_state_logging)
         self._run_session: Optional[RunSession] = None
         self.log_writer: Optional[LogWriter] = None
         self._session_initialized = False
@@ -186,7 +192,10 @@ class LoggerNode(Node):
             'yolo_detection_count': float('nan'),
             'yolo_inference_ms': float('nan'),
         }
-        self._cone_range_rmse_samples: List[Dict[str, object]] = []
+        self._cone_range_rmse_samples_by_suffix: Dict[str, List[Dict[str, object]]] = {
+            '': [],
+            'lidar': [],
+        }
         self._monocular_fit_samples: List[Dict[str, object]] = []
         self._diag_cmd_stamp_sec = float('nan')
         self._diag_cmd_recv_sec = float('nan')
@@ -204,12 +213,6 @@ class LoggerNode(Node):
         self._diag_csv_writer: Optional[csv.DictWriter] = None
         self._diag_flush_counter = 0
         self._diag_flush_stride = max(1, int(self._steering_diag_rate_hz * 2.0))
-        self._diag_live_plot_stride = max(
-            1,
-            int(round(self._steering_diag_rate_hz / self._steering_diag_live_plot_rate_hz)),
-        )
-        self._diag_live_plot_counter = 0
-        self._diag_live_plot: Optional[StanleyDebugLivePlot] = None
         self._diag_timer = None
 
         if enable_logging:
@@ -237,13 +240,15 @@ class LoggerNode(Node):
         self._setup_cone_subscriptions()
         self._setup_steering_diag_subscriptions()
 
-        # Subscribe to vehicle state
-        self.state_sub = self.create_subscription(
-            VehicleStateMsg,
-            state_topic,
-            self.state_callback,
-            PLOTTER_QOS,
-        )
+        if self._enable_state_logging:
+            self.state_sub = self.create_subscription(
+                VehicleStateMsg,
+                state_topic,
+                self.state_callback,
+                PLOTTER_QOS,
+            )
+        else:
+            self.state_sub = None
 
         # Flush timer (will be created after session init)
         self._flush_timer = None
@@ -251,115 +256,61 @@ class LoggerNode(Node):
         # Status timer
         self.status_timer = self.create_timer(10.0, self.status_callback)
 
-        self.get_logger().info(f'LoggerNode started, subscribed to {state_topic}')
+        if self._enable_state_logging:
+            self.get_logger().info(f'LoggerNode started, subscribed to {state_topic}')
+        else:
+            self.get_logger().info('LoggerNode started without vehicle state subscription')
 
         # Ensure shutdown handler runs on ROS shutdown as well
         # NOTE: rclpy.on_shutdown / Node.add_on_shutdown are not available in Humble
         rclpy.get_default_context().on_shutdown(self.shutdown)
 
     def _setup_cone_subscriptions(self) -> None:
-        if not self._cone_eval_topic:
-            return
-        prefix = self._cone_metrics_prefix.rstrip('/')
-        self._cone_pairs_sub = self.create_subscription(
-            Int32,
-            f'{prefix}/cone_depth_pairs',
-            self._cone_pairs_callback,
-            10,
+        self._cone_subscriptions = []
+        if self._camera_cone_eval_topic:
+            self._register_cone_stream(
+                self._camera_cone_eval_topic,
+                suffix='',
+                include_monocular_fit=True,
+            )
+        if self._lidar_cone_eval_topic:
+            self._register_cone_stream(
+                self._lidar_cone_eval_topic,
+                suffix='lidar',
+                include_monocular_fit=False,
+            )
+        if self._cone_subscriptions:
+            self.get_logger().info(
+                "Cone logging enabled: "
+                f"camera_prefix={self._camera_cone_eval_topic or 'disabled'} "
+                f"lidar_prefix={self._lidar_cone_eval_topic or 'disabled'}"
+            )
+
+    def _register_cone_stream(
+        self,
+        topic_prefix: str,
+        *,
+        suffix: str,
+        include_monocular_fit: bool,
+    ) -> None:
+        prefix = self._derive_cone_metrics_prefix(topic_prefix)
+        self._cone_subscriptions.append(
+            self.create_subscription(
+                String,
+                f'{prefix}/cone_depth_samples',
+                lambda msg, log_suffix=suffix: self._cone_depth_samples_callback(msg, log_suffix),
+                10,
+            )
         )
-        self._cone_samples_sub = self.create_subscription(
-            String,
-            f'{prefix}/cone_depth_samples',
-            self._cone_depth_samples_callback,
-            10,
-        )
-        self._cone_mono_fit_samples_sub = self.create_subscription(
-            String,
-            f'{prefix}/cone_depth_monocular_fit_samples',
-            self._cone_monocular_fit_samples_callback,
-            10,
-        )
-        self._cone_yolo_detections_sub = self.create_subscription(
-            Int32,
-            f'{prefix}/cone_depth_yolo_detections',
-            self._cone_yolo_detections_callback,
-            10,
-        )
-        self._cone_yolo_depth_valid_sub = self.create_subscription(
-            Int32,
-            f'{prefix}/cone_depth_yolo_depth_valid',
-            self._cone_yolo_depth_valid_callback,
-            10,
-        )
-        self._cone_gt_projected_sub = self.create_subscription(
-            Int32,
-            f'{prefix}/cone_depth_gt_projected',
-            self._cone_gt_projected_callback,
-            10,
-        )
-        self._cone_bbox_matches_sub = self.create_subscription(
-            Int32,
-            f'{prefix}/cone_depth_bbox_matches',
-            self._cone_bbox_matches_callback,
-            10,
-        )
-        self._cone_id_matches_sub = self.create_subscription(
-            Int32,
-            f'{prefix}/cone_depth_cone_id_matches',
-            self._cone_id_matches_callback,
-            10,
-        )
-        self._cone_axis_mae_sub = self.create_subscription(
-            Float32,
-            f'{prefix}/cone_depth_axis_mae_m',
-            self._cone_axis_mae_callback,
-            10,
-        )
-        self._cone_axis_rmse_sub = self.create_subscription(
-            Float32,
-            f'{prefix}/cone_depth_axis_rmse_m',
-            self._cone_axis_rmse_callback,
-            10,
-        )
-        self._cone_axis_bias_sub = self.create_subscription(
-            Float32,
-            f'{prefix}/cone_depth_axis_bias_m',
-            self._cone_axis_bias_callback,
-            10,
-        )
-        self._cone_range_mae_sub = self.create_subscription(
-            Float32,
-            f'{prefix}/cone_depth_range_mae_m',
-            self._cone_range_mae_callback,
-            10,
-        )
-        self._cone_range_rmse_sub = self.create_subscription(
-            Float32,
-            f'{prefix}/cone_depth_range_rmse_m',
-            self._cone_range_rmse_callback,
-            10,
-        )
-        self._cone_sync_dt_sub = self.create_subscription(
-            Float32,
-            f'{prefix}/cone_depth_sync_dt_ms',
-            self._cone_sync_dt_callback,
-            10,
-        )
-        self._yolo_detection_count_sub = self.create_subscription(
-            Int32,
-            f'{prefix}/yolo/detection_count',
-            self._yolo_detection_count_callback,
-            10,
-        )
-        self._yolo_inference_ms_sub = self.create_subscription(
-            Float32,
-            f'{prefix}/yolo/inference_ms',
-            self._yolo_inference_ms_callback,
-            10,
-        )
-        self.get_logger().info(
-            f'Cone logging enabled: metrics_prefix={self._cone_metrics_prefix}'
-        )
+        if include_monocular_fit:
+            self._cone_subscriptions.append(
+                self.create_subscription(
+                    String,
+                    f'{prefix}/cone_depth_monocular_fit_samples',
+                    self._cone_monocular_fit_samples_callback,
+                    10,
+                )
+            )
 
     def _setup_steering_diag_subscriptions(self) -> None:
         if not self._steering_diag_enabled:
@@ -401,7 +352,7 @@ class LoggerNode(Node):
             10,
         )
         self.get_logger().info(
-            'Steering diagnostics enabled: '
+            'Controller diagnostics enabled: '
             f'cmd={self._steering_diag_cmd_topic} '
             f'steering={self._steering_diag_steering_topic} '
             f'joint_states={self._steering_diag_joint_states_topic} '
@@ -497,7 +448,7 @@ class LoggerNode(Node):
             return number
         return float('nan')
 
-    def _cone_depth_samples_callback(self, msg: String) -> None:
+    def _cone_depth_samples_callback(self, msg: String, log_suffix: str = '') -> None:
         payload = str(msg.data)
         lines = [line.strip() for line in payload.splitlines() if line.strip()]
         if not lines:
@@ -536,7 +487,9 @@ class LoggerNode(Node):
                 source = 'stereo'
             if not (math.isfinite(gt_range_m) and math.isfinite(error_m)):
                 continue
-            self._cone_range_rmse_samples.append(
+            if log_suffix not in self._cone_range_rmse_samples_by_suffix:
+                self._cone_range_rmse_samples_by_suffix[log_suffix] = []
+            self._cone_range_rmse_samples_by_suffix[log_suffix].append(
                 {
                     'timestamp': timestamp_sec,
                     'source': source,
@@ -748,19 +701,8 @@ class LoggerNode(Node):
         self._diag_csv_writer = csv.DictWriter(self._diag_file_handle, fieldnames=fieldnames)
         self._diag_csv_writer.writeheader()
         self._diag_flush_counter = 0
-        self._diag_live_plot_counter = 0
         self._diag_timer = self.create_timer(1.0 / self._steering_diag_rate_hz, self._steering_diag_sample)
-        if self._steering_diag_live_plot_enabled:
-            try:
-                self._diag_live_plot = StanleyDebugLivePlot(
-                    buffer_sec=self._steering_diag_live_buffer_sec,
-                    sample_rate_hz=self._steering_diag_live_plot_rate_hz,
-                )
-                self.get_logger().info('Steering diagnostics live plot enabled')
-            except Exception as exc:
-                self._diag_live_plot = None
-                self._safe_log_warn(f'Failed to initialize steering diagnostics live plot: {exc}')
-        self.get_logger().info(f'Steering diagnostics CSV: {diag_path}')
+        self.get_logger().info(f'Controller diagnostics CSV: {diag_path}')
 
     def _steering_diag_sample(self) -> None:
         if self._diag_csv_writer is None or self._diag_file_handle is None:
@@ -876,14 +818,6 @@ class LoggerNode(Node):
         if self._diag_flush_counter >= self._diag_flush_stride:
             self._diag_file_handle.flush()
             self._diag_flush_counter = 0
-        if self._diag_live_plot is not None:
-            self._diag_live_plot_counter += 1
-            if self._diag_live_plot_counter >= self._diag_live_plot_stride:
-                if not self._diag_live_plot.update(row):
-                    self._safe_log_warn('Steering diagnostics live plot closed')
-                    self._diag_live_plot.close()
-                    self._diag_live_plot = None
-                self._diag_live_plot_counter = 0
 
     def state_callback(self, msg: VehicleStateMsg) -> None:
         """Handle incoming vehicle state message."""
@@ -947,9 +881,6 @@ class LoggerNode(Node):
         if self._diag_timer is not None:
             self._diag_timer.cancel()
             self._diag_timer = None
-        if self._diag_live_plot is not None:
-            self._diag_live_plot.close()
-            self._diag_live_plot = None
         if self._diag_file_handle is None:
             return
         self._diag_file_handle.flush()
@@ -964,28 +895,27 @@ class LoggerNode(Node):
             summary = analyze_csv(csv_path)
             write_summary_files(summary, summary_json, summary_txt)
             self._safe_log_info(
-                'Steering diagnostics summary: '
+                'Controller diagnostics summary: '
                 f"rms={summary.get('steering_error_rms_rad', float('nan')):.4f} rad "
                 f"cte_rms={summary.get('cte_rms_m', float('nan')):.4f} m "
                 f"lag={summary.get('lag_sec', float('nan')):.4f} s"
             )
         except Exception as exc:
-            self._safe_log_warn(f'Failed steering diagnostics analysis: {exc}')
+            self._safe_log_warn(f'Failed controller diagnostics analysis: {exc}')
 
         try:
             debug_plot_path = self._run_session.plots_path / 'stanley_debug_plots.png'
             generated_path = generate_stanley_debug_plot(csv_path, debug_plot_path)
             if generated_path is not None:
-                self._safe_log_info(f'Generated Stanley debug plot: {generated_path}')
+                self._safe_log_info(f'Generated controller diagnostics plot: {generated_path}')
             else:
-                self._safe_log_warn('Stanley debug plot skipped: no steering diagnostics rows')
+                self._safe_log_warn('Controller diagnostics plot skipped: no diagnostics rows')
         except Exception as exc:
-            self._safe_log_warn(f'Failed Stanley debug plot generation: {exc}')
+            self._safe_log_warn(f'Failed controller diagnostics plot generation: {exc}')
 
     def _save_cone_range_rmse_samples_csv(self) -> None:
-        if self._run_session is None or not self._cone_range_rmse_samples:
+        if self._run_session is None:
             return
-        out_path = self._run_session.logs_path / self._cone_output_filename('cone_range_rmse_samples', 'csv')
         fieldnames = [
             'timestamp',
             'source',
@@ -994,16 +924,27 @@ class LoggerNode(Node):
             'predicted_class_id',
             'ground_truth_class_id',
         ]
-        with open(out_path, 'w', newline='') as handle:
-            writer = csv.DictWriter(handle, fieldnames=fieldnames)
-            writer.writeheader()
-            writer.writerows(self._cone_range_rmse_samples)
-        self._safe_log_info(f'Saved cone range RMSE sample log: {out_path}')
+        for suffix, rows in self._cone_range_rmse_samples_by_suffix.items():
+            if not rows:
+                continue
+            out_path = self._run_session.logs_path / self._cone_output_filename(
+                'cone_range_rmse_samples',
+                'csv',
+                suffix=suffix,
+            )
+            with open(out_path, 'w', newline='') as handle:
+                writer = csv.DictWriter(handle, fieldnames=fieldnames)
+                writer.writeheader()
+                writer.writerows(rows)
+            self._safe_log_info(f'Saved cone range RMSE sample log: {out_path}')
 
     def _save_monocular_fit_samples_csv(self) -> None:
         if self._run_session is None or not self._monocular_fit_samples:
             return
-        out_path = self._run_session.logs_path / self._cone_output_filename('monocular_fit_samples', 'csv')
+        out_path = self._run_session.logs_path / self._cone_output_filename(
+            'monocular_fit_samples',
+            'csv',
+        )
         fieldnames = list(self._monocular_fit_samples[0].keys())
         with open(out_path, 'w', newline='') as handle:
             writer = csv.DictWriter(handle, fieldnames=fieldnames)
@@ -1031,7 +972,7 @@ class LoggerNode(Node):
             cone_plotter = OfflineConePlotter(
                 self._run_session.session_path,
                 range_rmse_filename=self._cone_output_filename('cone_range_rmse_samples', 'csv'),
-                output_suffix=self._cone_log_suffix,
+                output_suffix='',
             )
             cone_range_generated = cone_plotter.generate_range_rmse_plot()
             if cone_range_generated is not None:
@@ -1040,13 +981,12 @@ class LoggerNode(Node):
             else:
                 self._safe_log_warn("Cone range RMSE offline plot skipped: no cone range samples found")
 
-            if self._cone_log_suffix != 'lidar':
-                combined_generated = cone_plotter.generate_combined_range_rmse_plot(
-                    right_range_rmse_filename='cone_range_rmse_samples_lidar.csv',
-                )
-                if combined_generated is not None:
-                    total += 1
-                    self._safe_log_info(f"Generated combined camera/lidar RMSE offline plot: {combined_generated}")
+            combined_generated = cone_plotter.generate_combined_range_rmse_plot(
+                right_range_rmse_filename='cone_range_rmse_samples_lidar.csv',
+            )
+            if combined_generated is not None:
+                total += 1
+                self._safe_log_info(f"Generated combined camera/lidar RMSE offline plot: {combined_generated}")
         except ImportError as e:
             self._safe_log_warn(f"Could not import cone offline plotter: {e}")
             msg = str(e).lower()
@@ -1060,21 +1000,11 @@ class LoggerNode(Node):
 
         self._safe_log_info(f"Generated {total} plots in {self._run_session.plots_path}")
 
-    @staticmethod
-    def _derive_cone_log_suffix(configured_suffix: str, cone_eval_topic: str) -> str:
-        suffix = configured_suffix.strip().lower()
-        if suffix:
-            return ''.join(ch if (ch.isalnum() or ch in {'_', '-'}) else '_' for ch in suffix).strip('_')
-        topic = cone_eval_topic.strip().lower()
-        if '/lidar/' in topic:
-            return 'lidar'
-        return ''
-
-    def _cone_output_filename(self, stem: str, ext: str) -> str:
+    def _cone_output_filename(self, stem: str, ext: str, suffix: str = '') -> str:
         clean_stem = stem.strip()
         clean_ext = ext.strip().lstrip('.')
-        if self._cone_log_suffix:
-            return f'{clean_stem}_{self._cone_log_suffix}.{clean_ext}'
+        if suffix:
+            return f'{clean_stem}_{suffix}.{clean_ext}'
         return f'{clean_stem}.{clean_ext}'
 
     @staticmethod

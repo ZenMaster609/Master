@@ -59,7 +59,6 @@ setup(
             'stereo_perception_node = sim_car.perception.stereo_perception_node:main',
             'mono_perception_node = sim_car.perception.mono_perception_node:main',
             'cone_evaluator_node = sim_car.cones.nodes.evaluator_node:main',
-            'cone_plotting2_node = sim_car.cones.nodes.plotting2_node:main',
             'lidar_node = sim_car.lidar.lidar_node:main',
             'delaunay_planner_node = sim_car.planning.delaunay_planner_node:main',
             'cone_memory_node = sim_car.cones.nodes.memory_node:main',

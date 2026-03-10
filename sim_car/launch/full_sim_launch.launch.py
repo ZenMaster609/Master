@@ -16,12 +16,11 @@ from launch import LaunchDescription
 import tempfile
 from pathlib import Path
 
-from launch.actions import DeclareLaunchArgument, GroupAction, IncludeLaunchDescription, OpaqueFunction, SetLaunchConfiguration
+from launch.actions import DeclareLaunchArgument, IncludeLaunchDescription, OpaqueFunction, SetLaunchConfiguration
 from launch.conditions import IfCondition
 from launch.launch_description_sources import PythonLaunchDescriptionSource
 from launch.substitutions import EnvironmentVariable, LaunchConfiguration, PathJoinSubstitution, PythonExpression
 from launch_ros.actions import Node
-from launch_ros.actions import PushRosNamespace
 from launch_ros.parameter_descriptions import ParameterValue
 from launch_ros.substitutions import FindPackageShare
 from ament_index_python.packages import get_package_share_directory
@@ -98,40 +97,34 @@ def generate_launch_description():
         description='Initial world yaw for the car model (radians)'
     )
 
-    plotting_arg = DeclareLaunchArgument(
-        'plotting',
-        default_value='false',
-        description='Enable live plotting'
-    )
-
-    cone_plotting_2_arg = DeclareLaunchArgument(
-        'cone_plotting_2',
+    cone_rmse_plotting_arg = DeclareLaunchArgument(
+        'cone_rmse_plotting',
         default_value='true',
         description='Enable aggregated range-binned RMSE plotting'
     )
 
-    steering_diagnostics_arg = DeclareLaunchArgument(
-        'steering_diagnostics',
+    controller_diagnostics_arg = DeclareLaunchArgument(
+        'controller_diagnostics',
         default_value='true',
-        description='Enable steering-vs-path diagnostics CSV logging in the main logger'
+        description='Enable controller diagnostics CSV logging in the main logger'
     )
 
-    steering_diag_live_plot_enabled_arg = DeclareLaunchArgument(
-        'steering_diag_live_plot_enabled',
+    controller_diagnostics_live_plot_enabled_arg = DeclareLaunchArgument(
+        'controller_diagnostics_live_plot_enabled',
         default_value='true',
-        description='Enable live Stanley steering diagnostics plot window'
+        description='Enable live controller diagnostics plot window'
     )
 
-    steering_diag_live_plot_rate_hz_arg = DeclareLaunchArgument(
-        'steering_diag_live_plot_rate_hz',
+    controller_diagnostics_live_plot_rate_hz_arg = DeclareLaunchArgument(
+        'controller_diagnostics_live_plot_rate_hz',
         default_value='10.0',
-        description='Refresh rate for live Stanley steering diagnostics plot'
+        description='Refresh rate for live controller diagnostics plot'
     )
 
-    steering_diag_live_buffer_sec_arg = DeclareLaunchArgument(
-        'steering_diag_live_buffer_sec',
+    controller_diagnostics_live_buffer_sec_arg = DeclareLaunchArgument(
+        'controller_diagnostics_live_buffer_sec',
         default_value='30.0',
-        description='History window in seconds for live Stanley diagnostics plot'
+        description='History window in seconds for live controller diagnostics plot'
     )
 
     logging_arg = DeclareLaunchArgument(
@@ -289,8 +282,8 @@ def generate_launch_description():
         description='Enable live global track-belief plot in cone_memory_node'
     )
 
-    lidar_cone_plotting_2_arg = DeclareLaunchArgument(
-        'lidar_cone_plotting_2',
+    lidar_cone_rmse_plotting_arg = DeclareLaunchArgument(
+        'lidar_cone_rmse_plotting',
         default_value='true',
         description='Enable aggregated range-binned RMSE plotting for LiDAR eval stream'
     )
@@ -395,8 +388,11 @@ def generate_launch_description():
         'spawn_y',
         'spawn_z',
         'spawn_yaw',
-        'plotting',
-        'cone_plotting_2',
+        'cone_rmse_plotting',
+        'controller_diagnostics',
+        'controller_diagnostics_live_plot_enabled',
+        'controller_diagnostics_live_plot_rate_hz',
+        'controller_diagnostics_live_buffer_sec',
         'logging',
         'close_plots',
         'rosbagging',
@@ -423,7 +419,7 @@ def generate_launch_description():
         'prefer_lidar_if_camera_missing_far',
         'allow_camera_fallback_near',
         'enable_track_live_plot',
-        'lidar_cone_plotting_2',
+        'lidar_cone_rmse_plotting',
         'camera_debug',
         'camera_debug_n_frames',
         'monocular_bbox_height_offset_px',
@@ -457,9 +453,21 @@ def generate_launch_description():
         "('", LaunchConfiguration('sensor_pipeline'), "'.lower() == 'true') or ('",
         LaunchConfiguration('measure'), "'.lower() == 'true')"
     ])
-    plotting_enabled = PythonExpression([
-        "('", LaunchConfiguration('sensor_pipeline'), "'.lower() == 'true') or ('",
-        LaunchConfiguration('plotting'), "'.lower() == 'true')"
+    sensor_plot_enabled = LaunchConfiguration('sensor_pipeline')
+    plotter_stack_enabled = PythonExpression([
+        "'true' if ('",
+        LaunchConfiguration('sensor_pipeline'),
+        "'.lower() == 'true' or '",
+        LaunchConfiguration('logging'),
+        "'.lower() == 'true' or '",
+        LaunchConfiguration('rosbagging'),
+        "'.lower() == 'true' or '",
+        LaunchConfiguration('cone_rmse_plotting'),
+        "'.lower() == 'true' or '",
+        LaunchConfiguration('lidar_cone_rmse_plotting'),
+        "'.lower() == 'true' or '",
+        LaunchConfiguration('controller_diagnostics'),
+        "'.lower() == 'true') else 'false'"
     ])
     topic_prefix = PythonExpression([
         "'/sim/raw' if (('",
@@ -538,67 +546,62 @@ def generate_launch_description():
         PythonLaunchDescriptionSource(
             PathJoinSubstitution([vehicle_plotter_share, 'launch', 'plotter.launch.py'])
         ),
+        condition=IfCondition(plotter_stack_enabled),
         launch_arguments={
-            'enable_plot': plotting_enabled,
+            'enable_sensor_plot': sensor_plot_enabled,
+            'enable_cone_rmse_plot': PythonExpression([
+                "'true' if ('",
+                LaunchConfiguration('cone_rmse_plotting'),
+                "'.lower() == 'true' or '",
+                LaunchConfiguration('lidar_cone_rmse_plotting'),
+                "'.lower() == 'true') else 'false'"
+            ]),
+            'enable_controller_diagnostics_plot': LaunchConfiguration(
+                'controller_diagnostics_live_plot_enabled'
+            ),
             'enable_log': PythonExpression([
                 "'true' if ('",
                 LaunchConfiguration('logging'),
                 "'.lower() == 'true' or '",
-                LaunchConfiguration('cone_plotting_2'),
+                LaunchConfiguration('cone_rmse_plotting'),
+                "'.lower() == 'true' or '",
+                LaunchConfiguration('lidar_cone_rmse_plotting'),
+                "'.lower() == 'true' or '",
+                LaunchConfiguration('controller_diagnostics'),
+                "'.lower() == 'true') else 'false'"
+            ]),
+            'enable_state_logging': PythonExpression([
+                "'true' if ('",
+                LaunchConfiguration('sensor_pipeline'),
+                "'.lower() == 'true' and '",
+                LaunchConfiguration('logging'),
                 "'.lower() == 'true') else 'false'"
             ]),
             'enable_rosbag': LaunchConfiguration('rosbagging'),
             'sensor_config': resolved_measurement_config,
             'use_sim_time': LaunchConfiguration('use_sim_time'),
             'close_plots': LaunchConfiguration('close_plots'),
-            'cone_eval_topic': PythonExpression(["'", topic_prefix, "' + '/stereo/eval'"]),
-            'steering_diag_enabled': LaunchConfiguration('steering_diagnostics'),
-            'steering_diag_rate_hz': '50.0',
-            'steering_diag_steering_topic': '/sim/steering_angle',
-            'steering_diag_joint_states_topic': '/sim/joint_states',
-            'steering_diag_live_plot_enabled': LaunchConfiguration('steering_diag_live_plot_enabled'),
-            'steering_diag_live_plot_rate_hz': LaunchConfiguration('steering_diag_live_plot_rate_hz'),
-            'steering_diag_live_buffer_sec': LaunchConfiguration('steering_diag_live_buffer_sec'),
+            'camera_cone_eval_topic': PythonExpression(["'", topic_prefix, "' + '/stereo/eval'"]),
+            'lidar_cone_eval_topic': PythonExpression([
+                "'",
+                topic_prefix,
+                "' + '/lidar/eval' if '",
+                LaunchConfiguration('lidar_enabled'),
+                "'.lower() == 'true' else ''"
+            ]),
+            'camera_source': camera_source_name,
+            'controller_diagnostics_enabled': LaunchConfiguration('controller_diagnostics'),
+            'controller_diagnostics_rate_hz': '50.0',
+            'controller_diagnostics_cmd_topic': '/cmd',
+            'controller_diagnostics_steering_topic': '/sim/steering_angle',
+            'controller_diagnostics_joint_states_topic': '/sim/joint_states',
+            'controller_diagnostics_odom_topic': '/sim/odom',
+            'controller_diagnostics_path_topic': '/planned_centerline',
+            'controller_diagnostics_planner_diag_topic': '/delaunay_planner/diagnostics',
+            'controller_diagnostics_live_plot_enabled': LaunchConfiguration('controller_diagnostics_live_plot_enabled'),
+            'controller_diagnostics_live_plot_rate_hz': LaunchConfiguration('controller_diagnostics_live_plot_rate_hz'),
+            'controller_diagnostics_live_buffer_sec': LaunchConfiguration('controller_diagnostics_live_buffer_sec'),
         }.items(),
-    )
-
-    lidar_plotter_launch = GroupAction(
-        condition=IfCondition(PythonExpression([
-            "('",
-            LaunchConfiguration('lidar_enabled'),
-            "'.lower() == 'true') and ('",
-            LaunchConfiguration('lidar_cone_plotting_2'),
-            "'.lower() == 'true' or '",
-            LaunchConfiguration('cone_plotting_2'),
-            "'.lower() == 'true')"
-        ])),
-        actions=[
-            PushRosNamespace('lidar_eval'),
-            IncludeLaunchDescription(
-                PythonLaunchDescriptionSource(
-                    PathJoinSubstitution([vehicle_plotter_share, 'launch', 'plotter.launch.py'])
-                ),
-                launch_arguments={
-                    'enable_plot': 'false',
-                    'enable_log': PythonExpression([
-                        "'true' if ('",
-                        LaunchConfiguration('logging'),
-                        "'.lower() == 'true' or '",
-                        LaunchConfiguration('lidar_cone_plotting_2'),
-                        "'.lower() == 'true' or '",
-                        LaunchConfiguration('cone_plotting_2'),
-                        "'.lower() == 'true') else 'false'"
-                    ]),
-                    'enable_rosbag': 'false',
-                    'sensor_config': resolved_measurement_config,
-                    'use_sim_time': LaunchConfiguration('use_sim_time'),
-                    'close_plots': LaunchConfiguration('close_plots'),
-                    'cone_eval_topic': PythonExpression(["'", topic_prefix, "' + '/lidar/eval'"]),
-                    'cone_log_suffix': 'lidar',
-                    'steering_diag_enabled': 'false',
-                }.items(),
-            ),
-        ],
     )
 
     steering_gui_node = Node(
@@ -834,11 +837,15 @@ def generate_launch_description():
             'ground_truth_cones_topic': '/ground_truth/cones',
             'eval_topic_prefix': PythonExpression(["'", topic_prefix, "' + '/stereo/eval'"]),
             'source_name': camera_source_name,
-            'cone_plotting_2': ParameterValue(
-                LaunchConfiguration('cone_plotting_2'),
+            'cone_rmse_plotting': ParameterValue(PythonExpression([
+                "'true' if ('",
+                LaunchConfiguration('logging'),
+                "'.lower() == 'true' or '",
+                LaunchConfiguration('cone_rmse_plotting'),
+                "'.lower() == 'true') else 'false'"
+            ]),
                 value_type=bool,
             ),
-            'cone_plotting_2_live_plot': False,
         }],
     )
 
@@ -880,34 +887,15 @@ def generate_launch_description():
             'ground_truth_cones_topic': '/ground_truth/cones',
             'eval_topic_prefix': PythonExpression(["'", topic_prefix, "' + '/lidar/eval'"]),
             'source_name': 'lidar',
-            'cone_plotting_2': ParameterValue(PythonExpression([
+            'cone_rmse_plotting': ParameterValue(PythonExpression([
                 "'true' if ('",
-                LaunchConfiguration('lidar_cone_plotting_2'),
+                LaunchConfiguration('logging'),
                 "'.lower() == 'true' or '",
-                LaunchConfiguration('cone_plotting_2'),
+                LaunchConfiguration('lidar_cone_rmse_plotting'),
+                "'.lower() == 'true' or '",
+                LaunchConfiguration('cone_rmse_plotting'),
                 "'.lower() == 'true') else 'false'"
             ]), value_type=bool),
-            'cone_plotting_2_live_plot': False,
-        }],
-    )
-
-    combined_cone_plotting2_node = Node(
-        package='sim_car',
-        executable='cone_plotting2_node',
-        name='cone_plotting2_node',
-        output='screen',
-        condition=IfCondition(PythonExpression([
-            "'",
-            LaunchConfiguration('cone_plotting_2'),
-            "'.lower() == 'true' or '",
-            LaunchConfiguration('lidar_cone_plotting_2'),
-            "'.lower() == 'true'"
-        ])),
-        parameters=[{
-            'camera_eval_prefix': PythonExpression(["'", topic_prefix, "' + '/stereo/eval'"]),
-            'lidar_eval_prefix': PythonExpression(["'", topic_prefix, "' + '/lidar/eval'"]),
-            'camera_source': camera_source_name,
-            'update_period_sec': 0.2,
         }],
     )
 
@@ -1044,12 +1032,11 @@ def generate_launch_description():
         spawn_y_arg,
         spawn_z_arg,
         spawn_yaw_arg,
-        plotting_arg,
-        cone_plotting_2_arg,
-        steering_diagnostics_arg,
-        steering_diag_live_plot_enabled_arg,
-        steering_diag_live_plot_rate_hz_arg,
-        steering_diag_live_buffer_sec_arg,
+        cone_rmse_plotting_arg,
+        controller_diagnostics_arg,
+        controller_diagnostics_live_plot_enabled_arg,
+        controller_diagnostics_live_plot_rate_hz_arg,
+        controller_diagnostics_live_buffer_sec_arg,
         logging_arg,
         close_plots_on_shutdown_arg,
         rosbagging_arg,
@@ -1076,7 +1063,7 @@ def generate_launch_description():
         prefer_lidar_if_camera_missing_far_arg,
         allow_camera_fallback_near_arg,
         enable_track_live_plot_arg,
-        lidar_cone_plotting_2_arg,
+        lidar_cone_rmse_plotting_arg,
         camera_debug_arg,
         camera_debug_n_frames_arg,
         monocular_bbox_height_offset_px_arg,
@@ -1098,14 +1085,12 @@ def generate_launch_description():
         sim_nodes_launch,
         measurement_node,
         plotter_launch,
-        lidar_plotter_launch,
         steering_bridge_node,
         stereo_perception_node,
         mono_perception_node,
         camera_cone_evaluator_node,
         lidar_node,
         lidar_cone_evaluator_node,
-        combined_cone_plotting2_node,
         cone_memory_node,
         delaunay_planner_node,
         camera_debug_viewer_node,
