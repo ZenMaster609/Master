@@ -9,11 +9,11 @@ plots on shutdown.
 
 import rclpy
 import yaml
+import signal
 from rclpy.node import Node
 from pathlib import Path
 from typing import Optional, Dict, List
 from dataclasses import replace
-from datetime import datetime
 import time
 
 from vehicle_plotter_msgs.msg import VehicleState as VehicleStateMsg
@@ -264,6 +264,7 @@ class PlotterNode(Node):
         self._state_count = 0
         self._window_open = True
         self._shutdown_from_window_close = False
+        self._artifacts_saved = False
 
         if self._direct_from_sensors:
             self.get_logger().info(
@@ -466,6 +467,9 @@ class PlotterNode(Node):
 
     def _save_on_exit(self) -> None:
         """Save plots and data if configured."""
+        if self._artifacts_saved:
+            return
+
         if not self._session_initialized or not self._run_session:
             # Create a fallback session if none exists
             if self._save_plots or self._save_plot_data:
@@ -475,28 +479,36 @@ class PlotterNode(Node):
         if not self._run_session:
             return
 
-        # Save plot image
-        if self._save_plots and self._gui_available:
-            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-            plot_path = self._run_session.plots_path / f"plots_{timestamp}.png"
-            try:
-                self.plot_manager.export(str(plot_path))
-                if plot_path.exists():
-                    self.get_logger().info(f'Plots saved to: {plot_path}')
-                else:
-                    self.get_logger().error(f'Plot export did not create file: {plot_path}')
-            except Exception as e:
-                self.get_logger().error(f'Failed to save plots: {e}')
-        elif self._save_plots and not self._gui_available:
-            self.get_logger().warn('Plot export skipped: GUI not available')
+        previous_sigint_handler = signal.getsignal(signal.SIGINT)
+        signal.signal(signal.SIGINT, signal.SIG_IGN)
+        try:
+            artifacts_saved = False
 
-        # Save plot data
-        if self._save_plot_data:
-            try:
-                exported = self.plot_manager.export_data(self._run_session.logs_path)
-                self.get_logger().info(f'Plot data saved: {len(exported)} files to {self._run_session.logs_path}')
-            except Exception as e:
-                self.get_logger().error(f'Failed to save plot data: {e}')
+            # Save plot image
+            if self._save_plots:
+                plot_path = self._run_session.plots_path / "virtual_sensors.png"
+                try:
+                    self.plot_manager.export_static_dashboard(str(plot_path))
+                    if plot_path.exists():
+                        self.get_logger().info(f'Plots saved to: {plot_path}')
+                        artifacts_saved = True
+                    else:
+                        self.get_logger().error(f'Plot export did not create file: {plot_path}')
+                except BaseException as e:
+                    self.get_logger().error(f'Failed to save plots: {e}')
+
+            # Save plot data
+            if self._save_plot_data:
+                try:
+                    exported = self.plot_manager.export_data(self._run_session.logs_path)
+                    self.get_logger().info(f'Plot data saved: {len(exported)} files to {self._run_session.logs_path}')
+                    artifacts_saved = True
+                except BaseException as e:
+                    self.get_logger().error(f'Failed to save plot data: {e}')
+
+            self._artifacts_saved = artifacts_saved
+        finally:
+            signal.signal(signal.SIGINT, previous_sigint_handler)
 
     def export_plots(self, path: str) -> None:
         """Export current plots to image file."""

@@ -581,6 +581,7 @@ def generate_launch_description():
             'sensor_config': resolved_measurement_config,
             'use_sim_time': LaunchConfiguration('use_sim_time'),
             'close_plots': LaunchConfiguration('close_plots'),
+            'save_plots_on_exit': 'true',
             'camera_cone_eval_topic': PythonExpression(["'", topic_prefix, "' + '/stereo/eval'"]),
             'lidar_cone_eval_topic': PythonExpression([
                 "'",

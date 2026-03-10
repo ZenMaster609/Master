@@ -222,6 +222,86 @@ class PlotManager:
         """Export current view to image file."""
         self._backend.export_figure(path, dpi)
 
+    def export_static_dashboard(self, path: str, dpi: int = 150) -> None:
+        """Export the buffered plots as one static PNG, even without a GUI backend."""
+        import matplotlib
+
+        matplotlib.use('Agg')
+        import matplotlib.pyplot as plt
+
+        path_obj = Path(path)
+        path_obj.parent.mkdir(parents=True, exist_ok=True)
+
+        fig = plt.figure(
+            figsize=(
+                max(8.0, self.layout.window_size[0] / 100.0),
+                max(6.0, self.layout.window_size[1] / 100.0),
+            )
+        )
+        grid = fig.add_gridspec(self.layout.rows, self.layout.cols, hspace=0.35, wspace=0.25)
+
+        with self._lock:
+            for config in self.layout.plots:
+                ax = fig.add_subplot(
+                    grid[
+                        config.row: config.row + config.row_span,
+                        config.col: config.col + config.col_span,
+                    ]
+                )
+                buffers = self._buffers.get(config.name)
+                if buffers is None:
+                    continue
+
+                x_data = buffers['x'].to_list()
+                if not x_data:
+                    ax.set_title(config.name)
+                    ax.grid(config.show_grid, alpha=0.3)
+                    continue
+
+                for series in config.series:
+                    y_data = buffers[series.name].to_list()
+                    min_len = min(len(x_data), len(y_data))
+                    if min_len <= 0:
+                        continue
+
+                    style = {
+                        'solid': '-',
+                        'dashed': '--',
+                        'dotted': ':',
+                    }.get(series.line_style, '-')
+                    color = None if series.color == 'auto' else series.color
+                    ax.plot(
+                        x_data[:min_len],
+                        y_data[:min_len],
+                        style,
+                        label=series.name,
+                        color=color,
+                        linewidth=series.line_width,
+                    )
+
+                ax.set_title(config.name)
+                ax.grid(config.show_grid, alpha=0.3)
+                ax.set_xlabel(self._x_axis_label(config))
+                ax.set_ylabel(self._y_axis_label(config))
+
+                if config.plot_type == 'xy':
+                    ax.set_aspect('equal', adjustable='datalim')
+
+                if config.x_axis is not None and config.x_axis.limits:
+                    ax.set_xlim(*config.x_axis.limits)
+                if config.y_axis is not None and config.y_axis.limits:
+                    ax.set_ylim(*config.y_axis.limits)
+
+                if config.show_legend:
+                    handles, labels = ax.get_legend_handles_labels()
+                    if handles:
+                        ax.legend(loc='best', fontsize='small')
+
+        fig.suptitle(self.layout.window_title)
+        fig.tight_layout()
+        fig.savefig(path_obj, dpi=dpi, bbox_inches='tight')
+        plt.close(fig)
+
     def export_data(self, output_dir: Path) -> Dict[str, Path]:
         """
         Export plot buffer data to CSV files.
@@ -333,3 +413,30 @@ class PlotManager:
                 return None
         except (ValueError, TypeError, IndexError):
             return None
+
+    @staticmethod
+    def _format_axis_label(label: str, unit: str) -> str:
+        if label and unit:
+            return f"{label} ({unit})"
+        return label or unit or ""
+
+    def _x_axis_label(self, config: PlotConfig) -> str:
+        if config.x_axis is not None:
+            return self._format_axis_label(config.x_axis.label, config.x_axis.unit)
+
+        if config.x_axis_type == XAxisType.TIME:
+            return "Time (s)"
+        if config.x_axis_type == XAxisType.DISTANCE:
+            return "Distance (m)"
+        if config.x_axis_type == XAxisType.YAW:
+            return "Yaw (rad)"
+        if config.x_axis_type == XAxisType.ENCODER_TOTAL:
+            return "Encoder Total (RPM)"
+        if config.x_axis_type == XAxisType.ENCODER_FL:
+            return "Encoder FL (RPM)"
+        return "X"
+
+    def _y_axis_label(self, config: PlotConfig) -> str:
+        if config.y_axis is not None:
+            return self._format_axis_label(config.y_axis.label, config.y_axis.unit)
+        return "Value"
