@@ -44,7 +44,7 @@ class RosbagControllerNode(Node):
         # Declare parameters
         self.declare_parameter('enable_recording', True)
         self.declare_parameter('topics', [])
-        self.declare_parameter('mode', 'common')  # common, jetson_hardware, simulation, etc.
+        self.declare_parameter('mode', 'common')  # common, simulation, windows_plotter, minimal
         self.declare_parameter('compression', 'zstd')
         self.declare_parameter('max_bag_size', 0)  # 0 = no limit
         self.declare_parameter('wait_for_session', True)

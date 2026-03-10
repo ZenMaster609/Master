@@ -32,7 +32,6 @@ setup(
     tests_require=['pytest'],
     entry_points={
         'console_scripts': [
-            'data_collector_node = vehicle_plotter.nodes.data_collector_node:main',
             'plotter_node = vehicle_plotter.nodes.plotter_node:main',
             'logger_node = vehicle_plotter.nodes.logger_node:main',
             'rosbag_controller_node = vehicle_plotter.nodes.rosbag_controller_node:main',

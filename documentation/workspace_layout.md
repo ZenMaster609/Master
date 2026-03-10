@@ -6,7 +6,6 @@
 Master/
 ├── agent.md
 ├── documentation/                # Canonical docs (this folder)
-├── canbus_decoder/               # CAN decoder ROS2 package
 ├── eufs_remastered/
 │   ├── eufs_gz_dynamics/         # Gazebo dynamics plugin (C++)
 │   ├── eufs_msgs/                # EUFS message and action definitions
@@ -14,7 +13,6 @@ Master/
 │   ├── eufs_models/              # EUFS vehicle model library (C++)
 │   └── steering_gui/             # RQT steering GUI plugin
 ├── sim_car/                      # Main Gazebo simulation package
-├── vectornav_decoder/            # VectorNav VN-200 serial decoder
 ├── vehicle_plotter/              # Plotting/logging/data collection
 ├── vehicle_plotter_msgs/         # RunSession + VehicleState messages
 ├── multidata/                    # Default data output directory
@@ -30,14 +28,12 @@ Master/
 
 | Package | Path | Type | Purpose |
 | --- | --- | --- | --- |
-| `canbus_decoder` | `canbus_decoder/` | Python | Decode raw CAN frames into wheel/suspension/steering topics. |
 | `eufs_gz_dynamics` | `eufs_remastered/eufs_gz_dynamics/` | C++ | Gazebo dynamics plugin library for EUFS car models. |
 | `eufs_msgs` | `eufs_remastered/eufs_msgs/` | Interface | EUFS messages/actions used by EUFS simulation stack. |
 | `gazebo_cone_plugins` | `eufs_remastered/gazebo_cone_plugins/` | C++ | Remastered cone plugin: track cones, visible cones, YAML confusion-matrix recoloring. |
 | `eufs_models` | `eufs_remastered/eufs_models/` | C++ | EUFS vehicle model library required by `eufs_gz_dynamics`. |
 | `sim_car` | `sim_car/` | Python | Gazebo Fortress sim, virtual sensors, measurement/noise layer, control bridge. |
 | `steering_gui` | `eufs_remastered/steering_gui/` | Python | RQT steering GUI for Ackermann commands. |
-| `vectornav_decoder` | `vectornav_decoder/` | Python | VN-200 serial decoder to ROS topics. |
 | `vehicle_plotter` | `vehicle_plotter/` | Python | Data collection, plotting, logging, rosbag control. |
 | `vehicle_plotter_msgs` | `vehicle_plotter_msgs/` | Interface | `RunSession` and `VehicleState` messages. |
 

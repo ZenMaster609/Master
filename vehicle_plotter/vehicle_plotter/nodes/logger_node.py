@@ -11,7 +11,7 @@ Storage Layout:
         vehicle_state_0000.parquet
         metadata.json
 
-Where <prefix> is 'sim' for simulation or 'jetson' for real hardware.
+Where <prefix> is 'sim' for simulation.
 """
 
 import rclpy
@@ -68,7 +68,7 @@ class LoggerNode(Node):
         buffer_size (int): Max records to buffer before flush
         wait_for_session (bool): Wait for /run_session before logging
         session_timeout_sec (float): Timeout to wait for /run_session
-        adapter (str): Sensor adapter type ('gazebo', 'can', 'vectornav') - determines directory prefix
+        adapter (str): Sensor adapter type ('gazebo') - determines directory prefix
         auto_plot_on_shutdown (bool): Generate offline plots when logger shuts down
     """
 

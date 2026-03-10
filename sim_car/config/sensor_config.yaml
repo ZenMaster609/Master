@@ -114,14 +114,14 @@ signals:
     output_topic: /sim/raw/odom
 
   wheel_encoder_rpm:
-    enabled: false
+    enabled: true
     input_topic: /sim/raw/wheel_encoder/rpm
     output_topic: /sim/wheel_encoder/rpm
     msg_type: std_msgs/msg/Float32MultiArray
     rate_hz: 50.0
-    latency_ms: 0.0
+    latency_ms: 8.0
     dropout_prob: 0.0
-    noise_std: 0.0
+    noise_std: 1.5
     bias_init: 0.0
     bias_rw_std: 0.0
     saturation_min: -5000.0
@@ -147,23 +147,23 @@ signals:
     output_topic: /sim/wheel_encoder/speed_mm_s
     msg_type: std_msgs/msg/Float32MultiArray
     rate_hz: 50.0
-    latency_ms: 0.0
+    latency_ms: 8.0
     dropout_prob: 0.0
-    noise_std: 0.0
+    noise_std: 12.0
     bias_init: 0.0
     bias_rw_std: 0.0
     saturation_min: null
     saturation_max: null
 
   suspension:
-    enabled: false
+    enabled: true
     input_topic: /sim/raw/suspension
     output_topic: /sim/suspension
     msg_type: std_msgs/msg/Float32MultiArray
     rate_hz: 50.0
-    latency_ms: 0.0
+    latency_ms: 12.0
     dropout_prob: 0.0
-    noise_std: 0.0
+    noise_std: 0.6
     bias_init: 0.0
     bias_rw_std: 0.0
     saturation_min: -50.0
@@ -175,65 +175,65 @@ signals:
     output_topic: /sim/steering_angle
     msg_type: std_msgs/msg/Float32
     rate_hz: 50.0
-    latency_ms: 0.0
+    latency_ms: 6.0
     dropout_prob: 0.0
-    noise_std: 0.0
+    noise_std: 0.15
     bias_init: 0.0
     bias_rw_std: 0.0
     saturation_min: -30.0
     saturation_max: 30.0
 
   water_pressure:
-    enabled: false
+    enabled: true
     input_topic: /sim/raw/cooling/water_pressure
     output_topic: /sim/cooling/water_pressure
     msg_type: std_msgs/msg/Float32
     rate_hz: 10.0
-    latency_ms: 0.0
+    latency_ms: 25.0
     dropout_prob: 0.0
-    noise_std: 0.0
+    noise_std: 0.03
     bias_init: 0.0
     bias_rw_std: 0.0
     saturation_min: 0.0
     saturation_max: 10.0
 
   water_flow:
-    enabled: false
+    enabled: true
     input_topic: /sim/raw/cooling/water_flow
     output_topic: /sim/cooling/water_flow
     msg_type: std_msgs/msg/Float32
     rate_hz: 10.0
-    latency_ms: 0.0
+    latency_ms: 25.0
     dropout_prob: 0.0
-    noise_std: 0.0
+    noise_std: 0.2
     bias_init: 0.0
     bias_rw_std: 0.0
     saturation_min: 0.0
     saturation_max: 50.0
 
   water_temp_in:
-    enabled: false
+    enabled: true
     input_topic: /sim/raw/cooling/water_temp_in
     output_topic: /sim/cooling/water_temp_in
     msg_type: std_msgs/msg/Float32
     rate_hz: 10.0
-    latency_ms: 0.0
+    latency_ms: 30.0
     dropout_prob: 0.0
-    noise_std: 0.0
+    noise_std: 0.15
     bias_init: 0.0
     bias_rw_std: 0.0
     saturation_min: -40.0
     saturation_max: 150.0
 
   water_temp_out:
-    enabled: false
+    enabled: true
     input_topic: /sim/raw/cooling/water_temp_out
     output_topic: /sim/cooling/water_temp_out
     msg_type: std_msgs/msg/Float32
     rate_hz: 10.0
-    latency_ms: 0.0
+    latency_ms: 30.0
     dropout_prob: 0.0
-    noise_std: 0.0
+    noise_std: 0.15
     bias_init: 0.0
     bias_rw_std: 0.0
     saturation_min: -40.0
@@ -254,42 +254,42 @@ signals:
     saturation_max: 150.0
 
   brake_temp_fr:
-    enabled: false
+    enabled: true
     input_topic: /sim/raw/brakes/temp_fr
     output_topic: /sim/brakes/temp_fr
     msg_type: std_msgs/msg/Float32
     rate_hz: 10.0
-    latency_ms: 0.0
+    latency_ms: 35.0
     dropout_prob: 0.0
-    noise_std: 0.0
+    noise_std: 0.8
     bias_init: 0.0
     bias_rw_std: 0.0
     saturation_min: -40.0
     saturation_max: 800.0
 
   brake_temp_rl:
-    enabled: false
+    enabled: true
     input_topic: /sim/raw/brakes/temp_rl
     output_topic: /sim/brakes/temp_rl
     msg_type: std_msgs/msg/Float32
     rate_hz: 10.0
-    latency_ms: 0.0
+    latency_ms: 35.0
     dropout_prob: 0.0
-    noise_std: 0.0
+    noise_std: 0.8
     bias_init: 0.0
     bias_rw_std: 0.0
     saturation_min: -40.0
     saturation_max: 800.0
 
   pitot_dynamic_pressure:
-    enabled: false
+    enabled: true
     input_topic: /sim/raw/pitot/dynamic_pressure
     output_topic: /sim/pitot/dynamic_pressure
     msg_type: std_msgs/msg/Float32
     rate_hz: 10.0
-    latency_ms: 0.0
+    latency_ms: 15.0
     dropout_prob: 0.0
-    noise_std: 0.0
+    noise_std: 4.0
     bias_init: 0.0
     bias_rw_std: 0.0
     saturation_min: 0.0

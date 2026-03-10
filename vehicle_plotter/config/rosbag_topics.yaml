@@ -8,16 +8,6 @@ common:
   - /vehicle_plotter/state
   - /run_session
 
-# Jetson hardware topics (CAN + VectorNav)
-jetson_hardware:
-  - /vectornav/imu
-  - /vectornav/gps
-  - /vectornav/ins
-  - /can/wheel_rpm
-  - /can/suspension
-  - /can/steering_angle
-  - /can/rx  # Raw CAN frames for debugging
-
 # Simulation topics (Gazebo)
 simulation:
   - /imu
@@ -28,25 +18,10 @@ simulation:
   - /joint_states
   - /clock
 
-# Windows plotter topics (subscriber side)
+# Remote plotter topics (subscriber side)
 windows_plotter:
   - /vehicle_plotter/state
   - /run_session
-  # Remote sensor topics (received over network)
-  - /vectornav/imu
-  - /vectornav/gps
-  - /vectornav/ins
-  - /can/wheel_rpm
-
-# Virtual CAN testing
-vcan_test:
-  - /vehicle_plotter/state
-  - /run_session
-  - /can/wheel_rpm
-  - /can/suspension
-  - /can/steering_angle
-  - /can/rx
-  - /to_can_bus  # Outgoing fake frames
 
 # Minimal recording (state only)
 minimal:

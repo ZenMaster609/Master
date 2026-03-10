@@ -131,31 +131,26 @@ class OfflinePlotter:
 
     def detect_data_source(self) -> str:
         """
-        Detect whether data is from simulation or real vehicle.
+        Detect whether data is from simulation.
 
         Detection order:
-        1. Check run_id prefix (sim_ or jetson_)
+        1. Check run_id prefix (sim_)
         2. Check source_adapter column in data
         3. Default to 'unknown'
 
         Returns:
-            'simulation', 'real_vehicle', or 'unknown'
+            'simulation' or 'unknown'
         """
         run_id = self.session_path.name
 
         # Check prefix (new format)
         if run_id.startswith('sim_'):
             return 'simulation'
-        elif run_id.startswith('jetson_'):
-            return 'real_vehicle'
-
         # Check source_adapter column (works with old format)
         if self.data is not None and 'source_adapter' in self.data.columns:
             source = self.data['source_adapter'].iloc[0] if len(self.data) > 0 else None
             if source == 'gazebo':
                 return 'simulation'
-            elif source in ('can', 'vectornav'):
-                return 'real_vehicle'
 
         return 'unknown'
 
@@ -164,10 +159,7 @@ class OfflinePlotter:
         source = self.detect_data_source()
         if source == 'simulation':
             return 'Simulation'
-        elif source == 'real_vehicle':
-            return 'Real Vehicle'
-        else:
-            return 'Unknown Source'
+        return 'Unknown Source'
 
     def generate_plots(
         self,
@@ -343,7 +335,7 @@ def main():
         epilog="""
 Examples:
     %(prog)s ./multidata/sim_2026-01-12_14-00-00/
-    %(prog)s ./multidata/jetson_2026-01-12_14-00-00/ --format pdf
+    %(prog)s ./multidata/sim_2026-01-12_14-00-00/ --format pdf
     %(prog)s ./multidata/2026-01-12_14-00-00/linux/ --dpi 300
         """
     )

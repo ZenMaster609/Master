@@ -2,8 +2,7 @@
 Abstract sensor adapter interfaces.
 
 Defines the interface that all sensor adapters must implement,
-allowing the data collector to work with both simulation and
-real hardware backends.
+allowing the data collector to work with the simulation backend.
 """
 
 from abc import ABC, abstractmethod
@@ -20,7 +19,7 @@ class SensorAdapterInterface(ABC):
 
     Sensor adapters handle the specifics of subscribing to sensor
     topics and converting sensor data to VehicleState. Different
-    adapters exist for simulation (Gazebo) and real hardware (VectorNav).
+    adapters exist for simulation backends.
 
     Subclasses must implement:
     - setup_subscriptions(): Create ROS subscriptions

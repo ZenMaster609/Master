@@ -68,19 +68,6 @@ def generate_launch_description():
         output='screen',
     )
 
-    # Data collector node
-    data_collector_node = Node(
-        package='vehicle_plotter',
-        executable='data_collector_node',
-        name='data_collector',
-        output='screen',
-        parameters=[{
-            'adapter': 'gazebo',
-            'output_rate_hz': 50.0,
-            'use_sim_time': True,
-        }],
-    )
-
     # Plotter node
     plotter_node = Node(
         package='vehicle_plotter',
@@ -90,6 +77,7 @@ def generate_launch_description():
         condition=IfCondition(LaunchConfiguration('enable_plot')),
         parameters=[{
             'update_rate_hz': 30.0,
+            'direct_from_sensors': False,
             'use_sim_time': True,
         }],
     )
@@ -120,7 +108,6 @@ def generate_launch_description():
 
         # Nodes
         rosbag_play,
-        data_collector_node,
         plotter_node,
         logger_node,
     ])

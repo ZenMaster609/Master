@@ -1,28 +1,4 @@
 # QoS overrides for rosbag replay
-# Match bag's QoS settings for compatibility
-/can/steering_angle:
-  reliability: reliable
-  durability: transient_local
-  history: keep_last
-  depth: 10
-
-/can/suspension:
-  reliability: reliable
-  durability: transient_local
-  history: keep_last
-  depth: 10
-
-/can/wheel_rpm:
-  reliability: reliable
-  durability: transient_local
-  history: keep_last
-  depth: 10
-
-/to_can_bus:
-  reliability: reliable
-  durability: transient_local
-  history: keep_last
-  depth: 10
 
 /run_session:
   reliability: reliable

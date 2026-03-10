@@ -19,8 +19,6 @@ This is a ROS2 multi-package workspace for vehicle simulation, CAN/IMU decoding,
 Core packages:
 - `sim_car`: Gazebo Fortress simulation, virtual sensors, the measurement/noise layer, and Ackermann command bridge.
 - `vehicle_plotter`: Aggregates sensor data into `VehicleState`, plots in real time, logs to disk, and controls rosbag.
-- `canbus_decoder`: Decodes raw CAN frames into wheel RPM, suspension, and steering topics.
-- `vectornav_decoder`: VN-200 serial decoder (IMU/GPS/INS topics).
 - `steering_gui`: RQT GUI for Ackermann commands and brake command.
 - `vehicle_plotter_msgs`: `VehicleState` and `RunSession` messages.
 

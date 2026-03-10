@@ -28,20 +28,10 @@ This file lists the main configuration files used by the packages in this worksp
 - Topic mappings and sensor rates for the Gazebo adapter.
 - Keys: `adapter`, `topics`, `sensor_rates`, `gps_origin`.
 
-### `vehicle_plotter/config/can_topics.yaml`
-
-- Topic mappings for the CAN adapter.
-- Keys: `wheel_velocities`, `suspension`, `steering_angle`.
-
-### `vehicle_plotter/config/vectornav_topics.yaml`
-
-- Topic mappings and sensor rates for the VectorNav adapter.
-- Keys: `adapter`, `topics`, `sensor_rates`, `gps_origin`, `vectornav`.
-
 ### `vehicle_plotter/config/rosbag_topics.yaml`
 
 - Topic lists for rosbag recording, grouped by mode.
-- Modes: `common`, `jetson_hardware`, `simulation`, `windows_plotter`, `vcan_test`, `minimal`.
+- Modes: `common`, `simulation`, `windows_plotter`, `minimal`.
 
 ### `vehicle_plotter/config/qos_overrides.yaml`
 
@@ -50,18 +40,6 @@ This file lists the main configuration files used by the packages in this worksp
 ### `vehicle_plotter/config/replay_qos_override.yaml`
 
 - QoS overrides for `ros2 bag play` to match recorded topic QoS.
-
-## vectornav_decoder
-
-### `vectornav_decoder/config/default_output.yaml`
-
-- Full VN-200 binary output configuration (IMU + GPS + INS).
-- Keys: `serial`, `output`, `binary_output_1`, `topics`, `frame_id`, `diagnostics`.
-
-### `vectornav_decoder/config/high_rate_imu.yaml`
-
-- High-rate IMU-only configuration for VN-200.
-- Similar structure to `default_output.yaml`, with GPS/INS disabled.
 
 ## eufs_models
 

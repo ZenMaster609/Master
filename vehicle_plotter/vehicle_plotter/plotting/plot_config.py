@@ -293,17 +293,15 @@ def get_virtual_sensor_plots() -> PlotLayoutConfig:
 
 
 def get_all_plots() -> PlotLayoutConfig:
-    """Get a unified plot layout for all sensors."""
-    import math
-
+    """Get the live sensor dashboard layout."""
     return PlotLayoutConfig(
-        rows=3,
-        cols=3,
+        rows=5,
+        cols=2,
         window_title="Vehicle Plotter",
-        window_size=(1600, 1100),
+        window_size=(1650, 1350),
         plots=[
             PlotConfig(
-                name="Realistic Position",
+                name="Position Trajectory",
                 plot_type="xy",
                 x_axis=AxisConfig(label="X", variable="x", unit="m"),
                 series=[SeriesConfig(name="Y", variable="y", color="#1f77b4")],
@@ -313,7 +311,7 @@ def get_all_plots() -> PlotLayoutConfig:
                 buffer_size=2000,
             ),
             PlotConfig(
-                name="Realistic Velocity",
+                name="Velocity",
                 plot_type="timeseries",
                 x_axis_type=XAxisType.TIME,
                 series=[
@@ -326,7 +324,7 @@ def get_all_plots() -> PlotLayoutConfig:
                 buffer_size=1000,
             ),
             PlotConfig(
-                name="Realistic Yaw",
+                name="Heading",
                 plot_type="timeseries",
                 x_axis_type=XAxisType.TIME,
                 series=[
@@ -334,54 +332,15 @@ def get_all_plots() -> PlotLayoutConfig:
                         name="Yaw",
                         variable="yaw",
                         color="#d62728",
-                        transform=lambda x: x * 180 / math.pi,
+                        transform=lambda x: x * 180.0 / 3.141592653589793,
                     ),
                 ],
                 y_axis=AxisConfig(label="Yaw", unit="deg"),
-                row=0, col=2,
-                buffer_size=1000,
-            ),
-            PlotConfig(
-                name="Raw Position",
-                plot_type="xy",
-                x_axis=AxisConfig(label="X", variable="raw_x", unit="m"),
-                series=[SeriesConfig(name="Y", variable="raw_y", color="#1f77b4")],
-                y_axis=AxisConfig(label="Y", variable="raw_y", unit="m"),
                 row=1, col=0,
-                show_grid=True,
-                buffer_size=2000,
-            ),
-            PlotConfig(
-                name="Raw Velocity",
-                plot_type="timeseries",
-                x_axis_type=XAxisType.TIME,
-                series=[
-                    SeriesConfig(name="Vx", variable="raw_vx", color="#1f77b4"),
-                    SeriesConfig(name="Vy", variable="raw_vy", color="#ff7f0e"),
-                    SeriesConfig(name="Speed", variable="raw_speed", color="#2ca02c"),
-                ],
-                y_axis=AxisConfig(label="Velocity", unit="m/s"),
-                row=1, col=1,
                 buffer_size=1000,
             ),
             PlotConfig(
-                name="Raw Yaw",
-                plot_type="timeseries",
-                x_axis_type=XAxisType.TIME,
-                series=[
-                    SeriesConfig(
-                        name="Yaw",
-                        variable="raw_yaw",
-                        color="#d62728",
-                        transform=lambda x: x * 180 / math.pi,
-                    ),
-                ],
-                y_axis=AxisConfig(label="Yaw", unit="deg"),
-                row=1, col=2,
-                buffer_size=1000,
-            ),
-            PlotConfig(
-                name="Encoder Wheel Speed (mm/s)",
+                name="Wheel Speed (mm/s)",
                 plot_type="timeseries",
                 x_axis_type=XAxisType.TIME,
                 series=[
@@ -391,9 +350,87 @@ def get_all_plots() -> PlotLayoutConfig:
                     SeriesConfig(name="RR", variable="encoder_speeds_mm_s[3]", color="#8c564b"),
                 ],
                 y_axis=AxisConfig(label="Wheel Speed", unit="mm/s"),
-                row=2, col=0,
-                col_span=3,
+                row=1, col=1,
                 buffer_size=1000,
+            ),
+            PlotConfig(
+                name="Wheel Encoder RPM",
+                plot_type="timeseries",
+                x_axis_type=XAxisType.TIME,
+                series=[
+                    SeriesConfig(name="FL", variable="encoder_velocities[0]", color="#2ca02c"),
+                    SeriesConfig(name="FR", variable="encoder_velocities[1]", color="#d62728"),
+                    SeriesConfig(name="RL", variable="encoder_velocities[2]", color="#9467bd"),
+                    SeriesConfig(name="RR", variable="encoder_velocities[3]", color="#8c564b"),
+                ],
+                y_axis=AxisConfig(label="Wheel RPM", unit="RPM"),
+                row=2, col=0,
+                buffer_size=1000,
+                show_legend=True,
+            ),
+            PlotConfig(
+                name="Water Flow + Pressure",
+                plot_type="timeseries",
+                x_axis_type=XAxisType.TIME,
+                series=[
+                    SeriesConfig(name="Water Flow", variable="water_flow", color="#1f77b4"),
+                    SeriesConfig(name="Water Pressure", variable="water_pressure", color="#ff7f0e"),
+                ],
+                y_axis=AxisConfig(label="Flow / Pressure", unit="L/min | bar"),
+                row=2, col=1,
+                buffer_size=1000,
+            ),
+            PlotConfig(
+                name="Water Temp In/Out",
+                plot_type="timeseries",
+                x_axis_type=XAxisType.TIME,
+                series=[
+                    SeriesConfig(name="Water Temp In", variable="water_temp_in", color="#2ca02c"),
+                    SeriesConfig(name="Water Temp Out", variable="water_temp_out", color="#d62728"),
+                ],
+                y_axis=AxisConfig(label="Temperature", unit="C"),
+                row=3, col=0,
+                buffer_size=1000,
+                show_legend=True,
+            ),
+            PlotConfig(
+                name="Suspensions",
+                plot_type="timeseries",
+                x_axis_type=XAxisType.TIME,
+                series=[
+                    SeriesConfig(name="FL", variable="suspension[0]", color="#2ca02c", scale=1000.0),
+                    SeriesConfig(name="FR", variable="suspension[1]", color="#d62728", scale=1000.0),
+                    SeriesConfig(name="RL", variable="suspension[2]", color="#9467bd", scale=1000.0),
+                    SeriesConfig(name="RR", variable="suspension[3]", color="#8c564b", scale=1000.0),
+                ],
+                y_axis=AxisConfig(label="Suspension", unit="mm"),
+                row=3, col=1,
+                buffer_size=1000,
+                show_legend=True,
+            ),
+            PlotConfig(
+                name="Steering Sensor",
+                plot_type="timeseries",
+                x_axis_type=XAxisType.TIME,
+                series=[
+                    SeriesConfig(name="Steering", variable="steering_angle", color="#17becf"),
+                ],
+                y_axis=AxisConfig(label="Angle", unit="deg"),
+                row=4, col=0,
+                buffer_size=1000,
+            ),
+            PlotConfig(
+                name="Brake Temps",
+                plot_type="timeseries",
+                x_axis_type=XAxisType.TIME,
+                series=[
+                    SeriesConfig(name="Front Right", variable="brake_temp_fr", color="#d62728"),
+                    SeriesConfig(name="Rear Left", variable="brake_temp_rl", color="#9467bd"),
+                ],
+                y_axis=AxisConfig(label="Temperature", unit="C"),
+                row=4, col=1,
+                buffer_size=1000,
+                show_legend=True,
             ),
         ],
     )

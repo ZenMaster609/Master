@@ -2,8 +2,9 @@
 """
 PlotterNode - Real-time visualization of vehicle state.
 
-Subscribes to /vehicle_plotter/state and displays real-time plots
-using PyQtGraph. Supports auto-save of plots on shutdown.
+Can either aggregate live simulation sensor topics directly or subscribe to
+/vehicle_plotter/state for replay/offline plotting. Supports auto-save of
+plots on shutdown.
 """
 
 import rclpy
@@ -22,6 +23,8 @@ from ament_index_python.packages import get_package_share_directory
 from ..core.vehicle_state import VehicleState
 from ..core.run_session import RunSession
 from ..core.qos_profiles import PLOTTER_QOS, RELIABLE_SENSOR_QOS
+from ..core.time_sync import TimeSynchronizer
+from ..adapters.gazebo_adapter import GazeboAdapter
 from ..plotting.plot_manager import PlotManager
 from ..plotting.plot_config import (
     get_default_plots,
@@ -88,8 +91,10 @@ class PlotterNode(Node):
     """
     Real-time plotting node for vehicle state visualization.
 
-    Subscribes to /vehicle_plotter/state and displays configurable
-    real-time plots using PyQtGraph.
+    Displays configurable real-time plots using PyQtGraph. In live simulation
+    it can aggregate measured sensor topics directly and publish
+    `/vehicle_plotter/state`; in replay/offline mode it subscribes to an
+    existing state topic.
 
     Supports:
     - RunSession integration for coordinated data storage
@@ -117,7 +122,9 @@ class PlotterNode(Node):
         self.declare_parameter('plot_layout', 'all')
         self.declare_parameter('dark_mode', True)
         self.declare_parameter('enable_gui', True)
+        self.declare_parameter('direct_from_sensors', False)
         self.declare_parameter('state_topic', 'vehicle_plotter/state')
+        self.declare_parameter('state_output_rate_hz', 50.0)
         self.declare_parameter('save_plots_on_exit', False)
         self.declare_parameter('save_plot_data_on_exit', True)
         self.declare_parameter('close_plots_on_shutdown', True)
@@ -133,7 +140,9 @@ class PlotterNode(Node):
         plot_layout = self.get_parameter('plot_layout').value
         dark_mode = self.get_parameter('dark_mode').value
         enable_gui = self.get_parameter('enable_gui').value
+        direct_from_sensors = bool(self.get_parameter('direct_from_sensors').value)
         state_topic = self.get_parameter('state_topic').value
+        state_output_rate_hz = float(self.get_parameter('state_output_rate_hz').value)
         self._save_plots = self.get_parameter('save_plots_on_exit').value
         self._save_plot_data = self.get_parameter('save_plot_data_on_exit').value
         self._close_plots_on_shutdown = self.get_parameter('close_plots_on_shutdown').value
@@ -152,6 +161,7 @@ class PlotterNode(Node):
         self.get_logger().info(f'  Backend: {backend}')
         self.get_logger().info(f'  Update rate: {update_rate} Hz')
         self.get_logger().info(f'  GUI enabled: {enable_gui}')
+        self.get_logger().info(f'  Direct from sensors: {direct_from_sensors}')
         self.get_logger().info(f'  Save plots on exit: {self._save_plots}')
         self.get_logger().info(f'  Save plot data on exit: {self._save_plot_data}')
         self.get_logger().info(f'  Close plots on shutdown: {self._close_plots_on_shutdown}')
@@ -211,13 +221,38 @@ class PlotterNode(Node):
         else:
             self._session_initialized = True
 
-        # Subscribe to vehicle state
-        self.state_sub = self.create_subscription(
-            VehicleStateMsg,
-            state_topic,
-            self.state_callback,
-            PLOTTER_QOS,
-        )
+        self._direct_from_sensors = direct_from_sensors
+        self._state_pub = None
+        self._state_sub = None
+        self._last_state = VehicleState()
+        self._distance_accumulator = 0.0
+
+        if self._direct_from_sensors:
+            self.synchronizer = TimeSynchronizer(
+                output_rate_hz=state_output_rate_hz,
+                buffer_duration_sec=0.2,
+            )
+            self.adapter = GazeboAdapter(
+                node=self,
+                synchronizer=self.synchronizer,
+                auto_set_gps_origin=True,
+            )
+            self._state_pub = self.create_publisher(
+                VehicleStateMsg,
+                state_topic,
+                PLOTTER_QOS,
+            )
+            self.state_timer = self.create_timer(
+                1.0 / max(1.0, state_output_rate_hz),
+                self.compute_and_publish_state,
+            )
+        else:
+            self._state_sub = self.create_subscription(
+                VehicleStateMsg,
+                state_topic,
+                self.state_callback,
+                PLOTTER_QOS,
+            )
 
         # Plot refresh timer
         self.refresh_timer = self.create_timer(
@@ -230,7 +265,12 @@ class PlotterNode(Node):
         self._window_open = True
         self._shutdown_from_window_close = False
 
-        self.get_logger().info(f'PlotterNode started, subscribed to {state_topic}')
+        if self._direct_from_sensors:
+            self.get_logger().info(
+                f'PlotterNode started, aggregating live sensors and publishing {state_topic}'
+            )
+        else:
+            self.get_logger().info(f'PlotterNode started, subscribed to {state_topic}')
 
     def _filter_layout_by_sensor_config(
         self,
@@ -367,6 +407,32 @@ class PlotterNode(Node):
         """Handle incoming vehicle state message."""
         state = VehicleState.from_msg(msg)
         self.plot_manager.push_state(state)
+        self._state_count += 1
+
+    def compute_and_publish_state(self) -> None:
+        """Aggregate measured sim topics into VehicleState, then plot and publish it."""
+        target_time = self.synchronizer.get_latest_time()
+        if target_time is None:
+            return
+
+        synced = self.synchronizer.get_synchronized(target_time)
+        if synced is None:
+            return
+
+        state = self.adapter.compute_state(synced, self._last_state)
+
+        if self._last_state.timestamp > 0.0:
+            dt = state.timestamp - self._last_state.timestamp
+            if 0.0 < dt < 0.1:
+                self._distance_accumulator += state.speed * dt
+
+        state.distance_traveled = self._distance_accumulator
+        self.plot_manager.push_state(state)
+
+        if self._state_pub is not None:
+            self._state_pub.publish(state.to_msg())
+
+        self._last_state = state
         self._state_count += 1
 
     def refresh_callback(self) -> None:

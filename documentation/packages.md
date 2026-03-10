@@ -2,18 +2,6 @@
 
 This file summarizes each ROS2 package in the workspace, with its nodes, launch files, configs, and key assets.
 
-## canbus_decoder (`canbus_decoder/`)
-
-- Purpose: Decode raw CAN frames into wheel RPM, suspension, and steering topics; provide monitor and VCAN test publisher.
-- Nodes (console scripts):
-  - `can_decoder_node`
-  - `can_monitor_node`
-  - `vcan_publisher_node`
-- Launch files:
-  - `canbus_decoder/launch/can_decoder.launch.py`
-  - `canbus_decoder/launch/can_monitor.launch.py`
-- Configs: none (parameters are set via launch or CLI).
-
 ## eufs_gz_dynamics (`eufs_remastered/eufs_gz_dynamics/`)
 
 - Purpose: Gazebo dynamics plugin library for EUFS models.
@@ -81,24 +69,10 @@ This file summarizes each ROS2 package in the workspace, with its nodes, launch 
 - Launch files: none (launched as an RQT plugin or via `ros2 run`).
 - Assets: `resource/EUFSRobotSteeringGUI.ui`, `plugin.xml`.
 
-## vectornav_decoder (`vectornav_decoder/`)
-
-- Purpose: VN-200 serial decoder for IMU/GPS/INS data.
-- Nodes (console scripts):
-  - `vectornav_decoder_node`
-  - `vectornav_monitor_node`
-- Launch files:
-  - `vectornav_decoder/launch/vectornav_decoder.launch.py`
-  - `vectornav_decoder/launch/vectornav_monitor.launch.py`
-- Configs:
-  - `vectornav_decoder/config/default_output.yaml`
-  - `vectornav_decoder/config/high_rate_imu.yaml`
-
 ## vehicle_plotter (`vehicle_plotter/`)
 
 - Purpose: Aggregate sensor data into `VehicleState`, plot in real time, log to disk, and manage rosbag recording.
 - Nodes (console scripts):
-  - `data_collector_node`
   - `plotter_node`
   - `logger_node`
   - `rosbag_controller_node`
@@ -107,12 +81,9 @@ This file summarizes each ROS2 package in the workspace, with its nodes, launch 
   - `vehicle_plotter/launch/plotter.launch.py`
   - `vehicle_plotter/launch/offline_replay.launch.py`
   - `vehicle_plotter/launch/replay.launch.py`
-  - `vehicle_plotter/launch/vcan_test.launch.py`
 - Configs:
   - `vehicle_plotter/config/default_plots.yaml`
   - `vehicle_plotter/config/gazebo_topics.yaml`
-  - `vehicle_plotter/config/can_topics.yaml`
-  - `vehicle_plotter/config/vectornav_topics.yaml`
   - `vehicle_plotter/config/rosbag_topics.yaml`
   - `vehicle_plotter/config/qos_overrides.yaml`
   - `vehicle_plotter/config/replay_qos_override.yaml`

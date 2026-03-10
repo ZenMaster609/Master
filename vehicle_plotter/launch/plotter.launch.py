@@ -2,7 +2,8 @@
 """
 Launch file for vehicle_plotter nodes.
 
-Launches data collector, plotter, and logger nodes with configurable options.
+Launches the plotter/logger stack with the plotter node directly aggregating
+the live simulation sensor topics when used in the main sim pipeline.
 """
 
 from launch import LaunchDescription
@@ -10,6 +11,7 @@ from launch.actions import DeclareLaunchArgument
 from launch.substitutions import LaunchConfiguration, PythonExpression
 from launch.conditions import IfCondition
 from launch_ros.actions import Node
+from launch_ros.parameter_descriptions import ParameterValue
 
 def generate_launch_description():
     # Session manager node - creates unified session for plotter and logger
@@ -22,13 +24,6 @@ def generate_launch_description():
     )
 
     # Declare arguments
-
-    # Adapter configuration
-    adapter_arg = DeclareLaunchArgument(
-        'adapter',
-        default_value='gazebo',
-        description='Sensor adapter type: gazebo or vectornav'
-    )
 
     # Output rate
     output_rate_arg = DeclareLaunchArgument(
@@ -203,45 +198,28 @@ def generate_launch_description():
         description='Enable rosbag recording'
     )
 
-    enable_data_collector_arg = DeclareLaunchArgument(
-        'enable_data_collector',
-        default_value='true',
-        description='Enable data collector node'
-    )
+    plotter_core_enabled = PythonExpression([
+        "('", LaunchConfiguration('enable_plot'), "'.lower() == 'true') or ('",
+        LaunchConfiguration('enable_log'), "'.lower() == 'true')"
+    ])
 
-    # Data collector node (always runs)
-    # Note: We use wall clock for timers but sensor timestamps for sync,
-    # so use_sim_time is set to false to ensure timers fire reliably
-    data_collector_node = Node(
-        package='vehicle_plotter',
-        executable='data_collector_node',
-        name='data_collector',
-        output='screen',
-        condition=IfCondition(LaunchConfiguration('enable_data_collector')),
-        parameters=[{
-            'adapter': LaunchConfiguration('adapter'),
-            'output_rate_hz': LaunchConfiguration('output_rate_hz'),
-            'gps_origin_lat': LaunchConfiguration('gps_origin_lat'),
-            'gps_origin_lon': LaunchConfiguration('gps_origin_lon'),
-            'use_sim_time': False,  # Use wall clock for timers
-        }],
-    )
-
-    # Plotter node (conditional)
-    # Use wall clock for refresh timer
+    # Plotter node aggregates live sim sensors and optionally shows the GUI.
     plotter_node = Node(
         package='vehicle_plotter',
         executable='plotter_node',
         name='plotter',
         output='screen',
-        condition=IfCondition(PythonExpression([
-            "'", LaunchConfiguration('enable_plot'), "'.lower() == 'true'"
-        ])),
+        condition=IfCondition(plotter_core_enabled),
         parameters=[{
             'backend': 'pyqtgraph',
-            'update_rate_hz': LaunchConfiguration('plot_rate_hz'),
+            'update_rate_hz': ParameterValue(LaunchConfiguration('plot_rate_hz'), value_type=float),
+            'state_output_rate_hz': ParameterValue(LaunchConfiguration('output_rate_hz'), value_type=float),
             'dark_mode': LaunchConfiguration('dark_mode'),
-            'enable_gui': True,
+            'enable_gui': ParameterValue(
+                PythonExpression(["'", LaunchConfiguration('enable_plot'), "'.lower() == 'true'"]),
+                value_type=bool,
+            ),
+            'direct_from_sensors': True,
             'plot_layout': 'all',
             'window_title': 'Vehicle Plotter',
             'save_plots_on_exit': LaunchConfiguration('save_plots_on_exit'),
@@ -265,7 +243,7 @@ def generate_launch_description():
             'base_path': LaunchConfiguration('log_path'),
             'flush_interval_sec': 5.0,
             'buffer_size': 1000,
-            'adapter': LaunchConfiguration('adapter'),  # For directory prefix (sim_ or jetson_)
+            'adapter': 'gazebo',
             'auto_plot_on_shutdown': True,  # Generate plots when logger shuts down
             'cone_eval_topic': LaunchConfiguration('cone_eval_topic'),
             'cone_log_suffix': LaunchConfiguration('cone_log_suffix'),
@@ -301,7 +279,6 @@ def generate_launch_description():
 
     return LaunchDescription([
         # Arguments
-        adapter_arg,
         output_rate_arg,
         enable_plot_arg,
         plot_rate_arg,
@@ -330,11 +307,9 @@ def generate_launch_description():
         use_sim_time_arg,
         sensor_config_arg,
         enable_rosbag_arg,
-        enable_data_collector_arg,
 
         # Nodes (session_manager must start first)
         session_manager_node,
-        data_collector_node,
         plotter_node,
         logger_node,
         rosbag_controller_node,

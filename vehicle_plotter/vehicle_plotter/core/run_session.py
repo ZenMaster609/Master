@@ -1,8 +1,7 @@
 """
 Run session management for multi-machine data collection.
 
-Handles run ID generation, storage layout, and session synchronization
-across Jetson and Windows machines.
+Handles run ID generation, storage layout, and session synchronization.
 
 Storage Layout:
     ./multidata/<run_id>/
@@ -40,13 +39,11 @@ def get_run_prefix(adapter_type: str) -> str:
     Get the run directory prefix based on adapter type.
 
     Args:
-        adapter_type: The sensor adapter being used ('gazebo', 'can', 'vectornav')
+        adapter_type: The sensor adapter being used.
 
     Returns:
-        'jetson' for real hardware adapters, 'sim' for simulation
+        'sim' for the simulation pipeline
     """
-    if adapter_type in ('can', 'vectornav'):
-        return 'jetson'
     return 'sim'
 
 
@@ -90,12 +87,12 @@ class RunSession:
             plots/          # PNG exports from plotter
             configs/        # Run config snapshot (YAMLs + launch parameters)
 
-    Where <prefix> is 'sim' for simulation or 'jetson' for real hardware.
+    Where <prefix> is 'sim' for simulation.
 
     Attributes:
         run_id: Unique session identifier (format: <prefix>_YYYY-MM-DD_HH-MM-SS)
         base_path: Root path for multidata storage
-        adapter_type: Sensor adapter type ('gazebo', 'can', 'vectornav')
+        adapter_type: Sensor adapter type
         originator_hostname: Machine that generated the run_id
         ros_domain_id: ROS_DOMAIN_ID for verification
         start_time: Session start timestamp
@@ -114,11 +111,11 @@ class RunSession:
         Create a new run session with a fresh run_id.
 
         The run_id format is: <prefix>_YYYY-MM-DD_HH-MM-SS
-        where <prefix> is 'sim' for simulation or 'jetson' for real hardware.
+        where <prefix> is 'sim' for simulation.
 
         Args:
             base_path: Optional base path. Uses default if not specified.
-            adapter_type: Sensor adapter type ('gazebo', 'can', 'vectornav')
+            adapter_type: Sensor adapter type
 
         Returns:
             New RunSession instance with generated run_id

@@ -539,7 +539,6 @@ def generate_launch_description():
             PathJoinSubstitution([vehicle_plotter_share, 'launch', 'plotter.launch.py'])
         ),
         launch_arguments={
-            'adapter': 'gazebo',
             'enable_plot': plotting_enabled,
             'enable_log': PythonExpression([
                 "'true' if ('",
@@ -549,7 +548,6 @@ def generate_launch_description():
                 "'.lower() == 'true') else 'false'"
             ]),
             'enable_rosbag': LaunchConfiguration('rosbagging'),
-            'enable_data_collector': 'true',
             'sensor_config': resolved_measurement_config,
             'use_sim_time': LaunchConfiguration('use_sim_time'),
             'close_plots': LaunchConfiguration('close_plots'),
@@ -581,7 +579,6 @@ def generate_launch_description():
                     PathJoinSubstitution([vehicle_plotter_share, 'launch', 'plotter.launch.py'])
                 ),
                 launch_arguments={
-                    'adapter': 'gazebo',
                     'enable_plot': 'false',
                     'enable_log': PythonExpression([
                         "'true' if ('",
@@ -593,7 +590,6 @@ def generate_launch_description():
                         "'.lower() == 'true') else 'false'"
                     ]),
                     'enable_rosbag': 'false',
-                    'enable_data_collector': 'false',
                     'sensor_config': resolved_measurement_config,
                     'use_sim_time': LaunchConfiguration('use_sim_time'),
                     'close_plots': LaunchConfiguration('close_plots'),

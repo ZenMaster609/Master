@@ -7,8 +7,12 @@ session = "session_20260109_095334"
 
 path = (
     Path.home()
-    / "jetson_ros_logs"
+    / "ros2_ws"
+    / "src"
+    / "Master"
+    / "multidata"
     / session
+    / "logs"
     / "vehicle_state_0000.parquet"
 )
 

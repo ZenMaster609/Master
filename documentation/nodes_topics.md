@@ -73,59 +73,7 @@ Common subscriptions and parameters for these nodes:
 | Subscribes | Config-defined input topics (default `/sim/raw/*` topics) |
 | Key parameters | `config_path` (defaults to `sim_car/config/sensor_config.yaml`) |
 
-## canbus_decoder
-
-### `can_decoder_node`
-
-| Item | Value |
-| --- | --- |
-| Publishes | `/can/wheel_rpm` (`std_msgs/Float32MultiArray`), `/can/suspension` (`std_msgs/Float32MultiArray`), `/can/steering_angle` (`std_msgs/Float32`) |
-| Subscribes | `/can/rx` (`can_msgs/Frame`) by default |
-| Key parameters | `can_topic`, `stale_timeout_ms`, `publish_rate_hz`, `wheel_radius`, `show_stats`, `stats_interval` |
-
-### `can_monitor_node`
-
-| Item | Value |
-| --- | --- |
-| Publishes | none |
-| Subscribes | `/can/rx` (`can_msgs/Frame`) |
-| Key parameters | `can_topic`, `filter_ids`, `show_stats`, `stats_interval`, `verbose` |
-
-### `vcan_publisher_node`
-
-| Item | Value |
-| --- | --- |
-| Publishes | `/to_can_bus` (`can_msgs/Frame`) |
-| Subscribes | none |
-| Key parameters | `publish_rate_hz`, `mode`, `base_velocity_mps` |
-
-## vectornav_decoder
-
-### `vectornav_decoder_node`
-
-| Item | Value |
-| --- | --- |
-| Publishes | `/vectornav/imu` (`sensor_msgs/Imu`), `/vectornav/gps` (`sensor_msgs/NavSatFix`), `/vectornav/ins` (`nav_msgs/Odometry`) |
-| Subscribes | none (reads directly from serial port) |
-| Key parameters | `config_file`, `serial_port`, `baudrate`, `publish_rate_hz`, `frame_id`, `imu_topic`, `gps_topic`, `ins_topic`, `show_stats`, `stats_interval` |
-
-### `vectornav_monitor_node`
-
-| Item | Value |
-| --- | --- |
-| Publishes | none |
-| Subscribes | none (reads directly from serial port) |
-| Key parameters | `config_file`, `serial_port`, `baudrate`, `verbose`, `stats_interval` |
-
 ## vehicle_plotter
-
-### `data_collector_node`
-
-| Item | Value |
-| --- | --- |
-| Publishes | `/vehicle_plotter/state` (`vehicle_plotter_msgs/VehicleState`) |
-| Subscribes | Adapter-defined topics (Gazebo, CAN, or VectorNav) |
-| Key parameters | `adapter`, `output_rate_hz`, `gps_origin_lat`, `gps_origin_lon`, `sync_buffer_sec` |
 
 ### `plotter_node`
 

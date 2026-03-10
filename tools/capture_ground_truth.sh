@@ -80,7 +80,7 @@ echo "# Captured at $(date -Iseconds)" >> "$FREQ_FILE"
 echo "" >> "$FREQ_FILE"
 
 # Sample a few key topics
-for topic in /vehicle_plotter/state /run_session /vectornav/imu /can/wheel_rpm; do
+for topic in /vehicle_plotter/state /run_session /sim/odom /sim/steering_angle; do
     if ros2 topic list | grep -q "^${topic}$"; then
         echo "Sampling $topic..."
         echo "## $topic" >> "$FREQ_FILE"
