@@ -29,7 +29,7 @@ from nav_msgs.msg import Odometry, Path as NavPath
 from sensor_msgs.msg import JointState
 from vehicle_plotter_msgs.msg import VehicleState as VehicleStateMsg
 from vehicle_plotter_msgs.msg import RunSession as RunSessionMsg
-from std_msgs.msg import String
+from std_msgs.msg import Float32, String
 
 from ..core.vehicle_state import VehicleState
 from ..core.run_session import RunSession
@@ -46,6 +46,13 @@ from ..logging.steering_diagnostics import (
     write_summary_files,
 )
 from ..logging.stanley_debug_plots import generate_stanley_debug_plot
+from ..logging.thesis_controller_diagnostics import (
+    THESIS_DIAG_FIELDNAMES,
+    analyze_thesis_csv,
+    build_thesis_sample_row,
+    write_thesis_summary_files,
+)
+from ..logging.thesis_controller_plots import generate_thesis_controller_plot
 
 
 class LoggerNode(Node):
@@ -92,6 +99,7 @@ class LoggerNode(Node):
         self.declare_parameter('camera_cone_eval_topic', '/sim/stereo/eval')
         self.declare_parameter('lidar_cone_eval_topic', '/sim/lidar/eval')
         self.declare_parameter('controller_diagnostics_enabled', False)
+        self.declare_parameter('thesis_controller_diagnostics_enabled', False)
         self.declare_parameter('controller_diagnostics_rate_hz', 50.0)
         self.declare_parameter('controller_diagnostics_cmd_topic', '/cmd')
         self.declare_parameter('controller_diagnostics_steering_topic', '/sim/steering_angle')
@@ -102,6 +110,9 @@ class LoggerNode(Node):
         self.declare_parameter('controller_diagnostics_filename', 'steering_tracking_diagnostics.csv')
         self.declare_parameter('controller_diagnostics_summary_json', 'steering_tracking_summary.json')
         self.declare_parameter('controller_diagnostics_summary_txt', 'steering_tracking_summary.txt')
+        self.declare_parameter('thesis_controller_diagnostics_filename', 'thesis_controller_diagnostics.csv')
+        self.declare_parameter('thesis_controller_diagnostics_summary_json', 'thesis_controller_diagnostics_summary.json')
+        self.declare_parameter('thesis_controller_diagnostics_summary_txt', 'thesis_controller_diagnostics_summary.txt')
 
         # Get parameters
         self._log_format = self.get_parameter('format').value
@@ -126,6 +137,10 @@ class LoggerNode(Node):
         self._steering_diag_enabled = bool(
             self.get_parameter('controller_diagnostics_enabled').value
         )
+        self._thesis_diag_enabled = bool(
+            self.get_parameter('thesis_controller_diagnostics_enabled').value
+        )
+        self._controller_diag_enabled = self._steering_diag_enabled or self._thesis_diag_enabled
         self._steering_diag_rate_hz = max(
             1.0,
             float(self.get_parameter('controller_diagnostics_rate_hz').value),
@@ -157,6 +172,15 @@ class LoggerNode(Node):
         self._steering_diag_summary_txt = str(
             self.get_parameter('controller_diagnostics_summary_txt').value
         ).strip() or 'steering_tracking_summary.txt'
+        self._thesis_diag_filename = str(
+            self.get_parameter('thesis_controller_diagnostics_filename').value
+        ).strip() or 'thesis_controller_diagnostics.csv'
+        self._thesis_diag_summary_json = str(
+            self.get_parameter('thesis_controller_diagnostics_summary_json').value
+        ).strip() or 'thesis_controller_diagnostics_summary.json'
+        self._thesis_diag_summary_txt = str(
+            self.get_parameter('thesis_controller_diagnostics_summary_txt').value
+        ).strip() or 'thesis_controller_diagnostics_summary.txt'
 
         # Parse base path
         if base_path_str:
@@ -194,6 +218,8 @@ class LoggerNode(Node):
         self._diag_planner_metrics: Dict[str, float] = dict(PLANNER_DIAG_DEFAULTS)
         self._diag_file_handle = None
         self._diag_csv_writer: Optional[csv.DictWriter] = None
+        self._thesis_diag_file_handle = None
+        self._thesis_diag_csv_writer: Optional[csv.DictWriter] = None
         self._diag_flush_counter = 0
         self._diag_flush_stride = max(1, int(self._steering_diag_rate_hz * 2.0))
         self._diag_timer = None
@@ -284,7 +310,7 @@ class LoggerNode(Node):
         )
 
     def _setup_steering_diag_subscriptions(self) -> None:
-        if not self._steering_diag_enabled:
+        if not self._controller_diag_enabled:
             return
         self._diag_cmd_sub = self.create_subscription(
             AckermannDriveStamped,
@@ -323,12 +349,13 @@ class LoggerNode(Node):
             10,
         )
         self.get_logger().info(
-            'Controller diagnostics enabled: '
+            'Controller diagnostics subscriptions enabled: '
             f'cmd={self._steering_diag_cmd_topic} '
             f'steering={self._steering_diag_steering_topic} '
             f'joint_states={self._steering_diag_joint_states_topic} '
             f'odom={self._steering_diag_odom_topic} '
-            f'path={self._steering_diag_path_topic}'
+            f'path={self._steering_diag_path_topic} '
+            f'oscillation={self._steering_diag_enabled} thesis={self._thesis_diag_enabled}'
         )
 
     def _steering_diag_cmd_callback(self, msg: AckermannDriveStamped) -> None:
@@ -549,61 +576,74 @@ class LoggerNode(Node):
         self._session_initialized = True
 
     def _initialize_steering_diag_output(self) -> None:
-        if not self._steering_diag_enabled or self._run_session is None:
+        if not self._controller_diag_enabled or self._run_session is None:
             return
-        diag_path = self._run_session.logs_path / self._steering_diag_filename
-        self._diag_file_handle = open(diag_path, 'w', newline='', encoding='utf-8')
-        fieldnames = [
-            'timestamp_sec',
-            'cmd_stamp_sec',
-            'cmd_age_sec',
-            'desired_steering_rad',
-            'desired_speed_mps',
-            'actual_steering_deg',
-            'actual_steering_rad',
-            'steering_error_rad',
-            'steering_error_abs_rad',
-            'raw_steering_cmd_rad',
-            'final_steering_cmd_rad',
-            'steering_after_clamp_rad',
-            'steering_after_filter_rad',
-            'steering_after_rate_limit_rad',
-            'steering_saturated_flag',
-            'vehicle_x_m',
-            'vehicle_y_m',
-            'vehicle_yaw_rad',
-            'vehicle_yaw_rate_rps',
-            'vehicle_speed_mps',
-            'speed_term_mps',
-            'centerline_available',
-            'centerline_point_count',
-            'cte_m',
-            'cte_abs_m',
-            'heading_error_rad',
-            'heading_error_abs_rad',
-            'heading_contribution_rad',
-            'cross_track_contribution_rad',
-            'yaw_rate_damping_contribution_rad',
-            'nearest_path_index',
-            'heading_path_index',
-            'target_point_x_base_m',
-            'target_point_y_base_m',
-            'target_point_x_frame_m',
-            'target_point_y_frame_m',
-            'nearest_path_point_x_m',
-            'nearest_path_point_y_m',
-            'planner_centerline_jump_max_m',
-            'planner_selected_edge_churn_ratio',
-            'planner_tracked_cones_frame_delta_p95_m',
-        ]
-        self._diag_csv_writer = csv.DictWriter(self._diag_file_handle, fieldnames=fieldnames)
-        self._diag_csv_writer.writeheader()
+        if self._steering_diag_enabled:
+            diag_path = self._run_session.logs_path / self._steering_diag_filename
+            self._diag_file_handle = open(diag_path, 'w', newline='', encoding='utf-8')
+            fieldnames = [
+                'timestamp_sec',
+                'cmd_stamp_sec',
+                'cmd_age_sec',
+                'desired_steering_rad',
+                'desired_speed_mps',
+                'actual_steering_deg',
+                'actual_steering_rad',
+                'steering_error_rad',
+                'steering_error_abs_rad',
+                'raw_steering_cmd_rad',
+                'final_steering_cmd_rad',
+                'steering_after_clamp_rad',
+                'steering_after_filter_rad',
+                'steering_after_rate_limit_rad',
+                'steering_saturated_flag',
+                'vehicle_x_m',
+                'vehicle_y_m',
+                'vehicle_yaw_rad',
+                'vehicle_yaw_rate_rps',
+                'vehicle_speed_mps',
+                'speed_term_mps',
+                'centerline_available',
+                'centerline_point_count',
+                'cte_m',
+                'cte_abs_m',
+                'heading_error_rad',
+                'heading_error_abs_rad',
+                'heading_contribution_rad',
+                'cross_track_contribution_rad',
+                'yaw_rate_damping_contribution_rad',
+                'nearest_path_index',
+                'heading_path_index',
+                'target_point_x_base_m',
+                'target_point_y_base_m',
+                'target_point_x_frame_m',
+                'target_point_y_frame_m',
+                'nearest_path_point_x_m',
+                'nearest_path_point_y_m',
+                'planner_centerline_jump_max_m',
+                'planner_selected_edge_churn_ratio',
+                'planner_tracked_cones_frame_delta_p95_m',
+            ]
+            self._diag_csv_writer = csv.DictWriter(self._diag_file_handle, fieldnames=fieldnames)
+            self._diag_csv_writer.writeheader()
+            self.get_logger().info(f'Controller diagnostics CSV: {diag_path}')
+        if self._thesis_diag_enabled:
+            thesis_path = self._run_session.logs_path / self._thesis_diag_filename
+            self._thesis_diag_file_handle = open(thesis_path, 'w', newline='', encoding='utf-8')
+            self._thesis_diag_csv_writer = csv.DictWriter(
+                self._thesis_diag_file_handle,
+                fieldnames=THESIS_DIAG_FIELDNAMES,
+            )
+            self._thesis_diag_csv_writer.writeheader()
+            self.get_logger().info(f'Thesis controller diagnostics CSV: {thesis_path}')
         self._diag_flush_counter = 0
         self._diag_timer = self.create_timer(1.0 / self._steering_diag_rate_hz, self._steering_diag_sample)
-        self.get_logger().info(f'Controller diagnostics CSV: {diag_path}')
 
     def _steering_diag_sample(self) -> None:
-        if self._diag_csv_writer is None or self._diag_file_handle is None:
+        if (
+            (self._diag_csv_writer is None or self._diag_file_handle is None)
+            and (self._thesis_diag_csv_writer is None or self._thesis_diag_file_handle is None)
+        ):
             return
 
         now_sec = float(self.get_clock().now().nanoseconds) * 1e-9
@@ -711,10 +751,31 @@ class LoggerNode(Node):
             'planner_selected_edge_churn_ratio': planner_churn,
             'planner_tracked_cones_frame_delta_p95_m': planner_tracked_delta,
         }
-        self._diag_csv_writer.writerow(row)
+        if self._diag_csv_writer is not None:
+            self._diag_csv_writer.writerow(row)
+        if self._thesis_diag_csv_writer is not None:
+            thesis_row = build_thesis_sample_row(
+                now_sec=now_sec,
+                cmd_stamp_sec=self._diag_cmd_stamp_sec,
+                cmd_recv_sec=self._diag_cmd_recv_sec,
+                desired_steering_rad=desired,
+                desired_speed_mps=self._diag_desired_speed_mps,
+                actual_steering_deg=actual_deg,
+                vehicle_x_m=self._diag_vehicle_x_m,
+                vehicle_y_m=self._diag_vehicle_y_m,
+                vehicle_yaw_rad=self._diag_vehicle_yaw_rad,
+                vehicle_yaw_rate_rps=self._diag_vehicle_yaw_rate_rps,
+                vehicle_speed_mps=vehicle_speed,
+                centerline_xy=self._diag_centerline_xy,
+                planner_metrics=self._diag_planner_metrics,
+            )
+            self._thesis_diag_csv_writer.writerow(thesis_row)
         self._diag_flush_counter += 1
         if self._diag_flush_counter >= self._diag_flush_stride:
-            self._diag_file_handle.flush()
+            if self._diag_file_handle is not None:
+                self._diag_file_handle.flush()
+            if self._thesis_diag_file_handle is not None:
+                self._thesis_diag_file_handle.flush()
             self._diag_flush_counter = 0
 
     def state_callback(self, msg: VehicleStateMsg) -> None:
@@ -737,6 +798,8 @@ class LoggerNode(Node):
             self.log_writer.flush()
         if self._diag_file_handle is not None:
             self._diag_file_handle.flush()
+        if self._thesis_diag_file_handle is not None:
+            self._thesis_diag_file_handle.flush()
 
     def status_callback(self) -> None:
         """Log periodic status update."""
@@ -773,42 +836,73 @@ class LoggerNode(Node):
                 self._generate_offline_plots()
 
     def _finalize_steering_diag_outputs(self) -> None:
-        if not self._steering_diag_enabled or self._run_session is None:
+        if not self._controller_diag_enabled or self._run_session is None:
             return
         if self._diag_timer is not None:
             self._diag_timer.cancel()
             self._diag_timer = None
-        if self._diag_file_handle is None:
-            return
-        self._diag_file_handle.flush()
-        self._diag_file_handle.close()
-        self._diag_file_handle = None
+        if self._diag_file_handle is not None:
+            self._diag_file_handle.flush()
+            self._diag_file_handle.close()
+            self._diag_file_handle = None
         self._diag_csv_writer = None
+        if self._thesis_diag_file_handle is not None:
+            self._thesis_diag_file_handle.flush()
+            self._thesis_diag_file_handle.close()
+            self._thesis_diag_file_handle = None
+        self._thesis_diag_csv_writer = None
 
-        csv_path = self._run_session.logs_path / self._steering_diag_filename
-        summary_json = self._run_session.logs_path / self._steering_diag_summary_json
-        summary_txt = self._run_session.logs_path / self._steering_diag_summary_txt
-        try:
-            summary = analyze_csv(csv_path)
-            write_summary_files(summary, summary_json, summary_txt)
-            self._safe_log_info(
-                'Controller diagnostics summary: '
-                f"rms={summary.get('steering_error_rms_rad', float('nan')):.4f} rad "
-                f"cte_rms={summary.get('cte_rms_m', float('nan')):.4f} m "
-                f"lag={summary.get('lag_sec', float('nan')):.4f} s"
-            )
-        except Exception as exc:
-            self._safe_log_warn(f'Failed controller diagnostics analysis: {exc}')
+        if self._steering_diag_enabled:
+            csv_path = self._run_session.logs_path / self._steering_diag_filename
+            summary_json = self._run_session.logs_path / self._steering_diag_summary_json
+            summary_txt = self._run_session.logs_path / self._steering_diag_summary_txt
+            try:
+                summary = analyze_csv(csv_path)
+                write_summary_files(summary, summary_json, summary_txt)
+                self._safe_log_info(
+                    'Controller diagnostics summary: '
+                    f"rms={summary.get('steering_error_rms_rad', float('nan')):.4f} rad "
+                    f"cte_rms={summary.get('cte_rms_m', float('nan')):.4f} m "
+                    f"lag={summary.get('lag_sec', float('nan')):.4f} s"
+                )
+            except Exception as exc:
+                self._safe_log_warn(f'Failed controller diagnostics analysis: {exc}')
 
-        try:
-            debug_plot_path = self._run_session.plots_path / 'stanley_debug_plots.png'
-            generated_path = generate_stanley_debug_plot(csv_path, debug_plot_path)
-            if generated_path is not None:
-                self._safe_log_info(f'Generated controller diagnostics plot: {generated_path}')
-            else:
-                self._safe_log_warn('Controller diagnostics plot skipped: no diagnostics rows')
-        except Exception as exc:
-            self._safe_log_warn(f'Failed controller diagnostics plot generation: {exc}')
+            try:
+                debug_plot_path = self._run_session.plots_path / 'stanley_debug_plots.png'
+                generated_path = generate_stanley_debug_plot(csv_path, debug_plot_path)
+                if generated_path is not None:
+                    self._safe_log_info(f'Generated controller diagnostics plot: {generated_path}')
+                else:
+                    self._safe_log_warn('Controller diagnostics plot skipped: no diagnostics rows')
+            except Exception as exc:
+                self._safe_log_warn(f'Failed controller diagnostics plot generation: {exc}')
+
+        if self._thesis_diag_enabled:
+            thesis_csv_path = self._run_session.logs_path / self._thesis_diag_filename
+            thesis_summary_json = self._run_session.logs_path / self._thesis_diag_summary_json
+            thesis_summary_txt = self._run_session.logs_path / self._thesis_diag_summary_txt
+            try:
+                summary = analyze_thesis_csv(thesis_csv_path)
+                write_thesis_summary_files(summary, thesis_summary_json, thesis_summary_txt)
+                self._safe_log_info(
+                    'Thesis controller diagnostics summary: '
+                    f"cte_rms={summary.get('cte_rms_m', float('nan')):.4f} m "
+                    f"heading_rms={summary.get('heading_error_rms_rad', float('nan')):.4f} rad "
+                    f"lag={summary.get('lag_sec', float('nan')):.4f} s"
+                )
+            except Exception as exc:
+                self._safe_log_warn(f'Failed thesis controller diagnostics analysis: {exc}')
+
+            try:
+                thesis_plot_path = self._run_session.plots_path / 'thesis_controller_diagnostics.png'
+                generated_path = generate_thesis_controller_plot(thesis_csv_path, thesis_plot_path)
+                if generated_path is not None:
+                    self._safe_log_info(f'Generated thesis controller diagnostics plot: {generated_path}')
+                else:
+                    self._safe_log_warn('Thesis controller diagnostics plot skipped: no diagnostics rows')
+            except Exception as exc:
+                self._safe_log_warn(f'Failed thesis controller diagnostics plot generation: {exc}')
 
     def _save_cone_range_rmse_samples_csv(self) -> None:
         if self._run_session is None:

@@ -96,6 +96,31 @@ def test_parse_planner_diag_with_control_debug_keys():
     assert abs(out['speed_term_mps'] - 2.2) < 1e-9
 
 
+def test_parse_planner_diag_with_thesis_context_keys():
+    msg = _Diag([
+        _Status(
+            'delaunay_planner/thesis_context',
+            [
+                _KV('plan_valid_flag', '1'),
+                _KV('plan_hold_active_flag', '0'),
+                _KV('plan_fallback_flag', '1'),
+                _KV('centerline_point_count', '42'),
+                _KV('selected_edge_count', '7'),
+                _KV('path_length_m', '18.5'),
+                _KV('path_curvature_abs_p95_1pm', '0.82'),
+            ],
+        )
+    ])
+    out = parse_planner_diag(msg)
+    assert abs(out['plan_valid_flag'] - 1.0) < 1e-9
+    assert abs(out['plan_hold_active_flag'] - 0.0) < 1e-9
+    assert abs(out['plan_fallback_flag'] - 1.0) < 1e-9
+    assert abs(out['centerline_point_count'] - 42.0) < 1e-9
+    assert abs(out['selected_edge_count'] - 7.0) < 1e-9
+    assert abs(out['path_length_m'] - 18.5) < 1e-9
+    assert abs(out['path_curvature_abs_p95_1pm'] - 0.82) < 1e-9
+
+
 def test_parse_planner_diag_missing_keys_returns_nan():
     msg = _Diag([_Status('other_status', [])])
     out = parse_planner_diag(msg)

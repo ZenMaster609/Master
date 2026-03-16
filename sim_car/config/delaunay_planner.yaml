@@ -69,20 +69,21 @@ delaunay_planner_node:
       lowpass_speed_alpha: 0.15
 
     validation:
-      max_centerline_jump_m: 0.8
+      max_centerline_jump_m: 0.45
       consistency_horizon_m: 8.0
       max_history_frames: 36
-      hold_last_valid_s: 0.5
+      hold_last_valid_s: 1.5
       min_stable_frames: 3
-      max_selected_edge_churn_ratio: 0.55
+      max_selected_edge_churn_ratio: 0.4
 
     diagnostics:
       topic: "/delaunay_planner/diagnostics"
       centerline_jump_horizon_m: 8.0
       edge_quantization_m: 0.05
       jump_warn_threshold_m: 0.8
-      edge_churn_warn_threshold: 0.55
+      edge_churn_warn_threshold: 0.4
       publish_control_debug: true
+      publish_thesis_context: false
 
     debug:
       enable_markers: true

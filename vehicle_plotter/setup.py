@@ -35,6 +35,7 @@ setup(
             'plotter_node = vehicle_plotter.nodes.plotter_node:main',
             'cone_rmse_plot_node = vehicle_plotter.nodes.cone_rmse_plot_node:main',
             'controller_diagnostics_plot_node = vehicle_plotter.nodes.controller_diagnostics_plot_node:main',
+            'thesis_controller_diagnostics_plot_node = vehicle_plotter.nodes.thesis_controller_diagnostics_plot_node:main',
             'logger_node = vehicle_plotter.nodes.logger_node:main',
             'rosbag_controller_node = vehicle_plotter.nodes.rosbag_controller_node:main',
             'session_manager_node = vehicle_plotter.nodes.session_manager_node:main',

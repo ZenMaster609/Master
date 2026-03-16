@@ -23,7 +23,7 @@ def build_camera_debug_image(
     elif image.ndim == 3 and image.shape[2] == 1:
         debug_image = image[:, :, 0].copy()
     elif image.ndim == 3 and image.shape[2] >= 3:
-        debug_image = cv2.cvtColor(image[:, :, :3], cv2.COLOR_BGR2GRAY)
+        debug_image = image[:, :, :3].copy() if not mono else cv2.cvtColor(image[:, :, :3], cv2.COLOR_BGR2GRAY)
     else:
         return None
 
@@ -37,11 +37,13 @@ def build_camera_debug_image(
         )
 
     _draw_yolo_debug_overlays(debug_image, yolo_detections, scale=scale)
-    _draw_debug_status_text(debug_image, yolo_detection_count=len(yolo_detections))
-
     if mono:
+        if debug_image.ndim == 3 and debug_image.shape[2] >= 3:
+            return cv2.cvtColor(debug_image[:, :, :3], cv2.COLOR_BGR2GRAY)
         return debug_image
-    return cv2.cvtColor(debug_image, cv2.COLOR_GRAY2BGR)
+    if debug_image.ndim == 2:
+        return cv2.cvtColor(debug_image, cv2.COLOR_GRAY2BGR)
+    return debug_image
 
 
 def _draw_yolo_debug_overlays(image: np.ndarray, yolo_detections: list[dict], *, scale: float) -> None:
@@ -49,6 +51,10 @@ def _draw_yolo_debug_overlays(image: np.ndarray, yolo_detections: list[dict], *,
         return
 
     height, width = image.shape[:2]
+    is_color = image.ndim == 3 and image.shape[2] >= 3
+    line_color = (255, 255, 255) if is_color else 255
+    text_color = (255, 255, 255) if is_color else 255
+    text_bg_color = (0, 0, 0) if is_color else 0
     font = cv2.FONT_HERSHEY_SIMPLEX
     font_scale = 0.40
     thickness = 1
@@ -65,7 +71,7 @@ def _draw_yolo_debug_overlays(image: np.ndarray, yolo_detections: list[dict], *,
         y0 = max(0, min(height - 1, y0))
         x1 = max(0, min(width - 1, x1))
         y1 = max(0, min(height - 1, y1))
-        cv2.rectangle(image, (x0, y0), (x1, y1), 255, 1)
+        cv2.rectangle(image, (x0, y0), (x1, y1), line_color, 1)
 
         label = str(det.get('label', '')).strip()
         if not label:
@@ -76,12 +82,5 @@ def _draw_yolo_debug_overlays(image: np.ndarray, yolo_detections: list[dict], *,
         box_y0 = max(0, text_y - text_h - baseline - 2)
         box_y1 = min(height - 1, text_y + 1)
         box_x1 = min(width - 1, text_x + text_w + 2)
-        cv2.rectangle(image, (text_x, box_y0), (box_x1, box_y1), 0, -1)
-        cv2.putText(image, label, (text_x + 1, text_y), font, font_scale, 255, thickness, cv2.LINE_AA)
-
-
-def _draw_debug_status_text(image: np.ndarray, yolo_detection_count: int) -> None:
-    text = f'yolo={int(yolo_detection_count)}'
-    cv2.rectangle(image, (6, 6), (120, 26), 0, -1)
-    cv2.rectangle(image, (6, 6), (120, 26), 180, 1)
-    cv2.putText(image, text, (10, 21), cv2.FONT_HERSHEY_SIMPLEX, 0.42, 255, 1, cv2.LINE_AA)
+        cv2.rectangle(image, (text_x, box_y0), (box_x1, box_y1), text_bg_color, -1)
+        cv2.putText(image, label, (text_x + 1, text_y), font, font_scale, text_color, thickness, cv2.LINE_AA)

@@ -39,7 +39,7 @@ from .yolo_runtime import init_yolo_detector, run_yolo
 
 
 _DEBUG_IMAGE_SCALE = 0.5
-_DEBUG_IMAGE_MONO = True
+_DEBUG_IMAGE_MONO = False
 
 
 @dataclass

@@ -237,11 +237,11 @@ class ConeMemoryNode(Node):
         self.odom_topic = str(self.get_parameter('odom_topic').value)
 
     def _lidar_cb(self, msg: ConeDetectionArray) -> None:
-        self._latest_lidar = self._convert_msg_to_detections(msg)
+        self._latest_lidar = self._convert_msg_to_detections(msg, source_name='lidar')
         self._latest_lidar_stamp_ns = self._stamp_to_ns(msg.header.stamp)
 
     def _camera_cb(self, msg: ConeDetectionArray) -> None:
-        self._latest_camera = self._convert_msg_to_detections(msg)
+        self._latest_camera = self._convert_msg_to_detections(msg, source_name='camera')
         self._latest_camera_stamp_ns = self._stamp_to_ns(msg.header.stamp)
 
     def _run_session_cb(self, msg: RunSession) -> None:
@@ -252,7 +252,12 @@ class ConeMemoryNode(Node):
         self._latest_odom_msg = msg
         self._recent_odom_msgs.append(msg)
 
-    def _convert_msg_to_detections(self, msg: ConeDetectionArray) -> list[SensorDetection]:
+    def _convert_msg_to_detections(
+        self,
+        msg: ConeDetectionArray,
+        *,
+        source_name: str,
+    ) -> list[SensorDetection]:
         source_frame = str(msg.header.frame_id).strip()
         if not source_frame:
             return []
@@ -271,16 +276,19 @@ class ConeMemoryNode(Node):
         )
         source_is_base = self._is_alias(source_frame, self.base_frame)
         odom_pose_fallback = None
+        nearest_odom_dt_ms = float('nan')
         if to_odom is None:
-            odom_pose_fallback = self._nearest_odom_pose(msg.header.stamp)
+            odom_pose_fallback, nearest_odom_dt_ms = self._nearest_odom_pose(msg.header.stamp)
             if odom_pose_fallback is None:
                 odom_pose_fallback = self._current_base_pose_if_stamp_is_fresh(msg.header.stamp)
         base_identity_ok = to_base is None and source_is_base
         if (to_odom is None and odom_pose_fallback is None) or (to_base is None and not base_identity_ok):
+            stamp_age_ms = (self.get_clock().now().nanoseconds - self._stamp_to_ns(msg.header.stamp)) / 1e6
             self._warn_throttled(
                 'cone_tf_missing',
-                f'cone transform unavailable at stamp source={source_frame} '
-                f'targets={self.odom_frame} and {self.base_frame}; dropping frame',
+                f'cone transform unavailable sensor={source_name} source={source_frame} '
+                f'targets={self.odom_frame} and {self.base_frame} nearest_odom_dt_ms={nearest_odom_dt_ms:.1f} '
+                f'stamp_age_ms={stamp_age_ms:.1f}; dropping frame',
             )
             return []
 
@@ -317,9 +325,9 @@ class ConeMemoryNode(Node):
             )
         return detections
 
-    def _nearest_odom_pose(self, stamp) -> Optional[tuple[float, float, float]]:
+    def _nearest_odom_pose(self, stamp) -> tuple[Optional[tuple[float, float, float]], float]:
         if not self._recent_odom_msgs:
-            return None
+            return None, float('nan')
 
         target_ns = self._stamp_to_ns(stamp)
         tolerance_ns = int(self.odom_pose_sync_tolerance_sec * 1e9)
@@ -337,11 +345,12 @@ class ConeMemoryNode(Node):
                 best_pose = pose
 
         if best_pose is None:
-            return None
+            return None, float('nan')
+        best_dt_ms = float(best_dt_ns) / 1e6 if best_dt_ns is not None else float('nan')
         if tolerance_ns > 0 and (best_dt_ns is None or best_dt_ns > tolerance_ns):
-            return None
+            return None, best_dt_ms
 
-        return best_pose
+        return best_pose, best_dt_ms
 
     def _current_base_pose_if_stamp_is_fresh(self, stamp) -> Optional[tuple[float, float, float]]:
         tolerance_sec = float(self.base_pose_latest_fallback_tolerance_sec)

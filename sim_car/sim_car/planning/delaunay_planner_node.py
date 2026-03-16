@@ -156,11 +156,14 @@ class DelaunayPlannerNode(Node):
             'diagnostics.jump_warn_threshold_m': 0.8,
             'diagnostics.edge_churn_warn_threshold': 0.55,
             'diagnostics.publish_control_debug': True,
+            'diagnostics.publish_thesis_context': False,
             'debug.enable_markers': True,
             'debug.show_raw_cones': False,
             'debug.show_delaunay_edges': True,
             'debug.show_candidate_edges': True,
             'debug.show_selected_edges': True,
+            'debug.show_raw_midpoint_chain': True,
+            'debug.show_raw_prevalidation_centerline': True,
             'debug.publish_points_topic': False,
             'debug.show_lookahead_point': True,
         }
@@ -268,12 +271,21 @@ class DelaunayPlannerNode(Node):
         self.publish_control_debug = bool(
             self.get_parameter('diagnostics.publish_control_debug').value
         )
+        self.publish_thesis_context = bool(
+            self.get_parameter('diagnostics.publish_thesis_context').value
+        )
 
         self.enable_debug_markers = bool(self.get_parameter('debug.enable_markers').value)
         self.show_raw_cones = bool(self.get_parameter('debug.show_raw_cones').value)
         self.show_delaunay_edges = bool(self.get_parameter('debug.show_delaunay_edges').value)
         self.show_candidate_edges = bool(self.get_parameter('debug.show_candidate_edges').value)
         self.show_selected_edges = bool(self.get_parameter('debug.show_selected_edges').value)
+        self.show_raw_midpoint_chain = bool(
+            self.get_parameter('debug.show_raw_midpoint_chain').value
+        )
+        self.show_raw_prevalidation_centerline = bool(
+            self.get_parameter('debug.show_raw_prevalidation_centerline').value
+        )
         self.publish_points_topic = bool(self.get_parameter('debug.publish_points_topic').value)
         self.show_lookahead_point = bool(self.get_parameter('debug.show_lookahead_point').value)
 
@@ -421,6 +433,7 @@ class DelaunayPlannerNode(Node):
         self._previous_edge_keys = set(selected_keys)
 
         raw_centerline = result.centerline
+        raw_midpoint_chain = result.midpoints_raw
         centerline_jump_max_m = compute_centerline_jump_max(
             raw_centerline,
             self._previous_raw_centerline,
@@ -441,9 +454,12 @@ class DelaunayPlannerNode(Node):
 
         centerline = raw_centerline
         status = result.status
+        plan_valid = False
+        plan_hold_active = False
         if centerline.shape[0] > 0:
             plan_ok = self._validate_plan(centerline, selected_edge_churn, now_sec)
             if plan_ok:
+                plan_valid = True
                 self._record_valid_centerline(now_sec, centerline)
                 self._last_valid_centerline = np.array(centerline, copy=True)
                 self._last_valid_time_sec = now_sec
@@ -451,6 +467,7 @@ class DelaunayPlannerNode(Node):
                 held_centerline = self._held_centerline(now_sec)
                 if held_centerline is not None:
                     centerline = held_centerline
+                    plan_hold_active = True
                     status = f'{status}; holding previous valid centerline'
                 else:
                     centerline = np.empty((0, 2), dtype=np.float64)
@@ -459,6 +476,7 @@ class DelaunayPlannerNode(Node):
             held_centerline = self._held_centerline(now_sec)
             if held_centerline is not None:
                 centerline = held_centerline
+                plan_hold_active = True
                 status = f'{status}; holding previous valid centerline'
 
         if self.enable_temporal_smoothing:
@@ -560,11 +578,20 @@ class DelaunayPlannerNode(Node):
             selected_edge_count=int(result.selected_edges.shape[0]),
             status=status,
             control_debug_metrics=control_debug_metrics,
+            thesis_context_metrics={
+                'plan_valid_flag': 1.0 if plan_valid else 0.0,
+                'plan_hold_active_flag': 1.0 if plan_hold_active else 0.0,
+                'plan_fallback_flag': 1.0 if bool(result.used_fallback) else 0.0,
+                'path_length_m': self._path_length_m(centerline),
+                'path_curvature_abs_p95_1pm': self._path_curvature_abs_p95(centerline),
+            },
         )
 
         self._publish_outputs(
             frame_id=target_frame,
             centerline=centerline,
+            raw_centerline=raw_centerline,
+            raw_midpoint_chain=raw_midpoint_chain,
             result=result,
             status=status,
             control_target_frame=control_target_frame,
@@ -922,6 +949,7 @@ class DelaunayPlannerNode(Node):
         selected_edge_count: int,
         status: str,
         control_debug_metrics: Optional[dict[str, float]] = None,
+        thesis_context_metrics: Optional[dict[str, float]] = None,
     ) -> None:
         msg = DiagnosticArray()
         msg.header.stamp = self.get_clock().now().to_msg()
@@ -1003,6 +1031,43 @@ class DelaunayPlannerNode(Node):
                 ),
             ]
             msg.status.append(control_diag)
+        if self.publish_thesis_context:
+            merged_thesis = self._default_thesis_context_metrics()
+            if thesis_context_metrics is not None:
+                merged_thesis.update(thesis_context_metrics)
+            thesis_diag = DiagnosticStatus()
+            thesis_diag.name = 'delaunay_planner/thesis_context'
+            thesis_diag.hardware_id = 'sim_car.delaunay_planner'
+            thesis_diag.level = DiagnosticStatus.OK
+            thesis_diag.message = 'planner context for controller thesis diagnostics'
+            thesis_diag.values = [
+                KeyValue(
+                    key='plan_valid_flag',
+                    value=str(int(round(merged_thesis['plan_valid_flag']))),
+                ),
+                KeyValue(
+                    key='plan_hold_active_flag',
+                    value=str(int(round(merged_thesis['plan_hold_active_flag']))),
+                ),
+                KeyValue(
+                    key='plan_fallback_flag',
+                    value=str(int(round(merged_thesis['plan_fallback_flag']))),
+                ),
+                KeyValue(key='centerline_point_count', value=str(int(centerline_point_count))),
+                KeyValue(key='selected_edge_count', value=str(int(selected_edge_count))),
+                KeyValue(key='centerline_jump_max_m', value=f'{centerline_jump_max_m:.6f}'),
+                KeyValue(key='selected_edge_churn_ratio', value=f'{selected_edge_churn_ratio:.6f}'),
+                KeyValue(
+                    key='tracked_cones_frame_delta_p95_m',
+                    value=f'{tracked_cones_frame_delta_p95_m:.6f}',
+                ),
+                KeyValue(key='path_length_m', value=f"{merged_thesis['path_length_m']:.6f}"),
+                KeyValue(
+                    key='path_curvature_abs_p95_1pm',
+                    value=f"{merged_thesis['path_curvature_abs_p95_1pm']:.6f}",
+                ),
+            ]
+            msg.status.append(thesis_diag)
         self._diag_pub.publish(msg)
 
     @staticmethod
@@ -1031,11 +1096,59 @@ class DelaunayPlannerNode(Node):
             'target_point_y_frame_m': nan,
         }
 
+    @staticmethod
+    def _default_thesis_context_metrics() -> dict[str, float]:
+        nan = float('nan')
+        return {
+            'plan_valid_flag': 0.0,
+            'plan_hold_active_flag': 0.0,
+            'plan_fallback_flag': 0.0,
+            'path_length_m': nan,
+            'path_curvature_abs_p95_1pm': nan,
+        }
+
+    @staticmethod
+    def _path_length_m(centerline: np.ndarray) -> float:
+        if centerline.shape[0] < 2:
+            return float('nan')
+        diffs = np.diff(centerline, axis=0)
+        lengths = np.hypot(diffs[:, 0], diffs[:, 1])
+        if lengths.size == 0:
+            return float('nan')
+        return float(np.sum(lengths))
+
+    @staticmethod
+    def _path_curvature_abs_p95(centerline: np.ndarray) -> float:
+        if centerline.shape[0] < 3:
+            return float('nan')
+        diffs = np.diff(centerline, axis=0)
+        seg_len = np.hypot(diffs[:, 0], diffs[:, 1])
+        valid = seg_len > 1e-6
+        if np.count_nonzero(valid) < 2:
+            return float('nan')
+        headings = np.arctan2(diffs[valid, 1], diffs[valid, 0])
+        if headings.size < 2:
+            return float('nan')
+        delta_heading = np.arctan2(
+            np.sin(np.diff(headings)),
+            np.cos(np.diff(headings)),
+        )
+        ds = 0.5 * (seg_len[valid][1:] + seg_len[valid][:-1])
+        valid_ds = ds > 1e-6
+        if not np.any(valid_ds):
+            return float('nan')
+        curvature = np.abs(delta_heading[valid_ds] / ds[valid_ds])
+        if curvature.size == 0:
+            return float('nan')
+        return float(np.percentile(curvature, 95.0))
+
     def _publish_outputs(
         self,
         *,
         frame_id: str,
         centerline: np.ndarray,
+        raw_centerline: np.ndarray,
+        raw_midpoint_chain: np.ndarray,
         result: Optional[CoreResult],
         status: str,
         control_target_frame: Optional[np.ndarray],
@@ -1076,6 +1189,8 @@ class DelaunayPlannerNode(Node):
                 frame_id=frame_id,
                 result=result,
                 centerline=centerline,
+                raw_centerline=raw_centerline,
+                raw_midpoint_chain=raw_midpoint_chain,
                 status=status_text,
                 control_target_frame=control_target_frame,
             )
@@ -1088,6 +1203,8 @@ class DelaunayPlannerNode(Node):
         frame_id: str,
         result: Optional[CoreResult],
         centerline: np.ndarray,
+        raw_centerline: np.ndarray,
+        raw_midpoint_chain: np.ndarray,
         status: str,
         control_target_frame: Optional[np.ndarray],
     ) -> MarkerArray:
@@ -1162,6 +1279,36 @@ class DelaunayPlannerNode(Node):
             )
             marker_id += 1
 
+        if self.show_raw_midpoint_chain:
+            arr.markers.append(
+                self._make_line_strip_marker(
+                    frame_id=frame_id,
+                    stamp=now,
+                    marker_id=marker_id,
+                    ns='raw_midpoint_chain',
+                    points=raw_midpoint_chain,
+                    color=(1.0, 1.0, 1.0, 0.95),
+                    width=0.06,
+                    z_offset=0.03,
+                )
+            )
+            marker_id += 1
+
+        if self.show_raw_prevalidation_centerline:
+            arr.markers.append(
+                self._make_line_strip_marker(
+                    frame_id=frame_id,
+                    stamp=now,
+                    marker_id=marker_id,
+                    ns='raw_prevalidation_centerline',
+                    points=raw_centerline,
+                    color=(1.0, 0.15, 0.85, 0.9),
+                    width=0.07,
+                    z_offset=0.05,
+                )
+            )
+            marker_id += 1
+
         arr.markers.append(
             self._make_line_strip_marker(
                 frame_id=frame_id,
@@ -1171,6 +1318,7 @@ class DelaunayPlannerNode(Node):
                 points=result.left_boundary,
                 color=(0.2, 0.45, 1.0, 0.95),
                 width=0.07,
+                z_offset=0.02,
             )
         )
         marker_id += 1
@@ -1184,6 +1332,7 @@ class DelaunayPlannerNode(Node):
                 points=result.right_boundary,
                 color=(1.0, 0.9, 0.2, 0.95),
                 width=0.07,
+                z_offset=0.02,
             )
         )
         marker_id += 1
@@ -1197,6 +1346,7 @@ class DelaunayPlannerNode(Node):
                 points=centerline,
                 color=(0.95, 0.15, 0.15, 1.0),
                 width=0.09,
+                z_offset=0.07,
             )
         )
         marker_id += 1
@@ -1325,6 +1475,7 @@ class DelaunayPlannerNode(Node):
         points: np.ndarray,
         color: tuple[float, float, float, float],
         width: float,
+        z_offset: float = 0.02,
     ) -> Marker:
         marker = Marker()
         marker.header.frame_id = frame_id
@@ -1343,7 +1494,7 @@ class DelaunayPlannerNode(Node):
             pt = Point()
             pt.x = float(x)
             pt.y = float(y)
-            pt.z = 0.02
+            pt.z = float(z_offset)
             marker.points.append(pt)
         return marker
 

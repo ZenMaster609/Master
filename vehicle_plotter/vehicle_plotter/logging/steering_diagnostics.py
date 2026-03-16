@@ -34,6 +34,13 @@ PLANNER_DIAG_DEFAULTS: dict[str, float] = {
     "target_point_y_base_m": float("nan"),
     "target_point_x_frame_m": float("nan"),
     "target_point_y_frame_m": float("nan"),
+    "plan_valid_flag": float("nan"),
+    "plan_hold_active_flag": float("nan"),
+    "plan_fallback_flag": float("nan"),
+    "centerline_point_count": float("nan"),
+    "selected_edge_count": float("nan"),
+    "path_length_m": float("nan"),
+    "path_curvature_abs_p95_1pm": float("nan"),
 }
 
 
@@ -125,7 +132,11 @@ def parse_planner_diag(diag_msg: Any) -> dict[str, float]:
 
     for status in statuses:
         name = str(getattr(status, "name", ""))
-        if name not in {"delaunay_planner/stability", "delaunay_planner/control_debug"}:
+        if name not in {
+            "delaunay_planner/stability",
+            "delaunay_planner/control_debug",
+            "delaunay_planner/thesis_context",
+        }:
             continue
         values = getattr(status, "values", [])
         for item in values:

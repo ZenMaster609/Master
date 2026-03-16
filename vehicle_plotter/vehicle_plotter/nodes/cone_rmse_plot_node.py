@@ -371,6 +371,8 @@ class ConeRMSEPlotNode(Node):
 
         camera_eval_topic = str(self.get_parameter("camera_eval_topic").value).strip().rstrip("/")
         lidar_eval_topic = str(self.get_parameter("lidar_eval_topic").value).strip().rstrip("/")
+        camera_enabled = bool(camera_eval_topic)
+        lidar_enabled = bool(lidar_eval_topic)
         self._camera_source = (
             str(self.get_parameter("camera_source").value).strip().lower() or "stereo"
         )
@@ -380,9 +382,12 @@ class ConeRMSEPlotNode(Node):
         self._lidar_analyzer = RangeRMSEAnalyzer(range_min_m=0.0, range_max_m=20.0, bin_width_m=1.0)
 
         left_title = "Stereo" if self._camera_source == "stereo" else "Monocular"
+        if not camera_enabled:
+            left_title = f"{left_title} (disabled)"
+        right_title = "LiDAR" if lidar_enabled else "LiDAR (disabled)"
         self._figure: Optional[_SideBySideRMSEFigure] = None
         try:
-            self._figure = _SideBySideRMSEFigure(left_title=left_title, right_title="LiDAR")
+            self._figure = _SideBySideRMSEFigure(left_title=left_title, right_title=right_title)
         except Exception as exc:  # pylint: disable=broad-except
             self.get_logger().warn(
                 f"Failed to initialize cone RMSE window ({exc}); disabling node."
@@ -407,8 +412,8 @@ class ConeRMSEPlotNode(Node):
 
         self.get_logger().info(
             "ConeRMSEPlotNode ready: "
-            f"camera_samples={camera_eval_topic}/cone_depth_samples "
-            f"lidar_samples={lidar_eval_topic}/cone_depth_samples "
+            f"camera_samples={(camera_eval_topic + '/cone_depth_samples') if camera_enabled else 'disabled'} "
+            f"lidar_samples={(lidar_eval_topic + '/cone_depth_samples') if lidar_enabled else 'disabled'} "
             f"camera_source={self._camera_source}"
         )
 

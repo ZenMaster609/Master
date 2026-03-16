@@ -30,6 +30,11 @@ def generate_launch_description():
         default_value="false",
         description="Enable the live controller diagnostics window",
     )
+    enable_thesis_controller_diagnostics_plot_arg = DeclareLaunchArgument(
+        "enable_thesis_controller_diagnostics_plot",
+        default_value="false",
+        description="Enable the live thesis controller diagnostics window",
+    )
     plot_rate_arg = DeclareLaunchArgument(
         "plot_rate_hz",
         default_value="30.0",
@@ -74,6 +79,11 @@ def generate_launch_description():
         "controller_diagnostics_enabled",
         default_value="false",
         description="Enable controller diagnostics CSV and summaries in the logger",
+    )
+    thesis_controller_diagnostics_enabled_arg = DeclareLaunchArgument(
+        "thesis_controller_diagnostics_enabled",
+        default_value="false",
+        description="Enable thesis controller diagnostics CSV and summaries in the logger",
     )
     controller_diagnostics_rate_hz_arg = DeclareLaunchArgument(
         "controller_diagnostics_rate_hz",
@@ -270,6 +280,54 @@ def generate_launch_description():
         }],
     )
 
+    thesis_controller_diagnostics_plot_node = Node(
+        package="vehicle_plotter",
+        executable="thesis_controller_diagnostics_plot_node",
+        name="thesis_controller_diagnostics_plot",
+        output="screen",
+        condition=IfCondition(
+            PythonExpression([
+                "('", LaunchConfiguration("thesis_controller_diagnostics_enabled"),
+                "'.lower() == 'true') and ('",
+                LaunchConfiguration("enable_thesis_controller_diagnostics_plot"),
+                "'.lower() == 'true')",
+            ])
+        ),
+        parameters=[{
+            "controller_diagnostics_rate_hz": ParameterValue(
+                LaunchConfiguration("controller_diagnostics_rate_hz"),
+                value_type=float,
+            ),
+            "controller_diagnostics_cmd_topic": LaunchConfiguration(
+                "controller_diagnostics_cmd_topic"
+            ),
+            "controller_diagnostics_steering_topic": LaunchConfiguration(
+                "controller_diagnostics_steering_topic"
+            ),
+            "controller_diagnostics_joint_states_topic": LaunchConfiguration(
+                "controller_diagnostics_joint_states_topic"
+            ),
+            "controller_diagnostics_odom_topic": LaunchConfiguration(
+                "controller_diagnostics_odom_topic"
+            ),
+            "controller_diagnostics_path_topic": LaunchConfiguration(
+                "controller_diagnostics_path_topic"
+            ),
+            "controller_diagnostics_planner_diag_topic": LaunchConfiguration(
+                "controller_diagnostics_planner_diag_topic"
+            ),
+            "controller_diagnostics_live_plot_rate_hz": ParameterValue(
+                LaunchConfiguration("controller_diagnostics_live_plot_rate_hz"),
+                value_type=float,
+            ),
+            "controller_diagnostics_live_buffer_sec": ParameterValue(
+                LaunchConfiguration("controller_diagnostics_live_buffer_sec"),
+                value_type=float,
+            ),
+            "use_sim_time": False,
+        }],
+    )
+
     logger_node = Node(
         package="vehicle_plotter",
         executable="logger_node",
@@ -291,6 +349,10 @@ def generate_launch_description():
             "lidar_cone_eval_topic": LaunchConfiguration("lidar_cone_eval_topic"),
             "controller_diagnostics_enabled": ParameterValue(
                 LaunchConfiguration("controller_diagnostics_enabled"),
+                value_type=bool,
+            ),
+            "thesis_controller_diagnostics_enabled": ParameterValue(
+                LaunchConfiguration("thesis_controller_diagnostics_enabled"),
                 value_type=bool,
             ),
             "controller_diagnostics_rate_hz": ParameterValue(
@@ -338,6 +400,7 @@ def generate_launch_description():
         enable_sensor_plot_arg,
         enable_cone_rmse_plot_arg,
         enable_controller_diagnostics_plot_arg,
+        enable_thesis_controller_diagnostics_plot_arg,
         plot_rate_arg,
         dark_mode_arg,
         save_plots_on_exit_arg,
@@ -347,6 +410,7 @@ def generate_launch_description():
         lidar_cone_eval_topic_arg,
         camera_source_arg,
         controller_diagnostics_enabled_arg,
+        thesis_controller_diagnostics_enabled_arg,
         controller_diagnostics_rate_hz_arg,
         controller_diagnostics_cmd_topic_arg,
         controller_diagnostics_steering_topic_arg,
@@ -368,6 +432,7 @@ def generate_launch_description():
         plotter_node,
         cone_rmse_plot_node,
         controller_diagnostics_plot_node,
+        thesis_controller_diagnostics_plot_node,
         logger_node,
         rosbag_controller_node,
     ])

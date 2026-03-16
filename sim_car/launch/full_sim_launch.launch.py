@@ -99,19 +99,25 @@ def generate_launch_description():
 
     cone_rmse_plotting_arg = DeclareLaunchArgument(
         'cone_rmse_plotting',
+        default_value='false',
+        description='Legacy alias to enable aggregated range-binned RMSE plotting for both camera and LiDAR'
+    )
+
+    camera_cone_rmse_plotting_arg = DeclareLaunchArgument(
+        'camera_cone_rmse_plotting',
         default_value='true',
-        description='Enable aggregated range-binned RMSE plotting'
+        description='Enable aggregated range-binned RMSE plotting for the camera eval stream'
     )
 
     controller_diagnostics_arg = DeclareLaunchArgument(
         'controller_diagnostics',
-        default_value='true',
+        default_value='false',
         description='Enable controller diagnostics CSV logging in the main logger'
     )
 
     controller_diagnostics_live_plot_enabled_arg = DeclareLaunchArgument(
         'controller_diagnostics_live_plot_enabled',
-        default_value='true',
+        default_value='false',
         description='Enable live controller diagnostics plot window'
     )
 
@@ -125,6 +131,18 @@ def generate_launch_description():
         'controller_diagnostics_live_buffer_sec',
         default_value='30.0',
         description='History window in seconds for live controller diagnostics plot'
+    )
+
+    thesis_controller_diagnostics_arg = DeclareLaunchArgument(
+        'thesis_controller_diagnostics',
+        default_value='true',
+        description='Enable thesis-oriented controller diagnostics logging in the main logger'
+    )
+
+    thesis_controller_diagnostics_live_plot_enabled_arg = DeclareLaunchArgument(
+        'thesis_controller_diagnostics_live_plot_enabled',
+        default_value='true',
+        description='Enable live thesis controller diagnostics plot window'
     )
 
     logging_arg = DeclareLaunchArgument(
@@ -285,7 +303,7 @@ def generate_launch_description():
 
     camera_debug_arg = DeclareLaunchArgument(
         'camera_debug',
-        default_value='true',
+        default_value='false',
         description='Enable perception debug image stream'
     )
 
@@ -384,10 +402,13 @@ def generate_launch_description():
         'spawn_z',
         'spawn_yaw',
         'cone_rmse_plotting',
+        'camera_cone_rmse_plotting',
         'controller_diagnostics',
         'controller_diagnostics_live_plot_enabled',
         'controller_diagnostics_live_plot_rate_hz',
         'controller_diagnostics_live_buffer_sec',
+        'thesis_controller_diagnostics',
+        'thesis_controller_diagnostics_live_plot_enabled',
         'logging',
         'close_plots',
         'rosbagging',
@@ -458,9 +479,13 @@ def generate_launch_description():
         "'.lower() == 'true' or '",
         LaunchConfiguration('cone_rmse_plotting'),
         "'.lower() == 'true' or '",
+        LaunchConfiguration('camera_cone_rmse_plotting'),
+        "'.lower() == 'true' or '",
         LaunchConfiguration('lidar_cone_rmse_plotting'),
         "'.lower() == 'true' or '",
         LaunchConfiguration('controller_diagnostics'),
+        "'.lower() == 'true' or '",
+        LaunchConfiguration('thesis_controller_diagnostics'),
         "'.lower() == 'true') else 'false'"
     ])
     topic_prefix = PythonExpression([
@@ -545,11 +570,16 @@ def generate_launch_description():
                 "'true' if ('",
                 LaunchConfiguration('cone_rmse_plotting'),
                 "'.lower() == 'true' or '",
+                LaunchConfiguration('camera_cone_rmse_plotting'),
+                "'.lower() == 'true' or '",
                 LaunchConfiguration('lidar_cone_rmse_plotting'),
                 "'.lower() == 'true') else 'false'"
             ]),
             'enable_controller_diagnostics_plot': LaunchConfiguration(
                 'controller_diagnostics_live_plot_enabled'
+            ),
+            'enable_thesis_controller_diagnostics_plot': LaunchConfiguration(
+                'thesis_controller_diagnostics_live_plot_enabled'
             ),
             'enable_log': PythonExpression([
                 "'true' if ('",
@@ -557,9 +587,13 @@ def generate_launch_description():
                 "'.lower() == 'true' or '",
                 LaunchConfiguration('cone_rmse_plotting'),
                 "'.lower() == 'true' or '",
+                LaunchConfiguration('camera_cone_rmse_plotting'),
+                "'.lower() == 'true' or '",
                 LaunchConfiguration('lidar_cone_rmse_plotting'),
                 "'.lower() == 'true' or '",
                 LaunchConfiguration('controller_diagnostics'),
+                "'.lower() == 'true' or '",
+                LaunchConfiguration('thesis_controller_diagnostics'),
                 "'.lower() == 'true') else 'false'"
             ]),
             'enable_state_logging': PythonExpression([
@@ -574,7 +608,17 @@ def generate_launch_description():
             'use_sim_time': LaunchConfiguration('use_sim_time'),
             'close_plots': LaunchConfiguration('close_plots'),
             'save_plots_on_exit': 'true',
-            'camera_cone_eval_topic': PythonExpression(["'", topic_prefix, "' + '/stereo/eval'"]),
+            'camera_cone_eval_topic': PythonExpression([
+                "'",
+                topic_prefix,
+                "' + '/stereo/eval' if ('",
+                LaunchConfiguration('logging'),
+                "'.lower() == 'true' or '",
+                LaunchConfiguration('camera_cone_rmse_plotting'),
+                "'.lower() == 'true' or '",
+                LaunchConfiguration('cone_rmse_plotting'),
+                "'.lower() == 'true') else ''"
+            ]),
             'lidar_cone_eval_topic': PythonExpression([
                 "'",
                 topic_prefix,
@@ -594,6 +638,7 @@ def generate_launch_description():
             'controller_diagnostics_live_plot_enabled': LaunchConfiguration('controller_diagnostics_live_plot_enabled'),
             'controller_diagnostics_live_plot_rate_hz': LaunchConfiguration('controller_diagnostics_live_plot_rate_hz'),
             'controller_diagnostics_live_buffer_sec': LaunchConfiguration('controller_diagnostics_live_buffer_sec'),
+            'thesis_controller_diagnostics_enabled': LaunchConfiguration('thesis_controller_diagnostics'),
         }.items(),
     )
 
@@ -744,6 +789,8 @@ def generate_launch_description():
                 "'true' if ('",
                 LaunchConfiguration('logging'),
                 "'.lower() == 'true' or '",
+                LaunchConfiguration('camera_cone_rmse_plotting'),
+                "'.lower() == 'true' or '",
                 LaunchConfiguration('cone_rmse_plotting'),
                 "'.lower() == 'true') else 'false'"
             ]),
@@ -871,6 +918,10 @@ def generate_launch_description():
                     delaunay_history_frames,
                     value_type=int,
                 ),
+                'diagnostics.publish_thesis_context': ParameterValue(
+                    LaunchConfiguration('thesis_controller_diagnostics'),
+                    value_type=bool,
+                ),
             },
         ],
         condition=IfCondition(PythonExpression([
@@ -936,10 +987,13 @@ def generate_launch_description():
         spawn_z_arg,
         spawn_yaw_arg,
         cone_rmse_plotting_arg,
+        camera_cone_rmse_plotting_arg,
         controller_diagnostics_arg,
         controller_diagnostics_live_plot_enabled_arg,
         controller_diagnostics_live_plot_rate_hz_arg,
         controller_diagnostics_live_buffer_sec_arg,
+        thesis_controller_diagnostics_arg,
+        thesis_controller_diagnostics_live_plot_enabled_arg,
         logging_arg,
         close_plots_on_shutdown_arg,
         rosbagging_arg,

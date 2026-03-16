@@ -3,7 +3,7 @@ cone_memory_node:
     odom_frame: "odom"
     base_frame: "front_axle"
     tf_timeout_s: 0.03
-    odom_pose_sync_tolerance_sec: 0.05
+    odom_pose_sync_tolerance_sec: 0.15
     base_pose_latest_fallback_tolerance_sec: 0.10
     wheelbase_m: 1.65
 
