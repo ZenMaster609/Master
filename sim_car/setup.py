@@ -60,6 +60,7 @@ setup(
             'cone_evaluator_node = sim_car.cones.nodes.evaluator_node:main',
             'lidar_node = sim_car.lidar.lidar_node:main',
             'delaunay_planner_node = sim_car.planning.delaunay_planner_node:main',
+            'hybrid_boundary_planner_node = sim_car.planning.hybrid_boundary_planner_node:main',
             'cone_memory_node = sim_car.cones.nodes.memory_node:main',
             'run_artifacts_node = sim_car.run_artifacts_node:main',
         ],

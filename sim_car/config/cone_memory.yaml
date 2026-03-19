@@ -10,6 +10,9 @@ cone_memory_node:
     max_range_m: 25.0
     behind_drop_m: 8.0
     ttl_sec: 3.0
+    tentative_ttl_sec: 1.0
+    stale_after_sec: 0.6
+    confirmed_prune_after_sec: 3.0
     unknown_drop_frames: 15
     gate_radius_m: 0.5
     spawn_radius_m: 0.85
@@ -18,8 +21,15 @@ cone_memory_node:
     track_merge_longitudinal_tolerance_m: 2.50
     track_merge_lateral_tolerance_m: 0.55
     min_seen_count: 3
+    confirm_hits: 3
     alpha_lidar: 0.25
     alpha_camera: 0.15
+    track_confidence_gain: 0.25
+    track_confidence_decay: 0.10
+    color_decay: 0.05
+    color_switch_margin: 0.20
+    publish_stale_tracks: true
+    stale_planner_ttl_sec: 1.5
 
     camera_range_m: 10.0
     prefer_lidar_if_camera_missing_far: true

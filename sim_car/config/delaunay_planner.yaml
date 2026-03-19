@@ -30,16 +30,35 @@ delaunay_planner_node:
 
     edge_selection:
       min_cross_edge_m: 0.8
-      max_cross_edge_m: 6.0
+      max_cross_edge_m: 6.0  # small_track spawn has valid local cross-track pairs above 5 m
       cross_edge_lateral_ratio: 0.6
       min_cross_edges: 3
+      max_near_field_lateral_jump_m: 0.6
+      near_field_midpoint_count: 5
+      max_diagonal_forward_alignment: 0.55
+      max_width_prior_step_drift_m: 0.2
+      max_midpoint_kink_rad: 1.2
+      max_seed_midpoint_distance_m: 8.0
+      max_same_side_step_m: 5.0
+      min_midpoint_progress_m: 0.15
+      width_prior_tolerance_m: 1.0
+      temporal_midpoint_match_tolerance_m: 1.0
+      local_opposite_neighbor_count: 1
+      local_opposite_forward_sector_rad: 0.9
 
     centerline:
       min_spacing_m: 0.5
       path_resolution_m: 0.5
       max_path_length_m: 30.0
       enable_temporal_smoothing: true
-      smoothing_alpha: 0.2
+      smoothing_alpha: 0.15
+      enable_near_field_freeze: true
+      freeze_near_field_m: 3.0
+      freeze_blend_length_m: 1.0
+      enable_committed_near_field: true
+      commit_plan_horizon_m: 8.0
+      commit_stable_frames: 3
+      commit_update_max_churn_ratio: 0.45
 
     runtime:
       publish_rate_hz: 180.0
@@ -69,12 +88,8 @@ delaunay_planner_node:
       lowpass_speed_alpha: 0.15
 
     validation:
-      max_centerline_jump_m: 0.45
-      consistency_horizon_m: 8.0
-      max_history_frames: 36
       hold_last_valid_s: 1.5
-      min_stable_frames: 3
-      max_selected_edge_churn_ratio: 0.4
+      hold_exit_clean_frames: 2
 
     diagnostics:
       topic: "/delaunay_planner/diagnostics"
@@ -88,8 +103,10 @@ delaunay_planner_node:
     debug:
       enable_markers: true
       show_raw_cones: false
-      show_delaunay_edges: true
+      show_delaunay_edges: false
       show_candidate_edges: true
       show_selected_edges: true
+      show_raw_midpoint_chain: true
+      show_raw_prevalidation_centerline: true
       publish_points_topic: false
       show_lookahead_point: true

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import math
 from typing import Optional
 
 
@@ -104,19 +105,29 @@ def update_class_probs(
     *,
     label: Optional[str],
     confidence: float,
+    decay: float = 0.0,
+    gain: float = 1.0,
 ) -> list[float]:
     """Simple Bayesian-ish running update from camera label observations."""
 
     if not probs or len(probs) != len(CLASS_NAMES):
         probs = [1.0, 0.0, 0.0, 0.0]
 
+    decay = max(0.0, min(0.99, float(decay)))
+    gain = max(0.0, float(gain))
+    if decay > 0.0:
+        probs = [max(0.0, p * (1.0 - decay)) for p in probs]
+
     if label is None:
-        return probs
+        total = sum(probs)
+        if total <= 1e-9:
+            return [1.0, 0.0, 0.0, 0.0]
+        return [p / total for p in probs]
 
     normalized = normalize_color(label)
     idx = CLASS_TO_INDEX.get(normalized, 0)
     conf = max(0.0, min(1.0, float(confidence)))
-    obs_strength = 0.10 + 0.90 * conf
+    obs_strength = gain * (0.10 + 0.90 * conf)
 
     one_hot = [0.0] * len(CLASS_NAMES)
     one_hot[idx] = 1.0
@@ -134,3 +145,66 @@ def class_from_probs(probs: list[float]) -> tuple[str, float]:
         return 'unknown', 0.0
     best_idx = max(range(len(probs)), key=lambda i: probs[i])
     return CLASS_NAMES[best_idx], float(max(0.0, min(1.0, probs[best_idx])))
+
+
+def update_color_belief(
+    scores: list[float],
+    *,
+    label: Optional[str],
+    confidence: float,
+    current_label: str,
+    color_decay: float,
+    color_switch_margin: float,
+) -> tuple[list[float], str, float]:
+    """Update per-class scores with decay and hysteresis."""
+
+    updated = update_class_probs(
+        scores,
+        label=label,
+        confidence=confidence,
+        decay=color_decay,
+        gain=1.0,
+    )
+    proposed_label, proposed_conf = class_from_probs(updated)
+    current_norm = normalize_color(current_label)
+    if current_norm == 'unknown':
+        return updated, proposed_label, proposed_conf
+
+    current_idx = CLASS_TO_INDEX.get(current_norm, 0)
+    proposed_idx = CLASS_TO_INDEX.get(proposed_label, 0)
+    if proposed_idx == current_idx:
+        return updated, current_norm, proposed_conf
+
+    current_score = updated[current_idx] if 0 <= current_idx < len(updated) else 0.0
+    proposed_score = updated[proposed_idx] if 0 <= proposed_idx < len(updated) else 0.0
+    margin = max(0.0, float(color_switch_margin))
+    if proposed_score < (current_score + margin):
+        return updated, current_norm, current_score
+    return updated, proposed_label, proposed_conf
+
+
+def blend_track_confidence(
+    current_confidence: float,
+    *,
+    observation_confidence: float,
+    track_confidence_gain: float,
+    track_confidence_decay: float,
+    seen: bool,
+) -> float:
+    """Bounded running confidence update for track validity."""
+
+    current = max(0.0, min(1.0, float(current_confidence)))
+    gain = max(0.0, float(track_confidence_gain))
+    decay = max(0.0, min(1.0, float(track_confidence_decay)))
+    if not seen:
+        return max(0.0, current * (1.0 - decay))
+
+    obs = max(0.0, min(1.0, float(observation_confidence)))
+    reinforced = current + (gain * (0.25 + (0.75 * obs)))
+    return max(0.0, min(1.0, reinforced))
+
+
+def age_to_decay(age_sec: float, time_constant_sec: float) -> float:
+    if time_constant_sec <= 1e-6 or age_sec <= 0.0:
+        return 0.0
+    return max(0.0, min(0.99, 1.0 - math.exp(-float(age_sec) / float(time_constant_sec))))

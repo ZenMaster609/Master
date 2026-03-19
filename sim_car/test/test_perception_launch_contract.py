@@ -39,3 +39,12 @@ def test_full_launch_declares_camera_cone_rmse_plotting_and_wires_it():
     assert "DeclareLaunchArgument(\n        'camera_cone_rmse_plotting'" in content
     assert content.count("LaunchConfiguration('camera_cone_rmse_plotting')") >= 4
     assert "'camera_cone_eval_topic': PythonExpression([" in content
+
+
+def test_full_launch_supports_hybrid_boundary_planner():
+    content = FULL_LAUNCH.read_text(encoding='utf-8')
+
+    assert "Planner to launch: 'delaunay', 'hybrid_boundary', or 'none'" in content
+    assert "executable='hybrid_boundary_planner_node'" in content
+    assert "\"'.lower() == 'hybrid_boundary'\"" in content
+    assert "supported_planners = {'delaunay', 'hybrid_boundary', 'none'}" in content

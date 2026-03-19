@@ -41,6 +41,15 @@ PLANNER_DIAG_DEFAULTS: dict[str, float] = {
     "selected_edge_count": float("nan"),
     "path_length_m": float("nan"),
     "path_curvature_abs_p95_1pm": float("nan"),
+    "planner_state_code": float("nan"),
+    "fresh_publish_flag": float("nan"),
+    "held_publish_flag": float("nan"),
+    "stopped_flag": float("nan"),
+    "waiting_flag": float("nan"),
+    "operator_reason_code": float("nan"),
+    "hold_remaining_s": float("nan"),
+    "control_path_point_count": float("nan"),
+    "zero_cmd_sent_flag": float("nan"),
 }
 
 

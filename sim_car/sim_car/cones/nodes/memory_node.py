@@ -29,9 +29,17 @@ from sim_car.cones.tracking.fusion import (
     choose_position_source,
     clamp_camera_range,
     normalize_color,
+    resolve_boundary_color_by_lateral_position,
 )
 from sim_car.cones.tracking.pose import base_point_to_odom, convert_odom_child_pose_to_base_frame, odom_point_to_base
-from sim_car.cones.tracking.tracker import ConeTrack, GlobalConeMemory, LocalConeTracker, TrackUpdate
+from sim_car.cones.tracking.tracker import (
+    TRACK_STATE_CONFIRMED,
+    TRACK_STATE_STALE,
+    TRACK_STATE_TENTATIVE,
+    ConeTrack,
+    LocalConeTracker,
+    TrackUpdate,
+)
 
 
 class ConeMemoryNode(Node):
@@ -47,7 +55,6 @@ class ConeMemoryNode(Node):
         self._last_throttled_log_sec: dict[str, float] = {}
 
         self._local_tracker = LocalConeTracker()
-        self._global_memory = GlobalConeMemory()
         self._latest_lidar: list[SensorDetection] = []
         self._latest_camera: list[SensorDetection] = []
         self._latest_lidar_stamp_ns: int = -1
@@ -122,6 +129,9 @@ class ConeMemoryNode(Node):
         self.declare_parameter('max_range_m', 25.0)
         self.declare_parameter('behind_drop_m', 8.0)
         self.declare_parameter('ttl_sec', 2.0)
+        self.declare_parameter('tentative_ttl_sec', 1.0)
+        self.declare_parameter('stale_after_sec', 0.6)
+        self.declare_parameter('confirmed_prune_after_sec', 3.0)
         self.declare_parameter('unknown_drop_frames', 15)
         self.declare_parameter('gate_radius_m', 0.5)
         self.declare_parameter('spawn_radius_m', 0.85)
@@ -130,8 +140,15 @@ class ConeMemoryNode(Node):
         self.declare_parameter('track_merge_longitudinal_tolerance_m', 2.50)
         self.declare_parameter('track_merge_lateral_tolerance_m', 0.55)
         self.declare_parameter('min_seen_count', 2)
+        self.declare_parameter('confirm_hits', 0)
         self.declare_parameter('alpha_lidar', 0.4)
         self.declare_parameter('alpha_camera', 0.2)
+        self.declare_parameter('track_confidence_gain', 0.25)
+        self.declare_parameter('track_confidence_decay', 0.10)
+        self.declare_parameter('color_decay', 0.05)
+        self.declare_parameter('color_switch_margin', 0.20)
+        self.declare_parameter('publish_stale_tracks', True)
+        self.declare_parameter('stale_planner_ttl_sec', 1.5)
 
         self.declare_parameter('camera_range_m', 0.0)
         self.declare_parameter('prefer_lidar_if_camera_missing_far', True)
@@ -180,6 +197,12 @@ class ConeMemoryNode(Node):
         self.max_range_m = max(1.0, float(self.get_parameter('max_range_m').value))
         self.behind_drop_m = max(0.0, float(self.get_parameter('behind_drop_m').value))
         self.ttl_sec = max(0.05, float(self.get_parameter('ttl_sec').value))
+        self.tentative_ttl_sec = max(0.05, float(self.get_parameter('tentative_ttl_sec').value))
+        self.stale_after_sec = max(0.0, float(self.get_parameter('stale_after_sec').value))
+        self.confirmed_prune_after_sec = max(
+            self.ttl_sec,
+            float(self.get_parameter('confirmed_prune_after_sec').value),
+        )
         self.unknown_drop_frames = max(0, int(self.get_parameter('unknown_drop_frames').value))
         self.gate_radius_m = max(0.05, float(self.get_parameter('gate_radius_m').value))
         self.spawn_radius_m = max(self.gate_radius_m, float(self.get_parameter('spawn_radius_m').value))
@@ -194,8 +217,19 @@ class ConeMemoryNode(Node):
             float(self.get_parameter('track_merge_lateral_tolerance_m').value),
         )
         self.min_seen_count = max(1, int(self.get_parameter('min_seen_count').value))
+        configured_confirm_hits = int(self.get_parameter('confirm_hits').value)
+        self.confirm_hits = max(1, configured_confirm_hits if configured_confirm_hits > 0 else self.min_seen_count)
         self.alpha_lidar = max(0.0, min(1.0, float(self.get_parameter('alpha_lidar').value)))
         self.alpha_camera = max(0.0, min(1.0, float(self.get_parameter('alpha_camera').value)))
+        self.track_confidence_gain = max(0.0, float(self.get_parameter('track_confidence_gain').value))
+        self.track_confidence_decay = max(
+            0.0,
+            min(1.0, float(self.get_parameter('track_confidence_decay').value)),
+        )
+        self.color_decay = max(0.0, min(0.99, float(self.get_parameter('color_decay').value)))
+        self.color_switch_margin = max(0.0, float(self.get_parameter('color_switch_margin').value))
+        self.publish_stale_tracks = bool(self.get_parameter('publish_stale_tracks').value)
+        self.stale_planner_ttl_sec = max(0.0, float(self.get_parameter('stale_planner_ttl_sec').value))
 
         self.camera_range_m = clamp_camera_range(float(self.get_parameter('camera_range_m').value))
         self.prefer_lidar_if_camera_missing_far = bool(self.get_parameter('prefer_lidar_if_camera_missing_far').value)
@@ -424,7 +458,11 @@ class ConeMemoryNode(Node):
                 spawn_radius_m=self.spawn_radius_m,
                 alpha_lidar=self.alpha_lidar,
                 alpha_camera=self.alpha_camera,
-                min_seen_count=self.min_seen_count,
+                confirm_hits=self.confirm_hits,
+                track_confidence_gain=self.track_confidence_gain,
+                track_confidence_decay=self.track_confidence_decay,
+                color_decay=self.color_decay,
+                color_switch_margin=self.color_switch_margin,
             )
             if lidar_is_new:
                 self._last_processed_lidar_stamp_ns = self._latest_lidar_stamp_ns
@@ -443,10 +481,13 @@ class ConeMemoryNode(Node):
         ]
         pruned = self._local_tracker.prune(
             now_sec=now_sec,
-            ttl_sec=self.ttl_sec,
+            tentative_ttl_sec=self.tentative_ttl_sec,
+            stale_after_sec=self.stale_after_sec,
+            confirmed_prune_after_sec=self.confirmed_prune_after_sec,
             max_range_m=self.max_range_m,
             behind_drop_m=self.behind_drop_m,
             unknown_drop_frames=self.unknown_drop_frames,
+            confirm_hits=self.confirm_hits,
             track_positions_in_base=track_positions_in_base,
         )
         track_positions_in_base = [
@@ -462,41 +503,42 @@ class ConeMemoryNode(Node):
         if stats is not None:
             stats.merged_tracks += merged_tracks
 
-        confirmed = self._local_tracker.confirmed_tracks(self.min_seen_count)
-        tentative = self._local_tracker.tentative_tracks(self.min_seen_count)
-
-        if self.enable_global_track_memory:
-            self._global_memory.update_from_tracks(
-                tracks=confirmed,
-                now_sec=now_sec,
-                merge_radius_m=self.global_merge_radius_m,
-                max_cones=self.global_max_cones,
-            )
+        confirmed = self._local_tracker.confirmed_tracks(self.confirm_hits)
+        stale = self._local_tracker.stale_tracks(self.confirm_hits)
+        tentative = self._local_tracker.tentative_tracks(self.confirm_hits)
+        planner_tracks = self._local_tracker.planner_tracks(
+            now_sec=now_sec,
+            confirm_hits=self.confirm_hits,
+            publish_stale_tracks=self.publish_stale_tracks,
+            stale_planner_ttl_sec=self.stale_planner_ttl_sec,
+        )
 
         heading_x = math.cos(veh_yaw)
         heading_y = math.sin(veh_yaw)
 
-        left, right, center = self._global_memory.infer_boundaries_and_centerline(
-            min_hits=self.global_min_hits_for_track,
-            min_confidence=0.0,
+        left, right, center = self._infer_track_boundaries_and_centerline(
+            tracks=planner_tracks,
+            min_track_confidence=0.0,
+            min_color_confidence=0.0,
             vehicle_x=veh_x,
             vehicle_y=veh_y,
             heading_x=heading_x,
             heading_y=heading_y,
         )
 
-        viz_left, viz_right, viz_center = self._global_memory.infer_boundaries_and_centerline(
-            min_hits=self.believed_track_viz_min_hits,
-            min_confidence=self.believed_track_viz_min_confidence,
+        viz_left, viz_right, viz_center = self._infer_track_boundaries_and_centerline(
+            tracks=planner_tracks,
+            min_track_confidence=self.believed_track_viz_min_confidence,
+            min_color_confidence=self.believed_track_viz_min_confidence,
             vehicle_x=veh_x,
             vehicle_y=veh_y,
             heading_x=heading_x,
             heading_y=heading_y,
         )
 
-        self._publish_tracked_cones(confirmed, now)
-        self._publish_local_markers(confirmed=confirmed, tentative=tentative, now=now)
-        self._publish_track_markers(left=viz_left, right=viz_right, center=viz_center, now=now)
+        self._publish_tracked_cones(planner_tracks, now)
+        self._publish_local_markers(confirmed=confirmed, stale=stale, tentative=tentative, now=now)
+        self._publish_track_markers(tracks=planner_tracks, left=viz_left, right=viz_right, center=viz_center, now=now)
         if self.enable_raw_debug_viz:
             self._publish_raw_markers(now=now)
 
@@ -506,9 +548,66 @@ class ConeMemoryNode(Node):
         self._info_throttled(
             'cone_memory_status',
             f'tracks total={len(self._local_tracker.tracks)} confirmed={len(confirmed)} '
-            f'tentative={len(tentative)} pruned={pruned} merged={merged_tracks} '
-            f'global={len(self._global_memory.cones)}{status_suffix}',
+            f'stale={len(stale)} tentative={len(tentative)} planner={len(planner_tracks)} '
+            f'left={len(left)} right={len(right)} center={len(center)} '
+            f'pruned={pruned} merged={merged_tracks}{status_suffix}',
         )
+
+    def _infer_track_boundaries_and_centerline(
+        self,
+        *,
+        tracks: list[ConeTrack],
+        min_track_confidence: float,
+        min_color_confidence: float,
+        vehicle_x: float,
+        vehicle_y: float,
+        heading_x: float,
+        heading_y: float,
+    ) -> tuple[list[tuple[float, float]], list[tuple[float, float]], list[tuple[float, float]]]:
+        left: list[tuple[float, float]] = []
+        right: list[tuple[float, float]] = []
+        for track in tracks:
+            if float(track.track_confidence) < float(min_track_confidence):
+                continue
+            label, color_conf = track.class_label()
+            if float(color_conf) < float(min_color_confidence):
+                continue
+            dx = float(track.x) - float(vehicle_x)
+            dy = float(track.y) - float(vehicle_y)
+            lateral_y = (-float(heading_y) * dx) + (float(heading_x) * dy)
+            resolved = resolve_boundary_color_by_lateral_position(
+                label,
+                lateral_y,
+                infer_unknown=True,
+                infer_orange=True,
+            )
+            if resolved == 'blue':
+                left.append((float(track.x), float(track.y)))
+            elif resolved == 'yellow':
+                right.append((float(track.x), float(track.y)))
+
+        def projection(p: tuple[float, float]) -> float:
+            dx = p[0] - float(vehicle_x)
+            dy = p[1] - float(vehicle_y)
+            return (dx * float(heading_x)) + (dy * float(heading_y))
+
+        left.sort(key=projection)
+        right.sort(key=projection)
+        center: list[tuple[float, float]] = []
+        if left and right:
+            for lx, ly in left:
+                best_idx = -1
+                best_dist_sq = float('inf')
+                for idx, (rx, ry) in enumerate(right):
+                    dist_sq = ((rx - lx) ** 2) + ((ry - ly) ** 2)
+                    if dist_sq < best_dist_sq:
+                        best_idx = idx
+                        best_dist_sq = dist_sq
+                if best_idx >= 0:
+                    rx, ry = right[best_idx]
+                    center.append(((lx + rx) * 0.5, (ly + ry) * 0.5))
+            center.sort(key=projection)
+        return left, right, center
 
     def _build_fused_observations(
         self,
@@ -700,12 +799,46 @@ class ConeMemoryNode(Node):
             label, class_conf = track.class_label()
             cone = ConeDetection()
             cone.color = label
-            cone.confidence = float(max(0.0, min(1.0, class_conf)))
+            cone.confidence = float(max(0.0, min(1.0, track.track_confidence)))
             cone.position.x = float(track.x)
             cone.position.y = float(track.y)
             cone.position.z = float(track.z)
+            self._set_cone_message_field(cone, 'track_id', int(track.track_id))
+            self._set_cone_message_field(cone, 'track_state', int(track.track_state))
+            self._set_cone_message_field(
+                cone,
+                'track_confidence',
+                float(max(0.0, min(1.0, track.track_confidence))),
+            )
+            self._set_cone_message_field(
+                cone,
+                'color_confidence',
+                float(max(0.0, min(1.0, class_conf))),
+            )
+            self._set_cone_message_field(cone, 'seen_count', int(track.seen_count))
+            self._set_cone_message_field(
+                cone,
+                'consecutive_seen_count',
+                int(track.consecutive_seen_count),
+            )
+            self._set_cone_message_field(cone, 'missed_count', int(track.missed_count))
+            self._set_cone_message_field(
+                cone,
+                'first_seen',
+                self._ns_to_stamp(int(max(0.0, track.first_seen_sec) * 1e9)),
+            )
+            self._set_cone_message_field(
+                cone,
+                'last_seen',
+                self._ns_to_stamp(int(max(0.0, track.last_seen_sec) * 1e9)),
+            )
             msg.cones.append(cone)
         self._tracked_pub.publish(msg)
+
+    @staticmethod
+    def _set_cone_message_field(cone: ConeDetection, field_name: str, value) -> None:
+        if hasattr(cone, field_name):
+            setattr(cone, field_name, value)
 
     @staticmethod
     def _stamp_to_ns(stamp) -> int:
@@ -718,7 +851,14 @@ class ConeMemoryNode(Node):
         msg.nanosec = int(stamp_ns % 1_000_000_000)
         return msg
 
-    def _publish_local_markers(self, *, confirmed: list[ConeTrack], tentative: list[ConeTrack], now: Time) -> None:
+    def _publish_local_markers(
+        self,
+        *,
+        confirmed: list[ConeTrack],
+        stale: list[ConeTrack],
+        tentative: list[ConeTrack],
+        now: Time,
+    ) -> None:
         arr = MarkerArray()
 
         clear = Marker()
@@ -728,21 +868,27 @@ class ConeMemoryNode(Node):
         arr.markers.append(clear)
 
         for track in confirmed:
-            arr.markers.append(self._make_cone_marker(track, now, tentative=False))
+            arr.markers.append(self._make_cone_marker(track, now))
             if self.enable_id_text:
-                arr.markers.append(self._make_id_marker(track, now, tentative=False))
+                arr.markers.append(self._make_id_marker(track, now))
+
+        for track in stale:
+            arr.markers.append(self._make_cone_marker(track, now))
+            if self.enable_id_text:
+                arr.markers.append(self._make_id_marker(track, now))
 
         if self.enable_tentative_viz:
             for track in tentative:
-                arr.markers.append(self._make_cone_marker(track, now, tentative=True))
+                arr.markers.append(self._make_cone_marker(track, now))
                 if self.enable_id_text:
-                    arr.markers.append(self._make_id_marker(track, now, tentative=True))
+                    arr.markers.append(self._make_id_marker(track, now))
 
         self._viz_pub.publish(arr)
 
     def _publish_track_markers(
         self,
         *,
+        tracks: list[ConeTrack],
         left: list[tuple[float, float]],
         right: list[tuple[float, float]],
         center: list[tuple[float, float]],
@@ -787,7 +933,7 @@ class ConeMemoryNode(Node):
             cones_marker = Marker()
             cones_marker.header.frame_id = self.odom_frame
             cones_marker.header.stamp = now.to_msg()
-            cones_marker.ns = 'global_cones'
+            cones_marker.ns = 'remembered_cones'
             cones_marker.id = marker_id
             cones_marker.type = Marker.SPHERE_LIST
             cones_marker.action = Marker.ADD
@@ -798,15 +944,15 @@ class ConeMemoryNode(Node):
             cones_marker.color.r = 0.8
             cones_marker.color.g = 0.8
             cones_marker.color.b = 0.8
-            for cone in self._global_memory.cones:
-                if cone.hits < self.believed_track_viz_min_hits:
+            for track in tracks:
+                if track.seen_count < self.believed_track_viz_min_hits:
                     continue
-                if float(cone.confidence) < self.believed_track_viz_min_confidence:
+                if float(track.track_confidence) < self.believed_track_viz_min_confidence:
                     continue
                 pt = Point()
-                pt.x = float(cone.x)
-                pt.y = float(cone.y)
-                pt.z = float(cone.z)
+                pt.x = float(track.x)
+                pt.y = float(track.y)
+                pt.z = float(track.z)
                 cones_marker.points.append(pt)
             arr.markers.append(cones_marker)
 
@@ -914,13 +1060,13 @@ class ConeMemoryNode(Node):
         self._raw_lidar_viz_pub.publish(lidar_arr)
         self._raw_camera_viz_pub.publish(camera_arr)
 
-    def _make_cone_marker(self, track: ConeTrack, now: Time, *, tentative: bool) -> Marker:
+    def _make_cone_marker(self, track: ConeTrack, now: Time) -> Marker:
         label, _conf = track.class_label()
         r, g, b = self._color_rgb(label)
         marker = Marker()
         marker.header.frame_id = self.odom_frame
         marker.header.stamp = now.to_msg()
-        marker.ns = 'tentative' if tentative else 'confirmed'
+        marker.ns = self._track_state_namespace(track.track_state)
         marker.id = track.track_id
         marker.type = Marker.CYLINDER
         marker.action = Marker.ADD
@@ -928,23 +1074,23 @@ class ConeMemoryNode(Node):
         marker.pose.position.y = float(track.y)
         marker.pose.position.z = float(track.z) + 0.15
         marker.pose.orientation.w = 1.0
-        scale = 0.22 if tentative else 0.30
+        scale = 0.22 if track.track_state == TRACK_STATE_TENTATIVE else 0.30
         marker.scale.x = scale
         marker.scale.y = scale
         marker.scale.z = 0.30
-        marker.color.a = 0.35 if tentative else 0.95
+        marker.color.a = self._track_state_alpha(track.track_state)
         marker.color.r = r
         marker.color.g = g
         marker.color.b = b
         marker.lifetime = Duration(seconds=1.0 / self.publish_rate_hz * 2.0).to_msg()
         return marker
 
-    def _make_id_marker(self, track: ConeTrack, now: Time, *, tentative: bool) -> Marker:
+    def _make_id_marker(self, track: ConeTrack, now: Time) -> Marker:
         marker = Marker()
         marker.header.frame_id = self.odom_frame
         marker.header.stamp = now.to_msg()
-        marker.ns = 'tentative_id' if tentative else 'confirmed_id'
-        marker.id = track.track_id + (100_000 if tentative else 50_000)
+        marker.ns = f'{self._track_state_namespace(track.track_state)}_id'
+        marker.id = track.track_id + self._track_state_id_offset(track.track_state)
         marker.type = Marker.TEXT_VIEW_FACING
         marker.action = Marker.ADD
         marker.pose.position.x = float(track.x)
@@ -952,11 +1098,15 @@ class ConeMemoryNode(Node):
         marker.pose.position.z = float(track.z) + 0.55
         marker.pose.orientation.w = 1.0
         marker.scale.z = 0.18
-        marker.color.a = 0.55 if tentative else 1.0
+        marker.color.a = min(1.0, self._track_state_alpha(track.track_state) + 0.15)
         marker.color.r = 1.0
         marker.color.g = 1.0
         marker.color.b = 1.0
-        marker.text = str(track.track_id)
+        marker.text = (
+            f'{track.track_id} s={track.seen_count} m={track.missed_count}'
+            if track.track_state != TRACK_STATE_CONFIRMED
+            else str(track.track_id)
+        )
         marker.lifetime = Duration(seconds=1.0 / self.publish_rate_hz * 2.0).to_msg()
         return marker
 
@@ -1000,6 +1150,30 @@ class ConeMemoryNode(Node):
             return 1.0, 0.45, 0.05
         return 0.75, 0.75, 0.75
 
+    @staticmethod
+    def _track_state_namespace(track_state: int) -> str:
+        if int(track_state) == TRACK_STATE_CONFIRMED:
+            return 'confirmed'
+        if int(track_state) == TRACK_STATE_STALE:
+            return 'stale'
+        return 'tentative'
+
+    @staticmethod
+    def _track_state_alpha(track_state: int) -> float:
+        if int(track_state) == TRACK_STATE_CONFIRMED:
+            return 0.95
+        if int(track_state) == TRACK_STATE_STALE:
+            return 0.55
+        return 0.35
+
+    @staticmethod
+    def _track_state_id_offset(track_state: int) -> int:
+        if int(track_state) == TRACK_STATE_CONFIRMED:
+            return 50_000
+        if int(track_state) == TRACK_STATE_STALE:
+            return 75_000
+        return 100_000
+
     def _init_live_plot(self) -> None:
         try:
             import matplotlib.pyplot as plt
@@ -1016,6 +1190,14 @@ class ConeMemoryNode(Node):
             self._plot_ready = False
             self.get_logger().warn(f'failed to initialize live plot ({exc}); continuing without live window')
 
+    def _planner_track_snapshot(self, now_sec: float) -> list[ConeTrack]:
+        return self._local_tracker.planner_tracks(
+            now_sec=now_sec,
+            confirm_hits=self.confirm_hits,
+            publish_stale_tracks=self.publish_stale_tracks,
+            stale_planner_ttl_sec=self.stale_planner_ttl_sec,
+        )
+
     def _update_live_plot(self) -> None:
         if not self._plot_enabled or not self._plot_ready or self._ax is None or self._plt is None:
             return
@@ -1031,9 +1213,11 @@ class ConeMemoryNode(Node):
             else:
                 veh_x, veh_y, veh_yaw = pose
             heading_x, heading_y = (math.cos(veh_yaw), math.sin(veh_yaw))
-
-            left, right, center = self._global_memory.infer_boundaries_and_centerline(
-                min_hits=self.global_min_hits_for_track,
+            tracks = self._planner_track_snapshot(float(self.get_clock().now().nanoseconds) * 1e-9)
+            left, right, center = self._infer_track_boundaries_and_centerline(
+                tracks=tracks,
+                min_track_confidence=self.believed_track_viz_min_confidence,
+                min_color_confidence=self.believed_track_viz_min_confidence,
                 vehicle_x=veh_x,
                 vehicle_y=veh_y,
                 heading_x=heading_x,
@@ -1041,12 +1225,27 @@ class ConeMemoryNode(Node):
             )
 
             self._ax.clear()
-            blue_x = [c.x for c in self._global_memory.cones if c.class_label == 'blue' and c.hits >= self.global_min_hits_for_track]
-            blue_y = [c.y for c in self._global_memory.cones if c.class_label == 'blue' and c.hits >= self.global_min_hits_for_track]
-            yellow_x = [c.x for c in self._global_memory.cones if c.class_label == 'yellow' and c.hits >= self.global_min_hits_for_track]
-            yellow_y = [c.y for c in self._global_memory.cones if c.class_label == 'yellow' and c.hits >= self.global_min_hits_for_track]
-            other_x = [c.x for c in self._global_memory.cones if c.class_label not in {'blue', 'yellow'} and c.hits >= self.global_min_hits_for_track]
-            other_y = [c.y for c in self._global_memory.cones if c.class_label not in {'blue', 'yellow'} and c.hits >= self.global_min_hits_for_track]
+            blue_x = []
+            blue_y = []
+            yellow_x = []
+            yellow_y = []
+            other_x = []
+            other_y = []
+            for track in tracks:
+                if float(track.track_confidence) < self.believed_track_viz_min_confidence:
+                    continue
+                label, color_conf = track.class_label()
+                if float(color_conf) < self.believed_track_viz_min_confidence:
+                    continue
+                if label == 'blue':
+                    blue_x.append(track.x)
+                    blue_y.append(track.y)
+                elif label == 'yellow':
+                    yellow_x.append(track.x)
+                    yellow_y.append(track.y)
+                else:
+                    other_x.append(track.x)
+                    other_y.append(track.y)
 
             if blue_x:
                 self._ax.scatter(blue_x, blue_y, s=20, c='tab:blue', label='blue cones')
@@ -1101,8 +1300,11 @@ class ConeMemoryNode(Node):
         else:
             veh_x, veh_y, veh_yaw = pose
         heading_x, heading_y = (math.cos(veh_yaw), math.sin(veh_yaw))
-        left, right, center = self._global_memory.infer_boundaries_and_centerline(
-            min_hits=self.global_min_hits_for_track,
+        tracks = self._planner_track_snapshot(float(self.get_clock().now().nanoseconds) * 1e-9)
+        left, right, center = self._infer_track_boundaries_and_centerline(
+            tracks=tracks,
+            min_track_confidence=self.believed_track_viz_min_confidence,
+            min_color_confidence=self.believed_track_viz_min_confidence,
             vehicle_x=veh_x,
             vehicle_y=veh_y,
             heading_x=heading_x,
@@ -1116,7 +1318,15 @@ class ConeMemoryNode(Node):
                 import matplotlib.pyplot as plt
 
                 fig, ax = plt.subplots(figsize=(9, 7))
-                self._render_static_plot(ax=ax, veh_x=veh_x, veh_y=veh_y, left=left, right=right, center=center)
+                self._render_static_plot(
+                    ax=ax,
+                    tracks=tracks,
+                    veh_x=veh_x,
+                    veh_y=veh_y,
+                    left=left,
+                    right=right,
+                    center=center,
+                )
                 fig.savefig(str(png_path), dpi=180)
                 plt.close(fig)
             self.get_logger().info(f'saved cone memory track plot: {png_path}')
@@ -1133,17 +1343,18 @@ class ConeMemoryNode(Node):
             try:
                 with csv_path.open('w', newline='') as f:
                     writer = csv.writer(f)
-                    writer.writerow(['section', 'id', 'x', 'y', 'z', 'label', 'hits', 'confidence'])
-                    for cone in self._global_memory.cones:
+                    writer.writerow(['section', 'id', 'x', 'y', 'z', 'label', 'seen_count', 'track_confidence'])
+                    for track in tracks:
+                        label, _color_conf = track.class_label()
                         writer.writerow([
-                            'global_cone',
-                            cone.cone_id,
-                            f'{cone.x:.6f}',
-                            f'{cone.y:.6f}',
-                            f'{cone.z:.6f}',
-                            cone.class_label,
-                            cone.hits,
-                            f'{cone.confidence:.6f}',
+                            'remembered_track',
+                            track.track_id,
+                            f'{track.x:.6f}',
+                            f'{track.y:.6f}',
+                            f'{track.z:.6f}',
+                            label,
+                            track.seen_count,
+                            f'{track.track_confidence:.6f}',
                         ])
                     for idx, (x, y) in enumerate(center):
                         writer.writerow(['centerline', idx, f'{x:.6f}', f'{y:.6f}', '0.0', '', '', ''])
@@ -1155,18 +1366,34 @@ class ConeMemoryNode(Node):
         self,
         *,
         ax,
+        tracks: list[ConeTrack],
         veh_x: float,
         veh_y: float,
         left: list[tuple[float, float]],
         right: list[tuple[float, float]],
         center: list[tuple[float, float]],
     ) -> None:
-        blue_x = [c.x for c in self._global_memory.cones if c.class_label == 'blue' and c.hits >= self.global_min_hits_for_track]
-        blue_y = [c.y for c in self._global_memory.cones if c.class_label == 'blue' and c.hits >= self.global_min_hits_for_track]
-        yellow_x = [c.x for c in self._global_memory.cones if c.class_label == 'yellow' and c.hits >= self.global_min_hits_for_track]
-        yellow_y = [c.y for c in self._global_memory.cones if c.class_label == 'yellow' and c.hits >= self.global_min_hits_for_track]
-        other_x = [c.x for c in self._global_memory.cones if c.class_label not in {'blue', 'yellow'} and c.hits >= self.global_min_hits_for_track]
-        other_y = [c.y for c in self._global_memory.cones if c.class_label not in {'blue', 'yellow'} and c.hits >= self.global_min_hits_for_track]
+        blue_x = []
+        blue_y = []
+        yellow_x = []
+        yellow_y = []
+        other_x = []
+        other_y = []
+        for track in tracks:
+            label, color_conf = track.class_label()
+            if float(track.track_confidence) < self.believed_track_viz_min_confidence:
+                continue
+            if float(color_conf) < self.believed_track_viz_min_confidence:
+                continue
+            if label == 'blue':
+                blue_x.append(track.x)
+                blue_y.append(track.y)
+            elif label == 'yellow':
+                yellow_x.append(track.x)
+                yellow_y.append(track.y)
+            else:
+                other_x.append(track.x)
+                other_y.append(track.y)
 
         if blue_x:
             ax.scatter(blue_x, blue_y, s=20, c='tab:blue', label='blue cones')

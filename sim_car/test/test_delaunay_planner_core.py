@@ -13,227 +13,415 @@ if str(PACKAGE_ROOT) not in sys.path:
 import sim_car.planning.delaunay_planner_core as core
 
 
-def test_color_filtering_unknown_gate_behavior():
-    points = np.array([
-        [4.0, 2.0],
-        [4.0, -2.0],
-        [6.0, 2.0],
-        [6.0, -2.0],
-        [8.0, 2.1],
-        [8.0, -2.1],
-        [10.0, 0.0],
-    ], dtype=np.float64)
-    colors = ['blue', 'yellow', 'blue', 'yellow', 'blue', 'yellow', 'unknown']
-    conf = np.ones((7,), dtype=np.float64)
-
+def _cfg(**overrides) -> core.CoreConfig:
     cfg = core.CoreConfig(
-        min_colored_cones=10,
-        use_unknown_cones=True,
-        infer_unknown_by_side=False,
-        min_required_cones=6,
+        min_required_cones=4,
+        min_cross_edges=2,
+        max_near_field_lateral_jump_m=0.6,
+        near_field_midpoint_count=5,
     )
-    result = core.compute_centerline(points, colors, conf, (0.0, 0.0), 0.0, cfg)
-    assert result.filtered_points.shape[0] == 7
-
-    cfg2 = core.CoreConfig(
-        min_colored_cones=1,
-        use_unknown_cones=True,
-        infer_unknown_by_side=False,
-        min_required_cones=6,
-    )
-    result2 = core.compute_centerline(points, colors, conf, (0.0, 0.0), 0.0, cfg2)
-    assert result2.filtered_points.shape[0] == 6
+    for key, value in overrides.items():
+        setattr(cfg, key, value)
+    return cfg
 
 
-def test_edge_selection_has_unique_pairs_and_cross_edges():
+def test_pre_turn_ambiguity_prefers_local_zig_zag():
     points = np.array([
-        [3.0, 1.8],
-        [3.0, -1.8],
-        [6.0, 2.0],
-        [6.1, -2.0],
-        [9.0, 2.1],
-        [9.0, -2.1],
-    ], dtype=np.float64)
-    colors = ['blue', 'yellow', 'blue', 'yellow', 'blue', 'yellow']
-    conf = np.ones((6,), dtype=np.float64)
-
-    result = core.compute_centerline(points, colors, conf, (0.0, 0.0), 0.0, core.CoreConfig())
-    tri_edges = result.triangulation_edges
-    if tri_edges.shape[0] > 0:
-        tuples = {(int(a), int(b)) for a, b in tri_edges}
-        assert len(tuples) == tri_edges.shape[0]
-    assert result.selected_edges.shape[0] >= 1
-
-
-def test_midpoint_ordering_and_spacing_with_resampling():
-    points = np.array([
-        [2.0, 1.5],
-        [2.0, -1.5],
-        [4.0, 1.5],
-        [4.0, -1.5],
-        [6.0, 1.5],
-        [6.0, -1.5],
-        [8.0, 1.5],
-        [8.0, -1.5],
+        [2.0, 2.0],
+        [2.0, -2.0],
+        [4.0, 2.2],
+        [4.0, -2.0],
+        [7.0, 4.5],
+        [6.0, -1.6],
+        [8.0, 5.5],
+        [8.0, -0.4],
     ], dtype=np.float64)
     colors = ['blue', 'yellow', 'blue', 'yellow', 'blue', 'yellow', 'blue', 'yellow']
     conf = np.ones((8,), dtype=np.float64)
+    prior = core.CorePrior(
+        previous_midpoints_raw=np.array([[2.0, 0.0], [4.0, 0.0], [6.0, 0.0]], dtype=np.float64),
+        previous_width_m=4.0,
+    )
 
-    cfg = core.CoreConfig(min_spacing_m=0.5, path_resolution_m=0.5, max_path_length_m=20.0)
-    result = core.compute_centerline(points, colors, conf, (0.0, 0.0), 0.0, cfg)
+    result = core.compute_centerline(points, colors, conf, (0.0, 0.0), 0.0, _cfg(), prior=prior)
 
-    assert result.centerline.shape[0] > 2
-    dx = np.diff(result.centerline[:, 0])
-    assert np.all(dx >= -1e-6)
-
-
-def test_temporal_blend_formula_example():
-    alpha = 0.3
-    old = np.array([[0.0, 0.0], [1.0, 0.0]], dtype=np.float64)
-    new = np.array([[0.0, 1.0], [1.0, 1.0]], dtype=np.float64)
-    smoothed = (alpha * new) + ((1.0 - alpha) * old)
-    assert np.allclose(smoothed[:, 1], np.array([0.3, 0.3]))
+    assert result.status == 'ok'
+    assert result.selected_chain_length >= 3
+    assert np.all(np.abs(result.midpoints_raw[:, 1]) < 1.0)
 
 
-def test_delaunay_failure_fallback_to_nearest_pairs(monkeypatch):
+def test_delaunay_miss_recovered_by_local_fallback(monkeypatch):
     points = np.array([
-        [3.0, 1.7],
-        [3.0, -1.7],
-        [5.0, 1.8],
-        [5.0, -1.8],
-        [7.0, 1.9],
-        [7.0, -1.9],
+        [2.0, 1.8],
+        [2.0, -1.8],
+        [4.0, 1.9],
+        [4.0, -1.9],
+        [6.0, 2.0],
+        [6.0, -2.0],
     ], dtype=np.float64)
     colors = ['blue', 'yellow', 'blue', 'yellow', 'blue', 'yellow']
     conf = np.ones((6,), dtype=np.float64)
 
-    def _fake_build_edges(_points):
-        return np.empty((0, 2), dtype=np.int64), False
+    monkeypatch.setattr(
+        core,
+        '_build_edges',
+        lambda _points: (np.empty((0, 2), dtype=np.int64), False),
+    )
+    result = core.compute_centerline(points, colors, conf, (0.0, 0.0), 0.0, _cfg())
 
-    monkeypatch.setattr(core, '_build_edges', _fake_build_edges)
-    result = core.compute_centerline(points, colors, conf, (0.0, 0.0), 0.0, core.CoreConfig())
+    assert result.status == 'ok'
     assert result.used_fallback
-    assert result.selected_edges.shape[0] >= 1
-    assert result.centerline.shape[0] >= 1
+    assert result.selected_chain_length >= 2
 
 
-def test_unknown_side_inference_can_be_toggled():
+def test_along_track_diagonal_rejected_by_orientation_gate():
     points = np.array([
-        [3.0, 1.8],
-        [3.0, -1.8],
-        [6.0, 2.0],
-        [6.0, -2.0],
-        [5.0, 1.4],
-        [5.0, -1.4],
+        [2.0, 1.0],
+        [4.0, 1.1],
+        [6.0, 1.2],
+        [2.2, -1.0],
+        [4.2, -1.1],
+        [6.2, -1.2],
     ], dtype=np.float64)
-    colors = ['blue', 'yellow', 'blue', 'yellow', 'unknown', 'unknown']
+    colors = ['blue', 'blue', 'blue', 'yellow', 'yellow', 'yellow']
     conf = np.ones((6,), dtype=np.float64)
 
-    cfg_off = core.CoreConfig(
-        use_unknown_cones=False,
-        infer_unknown_by_side=False,
-        min_required_cones=4,
-    )
-    result_off = core.compute_centerline(points, colors, conf, (0.0, 0.0), 0.0, cfg_off)
-    assert result_off.filtered_points.shape[0] == 4
-    assert result_off.filtered_colors.count('unknown') == 0
+    result = core.compute_centerline(points, colors, conf, (0.0, 0.0), 0.0, _cfg())
 
-    cfg_on = core.CoreConfig(
-        use_unknown_cones=False,
-        infer_unknown_by_side=True,
-        min_required_cones=4,
-    )
-    result_on = core.compute_centerline(points, colors, conf, (0.0, 0.0), 0.0, cfg_on)
-    assert result_on.filtered_points.shape[0] == 6
-    assert result_on.filtered_colors.count('unknown') == 0
-    assert result_on.filtered_colors.count('blue') == 3
-    assert result_on.filtered_colors.count('yellow') == 3
+    assert result.status != 'ok'
+    assert result.reject_counts['orientation'] > 0
 
 
-def test_orange_side_inference_uses_clear_lateral_separation():
+def test_near_field_teleport_rejected_against_previous_raw_chain():
     points = np.array([
-        [3.0, 1.8],
-        [3.0, -1.8],
-        [6.0, 2.0],
-        [6.0, -2.0],
-        [5.0, 1.4],
-        [5.0, -1.4],
+        [2.0, 3.0],
+        [2.0, -0.6],
+        [4.0, 3.1],
+        [4.0, -0.5],
+        [6.0, 3.2],
+        [6.0, -0.4],
     ], dtype=np.float64)
-    colors = ['blue', 'yellow', 'blue', 'yellow', 'orange', 'orange']
+    colors = ['blue', 'yellow', 'blue', 'yellow', 'blue', 'yellow']
     conf = np.ones((6,), dtype=np.float64)
-
-    cfg = core.CoreConfig(
-        use_unknown_cones=False,
-        include_orange=False,
-        infer_unknown_by_side=True,
-        infer_orange_by_side=True,
-        min_required_cones=4,
+    prior = core.CorePrior(
+        previous_midpoints_raw=np.array([[2.0, 0.0], [4.0, 0.0], [6.0, 0.0]], dtype=np.float64),
+        previous_width_m=3.6,
     )
-    result = core.compute_centerline(points, colors, conf, (0.0, 0.0), 0.0, cfg)
 
-    assert result.filtered_points.shape[0] == 6
-    assert result.filtered_colors.count('orange') == 0
-    assert result.filtered_colors.count('blue') == 3
-    assert result.filtered_colors.count('yellow') == 3
-
-
-def test_orange_near_center_is_left_unmapped_when_side_is_ambiguous():
-    points = np.array([
-        [3.0, 1.8],
-        [3.0, -1.8],
-        [6.0, 2.0],
-        [6.0, -2.0],
-        [5.0, 0.15],
-        [5.0, -0.15],
-    ], dtype=np.float64)
-    colors = ['blue', 'yellow', 'blue', 'yellow', 'orange', 'orange']
-    conf = np.ones((6,), dtype=np.float64)
-
-    cfg = core.CoreConfig(
-        use_unknown_cones=False,
-        include_orange=False,
-        infer_unknown_by_side=True,
-        infer_orange_by_side=True,
-        min_required_cones=4,
+    result = core.compute_centerline(
+        points,
+        colors,
+        conf,
+        (0.0, 0.0),
+        0.0,
+        _cfg(max_near_field_lateral_jump_m=0.4),
+        prior=prior,
     )
-    result = core.compute_centerline(points, colors, conf, (0.0, 0.0), 0.0, cfg)
 
-    assert result.filtered_points.shape[0] == 4
-    assert result.filtered_colors.count('orange') == 0
-    assert result.filtered_colors.count('blue') == 2
-    assert result.filtered_colors.count('yellow') == 2
+    assert result.status != 'ok'
+    assert result.reject_counts['near_field_continuity'] > 0
 
 
-def test_inferred_orange_pair_cannot_become_the_only_cross_edge_reference():
+def test_real_corner_entry_allowed_when_geometry_is_consistent():
     points = np.array([
         [2.0, 1.8],
         [2.0, -1.8],
-        [5.0, 1.4],
-        [5.0, -1.4],
+        [4.0, 2.0],
+        [4.0, -1.6],
+        [6.0, 2.5],
+        [6.0, -1.1],
+        [8.0, 3.2],
+        [8.0, -0.4],
     ], dtype=np.float64)
-    colors = ['blue', 'yellow', 'orange', 'orange']
-    conf = np.ones((4,), dtype=np.float64)
-
-    cfg = core.CoreConfig(
-        use_unknown_cones=False,
-        infer_unknown_by_side=True,
-        infer_orange_by_side=True,
-        include_orange=False,
-        min_required_cones=4,
-        min_cross_edges=1,
+    colors = ['blue', 'yellow', 'blue', 'yellow', 'blue', 'yellow', 'blue', 'yellow']
+    conf = np.ones((8,), dtype=np.float64)
+    prior = core.CorePrior(
+        previous_midpoints_raw=np.array([[2.0, 0.0], [4.0, 0.0], [6.0, 0.0]], dtype=np.float64),
+        previous_width_m=3.6,
     )
-    result = core.compute_centerline(points, colors, conf, (0.0, 0.0), 0.0, cfg)
 
-    assert result.filtered_points.shape[0] == 4
-    selected_edges = {
-        tuple(sorted((int(edge[0]), int(edge[1]))))
-        for edge in result.selected_edges
-    }
-    assert (0, 1) in selected_edges
-    assert (2, 3) not in selected_edges
+    result = core.compute_centerline(points, colors, conf, (0.0, 0.0), 0.0, _cfg(), prior=prior)
+
+    assert result.status == 'ok'
+    assert result.near_field_lateral_max_m < 0.6
 
 
-def test_selected_edge_churn_ratio_and_key_generation():
+def test_seed_midpoint_too_far_is_rejected():
+    points = np.array([
+        [12.0, 1.8],
+        [12.0, -1.8],
+        [14.0, 1.9],
+        [14.0, -1.9],
+        [16.0, 2.0],
+        [16.0, -2.0],
+    ], dtype=np.float64)
+    colors = ['blue', 'yellow', 'blue', 'yellow', 'blue', 'yellow']
+    conf = np.ones((6,), dtype=np.float64)
+
+    result = core.compute_centerline(
+        points,
+        colors,
+        conf,
+        (0.0, 0.0),
+        0.0,
+        _cfg(max_seed_midpoint_distance_m=6.0),
+    )
+
+    assert result.status != 'ok'
+    assert result.reject_counts['seed_distance'] > 0
+
+
+def test_two_diagonal_near_field_chain_is_kept_instead_of_dropping_to_zero():
+    points = np.array([
+        [2.0, 1.8],
+        [2.0, -1.8],
+        [4.0, 1.8],
+    ], dtype=np.float64)
+    colors = ['blue', 'yellow', 'blue']
+    conf = np.ones((3,), dtype=np.float64)
+
+    result = core.compute_centerline(
+        points,
+        colors,
+        conf,
+        (0.0, 0.0),
+        0.0,
+        _cfg(min_required_cones=3, min_cross_edges=3),
+    )
+
+    assert result.status == 'ok'
+    assert result.selected_chain_length == 2
+    assert result.seed_midpoint_distance_m <= 3.5
+
+
+def test_candidate_progress_is_measured_from_vehicle_not_previous_seed():
+    points = np.array([
+        [2.0, 1.8],
+        [2.0, -1.8],
+        [4.0, 1.8],
+        [4.0, -1.8],
+        [6.0, 1.8],
+        [6.0, -1.8],
+    ], dtype=np.float64)
+    colors = ['blue', 'yellow', 'blue', 'yellow', 'blue', 'yellow']
+    conf = np.ones((6,), dtype=np.float64)
+    prior = core.CorePrior(
+        previous_midpoints_raw=np.array([[4.0, 0.0], [6.0, 0.0], [8.0, 0.0]], dtype=np.float64),
+        previous_width_m=3.6,
+    )
+
+    result = core.compute_centerline(
+        points,
+        colors,
+        conf,
+        (0.0, 0.0),
+        0.0,
+        _cfg(min_cross_edges=3),
+        prior=prior,
+    )
+
+    assert result.status == 'ok'
+    assert result.reject_counts['progress'] == 0
+    assert result.selected_chain_length >= 3
+    assert np.allclose(result.midpoints_raw[0], np.array([2.0, 0.0]))
+
+
+def test_startup_tangent_comes_from_cone_geometry_not_vehicle_yaw():
+    left_boundary = np.array([
+        [5.07326, -10.121974],
+        [1.441203, -11.932402],
+        [-2.466965, -13.999331],
+    ], dtype=np.float64)
+    right_boundary = np.array([
+        [4.67237, -5.183963],
+        [1.824002, -6.670729],
+        [-1.94798, -8.549423],
+    ], dtype=np.float64)
+    vehicle_xy = (9.58, -5.2)
+    vehicle_yaw = 3.75
+    rejected_edge = np.array([1.441203, -11.932402]) - np.array([1.824002, -6.670729])
+
+    startup_tangent = core._estimate_startup_tangent(
+        left_boundary=left_boundary,
+        right_boundary=right_boundary,
+        vehicle_xy=vehicle_xy,
+        vehicle_yaw=vehicle_yaw,
+    )
+    yaw_tangent = core._yaw_unit(vehicle_yaw)
+    startup_alignment = abs(float(np.dot(core._unit_vector(rejected_edge), startup_tangent)))
+    yaw_alignment = abs(float(np.dot(core._unit_vector(rejected_edge), yaw_tangent)))
+
+    assert startup_alignment < 0.55
+    assert yaw_alignment > 0.55
+
+
+def test_startup_geometry_accepts_local_chain_even_if_vehicle_yaw_is_off():
+    points = np.array([
+        [4.67237, -5.183963],
+        [5.07326, -10.121974],
+        [1.824002, -6.670729],
+        [1.441203, -11.932402],
+        [-1.94798, -8.549423],
+        [-2.466965, -13.999331],
+    ], dtype=np.float64)
+    colors = ['yellow', 'blue', 'yellow', 'blue', 'yellow', 'blue']
+    conf = np.ones((6,), dtype=np.float64)
+
+    result = core.compute_centerline(
+        points,
+        colors,
+        conf,
+        (9.58, -5.2),
+        3.75,
+        _cfg(max_seed_midpoint_distance_m=12.0),
+    )
+
+    assert result.status == 'ok'
+    assert result.selected_chain_length >= 2
+    assert result.reject_counts['orientation'] == 0
+    assert result.reject_counts['seed_distance'] == 0
+
+
+def test_small_track_spawn_width_gate_above_five_meters_is_needed():
+    points = np.array([
+        [4.67237, -5.183963],
+        [5.07326, -10.121974],
+        [1.824002, -6.670729],
+        [1.441203, -11.932402],
+        [-1.94798, -8.549423],
+        [-2.466965, -13.999331],
+    ], dtype=np.float64)
+    colors = ['yellow', 'blue', 'yellow', 'blue', 'yellow', 'blue']
+    conf = np.ones((6,), dtype=np.float64)
+
+    too_tight = core.compute_centerline(
+        points,
+        colors,
+        conf,
+        (9.58, -5.2),
+        3.75,
+        _cfg(max_cross_edge_m=5.0, max_seed_midpoint_distance_m=12.0, min_cross_edges=3),
+    )
+    corrected = core.compute_centerline(
+        points,
+        colors,
+        conf,
+        (9.58, -5.2),
+        3.75,
+        _cfg(max_cross_edge_m=5.4, max_seed_midpoint_distance_m=12.0, min_cross_edges=3),
+    )
+
+    assert too_tight.status != 'ok'
+    assert too_tight.reject_counts['width'] > 0
+    assert corrected.status == 'ok'
+    assert corrected.selected_chain_length >= 4
+
+
+def test_boundary_near_field_pairs_keep_local_ladder_in_front_of_vehicle():
+    points = np.array([
+        [5.07326, -10.121974],   # left 0
+        [1.441203, -11.932402],  # left 1
+        [-2.466965, -13.999331], # left 2
+        [4.67237, -5.183963],    # right 0
+        [1.824002, -6.670729],   # right 1
+        [-1.94798, -8.549423],   # right 2
+    ], dtype=np.float64)
+    left_idx = np.array([0, 1, 2], dtype=np.int64)
+    right_idx = np.array([3, 4, 5], dtype=np.int64)
+    tangent = np.array([-0.89, -0.45], dtype=np.float64)
+
+    pairs = core._build_boundary_near_field_pairs(
+        points=points,
+        left_boundary_idx=left_idx,
+        right_boundary_idx=right_idx,
+        vehicle_xy=(9.58, -5.2),
+        reference_tangent=tangent,
+        config=_cfg(max_seed_midpoint_distance_m=8.0, max_same_side_step_m=5.0),
+    )
+
+    as_pairs = {tuple(map(int, pair)) for pair in pairs.tolist()}
+    assert (0, 3) in as_pairs
+    assert (0, 4) in as_pairs
+    assert (1, 3) in as_pairs
+    assert (1, 4) in as_pairs
+
+
+def test_boundary_order_prefers_local_same_side_continuation():
+    points = np.array([
+        [4.80910279, -5.04329004],
+        [1.95319712, -6.71117767],
+        [-1.75103629, -8.62416587],
+        [-3.93795828, 8.46931923],
+    ], dtype=np.float64)
+    colors = ['yellow', 'yellow', 'yellow', 'yellow']
+    vehicle_xy = (3.233129609988708, -8.156905936403199)
+    tangent = np.array([-0.91, -0.41], dtype=np.float64)
+
+    ordered_idx = core._order_boundary_indices(
+        points,
+        colors,
+        'yellow',
+        vehicle_xy,
+        tangent,
+        max_step_m=6.25,
+    )
+
+    assert ordered_idx.tolist()[:2] == [1, 2]
+    assert 3 not in ordered_idx.tolist()[:2]
+
+
+def test_shared_vertex_alternation_still_holds():
+    points = np.array([
+        [2.0, 1.8],
+        [2.0, -1.8],
+        [4.0, 1.9],
+        [4.0, -1.9],
+        [6.0, 2.0],
+        [6.0, -2.0],
+    ], dtype=np.float64)
+    colors = ['blue', 'yellow', 'blue', 'yellow', 'blue', 'yellow']
+    conf = np.ones((6,), dtype=np.float64)
+
+    result = core.compute_centerline(points, colors, conf, (0.0, 0.0), 0.0, _cfg())
+
+    assert result.status == 'ok'
+    assert result.selected_edges.shape[0] >= 3
+    for prev, curr in zip(result.selected_edges[:-1], result.selected_edges[1:]):
+        shared = set(map(int, prev)).intersection(set(map(int, curr)))
+        assert len(shared) == 1
+
+
+def test_direct_color_beats_inferred_when_both_valid():
+    points = np.array([
+        [2.0, 1.8],
+        [2.0, -1.8],
+        [4.0, 2.0],
+        [4.0, -2.0],
+        [4.2, 2.05],
+        [6.0, -2.2],
+    ], dtype=np.float64)
+    colors = ['blue', 'yellow', 'blue', 'yellow', 'unknown', 'yellow']
+    conf = np.ones((6,), dtype=np.float64)
+
+    result = core.compute_centerline(
+        points,
+        colors,
+        conf,
+        (0.0, 0.0),
+        0.0,
+        _cfg(infer_unknown_by_side=True, use_unknown_cones=True),
+    )
+
+    assert result.status == 'ok'
+    assert np.any(np.all(np.isclose(result.midpoints_raw, np.array([4.0, 0.0])), axis=1))
+
+
+def test_width_prior_drift_is_capped():
+    updated = core._update_expected_width(4.0, 5.0, 0.2)
+    assert abs(updated - 4.2) < 1e-6
+
+
+def test_selected_edge_churn_uses_canonical_diagonal_identity():
     points = np.array([
         [2.0, 1.0],
         [2.0, -1.0],
@@ -245,66 +433,34 @@ def test_selected_edge_churn_ratio_and_key_generation():
 
     keys_a = core.selected_edge_keys(points=points, edges=edges_a, quantization_m=0.05)
     keys_b = core.selected_edge_keys(points=points, edges=edges_b, quantization_m=0.05)
-    churn = core.edge_churn_ratio(keys_a, keys_b)
 
-    assert len(keys_a) == 2
-    assert len(keys_b) == 2
-    assert abs(churn - (2.0 / 3.0)) < 1e-6
+    assert core.edge_churn_count(keys_a, keys_b) == 2
+    assert abs(core.edge_churn_ratio(keys_a, keys_b) - (2.0 / 3.0)) < 1e-6
 
 
-def test_centerline_jump_metric_tracks_large_vs_small_shift():
-    prev = np.array([[0.0, 0.0], [2.0, 0.0], [4.0, 0.0], [6.0, 0.0]], dtype=np.float64)
-    smooth = np.array([[0.0, 0.05], [2.0, 0.05], [4.0, 0.05], [6.0, 0.05]], dtype=np.float64)
-    jumpy = np.array([[0.0, 0.0], [2.0, 1.0], [4.0, 1.0], [6.0, 1.0]], dtype=np.float64)
-
-    smooth_jump = core.compute_centerline_jump_max(smooth, prev, horizon_m=8.0)
-    jumpy_jump = core.compute_centerline_jump_max(jumpy, prev, horizon_m=8.0)
-
-    assert smooth_jump < 0.1
-    assert jumpy_jump > 0.9
-
-
-def test_deterministic_centerline_under_input_permutation():
+def test_resample_before_smooth_preserves_even_spacing():
     points = np.array([
-        [3.0, 1.8],
-        [3.0, -1.8],
+        [2.0, 1.8],
+        [2.0, -1.8],
+        [4.0, 1.9],
+        [4.0, -1.9],
         [6.0, 2.0],
         [6.0, -2.0],
-        [9.0, 2.2],
-        [9.0, -2.2],
-        [12.0, 2.4],
-        [12.0, -2.4],
     ], dtype=np.float64)
-    colors = ['blue', 'yellow', 'blue', 'yellow', 'blue', 'yellow', 'blue', 'yellow']
-    conf = np.ones((8,), dtype=np.float64)
-    cfg = core.CoreConfig(min_required_cones=6)
+    colors = ['blue', 'yellow', 'blue', 'yellow', 'blue', 'yellow']
+    conf = np.ones((6,), dtype=np.float64)
 
-    base = core.compute_centerline(points, colors, conf, (0.0, 0.0), 0.0, cfg)
+    result = core.compute_centerline(
+        points,
+        colors,
+        conf,
+        (0.0, 0.0),
+        0.0,
+        _cfg(path_resolution_m=0.5, min_cross_edges=2),
+    )
 
-    perm = np.array([6, 1, 4, 3, 0, 5, 2, 7], dtype=np.int64)
-    perm_points = points[perm]
-    perm_colors = [colors[idx] for idx in perm]
-    perm_conf = conf[perm]
-    permuted = core.compute_centerline(perm_points, perm_colors, perm_conf, (0.0, 0.0), 0.0, cfg)
-
-    assert base.centerline.shape == permuted.centerline.shape
-    assert np.allclose(base.centerline, permuted.centerline)
-
-
-def test_steering_lowpass_step_response_is_bounded():
-    alpha = 0.35
-    previous = 0.0
-    commanded = []
-    for _ in range(5):
-        previous = (alpha * 1.0) + ((1.0 - alpha) * previous)
-        commanded.append(previous)
-    assert 0.0 < commanded[0] < 1.0
-    assert commanded[-1] < 1.0
-    assert commanded[-1] > commanded[0]
-
-
-def test_tracked_cones_frame_delta_p95_reflects_motion():
-    prev = np.array([[0.0, 0.0], [1.0, 1.0], [2.0, 2.0]], dtype=np.float64)
-    curr = np.array([[0.1, 0.0], [1.1, 1.0], [2.1, 2.0]], dtype=np.float64)
-    delta = core.tracked_cones_frame_delta_p95(prev, curr)
-    assert 0.09 <= delta <= 0.11
+    assert result.status == 'ok'
+    seg = np.diff(result.centerline, axis=0)
+    seg_len = np.hypot(seg[:, 0], seg[:, 1])
+    assert np.all(seg_len > 0.15)
+    assert np.all(seg_len < 0.8)

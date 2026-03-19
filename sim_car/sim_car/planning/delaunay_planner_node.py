@@ -3,7 +3,6 @@
 
 from __future__ import annotations
 
-from collections import deque
 import math
 import time
 from typing import Optional
@@ -28,13 +27,63 @@ from sim_car.controllers.factory import create_steering_controller
 from sim_car.controllers.stanley_controller import StanleyConfig
 from sim_car.planning.delaunay_planner_core import (
     CoreConfig,
+    CorePrior,
     CoreResult,
     compute_centerline,
     compute_centerline_jump_max,
+    edge_churn_count,
     edge_churn_ratio,
     selected_edge_keys,
     tracked_cones_frame_delta_p95,
 )
+
+_OPERATOR_STATE_CODES = {
+    'waiting': 0,
+    'fresh': 1,
+    'held': 2,
+    'stopped': 3,
+}
+
+_OPERATOR_REASON_CODES = {
+    'none': 0,
+    'waiting_for_cones': 1,
+    'missing_vehicle_pose': 2,
+    'cone_transform_unavailable': 3,
+    'no_safe_chain': 4,
+    'near_field_continuity': 5,
+    'seed_distance': 6,
+    'midpoint_kink': 7,
+    'hysteresis_holding': 8,
+    'holding_previous_valid': 9,
+    'hold_expired_no_path': 10,
+    'no_control_path': 11,
+    'controller_compute_failed': 12,
+    'stop_if_no_path': 13,
+}
+
+_OPERATOR_REASON_LABELS = {
+    'none': 'fresh path accepted',
+    'waiting_for_cones': 'waiting for /tracked_cones',
+    'missing_vehicle_pose': 'missing vehicle pose',
+    'cone_transform_unavailable': 'cone transform unavailable',
+    'no_safe_chain': 'no safe fresh chain',
+    'near_field_continuity': 'near-field continuity rejected fresh chain',
+    'seed_distance': 'seed midpoint too far ahead',
+    'midpoint_kink': 'near-field midpoint kink too large',
+    'hysteresis_holding': 'holding previous valid path during hysteresis',
+    'holding_previous_valid': 'holding previous valid path',
+    'hold_expired_no_path': 'held path expired and no fresh path is available',
+    'no_control_path': 'no control path available',
+    'controller_compute_failed': 'controller compute failed',
+    'stop_if_no_path': 'stop_if_no_path sent zero command',
+}
+
+_OPERATOR_STATE_COLORS = {
+    'waiting': (0.9, 0.9, 0.9),
+    'fresh': (0.2, 1.0, 0.3),
+    'held': (1.0, 0.9, 0.2),
+    'stopped': (1.0, 0.2, 0.2),
+}
 
 
 class DelaunayPlannerNode(Node):
@@ -58,10 +107,17 @@ class DelaunayPlannerNode(Node):
         self._previous_tracked_points: Optional[np.ndarray] = None
         self._previous_edge_keys: set[tuple[int, int, int, int]] = set()
         self._last_valid_centerline: Optional[np.ndarray] = None
+        self._last_valid_raw_midpoint_chain: Optional[np.ndarray] = None
+        self._last_valid_width_m: Optional[float] = None
         self._last_valid_time_sec: float = -1.0
-        self._recent_valid_centerlines: deque[tuple[float, np.ndarray]] = deque()
+        self._committed_centerline: Optional[np.ndarray] = None
+        self._commit_stable_frame_count: int = 0
+        self._hold_mode_active: bool = False
+        self._hold_clean_frame_count: int = 0
         self._last_speed_cmd: Optional[float] = None
         self._last_steering_cmd: Optional[float] = None
+        self._last_operator_state: Optional[str] = None
+        self._last_operator_reason: Optional[str] = None
 
         self._cmd_pub = self.create_publisher(AckermannDriveStamped, self.cmd_topic, 10)
         self._path_pub = self.create_publisher(Path, self.centerline_topic, 10)
@@ -120,11 +176,30 @@ class DelaunayPlannerNode(Node):
             'edge_selection.max_cross_edge_m': 6.0,
             'edge_selection.cross_edge_lateral_ratio': 0.6,
             'edge_selection.min_cross_edges': 3,
+            'edge_selection.max_near_field_lateral_jump_m': 0.6,
+            'edge_selection.near_field_midpoint_count': 5,
+            'edge_selection.max_diagonal_forward_alignment': 0.55,
+            'edge_selection.max_width_prior_step_drift_m': 0.2,
+            'edge_selection.max_midpoint_kink_rad': 1.2,
+            'edge_selection.max_seed_midpoint_distance_m': 8.0,
+            'edge_selection.max_same_side_step_m': 5.0,
+            'edge_selection.min_midpoint_progress_m': 0.15,
+            'edge_selection.width_prior_tolerance_m': 1.0,
+            'edge_selection.temporal_midpoint_match_tolerance_m': 1.0,
+            'edge_selection.local_opposite_neighbor_count': 2,
+            'edge_selection.local_opposite_forward_sector_rad': 0.9,
             'centerline.min_spacing_m': 0.5,
             'centerline.path_resolution_m': 0.5,
             'centerline.max_path_length_m': 30.0,
             'centerline.enable_temporal_smoothing': True,
             'centerline.smoothing_alpha': 0.3,
+            'centerline.enable_near_field_freeze': True,
+            'centerline.freeze_near_field_m': 3.0,
+            'centerline.freeze_blend_length_m': 1.0,
+            'centerline.enable_committed_near_field': True,
+            'centerline.commit_plan_horizon_m': 8.0,
+            'centerline.commit_stable_frames': 3,
+            'centerline.commit_update_max_churn_ratio': 0.45,
             'runtime.publish_rate_hz': 180.0,
             'runtime.log_throttle_s': 1.0,
             'control.controller_type': 'stanley',
@@ -144,12 +219,8 @@ class DelaunayPlannerNode(Node):
             'speed_control.speed_max_mps': 1.8,
             'speed_control.curvature_speed_gain': 4.0,
             'speed_control.lowpass_speed_alpha': 0.15,
-            'validation.max_centerline_jump_m': 0.0,
-            'validation.consistency_horizon_m': 8.0,
-            'validation.max_history_frames': 8,
             'validation.hold_last_valid_s': 1.25,
-            'validation.min_stable_frames': 3,
-            'validation.max_selected_edge_churn_ratio': 1.0,
+            'validation.hold_exit_clean_frames': 2,
             'diagnostics.topic': '/delaunay_planner/diagnostics',
             'diagnostics.centerline_jump_horizon_m': 8.0,
             'diagnostics.edge_quantization_m': 0.05,
@@ -184,8 +255,36 @@ class DelaunayPlannerNode(Node):
         self.odom_topic = str(self.get_parameter('topics.odom_topic').value)
 
         self.enable_temporal_smoothing = bool(self.get_parameter('centerline.enable_temporal_smoothing').value)
+        self.centerline_path_resolution_m = max(
+            0.05,
+            float(self.get_parameter('centerline.path_resolution_m').value),
+        )
         self.smoothing_alpha = float(
             np.clip(float(self.get_parameter('centerline.smoothing_alpha').value), 0.0, 1.0)
+        )
+        self.enable_near_field_freeze = bool(self.get_parameter('centerline.enable_near_field_freeze').value)
+        self.freeze_near_field_m = max(
+            0.0,
+            float(self.get_parameter('centerline.freeze_near_field_m').value),
+        )
+        self.freeze_blend_length_m = max(
+            0.0,
+            float(self.get_parameter('centerline.freeze_blend_length_m').value),
+        )
+        self.enable_committed_near_field = bool(
+            self.get_parameter('centerline.enable_committed_near_field').value
+        )
+        self.commit_plan_horizon_m = max(
+            0.0,
+            float(self.get_parameter('centerline.commit_plan_horizon_m').value),
+        )
+        self.commit_stable_frames = max(
+            1,
+            int(self.get_parameter('centerline.commit_stable_frames').value),
+        )
+        self.commit_update_max_churn_ratio = max(
+            0.0,
+            float(self.get_parameter('centerline.commit_update_max_churn_ratio').value),
         )
 
         self.publish_rate_hz = max(1.0, float(self.get_parameter('runtime.publish_rate_hz').value))
@@ -236,20 +335,10 @@ class DelaunayPlannerNode(Node):
         self.lowpass_speed_alpha = float(
             np.clip(float(self.get_parameter('speed_control.lowpass_speed_alpha').value), 0.0, 1.0)
         )
-        self.max_centerline_jump_m = max(
-            0.0,
-            float(self.get_parameter('validation.max_centerline_jump_m').value),
-        )
-        self.consistency_horizon_m = max(
-            0.5,
-            float(self.get_parameter('validation.consistency_horizon_m').value),
-        )
-        self.max_history_frames = max(1, int(self.get_parameter('validation.max_history_frames').value))
         self.hold_last_valid_s = max(0.0, float(self.get_parameter('validation.hold_last_valid_s').value))
-        self.min_stable_frames = max(1, int(self.get_parameter('validation.min_stable_frames').value))
-        self.max_selected_edge_churn_ratio = max(
-            0.0,
-            float(self.get_parameter('validation.max_selected_edge_churn_ratio').value),
+        self.hold_exit_clean_frames = max(
+            1,
+            int(self.get_parameter('validation.hold_exit_clean_frames').value),
         )
         self.diagnostics_topic = str(self.get_parameter('diagnostics.topic').value).strip() or '/delaunay_planner/diagnostics'
         self.centerline_jump_horizon_m = max(
@@ -306,6 +395,40 @@ class DelaunayPlannerNode(Node):
             max_cross_edge_m=float(self.get_parameter('edge_selection.max_cross_edge_m').value),
             cross_edge_lateral_ratio=float(self.get_parameter('edge_selection.cross_edge_lateral_ratio').value),
             min_cross_edges=max(1, int(self.get_parameter('edge_selection.min_cross_edges').value)),
+            max_near_field_lateral_jump_m=float(
+                self.get_parameter('edge_selection.max_near_field_lateral_jump_m').value
+            ),
+            near_field_midpoint_count=max(
+                2,
+                int(self.get_parameter('edge_selection.near_field_midpoint_count').value),
+            ),
+            max_diagonal_forward_alignment=float(
+                self.get_parameter('edge_selection.max_diagonal_forward_alignment').value
+            ),
+            max_width_prior_step_drift_m=float(
+                self.get_parameter('edge_selection.max_width_prior_step_drift_m').value
+            ),
+            max_midpoint_kink_rad=float(self.get_parameter('edge_selection.max_midpoint_kink_rad').value),
+            max_seed_midpoint_distance_m=float(
+                self.get_parameter('edge_selection.max_seed_midpoint_distance_m').value
+            ),
+            max_same_side_step_m=float(self.get_parameter('edge_selection.max_same_side_step_m').value),
+            min_midpoint_progress_m=float(
+                self.get_parameter('edge_selection.min_midpoint_progress_m').value
+            ),
+            width_prior_tolerance_m=float(
+                self.get_parameter('edge_selection.width_prior_tolerance_m').value
+            ),
+            temporal_midpoint_match_tolerance_m=float(
+                self.get_parameter('edge_selection.temporal_midpoint_match_tolerance_m').value
+            ),
+            local_opposite_neighbor_count=max(
+                1,
+                int(self.get_parameter('edge_selection.local_opposite_neighbor_count').value),
+            ),
+            local_opposite_forward_sector_rad=float(
+                self.get_parameter('edge_selection.local_opposite_forward_sector_rad').value
+            ),
             min_spacing_m=float(self.get_parameter('centerline.min_spacing_m').value),
             path_resolution_m=float(self.get_parameter('centerline.path_resolution_m').value),
             max_path_length_m=float(self.get_parameter('centerline.max_path_length_m').value),
@@ -336,16 +459,16 @@ class DelaunayPlannerNode(Node):
 
         cones_msg = self._latest_cones_msg
         if cones_msg is None:
-            self._apply_no_path_behavior()
-            self._publish_outputs(
+            zero_cmd_sent = int(self._apply_no_path_behavior())
+            self._publish_empty_cycle(
                 frame_id=self.odom_frame,
-                centerline=np.empty((0, 2), dtype=np.float64),
-                result=None,
                 status='waiting for /tracked_cones',
-                control_target_frame=control_target_frame,
+                operator_state='waiting',
+                operator_reason='waiting_for_cones',
                 cmd_speed=cmd_speed,
                 cmd_steering=cmd_steering,
                 lookahead=lookahead,
+                zero_cmd_sent_flag=zero_cmd_sent,
             )
             return
 
@@ -359,16 +482,16 @@ class DelaunayPlannerNode(Node):
             pose = self._resolve_vehicle_pose(target_frame, cones_msg.header.stamp)
 
         if pose is None:
-            self._apply_no_path_behavior()
-            self._publish_outputs(
+            zero_cmd_sent = int(self._apply_no_path_behavior())
+            self._publish_empty_cycle(
                 frame_id=target_frame,
-                centerline=np.empty((0, 2), dtype=np.float64),
-                result=None,
                 status='missing vehicle pose (tf and /sim/odom unavailable)',
-                control_target_frame=control_target_frame,
+                operator_state='waiting',
+                operator_reason='missing_vehicle_pose',
                 cmd_speed=cmd_speed,
                 cmd_steering=cmd_steering,
                 lookahead=lookahead,
+                zero_cmd_sent_flag=zero_cmd_sent,
             )
             return
 
@@ -383,32 +506,32 @@ class DelaunayPlannerNode(Node):
                 target_frame = self.odom_frame
                 pose = self._resolve_vehicle_pose(target_frame, cones_msg.header.stamp)
                 if pose is None:
-                    self._apply_no_path_behavior()
-                    self._publish_outputs(
+                    zero_cmd_sent = int(self._apply_no_path_behavior())
+                    self._publish_empty_cycle(
                         frame_id=self.odom_frame,
-                        centerline=np.empty((0, 2), dtype=np.float64),
-                        result=None,
                         status='cone transform failed and odom pose unavailable',
-                        control_target_frame=control_target_frame,
+                        operator_state='waiting',
+                        operator_reason='cone_transform_unavailable',
                         cmd_speed=cmd_speed,
                         cmd_steering=cmd_steering,
                         lookahead=lookahead,
+                        zero_cmd_sent_flag=zero_cmd_sent,
                     )
                     return
                 vehicle_x, vehicle_y, vehicle_yaw = pose
                 points_xy, colors, confidences = self._convert_cones_to_frame(cones_msg, source_frame, target_frame)
 
         if points_xy is None:
-            self._apply_no_path_behavior()
-            self._publish_outputs(
+            zero_cmd_sent = int(self._apply_no_path_behavior())
+            self._publish_empty_cycle(
                 frame_id=target_frame,
-                centerline=np.empty((0, 2), dtype=np.float64),
-                result=None,
                 status='cone transform unavailable',
-                control_target_frame=control_target_frame,
+                operator_state='waiting',
+                operator_reason='cone_transform_unavailable',
                 cmd_speed=cmd_speed,
                 cmd_steering=cmd_steering,
                 lookahead=lookahead,
+                zero_cmd_sent_flag=zero_cmd_sent,
             )
             return
 
@@ -419,17 +542,27 @@ class DelaunayPlannerNode(Node):
             vehicle_xy=(vehicle_x, vehicle_y),
             vehicle_yaw=vehicle_yaw,
             config=self._core_config,
+            prior=CorePrior(
+                previous_midpoints_raw=(
+                    np.array(self._last_valid_raw_midpoint_chain, copy=True)
+                    if self._last_valid_raw_midpoint_chain is not None
+                    else None
+                ),
+                previous_width_m=self._last_valid_width_m,
+            ),
         )
         now_sec = float(self.get_clock().now().nanoseconds) * 1e-9
         tracked_delta_p95_m = tracked_cones_frame_delta_p95(self._previous_tracked_points, points_xy)
         self._previous_tracked_points = np.array(points_xy, copy=True)
 
+        previous_edge_keys = set(self._previous_edge_keys)
         selected_keys = selected_edge_keys(
             points=result.filtered_points,
             edges=result.selected_edges,
             quantization_m=self.edge_quantization_m,
         )
-        selected_edge_churn = edge_churn_ratio(self._previous_edge_keys, selected_keys)
+        selected_edge_churn_count = edge_churn_count(previous_edge_keys, selected_keys)
+        selected_edge_churn = edge_churn_ratio(previous_edge_keys, selected_keys)
         self._previous_edge_keys = set(selected_keys)
 
         raw_centerline = result.centerline
@@ -456,31 +589,94 @@ class DelaunayPlannerNode(Node):
         status = result.status
         plan_valid = False
         plan_hold_active = False
+        publish_mode = 'fresh'
+        hold_reason = result.reject_reason
+        zero_cmd_sent_flag = 0
+        controller_failed = False
+        near_field_freeze_active = False
+        committed_near_field_active = False
+
+        # The first few meters of the published midline must remain laterally stable frame-to-frame.
+        # A longer path is not better if the near-field segment teleports sideways.
         if centerline.shape[0] > 0:
-            plan_ok = self._validate_plan(centerline, selected_edge_churn, now_sec)
+            plan_ok = True
             if plan_ok:
                 plan_valid = True
-                self._record_valid_centerline(now_sec, centerline)
-                self._last_valid_centerline = np.array(centerline, copy=True)
-                self._last_valid_time_sec = now_sec
+                continue_holding = self._advance_hold_hysteresis(plan_ok=True)
+                if continue_holding:
+                    held_centerline = self._held_centerline(now_sec)
+                    if held_centerline is not None:
+                        centerline = held_centerline
+                        plan_hold_active = True
+                        publish_mode = 'held'
+                        status = (
+                            f'{status}; hysteresis holding previous valid centerline '
+                            f'({self._hold_clean_frame_count}/{self.hold_exit_clean_frames})'
+                        )
+                if not plan_hold_active:
+                    publish_mode = 'fresh'
             else:
+                self._advance_hold_hysteresis(plan_ok=False)
                 held_centerline = self._held_centerline(now_sec)
                 if held_centerline is not None:
                     centerline = held_centerline
                     plan_hold_active = True
+                    publish_mode = 'held'
                     status = f'{status}; holding previous valid centerline'
                 else:
                     centerline = np.empty((0, 2), dtype=np.float64)
+                    publish_mode = 'held'
                     status = f'{status}; rejected unstable centerline'
         else:
+            self._advance_hold_hysteresis(plan_ok=False)
             held_centerline = self._held_centerline(now_sec)
             if held_centerline is not None:
                 centerline = held_centerline
                 plan_hold_active = True
+                publish_mode = 'held'
                 status = f'{status}; holding previous valid centerline'
+            else:
+                publish_mode = 'held'
 
-        if self.enable_temporal_smoothing:
+        if plan_hold_active:
+            hold_reason = result.reject_reason or status
+
+        if self.enable_temporal_smoothing and publish_mode == 'fresh':
             centerline = self._apply_temporal_smoothing(centerline)
+            self._previous_centerline = np.array(centerline, copy=True)
+        if publish_mode == 'fresh':
+            self._update_committed_near_field(
+                centerline=centerline,
+                selected_edge_churn=selected_edge_churn,
+                selected_chain_length=int(result.selected_chain_length),
+                previous_edge_keys=previous_edge_keys,
+            )
+            centerline, near_field_freeze_active, committed_near_field_active = self._apply_near_field_freeze(
+                centerline,
+                frame_id=target_frame,
+                vehicle_x=vehicle_x,
+                vehicle_y=vehicle_y,
+            )
+            if centerline.shape[0] > 0:
+                self._previous_centerline = np.array(centerline, copy=True)
+                self._record_valid_plan(
+                    now_sec=now_sec,
+                    centerline=centerline,
+                    raw_midpoint_chain=raw_midpoint_chain,
+                    selected_chain_width_median=result.selected_chain_width_median,
+                )
+                if near_field_freeze_active:
+                    status = (
+                        f'{status}; frozen near-field '
+                        f'{self.freeze_near_field_m:.1f} m before blending into fresh far field'
+                    )
+                if committed_near_field_active:
+                    status = (
+                        f'{status}; committed near-field '
+                        f'{self.commit_plan_horizon_m:.1f} m trusted over high-churn refresh'
+                    )
+        elif publish_mode == 'held' and centerline.shape[0] > 0:
+            self._previous_centerline = np.array(centerline, copy=True)
 
         control_path = self._centerline_to_vehicle_frame(
             centerline=centerline,
@@ -489,9 +685,6 @@ class DelaunayPlannerNode(Node):
             vehicle_y=vehicle_y,
             vehicle_yaw=vehicle_yaw,
         )
-        if control_path.shape[0] >= 1 and not self._has_stable_history():
-            status = f'{status}; waiting for stable centerline history'
-            control_path = np.empty((0, 2), dtype=np.float64)
         if control_path.shape[0] >= 1:
             try:
                 controller_output = self._controller.compute(
@@ -501,7 +694,8 @@ class DelaunayPlannerNode(Node):
                 )
             except ValueError as exc:
                 self._warn_throttled('controller_compute_error', f'controller compute failed: {exc}')
-                self._apply_no_path_behavior()
+                controller_failed = True
+                zero_cmd_sent_flag = int(self._apply_no_path_behavior())
                 if self._last_speed_cmd is not None:
                     cmd_speed = float(self._last_speed_cmd)
                 if self._last_steering_cmd is not None:
@@ -563,11 +757,60 @@ class DelaunayPlannerNode(Node):
                         ),
                     }
         else:
-            self._apply_no_path_behavior()
+            zero_cmd_sent_flag = int(self._apply_no_path_behavior())
             if self._last_speed_cmd is not None:
                 cmd_speed = float(self._last_speed_cmd)
             if self._last_steering_cmd is not None:
                 cmd_steering = float(self._last_steering_cmd)
+
+        control_path_point_count = int(control_path.shape[0])
+        hold_remaining_s = self._hold_remaining_s(now_sec)
+        operator_state = 'fresh'
+        operator_reason = 'none'
+        core_reject_reason = self._normalize_core_reject_reason(result)
+        if centerline.shape[0] == 0:
+            if self._last_valid_centerline is not None and hold_remaining_s <= 0.0:
+                operator_state = 'stopped'
+                operator_reason = 'hold_expired_no_path'
+            elif core_reject_reason != 'none':
+                operator_state = 'stopped'
+                operator_reason = core_reject_reason
+            elif zero_cmd_sent_flag:
+                operator_state = 'stopped'
+                operator_reason = 'stop_if_no_path'
+            else:
+                operator_state = 'held'
+                operator_reason = 'holding_previous_valid'
+        elif publish_mode == 'held':
+            operator_state = 'held'
+            if centerline.shape[0] > 0 and 'hysteresis holding previous valid centerline' in status:
+                operator_reason = 'hysteresis_holding'
+            elif core_reject_reason != 'none':
+                operator_reason = core_reject_reason
+            else:
+                operator_reason = 'holding_previous_valid'
+        else:
+            operator_state = 'fresh'
+            operator_reason = 'none'
+
+        if controller_failed:
+            operator_state = 'stopped'
+            operator_reason = 'controller_compute_failed'
+        elif centerline.shape[0] > 0 and control_path_point_count <= 0 and operator_state != 'waiting':
+            operator_state = 'stopped'
+            operator_reason = 'no_control_path'
+        if zero_cmd_sent_flag and operator_reason == 'none':
+            operator_state = 'stopped'
+            operator_reason = 'stop_if_no_path'
+        if control_path_point_count > 0 and centerline.shape[0] > 0 and zero_cmd_sent_flag == 0 and publish_mode == 'fresh':
+            operator_state = 'fresh'
+
+        self._log_operator_state_transition(
+            operator_state=operator_state,
+            operator_reason=operator_reason,
+            hold_remaining_s=hold_remaining_s,
+            selected_chain_length=int(result.selected_chain_length),
+        )
 
         self._publish_diagnostics(
             frame_id=target_frame,
@@ -585,6 +828,47 @@ class DelaunayPlannerNode(Node):
                 'path_length_m': self._path_length_m(centerline),
                 'path_curvature_abs_p95_1pm': self._path_curvature_abs_p95(centerline),
             },
+            planner_metrics={
+                'candidate_diagonal_count': result.candidate_count,
+                'selected_chain_length': result.selected_chain_length,
+                'selected_chain_median_width_m': result.selected_chain_width_median,
+                'expected_width_prior_m': result.expected_width_prior_m,
+                'reject_wrong_side_count': result.reject_counts.get('wrong_side', 0),
+                'reject_width_count': result.reject_counts.get('width', 0),
+                'reject_width_range_count': result.reject_counts.get('width_range', 0),
+                'reject_width_prior_count': result.reject_counts.get('width_prior', 0),
+                'reject_orientation_count': result.reject_counts.get('orientation', 0),
+                'reject_progress_count': result.reject_counts.get('progress', 0),
+                'reject_near_field_continuity_count': result.reject_counts.get('near_field_continuity', 0),
+                'reject_midpoint_kink_count': result.reject_counts.get('midpoint_kink', 0),
+                'reject_seed_distance_count': result.reject_counts.get('seed_distance', 0),
+                'near_field_lateral_max_m': result.near_field_lateral_max_m,
+                'near_field_lateral_mean_m': result.near_field_lateral_mean_m,
+                'near_field_displacement_max_m': result.near_field_displacement_max_m,
+                'near_field_displacement_mean_m': result.near_field_displacement_mean_m,
+                'near_field_midpoint_kink_max_rad': result.near_field_kink_max_rad,
+                'seed_midpoint_distance_m': result.seed_midpoint_distance_m,
+                'seed_temporal_offset_m': result.seed_temporal_offset_m,
+                'selected_chain_churn_count': selected_edge_churn_count,
+                'selected_chain_churn_ratio': selected_edge_churn,
+                'publish_mode': publish_mode,
+                'hold_mode_active_flag': 1 if self._hold_mode_active else 0,
+                'hold_clean_frame_count': self._hold_clean_frame_count,
+                'hold_reason': hold_reason or '',
+                'committed_near_field_active_flag': 1 if committed_near_field_active else 0,
+                'commit_stable_frame_count': self._commit_stable_frame_count,
+                'near_field_freeze_active_flag': 1 if near_field_freeze_active else 0,
+                'planner_state_code': self._operator_state_code(operator_state),
+                'fresh_publish_flag': 1 if operator_state == 'fresh' else 0,
+                'held_publish_flag': 1 if operator_state == 'held' else 0,
+                'stopped_flag': 1 if operator_state == 'stopped' else 0,
+                'waiting_flag': 1 if operator_state == 'waiting' else 0,
+                'operator_reason_code': self._operator_reason_code(operator_reason),
+                'operator_reason': operator_reason,
+                'hold_remaining_s': hold_remaining_s,
+                'control_path_point_count': control_path_point_count,
+                'zero_cmd_sent_flag': zero_cmd_sent_flag,
+            },
         )
 
         self._publish_outputs(
@@ -598,6 +882,15 @@ class DelaunayPlannerNode(Node):
             cmd_speed=cmd_speed,
             cmd_steering=cmd_steering,
             lookahead=lookahead,
+            operator_state=operator_state,
+            operator_reason=operator_reason,
+            hold_remaining_s=hold_remaining_s,
+            control_path_point_count=control_path_point_count,
+            candidate_diagonal_count=int(result.candidate_count),
+            selected_chain_length=int(result.selected_chain_length),
+            seed_midpoint_distance_m=float(result.seed_midpoint_distance_m),
+            near_field_lateral_max_m=float(result.near_field_lateral_max_m),
+            near_field_midpoint_kink_max_rad=float(result.near_field_kink_max_rad),
         )
 
     def _centerline_to_vehicle_frame(
@@ -630,14 +923,15 @@ class DelaunayPlannerNode(Node):
         alpha = self.lowpass_speed_alpha
         return float((alpha * v_des) + ((1.0 - alpha) * float(self._last_speed_cmd)))
 
-    def _apply_no_path_behavior(self) -> None:
+    def _apply_no_path_behavior(self) -> bool:
         if self.stop_if_no_path:
             self._publish_cmd(0.0, 0.0)
             self._last_speed_cmd = 0.0
             self._last_steering_cmd = 0.0
-            return
+            return True
         if self._last_speed_cmd is not None and self._last_steering_cmd is not None:
             self._publish_cmd(float(self._last_speed_cmd), float(self._last_steering_cmd))
+        return False
 
     def _publish_cmd(self, speed_mps: float, steering_rad: float) -> None:
         msg = AckermannDriveStamped()
@@ -808,22 +1102,201 @@ class DelaunayPlannerNode(Node):
 
     def _apply_temporal_smoothing(self, centerline: np.ndarray) -> np.ndarray:
         if centerline.shape[0] == 0:
-            self._previous_centerline = None
             return centerline
         prev = self._previous_centerline
         if prev is None or prev.shape[0] < 2 or centerline.shape[0] < 2:
-            self._previous_centerline = centerline
             return centerline
 
         count_diff = abs(prev.shape[0] - centerline.shape[0])
         if count_diff > max(2, int(0.25 * centerline.shape[0])):
-            self._previous_centerline = centerline
             return centerline
 
         prev_rs = self._resample_to_count(prev, centerline.shape[0])
-        blended = (self.smoothing_alpha * centerline) + ((1.0 - self.smoothing_alpha) * prev_rs)
-        self._previous_centerline = blended
-        return blended
+        return (self.smoothing_alpha * centerline) + ((1.0 - self.smoothing_alpha) * prev_rs)
+
+    def _apply_near_field_freeze(
+        self,
+        centerline: np.ndarray,
+        *,
+        frame_id: str,
+        vehicle_x: float,
+        vehicle_y: float,
+    ) -> tuple[np.ndarray, bool, bool]:
+        if not self.enable_near_field_freeze or self.freeze_near_field_m <= 0.0:
+            return centerline, False, False
+        previous, committed_active = self._freeze_reference_path(
+            frame_id=frame_id,
+            vehicle_x=vehicle_x,
+            vehicle_y=vehicle_y,
+        )
+        if centerline.shape[0] < 2 or previous is None or previous.shape[0] < 2:
+            return centerline, False, committed_active
+        freeze_horizon_m = self.freeze_near_field_m
+        if committed_active:
+            freeze_horizon_m = max(freeze_horizon_m, self.commit_plan_horizon_m)
+        spliced, applied = self._splice_frozen_near_field(
+            previous=previous,
+            current=centerline,
+            freeze_horizon_m=freeze_horizon_m,
+            blend_length_m=self.freeze_blend_length_m,
+            resolution_m=self.centerline_path_resolution_m,
+        )
+        return spliced, applied, committed_active
+
+    def _freeze_reference_path(
+        self,
+        *,
+        frame_id: str,
+        vehicle_x: float,
+        vehicle_y: float,
+    ) -> tuple[Optional[np.ndarray], bool]:
+        if (
+            self.enable_committed_near_field
+            and self.commit_plan_horizon_m > 0.0
+            and self._is_alias(frame_id, self.odom_frame)
+            and self._committed_centerline is not None
+            and self._committed_centerline.shape[0] >= 2
+        ):
+            committed = self._extract_forward_path_from_pose(
+                path=self._committed_centerline,
+                vehicle_xy=(vehicle_x, vehicle_y),
+                resolution_m=self.centerline_path_resolution_m,
+            )
+            if committed is not None and committed.shape[0] >= 2:
+                return committed, True
+            self._committed_centerline = None
+            self._commit_stable_frame_count = 0
+        return self._last_valid_centerline, False
+
+    def _update_committed_near_field(
+        self,
+        *,
+        centerline: np.ndarray,
+        selected_edge_churn: float,
+        selected_chain_length: int,
+        previous_edge_keys: set[tuple[int, int, int, int]],
+    ) -> None:
+        if not self.enable_committed_near_field or self.commit_plan_horizon_m <= 0.0:
+            return
+        if centerline.shape[0] < 2 or selected_chain_length <= 0:
+            self._commit_stable_frame_count = 0
+            return
+
+        stable_enough = (not previous_edge_keys) or (
+            selected_edge_churn <= self.commit_update_max_churn_ratio
+        )
+        if not stable_enough:
+            self._commit_stable_frame_count = 0
+            return
+
+        self._commit_stable_frame_count += 1
+        if self._commit_stable_frame_count < self.commit_stable_frames:
+            return
+
+        self._committed_centerline = np.array(centerline, copy=True)
+
+    @staticmethod
+    def _splice_frozen_near_field(
+        *,
+        previous: np.ndarray,
+        current: np.ndarray,
+        freeze_horizon_m: float,
+        blend_length_m: float,
+        resolution_m: float,
+    ) -> tuple[np.ndarray, bool]:
+        if previous.shape[0] < 2 or current.shape[0] < 2:
+            return current, False
+
+        prev_cum = DelaunayPlannerNode._path_cumulative_lengths(previous)
+        curr_cum = DelaunayPlannerNode._path_cumulative_lengths(current)
+        prev_total = float(prev_cum[-1])
+        curr_total = float(curr_cum[-1])
+        if prev_total <= 1e-6 or curr_total <= 1e-6:
+            return current, False
+
+        overlap_m = min(prev_total, curr_total)
+        freeze_m = min(max(0.0, float(freeze_horizon_m)), overlap_m)
+        if freeze_m <= 0.0:
+            return current, False
+
+        blend_m = max(0.0, float(blend_length_m))
+        blend_end_m = min(overlap_m, freeze_m + blend_m)
+        step_m = max(0.05, float(resolution_m))
+        samples = np.arange(0.0, curr_total + 1e-9, step_m, dtype=np.float64)
+        if samples.size == 0 or samples[-1] < curr_total:
+            samples = np.concatenate((samples, [curr_total]))
+
+        current_rs = DelaunayPlannerNode._sample_path_at_lengths(current, curr_cum, samples)
+        previous_rs = DelaunayPlannerNode._sample_path_at_lengths(previous, prev_cum, samples)
+        out = np.array(current_rs, copy=True)
+        out[samples <= freeze_m + 1e-9] = previous_rs[samples <= freeze_m + 1e-9]
+        if blend_end_m > freeze_m + 1e-6:
+            blend_mask = (samples > freeze_m) & (samples < blend_end_m)
+            if np.any(blend_mask):
+                w = ((samples[blend_mask] - freeze_m) / (blend_end_m - freeze_m)).reshape(-1, 1)
+                out[blend_mask] = ((1.0 - w) * previous_rs[blend_mask]) + (w * current_rs[blend_mask])
+
+        return out.astype(np.float64), True
+
+    @staticmethod
+    def _path_cumulative_lengths(points: np.ndarray) -> np.ndarray:
+        if points.shape[0] <= 1:
+            return np.asarray([0.0], dtype=np.float64)
+        seg = points[1:] - points[:-1]
+        seg_len = np.hypot(seg[:, 0], seg[:, 1])
+        return np.concatenate(([0.0], np.cumsum(seg_len))).astype(np.float64)
+
+    @staticmethod
+    def _sample_path_at_lengths(points: np.ndarray, cum_lengths: np.ndarray, samples: np.ndarray) -> np.ndarray:
+        capped = np.clip(samples, 0.0, float(cum_lengths[-1]))
+        x = np.interp(capped, cum_lengths, points[:, 0])
+        y = np.interp(capped, cum_lengths, points[:, 1])
+        return np.column_stack((x, y)).astype(np.float64)
+
+    @staticmethod
+    def _extract_forward_path_from_pose(
+        *,
+        path: np.ndarray,
+        vehicle_xy: tuple[float, float],
+        resolution_m: float,
+    ) -> Optional[np.ndarray]:
+        if path.shape[0] < 2:
+            return None
+        cum = DelaunayPlannerNode._path_cumulative_lengths(path)
+        s_vehicle = DelaunayPlannerNode._project_point_to_path_s(
+            path,
+            cum,
+            np.asarray(vehicle_xy, dtype=np.float64),
+        )
+        total = float(cum[-1])
+        step = max(0.05, float(resolution_m))
+        if (total - s_vehicle) <= step:
+            return None
+        samples = np.arange(s_vehicle, total + 1e-9, step, dtype=np.float64)
+        if samples.size == 0 or samples[-1] < total:
+            samples = np.concatenate((samples, [total]))
+        return DelaunayPlannerNode._sample_path_at_lengths(path, cum, samples)
+
+    @staticmethod
+    def _project_point_to_path_s(path: np.ndarray, cum_lengths: np.ndarray, point_xy: np.ndarray) -> float:
+        best_s = 0.0
+        best_dist = float('inf')
+        for idx in range(path.shape[0] - 1):
+            a = path[idx]
+            b = path[idx + 1]
+            ab = b - a
+            denom = float(np.dot(ab, ab))
+            if denom <= 1e-12:
+                t = 0.0
+                projected = a
+            else:
+                t = float(np.clip(np.dot(point_xy - a, ab) / denom, 0.0, 1.0))
+                projected = a + (t * ab)
+            dist = float(np.hypot(*(point_xy - projected)))
+            if dist < best_dist:
+                best_dist = dist
+                best_s = float(cum_lengths[idx] + (t * np.hypot(ab[0], ab[1])))
+        return best_s
 
     @staticmethod
     def _resample_to_count(points: np.ndarray, count: int) -> np.ndarray:
@@ -841,102 +1314,260 @@ class DelaunayPlannerNode(Node):
         y = np.interp(samples, cum, points[:, 1])
         return np.column_stack((x, y)).astype(np.float64)
 
-    def _validate_plan(self, centerline: np.ndarray, selected_edge_churn: float, now_sec: float) -> bool:
-        if centerline.shape[0] < 2:
+    def _record_valid_plan(
+        self,
+        *,
+        now_sec: float,
+        centerline: np.ndarray,
+        raw_midpoint_chain: np.ndarray,
+        selected_chain_width_median: float,
+    ) -> None:
+        self._last_valid_centerline = np.array(centerline, copy=True)
+        self._last_valid_raw_midpoint_chain = (
+            np.array(raw_midpoint_chain, copy=True)
+            if raw_midpoint_chain.shape[0] > 0
+            else None
+        )
+        self._last_valid_width_m = (
+            float(selected_chain_width_median)
+            if math.isfinite(float(selected_chain_width_median))
+            else self._last_valid_width_m
+        )
+        self._last_valid_time_sec = now_sec
+
+    def _advance_hold_hysteresis(self, *, plan_ok: bool) -> bool:
+        if not plan_ok:
+            self._hold_mode_active = True
+            self._hold_clean_frame_count = 0
             return True
-        if (
-            self.max_selected_edge_churn_ratio > 0.0
-            and selected_edge_churn > self.max_selected_edge_churn_ratio
-        ):
-            self._warn_throttled(
-                'reject_edge_churn',
-                'rejecting plan because selected edge churn exceeds limit',
-            )
+        # Re-enter fresh publishing only after consecutive clean frames so borderline cases do not
+        # flap between held and fresh controller inputs.
+        if not self._hold_mode_active:
             return False
-        if self.max_centerline_jump_m <= 0.0:
+        self._hold_clean_frame_count += 1
+        if self._hold_clean_frame_count < self.hold_exit_clean_frames:
             return True
-        if self._plan_has_large_jump(centerline, now_sec):
-            self._warn_throttled(
-                'reject_centerline_jump',
-                'rejecting plan because centerline contradicts recent valid history',
-            )
-            return False
-        return True
-
-    def _plan_has_large_jump(self, centerline: np.ndarray, now_sec: float) -> bool:
-        self._prune_centerline_history(now_sec)
-        if not self._recent_valid_centerlines:
-            return False
-        if centerline.shape[0] < 2:
-            return False
-
-        horizon_limit = min(self.consistency_horizon_m, float(centerline[-1, 0]))
-        if horizon_limit <= 0.25:
-            return False
-
-        sample_mask = centerline[:, 0] <= horizon_limit
-        if not np.any(sample_mask):
-            return False
-        sample_x = centerline[sample_mask, 0]
-        current_y = centerline[sample_mask, 1]
-
-        reference_rows: list[np.ndarray] = []
-        for _, previous_centerline in self._recent_valid_centerlines:
-            if previous_centerline.shape[0] < 2:
-                continue
-            overlap_limit = min(horizon_limit, float(previous_centerline[-1, 0]))
-            if overlap_limit <= 0.25:
-                continue
-            overlap_mask = sample_x <= overlap_limit
-            if not np.any(overlap_mask):
-                continue
-            interp_y = np.interp(sample_x[overlap_mask], previous_centerline[:, 0], previous_centerline[:, 1])
-            row = np.full(sample_x.shape, np.nan, dtype=np.float64)
-            row[overlap_mask] = interp_y
-            reference_rows.append(row)
-
-        if not reference_rows:
-            return False
-
-        stacked = np.vstack(reference_rows)
-        valid_counts = np.sum(np.isfinite(stacked), axis=0)
-        finite_cols = valid_counts > 0
-        if not np.any(finite_cols):
-            return False
-
-        reference_y = np.full(sample_x.shape, np.nan, dtype=np.float64)
-        reference_y[finite_cols] = np.nanmedian(stacked[:, finite_cols], axis=0)
-        valid_mask = np.isfinite(reference_y)
-        if not np.any(valid_mask):
-            return False
-
-        deviation = np.abs(current_y[valid_mask] - reference_y[valid_mask])
-        return bool(np.max(deviation) > self.max_centerline_jump_m)
-
-    def _record_valid_centerline(self, now_sec: float, centerline: np.ndarray) -> None:
-        if centerline.shape[0] == 0:
-            return
-        self._recent_valid_centerlines.append((now_sec, np.array(centerline, copy=True)))
-        self._prune_centerline_history(now_sec)
-
-    def _prune_centerline_history(self, now_sec: float) -> None:
-        del now_sec  # kept for symmetry with other planner implementations.
-        while len(self._recent_valid_centerlines) > self.max_history_frames:
-            self._recent_valid_centerlines.popleft()
+        self._hold_mode_active = False
+        self._hold_clean_frame_count = 0
+        return False
 
     def _held_centerline(self, now_sec: float) -> Optional[np.ndarray]:
         if self._last_valid_centerline is None:
             return None
         if self._last_valid_time_sec < 0.0:
             return None
-        if not self._has_stable_history():
-            return None
         if (now_sec - self._last_valid_time_sec) > self.hold_last_valid_s:
             return None
         return np.array(self._last_valid_centerline, copy=True)
 
-    def _has_stable_history(self) -> bool:
-        return len(self._recent_valid_centerlines) >= self.min_stable_frames
+    def _hold_remaining_s(self, now_sec: float) -> float:
+        if self._last_valid_centerline is None or self._last_valid_time_sec < 0.0:
+            return 0.0
+        return max(0.0, float(self.hold_last_valid_s) - max(0.0, now_sec - self._last_valid_time_sec))
+
+    @staticmethod
+    def _operator_state_code(state: str) -> int:
+        return int(_OPERATOR_STATE_CODES.get(state, 0))
+
+    @staticmethod
+    def _operator_reason_code(reason: str) -> int:
+        return int(_OPERATOR_REASON_CODES.get(reason, 0))
+
+    @staticmethod
+    def _operator_reason_label(reason: str) -> str:
+        return _OPERATOR_REASON_LABELS.get(reason, reason.replace('_', ' '))
+
+    @staticmethod
+    def _operator_state_color(state: str) -> tuple[float, float, float]:
+        return _OPERATOR_STATE_COLORS.get(state, _OPERATOR_STATE_COLORS['waiting'])
+
+    def _normalize_core_reject_reason(self, result: Optional[CoreResult]) -> str:
+        if result is None:
+            return 'none'
+        reject_counts = result.reject_counts or {}
+        if int(reject_counts.get('near_field_continuity', 0)) > 0:
+            return 'near_field_continuity'
+        if int(reject_counts.get('seed_distance', 0)) > 0:
+            return 'seed_distance'
+        if int(reject_counts.get('midpoint_kink', 0)) > 0:
+            return 'midpoint_kink'
+        text = (result.reject_reason or result.status or '').strip().lower()
+        if text in {
+            'no valid diagonal candidates',
+            'no safe zig-zag chain',
+            'centerline generation failed',
+            'dedup removed all selected midpoints',
+            'no cones available',
+        }:
+            return 'no_safe_chain'
+        if text.startswith('usable cones below minimum'):
+            return 'no_safe_chain'
+        return 'none'
+
+    def _log_operator_state_transition(
+        self,
+        *,
+        operator_state: str,
+        operator_reason: str,
+        hold_remaining_s: float,
+        selected_chain_length: int,
+    ) -> None:
+        if operator_state == self._last_operator_state and operator_reason == self._last_operator_reason:
+            return
+        prev_state = self._last_operator_state or 'none'
+        prev_reason = self._last_operator_reason or 'none'
+        self.get_logger().info(
+            'planner state %s -> %s | reason=%s | prev_reason=%s | hold_remaining=%.2fs | chain=%d | clean_frames=%d/%d'
+            % (
+                prev_state,
+                operator_state,
+                operator_reason,
+                prev_reason,
+                float(hold_remaining_s),
+                int(selected_chain_length),
+                int(self._hold_clean_frame_count),
+                int(self.hold_exit_clean_frames),
+            )
+        )
+        self._last_operator_state = operator_state
+        self._last_operator_reason = operator_reason
+
+    @staticmethod
+    def _fmt_metric(value: float, suffix: str = '', *, digits: int = 2) -> str:
+        value_f = float(value)
+        if not math.isfinite(value_f):
+            return 'n/a'
+        return f'{value_f:.{digits}f}{suffix}'
+
+    def _build_operator_status_text(
+        self,
+        *,
+        operator_state: str,
+        operator_reason: str,
+        centerline_point_count: int,
+        cmd_speed: float,
+        cmd_steering: float,
+        lookahead: float,
+        candidate_diagonal_count: int,
+        selected_chain_length: int,
+        seed_midpoint_distance_m: float,
+        near_field_lateral_max_m: float,
+        near_field_midpoint_kink_max_rad: float,
+        hold_remaining_s: float,
+    ) -> str:
+        return '\n'.join(
+            [
+                f'STATE: {operator_state.upper()}',
+                f'REASON: {self._operator_reason_label(operator_reason)}',
+                (
+                    f'PATH: {int(centerline_point_count)} pts | '
+                    f'chain={int(selected_chain_length)} | cand={int(candidate_diagonal_count)}'
+                ),
+                (
+                    f'CMD: v={self._fmt_metric(cmd_speed, " m/s")} | '
+                    f'delta={self._fmt_metric(cmd_steering, " rad")} | '
+                    f'Ld={self._fmt_metric(lookahead, " m")}'
+                ),
+                (
+                    f'NF: lat={self._fmt_metric(near_field_lateral_max_m, " m")} | '
+                    f'kink={self._fmt_metric(near_field_midpoint_kink_max_rad, " rad")} | '
+                    f'seed={self._fmt_metric(seed_midpoint_distance_m, " m")}'
+                ),
+                (
+                    f'HOLD: {self._fmt_metric(hold_remaining_s, " s")} left | '
+                    f'clean {int(self._hold_clean_frame_count)}/{int(self.hold_exit_clean_frames)}'
+                ),
+            ]
+        )
+
+    def _publish_empty_cycle(
+        self,
+        *,
+        frame_id: str,
+        status: str,
+        operator_state: str,
+        operator_reason: str,
+        cmd_speed: float,
+        cmd_steering: float,
+        lookahead: float,
+        zero_cmd_sent_flag: int,
+    ) -> None:
+        now_sec = float(self.get_clock().now().nanoseconds) * 1e-9
+        hold_remaining_s = self._hold_remaining_s(now_sec)
+        self._log_operator_state_transition(
+            operator_state=operator_state,
+            operator_reason=operator_reason,
+            hold_remaining_s=hold_remaining_s,
+            selected_chain_length=0,
+        )
+        self._publish_diagnostics(
+            frame_id=frame_id,
+            centerline_jump_max_m=0.0,
+            selected_edge_churn_ratio=0.0,
+            tracked_cones_frame_delta_p95_m=0.0,
+            centerline_point_count=0,
+            selected_edge_count=0,
+            status=status,
+            planner_metrics={
+                'candidate_diagonal_count': 0,
+                'selected_chain_length': 0,
+                'selected_chain_median_width_m': float('nan'),
+                'expected_width_prior_m': float('nan'),
+                'reject_wrong_side_count': 0,
+                'reject_width_count': 0,
+                'reject_width_range_count': 0,
+                'reject_width_prior_count': 0,
+                'reject_orientation_count': 0,
+                'reject_progress_count': 0,
+                'reject_near_field_continuity_count': 0,
+                'reject_midpoint_kink_count': 0,
+                'reject_seed_distance_count': 0,
+                'near_field_lateral_max_m': float('nan'),
+                'near_field_lateral_mean_m': float('nan'),
+                'near_field_displacement_max_m': float('nan'),
+                'near_field_displacement_mean_m': float('nan'),
+                'near_field_midpoint_kink_max_rad': float('nan'),
+                'seed_midpoint_distance_m': float('nan'),
+                'seed_temporal_offset_m': float('nan'),
+                'selected_chain_churn_count': 0,
+                'selected_chain_churn_ratio': 0.0,
+                'publish_mode': operator_state if operator_state in {'fresh', 'held'} else 'held',
+                'hold_mode_active_flag': 1 if self._hold_mode_active else 0,
+                'hold_clean_frame_count': self._hold_clean_frame_count,
+                'hold_reason': '',
+                'planner_state_code': self._operator_state_code(operator_state),
+                'fresh_publish_flag': 1 if operator_state == 'fresh' else 0,
+                'held_publish_flag': 1 if operator_state == 'held' else 0,
+                'stopped_flag': 1 if operator_state == 'stopped' else 0,
+                'waiting_flag': 1 if operator_state == 'waiting' else 0,
+                'operator_reason_code': self._operator_reason_code(operator_reason),
+                'operator_reason': operator_reason,
+                'hold_remaining_s': hold_remaining_s,
+                'control_path_point_count': 0,
+                'zero_cmd_sent_flag': int(zero_cmd_sent_flag),
+            },
+        )
+        self._publish_outputs(
+            frame_id=frame_id,
+            centerline=np.empty((0, 2), dtype=np.float64),
+            raw_centerline=np.empty((0, 2), dtype=np.float64),
+            raw_midpoint_chain=np.empty((0, 2), dtype=np.float64),
+            result=None,
+            status=status,
+            control_target_frame=None,
+            cmd_speed=cmd_speed,
+            cmd_steering=cmd_steering,
+            lookahead=lookahead,
+            operator_state=operator_state,
+            operator_reason=operator_reason,
+            hold_remaining_s=hold_remaining_s,
+            control_path_point_count=0,
+            candidate_diagonal_count=0,
+            selected_chain_length=0,
+            seed_midpoint_distance_m=float('nan'),
+            near_field_lateral_max_m=float('nan'),
+            near_field_midpoint_kink_max_rad=float('nan'),
+        )
 
     def _publish_diagnostics(
         self,
@@ -950,6 +1581,7 @@ class DelaunayPlannerNode(Node):
         status: str,
         control_debug_metrics: Optional[dict[str, float]] = None,
         thesis_context_metrics: Optional[dict[str, float]] = None,
+        planner_metrics: Optional[dict[str, object]] = None,
     ) -> None:
         msg = DiagnosticArray()
         msg.header.stamp = self.get_clock().now().to_msg()
@@ -967,6 +1599,9 @@ class DelaunayPlannerNode(Node):
             KeyValue(key='centerline_point_count', value=str(int(centerline_point_count))),
             KeyValue(key='selected_edge_count', value=str(int(selected_edge_count))),
         ]
+        if planner_metrics is not None:
+            for key in sorted(planner_metrics):
+                diag.values.append(KeyValue(key=str(key), value=self._diag_value_string(planner_metrics[key])))
         msg.status.append(diag)
 
         if self.publish_control_debug:
@@ -1097,6 +1732,17 @@ class DelaunayPlannerNode(Node):
         }
 
     @staticmethod
+    def _diag_value_string(value: object) -> str:
+        if isinstance(value, str):
+            return value
+        if isinstance(value, (int, np.integer)):
+            return str(int(value))
+        if isinstance(value, (float, np.floating)):
+            value_f = float(value)
+            return f'{value_f:.6f}' if math.isfinite(value_f) else 'nan'
+        return str(value)
+
+    @staticmethod
     def _default_thesis_context_metrics() -> dict[str, float]:
         nan = float('nan')
         return {
@@ -1155,6 +1801,15 @@ class DelaunayPlannerNode(Node):
         cmd_speed: float,
         cmd_steering: float,
         lookahead: float,
+        operator_state: str,
+        operator_reason: str,
+        hold_remaining_s: float,
+        control_path_point_count: int,
+        candidate_diagonal_count: int,
+        selected_chain_length: int,
+        seed_midpoint_distance_m: float,
+        near_field_lateral_max_m: float,
+        near_field_midpoint_kink_max_rad: float,
     ) -> None:
         now = self.get_clock().now().to_msg()
         path_msg = Path()
@@ -1180,9 +1835,19 @@ class DelaunayPlannerNode(Node):
             self._points_pub.publish(points_msg)
 
         if self.enable_debug_markers:
-            status_text = (
-                f'{status}  v_cmd={cmd_speed:.2f} m/s  '
-                f'delta={cmd_steering:.2f} rad  Ld={lookahead:.2f} m'
+            status_text = self._build_operator_status_text(
+                operator_state=operator_state,
+                operator_reason=operator_reason,
+                centerline_point_count=int(centerline.shape[0]),
+                cmd_speed=cmd_speed,
+                cmd_steering=cmd_steering,
+                lookahead=lookahead,
+                candidate_diagonal_count=candidate_diagonal_count,
+                selected_chain_length=selected_chain_length,
+                seed_midpoint_distance_m=seed_midpoint_distance_m,
+                near_field_lateral_max_m=near_field_lateral_max_m,
+                near_field_midpoint_kink_max_rad=near_field_midpoint_kink_max_rad,
+                hold_remaining_s=hold_remaining_s,
             )
             markers = self._build_markers(
                 now=now,
@@ -1192,6 +1857,7 @@ class DelaunayPlannerNode(Node):
                 raw_centerline=raw_centerline,
                 raw_midpoint_chain=raw_midpoint_chain,
                 status=status_text,
+                operator_state=operator_state,
                 control_target_frame=control_target_frame,
             )
             self._viz_pub.publish(markers)
@@ -1206,6 +1872,7 @@ class DelaunayPlannerNode(Node):
         raw_centerline: np.ndarray,
         raw_midpoint_chain: np.ndarray,
         status: str,
+        operator_state: str,
         control_target_frame: Optional[np.ndarray],
     ) -> MarkerArray:
         arr = MarkerArray()
@@ -1218,7 +1885,14 @@ class DelaunayPlannerNode(Node):
 
         marker_id = 1
         if result is None:
-            marker_id = self._append_status_marker(arr, marker_id, frame_id, now, status)
+            marker_id = self._append_status_marker(
+                arr,
+                marker_id,
+                frame_id,
+                now,
+                status,
+                operator_state=operator_state,
+            )
             return arr
 
         if self.show_raw_cones and result.filtered_points.shape[0] > 0:
@@ -1373,7 +2047,14 @@ class DelaunayPlannerNode(Node):
             arr.markers.append(marker)
             marker_id += 1
 
-        self._append_status_marker(arr, marker_id, frame_id, now, status)
+        self._append_status_marker(
+            arr,
+            marker_id,
+            frame_id,
+            now,
+            status,
+            operator_state=operator_state,
+        )
         return arr
 
     @staticmethod
@@ -1505,6 +2186,8 @@ class DelaunayPlannerNode(Node):
         frame_id: str,
         stamp,
         status: str,
+        *,
+        operator_state: str,
     ) -> int:
         marker = Marker()
         marker.header.frame_id = frame_id
@@ -1513,14 +2196,15 @@ class DelaunayPlannerNode(Node):
         marker.id = marker_id
         marker.type = Marker.TEXT_VIEW_FACING
         marker.action = Marker.ADD
-        marker.scale.z = 0.5
+        marker.scale.z = 0.32
         marker.color.a = 1.0
-        marker.color.r = 1.0
-        marker.color.g = 1.0
-        marker.color.b = 1.0
+        color = _OPERATOR_STATE_COLORS.get(operator_state, _OPERATOR_STATE_COLORS['waiting'])
+        marker.color.r = float(color[0])
+        marker.color.g = float(color[1])
+        marker.color.b = float(color[2])
         marker.pose.position.x = 1.5
         marker.pose.position.y = 0.0
-        marker.pose.position.z = 1.2
+        marker.pose.position.z = 1.35
         marker.pose.orientation.w = 1.0
         marker.text = status
         markers.markers.append(marker)

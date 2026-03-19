@@ -8,6 +8,15 @@ import cv2
 import numpy as np
 
 
+def _format_debug_label(label: str) -> str:
+    token = label.strip().casefold()
+    if token == 'blue':
+        return 'b'
+    if token == 'yellow':
+        return 'y'
+    return label.strip()
+
+
 def build_camera_debug_image(
     image: np.ndarray | None,
     yolo_detections: list[dict],
@@ -56,7 +65,7 @@ def _draw_yolo_debug_overlays(image: np.ndarray, yolo_detections: list[dict], *,
     text_color = (255, 255, 255) if is_color else 255
     text_bg_color = (0, 0, 0) if is_color else 0
     font = cv2.FONT_HERSHEY_SIMPLEX
-    font_scale = 0.40
+    font_scale = 0.30
     thickness = 1
 
     for det in yolo_detections:
@@ -73,14 +82,14 @@ def _draw_yolo_debug_overlays(image: np.ndarray, yolo_detections: list[dict], *,
         y1 = max(0, min(height - 1, y1))
         cv2.rectangle(image, (x0, y0), (x1, y1), line_color, 1)
 
-        label = str(det.get('label', '')).strip()
+        label = _format_debug_label(str(det.get('label', '')))
         if not label:
             continue
         (text_w, text_h), baseline = cv2.getTextSize(label, font, font_scale, thickness)
-        text_x = max(0, min(width - text_w - 3, x0))
-        text_y = max(text_h + baseline + 2, y0 - 2)
-        box_y0 = max(0, text_y - text_h - baseline - 2)
-        box_y1 = min(height - 1, text_y + 1)
-        box_x1 = min(width - 1, text_x + text_w + 2)
+        text_x = max(0, min(width - text_w, x0))
+        text_y = max(text_h + baseline, y0 - 1)
+        box_y0 = max(0, text_y - text_h - baseline)
+        box_y1 = min(height - 1, text_y)
+        box_x1 = min(width - 1, text_x + text_w)
         cv2.rectangle(image, (text_x, box_y0), (box_x1, box_y1), text_bg_color, -1)
-        cv2.putText(image, label, (text_x + 1, text_y), font, font_scale, text_color, thickness, cv2.LINE_AA)
+        cv2.putText(image, label, (text_x, text_y), font, font_scale, text_color, thickness, cv2.LINE_AA)

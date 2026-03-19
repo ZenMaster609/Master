@@ -6,6 +6,7 @@ from sim_car.cones.tracking.fusion import (
 )
 from sim_car.cones.tracking.pose import convert_odom_child_pose_to_base_frame
 from sim_car.cones.tracking.tracker import (
+    TRACK_STATE_STALE,
     GlobalConeMemory,
     LocalConeTracker,
     TrackUpdate,
@@ -477,6 +478,63 @@ def test_local_tracker_merges_longitudinal_same_side_aliases_in_base_frame():
 
     assert merged == 1
     assert len(tracker.tracks) == 1
+
+
+def test_local_tracker_keeps_confirmed_track_as_stale_before_pruning():
+    tracker = LocalConeTracker()
+    tracker.update(
+        updates=[_u(assoc_x=1.0, assoc_y=1.0, update_x=1.0, update_y=1.0, camera_label='blue', has_camera=True)],
+        now_sec=1.0,
+        gate_radius_m=0.5,
+        spawn_radius_m=0.5,
+        alpha_lidar=0.25,
+        alpha_camera=0.15,
+        confirm_hits=1,
+    )
+
+    pruned = tracker.prune(
+        now_sec=1.8,
+        tentative_ttl_sec=0.5,
+        stale_after_sec=0.25,
+        confirmed_prune_after_sec=3.0,
+        max_range_m=100.0,
+        behind_drop_m=100.0,
+        unknown_drop_frames=0,
+        confirm_hits=1,
+        track_positions_in_base=[(1.0, 1.0)],
+    )
+
+    assert pruned == 0
+    assert len(tracker.tracks) == 1
+    assert tracker.tracks[0].track_state == TRACK_STATE_STALE
+    assert len(tracker.planner_tracks(now_sec=1.8, confirm_hits=1, publish_stale_tracks=True, stale_planner_ttl_sec=2.0)) == 1
+
+
+def test_local_tracker_color_hysteresis_resists_single_bad_flip():
+    tracker = LocalConeTracker()
+    tracker.update(
+        updates=[_u(assoc_x=0.0, assoc_y=0.0, update_x=0.0, update_y=0.0, camera_label='blue', has_camera=True, camera_confidence=0.95)],
+        now_sec=1.0,
+        gate_radius_m=0.5,
+        spawn_radius_m=0.5,
+        alpha_lidar=0.25,
+        alpha_camera=0.15,
+        confirm_hits=1,
+        color_switch_margin=0.25,
+    )
+    tracker.update(
+        updates=[_u(assoc_x=0.0, assoc_y=0.0, update_x=0.0, update_y=0.0, camera_label='yellow', has_camera=True, camera_confidence=0.55)],
+        now_sec=1.1,
+        gate_radius_m=0.5,
+        spawn_radius_m=0.5,
+        alpha_lidar=0.25,
+        alpha_camera=0.15,
+        confirm_hits=1,
+        color_switch_margin=0.25,
+    )
+
+    label, _conf = tracker.tracks[0].class_label()
+    assert label == 'blue'
 
 
 def test_convert_odom_child_pose_to_front_axle_applies_wheelbase_offset():

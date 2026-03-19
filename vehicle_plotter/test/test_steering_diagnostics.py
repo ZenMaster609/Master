@@ -66,6 +66,11 @@ def test_parse_planner_diag_with_keys():
                 _KV('centerline_jump_max_m', '0.7'),
                 _KV('selected_edge_churn_ratio', '0.4'),
                 _KV('tracked_cones_frame_delta_p95_m', '0.3'),
+                _KV('planner_state_code', '2'),
+                _KV('operator_reason_code', '5'),
+                _KV('hold_remaining_s', '1.2'),
+                _KV('control_path_point_count', '4'),
+                _KV('zero_cmd_sent_flag', '1'),
             ],
         )
     ])
@@ -73,6 +78,11 @@ def test_parse_planner_diag_with_keys():
     assert abs(out['centerline_jump_max_m'] - 0.7) < 1e-9
     assert abs(out['selected_edge_churn_ratio'] - 0.4) < 1e-9
     assert abs(out['tracked_cones_frame_delta_p95_m'] - 0.3) < 1e-9
+    assert abs(out['planner_state_code'] - 2.0) < 1e-9
+    assert abs(out['operator_reason_code'] - 5.0) < 1e-9
+    assert abs(out['hold_remaining_s'] - 1.2) < 1e-9
+    assert abs(out['control_path_point_count'] - 4.0) < 1e-9
+    assert abs(out['zero_cmd_sent_flag'] - 1.0) < 1e-9
 
 
 def test_parse_planner_diag_with_control_debug_keys():
@@ -128,6 +138,7 @@ def test_parse_planner_diag_missing_keys_returns_nan():
     assert np.isnan(out['selected_edge_churn_ratio'])
     assert np.isnan(out['tracked_cones_frame_delta_p95_m'])
     assert np.isnan(out['raw_steering_cmd_rad'])
+    assert np.isnan(out['planner_state_code'])
 
 
 def test_analyze_csv_recovers_known_lag(tmp_path):

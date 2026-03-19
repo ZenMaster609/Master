@@ -135,13 +135,13 @@ def generate_launch_description():
 
     thesis_controller_diagnostics_arg = DeclareLaunchArgument(
         'thesis_controller_diagnostics',
-        default_value='true',
+        default_value='false',
         description='Enable thesis-oriented controller diagnostics logging in the main logger'
     )
 
     thesis_controller_diagnostics_live_plot_enabled_arg = DeclareLaunchArgument(
         'thesis_controller_diagnostics_live_plot_enabled',
-        default_value='true',
+        default_value='false',
         description='Enable live thesis controller diagnostics plot window'
     )
 
@@ -207,8 +207,14 @@ def generate_launch_description():
 
     planner_arg = DeclareLaunchArgument(
         'planner',
-        default_value='delaunay',
-        description="Planner to launch: 'delaunay' or 'none'"
+        default_value='hybrid_boundary',
+        description="Planner to launch: 'delaunay', 'hybrid_boundary', or 'none'"
+    )
+
+    hybrid_force_single_boundary_arg = DeclareLaunchArgument(
+        'hybrid_force_single_boundary',
+        default_value='false',
+        description='Force hybrid_boundary_planner_node to use single-boundary mode only'
     )
 
     controller_arg = DeclareLaunchArgument(
@@ -420,6 +426,7 @@ def generate_launch_description():
         'measure',
         'sensor_nodes',
         'planner',
+        'hybrid_force_single_boundary',
         'controller',
         'rviz',
         'use_rviz',
@@ -910,6 +917,10 @@ def generate_launch_description():
                 ]),
                 'topics.odom_topic': '/sim/odom',
                 'control.controller_type': LaunchConfiguration('controller'),
+                'planner.force_single_boundary': ParameterValue(
+                    LaunchConfiguration('hybrid_force_single_boundary'),
+                    value_type=bool,
+                ),
                 'runtime.publish_rate_hz': ParameterValue(
                     LaunchConfiguration('planner_rate_hz'),
                     value_type=float,
@@ -928,6 +939,48 @@ def generate_launch_description():
             "'",
             LaunchConfiguration('planner'),
             "'.lower() == 'delaunay'"
+        ])),
+    )
+
+    hybrid_boundary_planner_node = Node(
+        package='sim_car',
+        executable='hybrid_boundary_planner_node',
+        name='hybrid_boundary_planner_node',
+        output='screen',
+        parameters=[
+            PathJoinSubstitution([sim_car_share, 'config', 'hybrid_boundary_planner.yaml']),
+            {
+                'use_sim_time': ParameterValue(
+                    LaunchConfiguration('use_sim_time'),
+                    value_type=bool,
+                ),
+                'topics.tracked_cones_topic': PythonExpression([
+                    "'/tracked_cones' if '",
+                    LaunchConfiguration('cone_memory_enabled'),
+                    "'.lower() == 'true' else '",
+                    topic_prefix,
+                    "' + '/stereo/perception/cones_3d'",
+                ]),
+                'topics.odom_topic': '/sim/odom',
+                'control.controller_type': LaunchConfiguration('controller'),
+                'planner.force_single_boundary': ParameterValue(
+                    LaunchConfiguration('hybrid_force_single_boundary'),
+                    value_type=bool,
+                ),
+                'runtime.publish_rate_hz': ParameterValue(
+                    LaunchConfiguration('planner_rate_hz'),
+                    value_type=float,
+                ),
+                'diagnostics.publish_thesis_context': ParameterValue(
+                    LaunchConfiguration('thesis_controller_diagnostics'),
+                    value_type=bool,
+                ),
+            },
+        ],
+        condition=IfCondition(PythonExpression([
+            "'",
+            LaunchConfiguration('planner'),
+            "'.lower() == 'hybrid_boundary'"
         ])),
     )
 
@@ -1005,6 +1058,7 @@ def generate_launch_description():
         measure_arg,
         sensor_nodes_arg,
         planner_arg,
+        hybrid_force_single_boundary_arg,
         controller_arg,
         rviz_arg,
         use_rviz_arg,
@@ -1048,6 +1102,7 @@ def generate_launch_description():
         lidar_cone_evaluator_node,
         cone_memory_node,
         delaunay_planner_node,
+        hybrid_boundary_planner_node,
         camera_debug_viewer_node,
         rviz_node,
         steering_gui_node,
@@ -1108,7 +1163,7 @@ def _validate_planner_and_controller_args(context, *_args, **_kwargs):
     controller = LaunchConfiguration('controller').perform(context).strip().lower()
 
     supported_bridges = {'ackermann'}
-    supported_planners = {'delaunay', 'none'}
+    supported_planners = {'delaunay', 'hybrid_boundary', 'none'}
     supported_controllers = {'stanley'}
 
     if bridge not in supported_bridges:
@@ -1118,7 +1173,7 @@ def _validate_planner_and_controller_args(context, *_args, **_kwargs):
         )
     if planner not in supported_planners:
         raise RuntimeError(
-            "Unsupported launch argument planner='%s'. Supported values: delaunay, none"
+            "Unsupported launch argument planner='%s'. Supported values: delaunay, hybrid_boundary, none"
             % planner
         )
     if controller not in supported_controllers:

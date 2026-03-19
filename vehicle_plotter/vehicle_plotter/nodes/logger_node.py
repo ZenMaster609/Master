@@ -623,6 +623,15 @@ class LoggerNode(Node):
                 'planner_centerline_jump_max_m',
                 'planner_selected_edge_churn_ratio',
                 'planner_tracked_cones_frame_delta_p95_m',
+                'planner_state_code',
+                'planner_fresh_publish_flag',
+                'planner_held_publish_flag',
+                'planner_stopped_flag',
+                'planner_waiting_flag',
+                'planner_operator_reason_code',
+                'planner_hold_remaining_s',
+                'planner_control_path_point_count',
+                'planner_zero_cmd_sent_flag',
             ]
             self._diag_csv_writer = csv.DictWriter(self._diag_file_handle, fieldnames=fieldnames)
             self._diag_csv_writer.writeheader()
@@ -676,6 +685,17 @@ class LoggerNode(Node):
         planner_jump = float(self._diag_planner_metrics.get('centerline_jump_max_m', float('nan')))
         planner_churn = float(self._diag_planner_metrics.get('selected_edge_churn_ratio', float('nan')))
         planner_tracked_delta = float(self._diag_planner_metrics.get('tracked_cones_frame_delta_p95_m', float('nan')))
+        planner_state_code = float(self._diag_planner_metrics.get('planner_state_code', float('nan')))
+        planner_fresh_publish_flag = float(self._diag_planner_metrics.get('fresh_publish_flag', float('nan')))
+        planner_held_publish_flag = float(self._diag_planner_metrics.get('held_publish_flag', float('nan')))
+        planner_stopped_flag = float(self._diag_planner_metrics.get('stopped_flag', float('nan')))
+        planner_waiting_flag = float(self._diag_planner_metrics.get('waiting_flag', float('nan')))
+        planner_operator_reason_code = float(self._diag_planner_metrics.get('operator_reason_code', float('nan')))
+        planner_hold_remaining_s = float(self._diag_planner_metrics.get('hold_remaining_s', float('nan')))
+        planner_control_path_point_count = float(
+            self._diag_planner_metrics.get('control_path_point_count', float('nan'))
+        )
+        planner_zero_cmd_sent_flag = float(self._diag_planner_metrics.get('zero_cmd_sent_flag', float('nan')))
         cte_ctrl = float(self._diag_planner_metrics.get('cross_track_error_m', float('nan')))
         heading_ctrl = float(self._diag_planner_metrics.get('heading_error_rad', float('nan')))
         cte_m = cte_ctrl if math.isfinite(cte_ctrl) else cte_geom
@@ -750,6 +770,15 @@ class LoggerNode(Node):
             'planner_centerline_jump_max_m': planner_jump,
             'planner_selected_edge_churn_ratio': planner_churn,
             'planner_tracked_cones_frame_delta_p95_m': planner_tracked_delta,
+            'planner_state_code': planner_state_code,
+            'planner_fresh_publish_flag': planner_fresh_publish_flag,
+            'planner_held_publish_flag': planner_held_publish_flag,
+            'planner_stopped_flag': planner_stopped_flag,
+            'planner_waiting_flag': planner_waiting_flag,
+            'planner_operator_reason_code': planner_operator_reason_code,
+            'planner_hold_remaining_s': planner_hold_remaining_s,
+            'planner_control_path_point_count': planner_control_path_point_count,
+            'planner_zero_cmd_sent_flag': planner_zero_cmd_sent_flag,
         }
         if self._diag_csv_writer is not None:
             self._diag_csv_writer.writerow(row)
