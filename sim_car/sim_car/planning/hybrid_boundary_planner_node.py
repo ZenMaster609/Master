@@ -1645,10 +1645,23 @@ class HybridBoundaryPlannerNode(DelaunayPlannerNode):
                     ns="boundary_left",
                     points=left_boundary,
                     color=(0.2, 0.45, 1.0, 0.95),
-                    width=0.07,
-                    z_offset=0.02,
+                    width=0.10,
+                    z_offset=0.12,
                 )
             )
+            marker_id += 1
+            left_points_marker = self._make_points_marker(
+                frame_id=frame_id,
+                stamp=now,
+                marker_id=marker_id,
+                ns="boundary_left_points",
+                points=left_boundary,
+                color=(0.2, 0.55, 1.0, 1.0),
+                scale=0.22,
+            )
+            for point in left_points_marker.points:
+                point.z = 0.13
+            arr.markers.append(left_points_marker)
             marker_id += 1
             arr.markers.append(
                 self._make_line_strip_marker(
@@ -1658,10 +1671,23 @@ class HybridBoundaryPlannerNode(DelaunayPlannerNode):
                     ns="boundary_right",
                     points=right_boundary,
                     color=(1.0, 0.9, 0.2, 0.95),
-                    width=0.07,
-                    z_offset=0.02,
+                    width=0.10,
+                    z_offset=0.14,
                 )
             )
+            marker_id += 1
+            right_points_marker = self._make_points_marker(
+                frame_id=frame_id,
+                stamp=now,
+                marker_id=marker_id,
+                ns="boundary_right_points",
+                points=right_boundary,
+                color=(1.0, 0.92, 0.25, 1.0),
+                scale=0.22,
+            )
+            for point in right_points_marker.points:
+                point.z = 0.15
+            arr.markers.append(right_points_marker)
             marker_id += 1
 
         if self.show_pair_lines:
@@ -1707,10 +1733,23 @@ class HybridBoundaryPlannerNode(DelaunayPlannerNode):
                     ns="raw_offset_path",
                     points=raw_offset_path,
                     color=(0.2, 1.0, 1.0, 0.9),
-                    width=0.06,
-                    z_offset=0.04,
+                    width=0.09,
+                    z_offset=0.18,
                 )
             )
+            marker_id += 1
+            raw_offset_points_marker = self._make_points_marker(
+                frame_id=frame_id,
+                stamp=now,
+                marker_id=marker_id,
+                ns="raw_offset_path_points",
+                points=raw_offset_path,
+                color=(0.2, 1.0, 1.0, 1.0),
+                scale=0.20,
+            )
+            for point in raw_offset_points_marker.points:
+                point.z = 0.19
+            arr.markers.append(raw_offset_points_marker)
             marker_id += 1
 
         if self.show_raw_prevalidation_centerline:

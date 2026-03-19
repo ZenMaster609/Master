@@ -83,7 +83,7 @@ Visualization Manager:
       Value: false
     - Class: rviz_default_plugins/MarkerArray
       Name: Planner Debug
-      Enabled: false
+      Enabled: true
       Topic:
         Value: /planner_viz
         Depth: 10
@@ -91,7 +91,7 @@ Visualization Manager:
         History Policy: Keep Last
         Reliability Policy: Reliable
       Queue Size: 100
-      Value: false
+      Value: true
     - Class: rviz_default_plugins/Path
       Name: Planned Centerline
       Enabled: true
