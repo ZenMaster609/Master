@@ -1560,7 +1560,10 @@ class HybridBoundaryPlannerNode(DelaunayPlannerNode):
                     f"unknown={int(self._active_unknown_pair_count)} | "
                     f"path={int(centerline_point_count)} pts"
                 ),
-                f"WIDTH: {self._fmt_metric(self._active_filtered_track_width_m, ' m')}",
+                (
+                    f"WIDTH: {self._fmt_metric(self._active_filtered_track_width_m, ' m')} | "
+                    f"HALF: {self._fmt_metric(0.5 * float(self._active_filtered_track_width_m), ' m')}"
+                ),
                 (
                     f"CMD: v={self._fmt_metric(cmd_speed, ' m/s')} | "
                     f"delta={self._fmt_metric(cmd_steering, ' rad')} | "
@@ -1626,17 +1629,18 @@ class HybridBoundaryPlannerNode(DelaunayPlannerNode):
             )
             marker_id += 1
 
+        left_boundary = np.array(result.left_boundary, copy=True)
+        right_boundary = np.array(result.right_boundary, copy=True)
+        if left_boundary.shape[0] > 0:
+            self._last_viz_left_boundary = np.array(left_boundary, copy=True)
+        elif self._last_viz_left_boundary is not None:
+            left_boundary = np.array(self._last_viz_left_boundary, copy=True)
+        if right_boundary.shape[0] > 0:
+            self._last_viz_right_boundary = np.array(right_boundary, copy=True)
+        elif self._last_viz_right_boundary is not None:
+            right_boundary = np.array(self._last_viz_right_boundary, copy=True)
+
         if self.show_boundary_chains:
-            left_boundary = np.array(result.left_boundary, copy=True)
-            right_boundary = np.array(result.right_boundary, copy=True)
-            if left_boundary.shape[0] > 0:
-                self._last_viz_left_boundary = np.array(left_boundary, copy=True)
-            elif self._last_viz_left_boundary is not None:
-                left_boundary = np.array(self._last_viz_left_boundary, copy=True)
-            if right_boundary.shape[0] > 0:
-                self._last_viz_right_boundary = np.array(right_boundary, copy=True)
-            elif self._last_viz_right_boundary is not None:
-                right_boundary = np.array(self._last_viz_right_boundary, copy=True)
             arr.markers.append(
                 self._make_line_strip_marker(
                     frame_id=frame_id,
@@ -1688,6 +1692,27 @@ class HybridBoundaryPlannerNode(DelaunayPlannerNode):
             for point in right_points_marker.points:
                 point.z = 0.15
             arr.markers.append(right_points_marker)
+            marker_id += 1
+
+        active_boundary = np.empty((0, 2), dtype=np.float64)
+        if result.planner_mode == "single_boundary":
+            if result.active_boundary_side == "blue":
+                active_boundary = left_boundary
+            elif result.active_boundary_side == "yellow":
+                active_boundary = right_boundary
+        if active_boundary.shape[0] > 0:
+            arr.markers.append(
+                self._make_line_strip_marker(
+                    frame_id=frame_id,
+                    stamp=now,
+                    marker_id=marker_id,
+                    ns="single_boundary_active",
+                    points=active_boundary,
+                    color=(0.15, 1.0, 0.2, 1.0),
+                    width=0.16,
+                    z_offset=0.20,
+                )
+            )
             marker_id += 1
 
         if self.show_pair_lines:

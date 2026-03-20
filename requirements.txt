@@ -1,3 +1,6 @@
+# Minimum direct Python dependencies for general development.
+# For the thesis reference environment, use requirements.user.lock.txt
+# and requirements-yolo-pt.lock.txt instead of this file.
 numpy>=2.0
 matplotlib>=3.8
 pandas>=2.0

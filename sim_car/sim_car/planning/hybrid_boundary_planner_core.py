@@ -98,6 +98,7 @@ class HybridBoundaryResult:
     reject_reason: str = ""
     reject_counts: dict[str, int] = field(default_factory=dict)
     planner_mode: str = "none"
+    active_boundary_side: str = ""
     raw_offset_path: np.ndarray = field(
         default_factory=lambda: np.empty((0, 2), dtype=np.float64)
     )
@@ -212,6 +213,7 @@ def compute_hybrid_boundary_centerline(
     selected_edges = np.empty((0, 2), dtype=np.int64)
     used_fallback = False
     planner_mode = "none"
+    active_boundary_side = ""
     candidate_count = 0
     measured_width_m = float("nan")
 
@@ -261,6 +263,7 @@ def compute_hybrid_boundary_centerline(
         fallback_chain, fallback_side = _select_fallback_chain(left_chain, right_chain, config)
         if fallback_chain is not None:
             planner_mode = "single_boundary"
+            active_boundary_side = fallback_side
             used_fallback = True
             raw_offset_path = _offset_boundary_chain(
                 chain=fallback_chain,
@@ -386,6 +389,7 @@ def compute_hybrid_boundary_centerline(
         reject_reason=reject_reason,
         reject_counts=reject_counts,
         planner_mode=planner_mode,
+        active_boundary_side=active_boundary_side,
         raw_offset_path=raw_offset_path,
         pair_segments=np.asarray(
             [[pair.left_global, pair.right_global] for pair in pairs],

@@ -212,6 +212,29 @@ def test_build_markers_include_pairs_offset_and_final_centerline():
     assert np.allclose(_marker_xy(by_ns["centerline"]), result.centerline)
 
 
+def test_build_markers_highlight_active_single_boundary_side():
+    node = _make_node()
+    result = _sample_result()
+    result.planner_mode = "single_boundary"
+    result.active_boundary_side = "blue"
+
+    markers = node._build_markers(
+        now=TimeMsg(sec=9, nanosec=1),
+        frame_id="odom",
+        result=result,
+        centerline=result.centerline,
+        raw_centerline=result.centerline,
+        raw_midpoint_chain=result.midpoints_raw,
+        status="ok",
+        operator_state="fresh",
+        control_target_frame=None,
+    )
+
+    by_ns = _marker_map(markers)
+    assert "single_boundary_active" in by_ns
+    assert np.allclose(_marker_xy(by_ns["single_boundary_active"]), result.left_boundary)
+
+
 def test_publish_outputs_status_text_includes_mode_and_width():
     node = _make_node()
     result = _sample_result()
@@ -250,6 +273,7 @@ def test_publish_outputs_status_text_includes_mode_and_width():
     status_marker = _marker_map(markers)["status"]
     assert "MODE: SINGLE_BOUNDARY" in status_marker.text
     assert "WIDTH: 3.70 m" in status_marker.text
+    assert "HALF: 1.85 m" in status_marker.text
     assert "unknown=1" in status_marker.text
     assert "held=1" in status_marker.text
 
