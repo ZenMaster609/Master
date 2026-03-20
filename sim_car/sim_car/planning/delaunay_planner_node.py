@@ -36,6 +36,14 @@ from sim_car.planning.delaunay_planner_core import (
     selected_edge_keys,
     tracked_cones_frame_delta_p95,
 )
+from sim_car.planning.path_stability import (
+    extract_forward_path_from_pose,
+    path_cumulative_lengths,
+    resample_to_count,
+    sample_path_at_lengths,
+    splice_frozen_near_field,
+)
+from sim_car.planning.planner_runtime_types import PlannerIdentity
 
 _OPERATOR_STATE_CODES = {
     'waiting': 0,
@@ -59,6 +67,7 @@ _OPERATOR_REASON_CODES = {
     'no_control_path': 11,
     'controller_compute_failed': 12,
     'stop_if_no_path': 13,
+    'controller_disabled': 14,
 }
 
 _OPERATOR_REASON_LABELS = {
@@ -76,6 +85,7 @@ _OPERATOR_REASON_LABELS = {
     'no_control_path': 'no control path available',
     'controller_compute_failed': 'controller compute failed',
     'stop_if_no_path': 'stop_if_no_path sent zero command',
+    'controller_disabled': 'controller disabled',
 }
 
 _OPERATOR_STATE_COLORS = {
@@ -90,7 +100,8 @@ class DelaunayPlannerNode(Node):
     """Consumes tracked cones and publishes a centerline path + debug markers."""
 
     def __init__(self) -> None:
-        super().__init__('delaunay_planner_node')
+        self._planner_identity = self._planner_identity_config()
+        super().__init__(self._planner_identity.node_name)
         self._declare_parameters()
         self._read_parameters()
 
@@ -118,6 +129,7 @@ class DelaunayPlannerNode(Node):
         self._last_steering_cmd: Optional[float] = None
         self._last_operator_state: Optional[str] = None
         self._last_operator_reason: Optional[str] = None
+        self._active_planner_mode = self._planner_identity.planner_mode
 
         self._cmd_pub = self.create_publisher(AckermannDriveStamped, self.cmd_topic, 10)
         self._path_pub = self.create_publisher(Path, self.centerline_topic, 10)
@@ -142,10 +154,18 @@ class DelaunayPlannerNode(Node):
         self.create_timer(1.0 / loop_hz, self._on_timer)
 
         self.get_logger().info(
-            'delaunay_planner_node ready '
+            f'{self._planner_identity.node_name} ready '
             f'cones={self.tracked_cones_topic} odom={self.odom_topic} '
             f'cmd={self.cmd_topic} path={self.centerline_topic} viz={self.viz_topic} '
             f'planning_frame={self.planning_frame} controller={self.controller_type}'
+        )
+
+    def _planner_identity_config(self) -> PlannerIdentity:
+        return PlannerIdentity(
+            node_name='delaunay_planner_node',
+            planner_mode='delaunay',
+            diagnostics_prefix='delaunay_planner',
+            diagnostics_topic='/delaunay_planner/diagnostics',
         )
 
     def _declare_parameters(self) -> None:
@@ -203,25 +223,25 @@ class DelaunayPlannerNode(Node):
             'runtime.publish_rate_hz': 180.0,
             'runtime.log_throttle_s': 1.0,
             'control.controller_type': 'stanley',
-            'stanley.k_gain': 1.25,
-            'stanley.softening_speed_mps': 0.5,
+            'control.stop_if_no_path': True,
+            'stanley.k_gain': 1.2,
+            'stanley.softening_speed_mps': 0.0,
             'stanley.heading_gain': 1.0,
-            'stanley.lookahead_idx_offset': 1,
+            'stanley.lookahead_idx_offset': 0,
             'stanley.steering_limit_rad': 0.52,
-            'stanley.steering_lowpass_alpha': 0.6,
+            'stanley.steering_lowpass_alpha': 1.0,
             'stanley.steering_rate_limit_rad_s': 10.0,
             'stanley.use_yaw_rate_damping': True,
             'stanley.yaw_rate_damping_gain': 0.0,
             'stanley.wheelbase_m': 1.65,
             'stanley.cross_track_deadband_m': 0.0,
-            'stanley.stop_if_no_path': True,
             'speed_control.speed_min_mps': 1.0,
             'speed_control.speed_max_mps': 1.8,
             'speed_control.curvature_speed_gain': 4.0,
             'speed_control.lowpass_speed_alpha': 0.15,
             'validation.hold_last_valid_s': 1.25,
             'validation.hold_exit_clean_frames': 2,
-            'diagnostics.topic': '/delaunay_planner/diagnostics',
+            'diagnostics.topic': self._planner_identity.diagnostics_topic,
             'diagnostics.centerline_jump_horizon_m': 8.0,
             'diagnostics.edge_quantization_m': 0.05,
             'diagnostics.jump_warn_threshold_m': 0.8,
@@ -293,9 +313,9 @@ class DelaunayPlannerNode(Node):
         self.controller_type = (
             str(self.get_parameter('control.controller_type').value).strip().lower() or 'stanley'
         )
-        if self.controller_type != 'stanley':
+        if self.controller_type not in {'stanley', 'pure_pursuit', 'none'}:
             raise ValueError(
-                "Unsupported control.controller_type '%s'. Supported value: stanley"
+                "Unsupported control.controller_type '%s'. Supported values: stanley, pure_pursuit, none"
                 % self.controller_type
             )
         stanley_config = StanleyConfig(
@@ -322,12 +342,22 @@ class DelaunayPlannerNode(Node):
                 float(self.get_parameter('stanley.cross_track_deadband_m').value),
             ),
         )
-        self._controller = create_steering_controller(
-            controller_type=self.controller_type,
-            stanley_config=stanley_config,
-            publish_rate_hz=self.publish_rate_hz,
+        self._controller = (
+            create_steering_controller(
+                controller_type=self.controller_type,
+                stanley_config=stanley_config,
+                publish_rate_hz=self.publish_rate_hz,
+            )
+            if self.controller_type == 'stanley'
+            else None
         )
-        self.stop_if_no_path = bool(self.get_parameter('stanley.stop_if_no_path').value)
+        self.stop_if_no_path = bool(self.get_parameter('control.stop_if_no_path').value)
+        if self.controller_type == 'pure_pursuit':
+            self.get_logger().warn(
+                "control.controller_type 'pure_pursuit' is a placeholder; controller output is disabled"
+            )
+        elif self.controller_type == 'none':
+            self.get_logger().info("control.controller_type 'none'; controller output is disabled")
 
         self.speed_min_mps = max(0.0, float(self.get_parameter('speed_control.speed_min_mps').value))
         self.speed_max_mps = max(self.speed_min_mps, float(self.get_parameter('speed_control.speed_max_mps').value))
@@ -340,7 +370,10 @@ class DelaunayPlannerNode(Node):
             1,
             int(self.get_parameter('validation.hold_exit_clean_frames').value),
         )
-        self.diagnostics_topic = str(self.get_parameter('diagnostics.topic').value).strip() or '/delaunay_planner/diagnostics'
+        self.diagnostics_topic = (
+            str(self.get_parameter('diagnostics.topic').value).strip()
+            or self._planner_identity.diagnostics_topic
+        )
         self.centerline_jump_horizon_m = max(
             0.5,
             float(self.get_parameter('diagnostics.centerline_jump_horizon_m').value),
@@ -685,7 +718,7 @@ class DelaunayPlannerNode(Node):
             vehicle_y=vehicle_y,
             vehicle_yaw=vehicle_yaw,
         )
-        if control_path.shape[0] >= 1:
+        if control_path.shape[0] >= 1 and self._controller is not None:
             try:
                 controller_output = self._controller.compute(
                     control_path=control_path,
@@ -756,6 +789,8 @@ class DelaunayPlannerNode(Node):
                             else float('nan')
                         ),
                     }
+        elif control_path.shape[0] >= 1:
+            zero_cmd_sent_flag = int(self._apply_controller_disabled_behavior())
         else:
             zero_cmd_sent_flag = int(self._apply_no_path_behavior())
             if self._last_speed_cmd is not None:
@@ -796,6 +831,9 @@ class DelaunayPlannerNode(Node):
         if controller_failed:
             operator_state = 'stopped'
             operator_reason = 'controller_compute_failed'
+        elif self._controller is None and centerline.shape[0] > 0:
+            operator_state = 'stopped'
+            operator_reason = 'controller_disabled'
         elif centerline.shape[0] > 0 and control_path_point_count <= 0 and operator_state != 'waiting':
             operator_state = 'stopped'
             operator_reason = 'no_control_path'
@@ -811,6 +849,7 @@ class DelaunayPlannerNode(Node):
             hold_remaining_s=hold_remaining_s,
             selected_chain_length=int(result.selected_chain_length),
         )
+        self._active_planner_mode = self._planner_identity.planner_mode
 
         self._publish_diagnostics(
             frame_id=target_frame,
@@ -868,6 +907,7 @@ class DelaunayPlannerNode(Node):
                 'hold_remaining_s': hold_remaining_s,
                 'control_path_point_count': control_path_point_count,
                 'zero_cmd_sent_flag': zero_cmd_sent_flag,
+                'planner_mode': self._active_planner_mode,
             },
         )
 
@@ -931,6 +971,14 @@ class DelaunayPlannerNode(Node):
             return True
         if self._last_speed_cmd is not None and self._last_steering_cmd is not None:
             self._publish_cmd(float(self._last_speed_cmd), float(self._last_steering_cmd))
+        return False
+
+    def _apply_controller_disabled_behavior(self) -> bool:
+        if self.stop_if_no_path:
+            self._publish_cmd(0.0, 0.0)
+            self._last_speed_cmd = 0.0
+            self._last_steering_cmd = 0.0
+            return True
         return False
 
     def _publish_cmd(self, speed_mps: float, steering_rad: float) -> None:
@@ -1204,54 +1252,21 @@ class DelaunayPlannerNode(Node):
         blend_length_m: float,
         resolution_m: float,
     ) -> tuple[np.ndarray, bool]:
-        if previous.shape[0] < 2 or current.shape[0] < 2:
-            return current, False
-
-        prev_cum = DelaunayPlannerNode._path_cumulative_lengths(previous)
-        curr_cum = DelaunayPlannerNode._path_cumulative_lengths(current)
-        prev_total = float(prev_cum[-1])
-        curr_total = float(curr_cum[-1])
-        if prev_total <= 1e-6 or curr_total <= 1e-6:
-            return current, False
-
-        overlap_m = min(prev_total, curr_total)
-        freeze_m = min(max(0.0, float(freeze_horizon_m)), overlap_m)
-        if freeze_m <= 0.0:
-            return current, False
-
-        blend_m = max(0.0, float(blend_length_m))
-        blend_end_m = min(overlap_m, freeze_m + blend_m)
-        step_m = max(0.05, float(resolution_m))
-        samples = np.arange(0.0, curr_total + 1e-9, step_m, dtype=np.float64)
-        if samples.size == 0 or samples[-1] < curr_total:
-            samples = np.concatenate((samples, [curr_total]))
-
-        current_rs = DelaunayPlannerNode._sample_path_at_lengths(current, curr_cum, samples)
-        previous_rs = DelaunayPlannerNode._sample_path_at_lengths(previous, prev_cum, samples)
-        out = np.array(current_rs, copy=True)
-        out[samples <= freeze_m + 1e-9] = previous_rs[samples <= freeze_m + 1e-9]
-        if blend_end_m > freeze_m + 1e-6:
-            blend_mask = (samples > freeze_m) & (samples < blend_end_m)
-            if np.any(blend_mask):
-                w = ((samples[blend_mask] - freeze_m) / (blend_end_m - freeze_m)).reshape(-1, 1)
-                out[blend_mask] = ((1.0 - w) * previous_rs[blend_mask]) + (w * current_rs[blend_mask])
-
-        return out.astype(np.float64), True
+        return splice_frozen_near_field(
+            previous=previous,
+            current=current,
+            freeze_horizon_m=freeze_horizon_m,
+            blend_length_m=blend_length_m,
+            resolution_m=resolution_m,
+        )
 
     @staticmethod
     def _path_cumulative_lengths(points: np.ndarray) -> np.ndarray:
-        if points.shape[0] <= 1:
-            return np.asarray([0.0], dtype=np.float64)
-        seg = points[1:] - points[:-1]
-        seg_len = np.hypot(seg[:, 0], seg[:, 1])
-        return np.concatenate(([0.0], np.cumsum(seg_len))).astype(np.float64)
+        return path_cumulative_lengths(points)
 
     @staticmethod
     def _sample_path_at_lengths(points: np.ndarray, cum_lengths: np.ndarray, samples: np.ndarray) -> np.ndarray:
-        capped = np.clip(samples, 0.0, float(cum_lengths[-1]))
-        x = np.interp(capped, cum_lengths, points[:, 0])
-        y = np.interp(capped, cum_lengths, points[:, 1])
-        return np.column_stack((x, y)).astype(np.float64)
+        return sample_path_at_lengths(points, cum_lengths, samples)
 
     @staticmethod
     def _extract_forward_path_from_pose(
@@ -1260,22 +1275,11 @@ class DelaunayPlannerNode(Node):
         vehicle_xy: tuple[float, float],
         resolution_m: float,
     ) -> Optional[np.ndarray]:
-        if path.shape[0] < 2:
-            return None
-        cum = DelaunayPlannerNode._path_cumulative_lengths(path)
-        s_vehicle = DelaunayPlannerNode._project_point_to_path_s(
-            path,
-            cum,
-            np.asarray(vehicle_xy, dtype=np.float64),
+        return extract_forward_path_from_pose(
+            path=path,
+            vehicle_xy=vehicle_xy,
+            resolution_m=resolution_m,
         )
-        total = float(cum[-1])
-        step = max(0.05, float(resolution_m))
-        if (total - s_vehicle) <= step:
-            return None
-        samples = np.arange(s_vehicle, total + 1e-9, step, dtype=np.float64)
-        if samples.size == 0 or samples[-1] < total:
-            samples = np.concatenate((samples, [total]))
-        return DelaunayPlannerNode._sample_path_at_lengths(path, cum, samples)
 
     @staticmethod
     def _project_point_to_path_s(path: np.ndarray, cum_lengths: np.ndarray, point_xy: np.ndarray) -> float:
@@ -1300,19 +1304,7 @@ class DelaunayPlannerNode(Node):
 
     @staticmethod
     def _resample_to_count(points: np.ndarray, count: int) -> np.ndarray:
-        if points.shape[0] == count:
-            return points
-        if points.shape[0] <= 1 or count <= 1:
-            return np.repeat(points[:1], count, axis=0)
-
-        seg = points[1:] - points[:-1]
-        seg_len = np.hypot(seg[:, 0], seg[:, 1])
-        cum = np.concatenate(([0.0], np.cumsum(seg_len)))
-        total = max(float(cum[-1]), 1e-6)
-        samples = np.linspace(0.0, total, count)
-        x = np.interp(samples, cum, points[:, 0])
-        y = np.interp(samples, cum, points[:, 1])
-        return np.column_stack((x, y)).astype(np.float64)
+        return resample_to_count(points, count)
 
     def _record_valid_plan(
         self,
@@ -1545,6 +1537,7 @@ class DelaunayPlannerNode(Node):
                 'hold_remaining_s': hold_remaining_s,
                 'control_path_point_count': 0,
                 'zero_cmd_sent_flag': int(zero_cmd_sent_flag),
+                'planner_mode': self._active_planner_mode,
             },
         )
         self._publish_outputs(
@@ -1588,8 +1581,8 @@ class DelaunayPlannerNode(Node):
         msg.header.frame_id = frame_id
 
         diag = DiagnosticStatus()
-        diag.name = 'delaunay_planner/stability'
-        diag.hardware_id = 'sim_car.delaunay_planner'
+        diag.name = f'{self._planner_identity.diagnostics_prefix}/stability'
+        diag.hardware_id = self._planner_identity.hardware_id
         diag.level = DiagnosticStatus.OK
         diag.message = status
         diag.values = [
@@ -1609,8 +1602,8 @@ class DelaunayPlannerNode(Node):
             if control_debug_metrics is not None:
                 merged.update(control_debug_metrics)
             control_diag = DiagnosticStatus()
-            control_diag.name = 'delaunay_planner/control_debug'
-            control_diag.hardware_id = 'sim_car.delaunay_planner'
+            control_diag.name = f'{self._planner_identity.diagnostics_prefix}/control_debug'
+            control_diag.hardware_id = self._planner_identity.hardware_id
             control_diag.level = DiagnosticStatus.OK
             control_diag.message = 'stanley debug signals'
             control_diag.values = [
@@ -1671,8 +1664,8 @@ class DelaunayPlannerNode(Node):
             if thesis_context_metrics is not None:
                 merged_thesis.update(thesis_context_metrics)
             thesis_diag = DiagnosticStatus()
-            thesis_diag.name = 'delaunay_planner/thesis_context'
-            thesis_diag.hardware_id = 'sim_car.delaunay_planner'
+            thesis_diag.name = f'{self._planner_identity.diagnostics_prefix}/thesis_context'
+            thesis_diag.hardware_id = self._planner_identity.hardware_id
             thesis_diag.level = DiagnosticStatus.OK
             thesis_diag.message = 'planner context for controller thesis diagnostics'
             thesis_diag.values = [

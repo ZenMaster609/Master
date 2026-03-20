@@ -141,11 +141,11 @@ def parse_planner_diag(diag_msg: Any) -> dict[str, float]:
 
     for status in statuses:
         name = str(getattr(status, "name", ""))
-        if name not in {
-            "delaunay_planner/stability",
-            "delaunay_planner/control_debug",
-            "delaunay_planner/thesis_context",
-        }:
+        if not (
+            name.endswith("/stability")
+            or name.endswith("/control_debug")
+            or name.endswith("/thesis_context")
+        ):
             continue
         values = getattr(status, "values", [])
         for item in values:

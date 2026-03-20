@@ -15,12 +15,12 @@ from sim_car.controllers.base import ControllerOutput, FloatArray, StanleyDebugI
 class StanleyConfig:
     """Stanley steering configuration."""
 
-    k_gain: float = 1.25
-    softening_speed_mps: float = 0.5
+    k_gain: float = 1.2
+    softening_speed_mps: float = 0.0
     heading_gain: float = 1.0
-    lookahead_idx_offset: int = 1
+    lookahead_idx_offset: int = 0
     steering_limit_rad: float = 0.52
-    steering_lowpass_alpha: float = 0.6
+    steering_lowpass_alpha: float = 1.0
     steering_rate_limit_rad_s: float = 10.0
     use_yaw_rate_damping: bool = True
     yaw_rate_damping_gain: float = 0.0

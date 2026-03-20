@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Simple hybrid boundary local planner over tracked cone detections."""
+"""Single-boundary planner over tracked cone detections."""
 
 from __future__ import annotations
 
@@ -31,15 +31,16 @@ from sim_car.planning.delaunay_planner_core import (
     selected_edge_keys,
     tracked_cones_frame_delta_p95,
 )
-from sim_car.planning.delaunay_planner_node import DelaunayPlannerNode
-from sim_car.planning.hybrid_boundary_planner_core import (
-    HybridBoundaryConfig,
-    HybridBoundaryPrior,
-    HybridBoundaryResult,
+from sim_car.planning.planner_runtime_types import PlannerIdentity
+from sim_car.planning.single_boundary_planner_core import (
+    SingleBoundaryPlannerConfig,
+    SingleBoundaryPlannerPrior,
+    SingleBoundaryPlannerResult,
     _finalize_path,
-    compute_hybrid_boundary_centerline,
+    compute_single_boundary_centerline,
     update_track_width_estimate,
 )
+from sim_car.planning.tracked_cone_planner_base import TrackedConePlannerBase
 
 MSG_TRACK_STATE_TENTATIVE = int(getattr(ConeDetection, "TRACK_STATE_TENTATIVE", 0))
 MSG_TRACK_STATE_CONFIRMED = int(getattr(ConeDetection, "TRACK_STATE_CONFIRMED", 1))
@@ -53,11 +54,17 @@ class _PairMemoryEntry:
     last_valid_sec: float
 
 
-class HybridBoundaryPlannerNode(DelaunayPlannerNode):
-    """Tracked-cone planner using midpoint mode with single-boundary fallback."""
+class SingleBoundaryPlannerNode(TrackedConePlannerBase):
+    """Tracked-cone single-boundary planner with shared path-memory stabilization."""
 
     def __init__(self) -> None:
-        Node.__init__(self, "hybrid_boundary_planner_node")
+        self._planner_identity = PlannerIdentity(
+            node_name="single_boundary_planner_node",
+            planner_mode="single_boundary",
+            diagnostics_prefix="single_boundary_planner",
+            diagnostics_topic="/single_boundary_planner/diagnostics",
+        )
+        Node.__init__(self, self._planner_identity.node_name)
         self._declare_parameters()
         self._read_parameters()
 
@@ -88,9 +95,6 @@ class HybridBoundaryPlannerNode(DelaunayPlannerNode):
         self._last_steering_cmd: Optional[float] = None
         self._last_operator_state: Optional[str] = None
         self._last_operator_reason: Optional[str] = None
-        self._pair_memory: list[_PairMemoryEntry] = []
-        self._mode_enter_good_count: int = 0
-        self._mode_exit_bad_count: int = 0
         self._midline_buffer_path: Optional[np.ndarray] = None
         self._midline_buffer_confidence: float = 0.0
         self._midline_buffer_last_update_sec: float = -1.0
@@ -132,7 +136,7 @@ class HybridBoundaryPlannerNode(DelaunayPlannerNode):
         self.create_timer(1.0 / loop_hz, self._on_timer)
 
         self.get_logger().info(
-            "hybrid_boundary_planner_node ready "
+            "single_boundary_planner_node ready "
             f"cones={self.tracked_cones_topic} odom={self.odom_topic} "
             f"cmd={self.cmd_topic} path={self.centerline_topic} viz={self.viz_topic} "
             f"planning_frame={self.planning_frame} controller={self.controller_type}"
@@ -140,11 +144,6 @@ class HybridBoundaryPlannerNode(DelaunayPlannerNode):
 
     def _declare_parameters(self) -> None:
         defaults = {
-            "planner.force_single_boundary": False,
-            "planner.force_single_boundary_min_chain_length": 2,
-            "planner.force_single_boundary_min_path_points": 2,
-            "planner.force_single_boundary_min_forward_extent_m": 1.0,
-            "planner.force_single_boundary_max_near_field_lateral_jump_m": 5.0,
             "frames.planning_frame": "odom",
             "frames.odom_frame": "odom",
             "frames.base_frame": "front_axle",
@@ -173,10 +172,7 @@ class HybridBoundaryPlannerNode(DelaunayPlannerNode):
             "pairing.max_pair_width_m": 5.5,
             "pairing.max_width_jump_m": 0.8,
             "pairing.min_pair_count": 3,
-            "pairing.pair_hold_time_s": 1.25,
             "pairing.pair_reassignment_margin": 0.25,
-            "mode_hysteresis.enter_good_frames": 2,
-            "mode_hysteresis.exit_bad_frames": 3,
             "width_estimation.initial_width_m": 3.6,
             "width_estimation.min_width_m": 2.4,
             "width_estimation.max_width_m": 4.8,
@@ -204,18 +200,18 @@ class HybridBoundaryPlannerNode(DelaunayPlannerNode):
             "runtime.publish_rate_hz": 180.0,
             "runtime.log_throttle_s": 1.0,
             "control.controller_type": "stanley",
-            "stanley.k_gain": 1.25,
-            "stanley.softening_speed_mps": 0.5,
+            "control.stop_if_no_path": True,
+            "stanley.k_gain": 1.2,
+            "stanley.softening_speed_mps": 0.0,
             "stanley.heading_gain": 1.0,
-            "stanley.lookahead_idx_offset": 1,
+            "stanley.lookahead_idx_offset": 0,
             "stanley.steering_limit_rad": 0.52,
-            "stanley.steering_lowpass_alpha": 0.6,
+            "stanley.steering_lowpass_alpha": 1.0,
             "stanley.steering_rate_limit_rad_s": 10.0,
             "stanley.use_yaw_rate_damping": True,
             "stanley.yaw_rate_damping_gain": 0.0,
             "stanley.wheelbase_m": 1.65,
             "stanley.cross_track_deadband_m": 0.0,
-            "stanley.stop_if_no_path": True,
             "speed_control.speed_min_mps": 1.0,
             "speed_control.speed_max_mps": 1.8,
             "speed_control.curvature_speed_gain": 4.0,
@@ -233,7 +229,7 @@ class HybridBoundaryPlannerNode(DelaunayPlannerNode):
             "validation.candidate_jump_recover_frames": 3,
             "validation.candidate_min_points": 4,
             "validation.candidate_min_extent_m": 2.0,
-            "diagnostics.topic": "/delaunay_planner/diagnostics",
+            "diagnostics.topic": "/single_boundary_planner/diagnostics",
             "diagnostics.centerline_jump_horizon_m": 8.0,
             "diagnostics.edge_quantization_m": 0.05,
             "diagnostics.jump_warn_threshold_m": 0.8,
@@ -285,15 +281,6 @@ class HybridBoundaryPlannerNode(DelaunayPlannerNode):
         self.commit_plan_horizon_m = 0.0
         self.commit_stable_frames = 1
         self.commit_update_max_churn_ratio = 1.0
-        self.pair_hold_time_s = max(0.0, float(self.get_parameter("pairing.pair_hold_time_s").value))
-        self.mode_enter_good_frames = max(
-            1,
-            int(self.get_parameter("mode_hysteresis.enter_good_frames").value),
-        )
-        self.mode_exit_bad_frames = max(
-            1,
-            int(self.get_parameter("mode_hysteresis.exit_bad_frames").value),
-        )
         self.midline_horizon_m = max(1.0, float(self.get_parameter("midline_memory.horizon_m").value))
         self.midline_station_spacing_m = max(
             0.05,
@@ -346,9 +333,9 @@ class HybridBoundaryPlannerNode(DelaunayPlannerNode):
         self.controller_type = (
             str(self.get_parameter("control.controller_type").value).strip().lower() or "stanley"
         )
-        if self.controller_type != "stanley":
+        if self.controller_type not in {"stanley", "pure_pursuit", "none"}:
             raise ValueError(
-                "Unsupported control.controller_type '%s'. Supported value: stanley"
+                "Unsupported control.controller_type '%s'. Supported values: stanley, pure_pursuit, none"
                 % self.controller_type
             )
         stanley_config = StanleyConfig(
@@ -375,12 +362,22 @@ class HybridBoundaryPlannerNode(DelaunayPlannerNode):
                 float(self.get_parameter("stanley.cross_track_deadband_m").value),
             ),
         )
-        self._controller = create_steering_controller(
-            controller_type=self.controller_type,
-            stanley_config=stanley_config,
-            publish_rate_hz=self.publish_rate_hz,
+        self._controller = (
+            create_steering_controller(
+                controller_type=self.controller_type,
+                stanley_config=stanley_config,
+                publish_rate_hz=self.publish_rate_hz,
+            )
+            if self.controller_type == "stanley"
+            else None
         )
-        self.stop_if_no_path = bool(self.get_parameter("stanley.stop_if_no_path").value)
+        self.stop_if_no_path = bool(self.get_parameter("control.stop_if_no_path").value)
+        if self.controller_type == "pure_pursuit":
+            self.get_logger().warn(
+                "control.controller_type 'pure_pursuit' is a placeholder; controller output is disabled"
+            )
+        elif self.controller_type == "none":
+            self.get_logger().info("control.controller_type 'none'; controller output is disabled")
 
         self.speed_min_mps = max(0.0, float(self.get_parameter("speed_control.speed_min_mps").value))
         self.speed_max_mps = max(self.speed_min_mps, float(self.get_parameter("speed_control.speed_max_mps").value))
@@ -413,7 +410,8 @@ class HybridBoundaryPlannerNode(DelaunayPlannerNode):
             float(self.get_parameter("validation.candidate_min_extent_m").value),
         )
         self.diagnostics_topic = (
-            str(self.get_parameter("diagnostics.topic").value).strip() or "/delaunay_planner/diagnostics"
+            str(self.get_parameter("diagnostics.topic").value).strip()
+            or self._planner_identity.diagnostics_topic
         )
         self.centerline_jump_horizon_m = max(
             0.5,
@@ -457,30 +455,7 @@ class HybridBoundaryPlannerNode(DelaunayPlannerNode):
         self.show_candidate_edges = False
         self.show_selected_edges = False
 
-        self._core_config = HybridBoundaryConfig(
-            force_single_boundary=bool(
-                self.get_parameter("planner.force_single_boundary").value
-            ),
-            force_single_boundary_min_chain_length=max(
-                2,
-                int(self.get_parameter("planner.force_single_boundary_min_chain_length").value),
-            ),
-            force_single_boundary_min_path_points=max(
-                2,
-                int(self.get_parameter("planner.force_single_boundary_min_path_points").value),
-            ),
-            force_single_boundary_min_forward_extent_m=max(
-                0.5,
-                float(self.get_parameter("planner.force_single_boundary_min_forward_extent_m").value),
-            ),
-            force_single_boundary_max_near_field_lateral_jump_m=max(
-                0.0,
-                float(
-                    self.get_parameter(
-                        "planner.force_single_boundary_max_near_field_lateral_jump_m"
-                    ).value
-                ),
-            ),
+        self._core_config = SingleBoundaryPlannerConfig(
             max_cone_range_m=float(self.get_parameter("filtering.max_cone_range_m").value),
             behind_drop_m=float(self.get_parameter("filtering.behind_drop_m").value),
             min_confidence=float(self.get_parameter("filtering.min_confidence").value),
@@ -648,7 +623,7 @@ class HybridBoundaryPlannerNode(DelaunayPlannerNode):
             & (track_states == MSG_TRACK_STATE_TENTATIVE)
         ] = 0.0
 
-        result = compute_hybrid_boundary_centerline(
+        result = compute_single_boundary_centerline(
             points_xy=points_xy,
             colors=colors,
             confidences=planner_confidences,
@@ -656,7 +631,7 @@ class HybridBoundaryPlannerNode(DelaunayPlannerNode):
             vehicle_xy=(vehicle_x, vehicle_y),
             vehicle_yaw=vehicle_yaw,
             config=self._core_config,
-            prior=HybridBoundaryPrior(
+            prior=SingleBoundaryPlannerPrior(
                 previous_centerline=(
                     np.array(self._midline_buffer_path, copy=True)
                     if self._midline_buffer_path is not None
@@ -668,12 +643,11 @@ class HybridBoundaryPlannerNode(DelaunayPlannerNode):
                 ),
                 previous_width_m=self._filtered_track_width_m,
                 previous_mode=self._active_planner_mode,
-                previous_pairs=self._active_pair_memory(now_sec),
+                previous_pairs=[],
             ),
         )
         if (
-            result.planner_mode == "midpoint"
-            and result.accepted_pair_count >= int(self._core_config.min_trustworthy_pairs)
+            result.accepted_pair_count >= int(self._core_config.min_trustworthy_pairs)
             and math.isfinite(float(result.selected_chain_width_median))
         ):
             self._filtered_track_width_m = update_track_width_estimate(
@@ -686,8 +660,7 @@ class HybridBoundaryPlannerNode(DelaunayPlannerNode):
         raw_centerline, candidate_source = self._select_candidate_centerline(result)
         raw_midpoint_chain = np.array(result.midpoints_raw, copy=True)
         pair_segments_for_viz = np.array(result.pair_segments, copy=True)
-        effective_candidate_mode = self._apply_mode_hysteresis(result.planner_mode)
-        result.planner_mode = effective_candidate_mode
+        result.planner_mode = self._planner_identity.planner_mode
 
         tracked_delta_p95_m = tracked_cones_frame_delta_p95(self._previous_tracked_points, points_xy)
         self._previous_tracked_points = np.array(points_xy, copy=True)
@@ -858,7 +831,7 @@ class HybridBoundaryPlannerNode(DelaunayPlannerNode):
             vehicle_y=vehicle_y,
             vehicle_yaw=vehicle_yaw,
         )
-        if control_path.shape[0] >= 1:
+        if control_path.shape[0] >= 1 and self._controller is not None:
             try:
                 controller_output = self._controller.compute(
                     control_path=control_path,
@@ -929,6 +902,8 @@ class HybridBoundaryPlannerNode(DelaunayPlannerNode):
                             else float("nan")
                         ),
                     }
+        elif control_path.shape[0] >= 1:
+            zero_cmd_sent_flag = int(self._apply_controller_disabled_behavior())
         else:
             zero_cmd_sent_flag = int(self._apply_no_path_behavior())
             if self._last_speed_cmd is not None:
@@ -969,6 +944,9 @@ class HybridBoundaryPlannerNode(DelaunayPlannerNode):
         if controller_failed:
             operator_state = "stopped"
             operator_reason = "controller_compute_failed"
+        elif self._controller is None and centerline.shape[0] > 0:
+            operator_state = "stopped"
+            operator_reason = "controller_disabled"
         elif centerline.shape[0] > 0 and control_path_point_count <= 0 and operator_state != "waiting":
             operator_state = "stopped"
             operator_reason = "no_control_path"
@@ -1117,48 +1095,15 @@ class HybridBoundaryPlannerNode(DelaunayPlannerNode):
         )
 
     def _active_pair_memory(self, now_sec: float) -> list[tuple[int, int]]:
-        active: list[tuple[int, int]] = []
-        keep: list[_PairMemoryEntry] = []
-        for entry in self._pair_memory:
-            if (now_sec - entry.last_valid_sec) <= self.pair_hold_time_s:
-                keep.append(entry)
-                active.append((entry.left_track_id, entry.right_track_id))
-        self._pair_memory = keep
-        return active
+        del now_sec
+        return []
 
-    def _remember_pairs(self, *, result: HybridBoundaryResult, now_sec: float) -> None:
-        if result.selected_pair_track_ids.size == 0:
-            self._active_pair_count = 0
-            return
-        self._pair_memory = [
-            _PairMemoryEntry(
-                left_track_id=int(pair_ids[0]),
-                right_track_id=int(pair_ids[1]),
-                last_valid_sec=now_sec,
-            )
-            for pair_ids in np.asarray(result.selected_pair_track_ids, dtype=np.int64)
-        ]
+    def _remember_pairs(self, *, result: SingleBoundaryPlannerResult, now_sec: float) -> None:
+        del result
+        del now_sec
 
     def _apply_mode_hysteresis(self, candidate_mode: str) -> str:
-        if bool(self._core_config.force_single_boundary):
-            return "single_boundary" if candidate_mode != "none" else "none"
-        candidate = str(candidate_mode or "none")
-        current = str(self._active_planner_mode or "none")
-        if candidate == "midpoint":
-            self._mode_enter_good_count += 1
-            self._mode_exit_bad_count = 0
-            if current == "midpoint" or self._mode_enter_good_count >= self.mode_enter_good_frames:
-                return "midpoint"
-            return current if current in {"single_boundary", "holding_last_valid"} else "single_boundary"
-
-        self._mode_enter_good_count = 0
-        self._mode_exit_bad_count += 1
-        if current == "midpoint" and self._mode_exit_bad_count < self.mode_exit_bad_frames:
-            return "midpoint"
-        if candidate == "single_boundary":
-            self._mode_exit_bad_count = 0
-            return "single_boundary"
-        return candidate
+        return "single_boundary" if candidate_mode != "none" else "none"
 
     def _update_midline_buffer(
         self,
@@ -1170,7 +1115,7 @@ class HybridBoundaryPlannerNode(DelaunayPlannerNode):
         vehicle_x: float,
         vehicle_y: float,
         vehicle_yaw: float,
-        result: HybridBoundaryResult,
+        result: SingleBoundaryPlannerResult,
         now_sec: float,
     ) -> np.ndarray:
         if not self._is_alias(frame_id, self.odom_frame):
@@ -1247,7 +1192,7 @@ class HybridBoundaryPlannerNode(DelaunayPlannerNode):
         vehicle_x: float,
         vehicle_y: float,
         vehicle_yaw: float,
-        result: HybridBoundaryResult,
+        result: SingleBoundaryPlannerResult,
         candidate_source: str = "validated",
     ) -> tuple[bool, str]:
         if candidate_centerline.shape[0] < self.candidate_min_points:
@@ -1281,7 +1226,7 @@ class HybridBoundaryPlannerNode(DelaunayPlannerNode):
 
     def _select_candidate_centerline(
         self,
-        result: HybridBoundaryResult,
+        result: SingleBoundaryPlannerResult,
     ) -> tuple[np.ndarray, str]:
         if result.centerline.shape[0] > 0:
             return np.array(result.centerline, copy=True), "validated"
@@ -1505,7 +1450,7 @@ class HybridBoundaryPlannerNode(DelaunayPlannerNode):
             zero_cmd_sent_flag=zero_cmd_sent_flag,
         )
 
-    def _normalize_core_reject_reason(self, result: Optional[HybridBoundaryResult]) -> str:
+    def _normalize_core_reject_reason(self, result: Optional[SingleBoundaryPlannerResult]) -> str:
         if result is None:
             return "none"
         reject_counts = result.reject_counts or {}
@@ -1587,7 +1532,7 @@ class HybridBoundaryPlannerNode(DelaunayPlannerNode):
         *,
         now,
         frame_id: str,
-        result: Optional[HybridBoundaryResult],
+        result: Optional[SingleBoundaryPlannerResult],
         centerline: np.ndarray,
         raw_centerline: np.ndarray,
         raw_midpoint_chain: np.ndarray,
@@ -1884,7 +1829,7 @@ class HybridBoundaryPlannerNode(DelaunayPlannerNode):
         self,
         *,
         mode: str,
-        result: HybridBoundaryResult,
+        result: SingleBoundaryPlannerResult,
         operator_state: str,
         operator_reason: str,
         hold_active: bool,
@@ -1917,7 +1862,7 @@ class HybridBoundaryPlannerNode(DelaunayPlannerNode):
 
 def main(args=None) -> None:
     rclpy.init(args=args)
-    node = HybridBoundaryPlannerNode()
+    node = SingleBoundaryPlannerNode()
     try:
         rclpy.spin(node)
     except (KeyboardInterrupt, ExternalShutdownException):

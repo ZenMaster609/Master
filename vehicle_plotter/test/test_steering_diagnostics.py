@@ -85,6 +85,21 @@ def test_parse_planner_diag_with_keys():
     assert abs(out['zero_cmd_sent_flag'] - 1.0) < 1e-9
 
 
+def test_parse_planner_diag_accepts_midpoint_prefix():
+    msg = _Diag([
+        _Status(
+            'midpoint_planner/stability',
+            [
+                _KV('centerline_jump_max_m', '0.5'),
+                _KV('selected_edge_churn_ratio', '0.2'),
+            ],
+        )
+    ])
+    out = parse_planner_diag(msg)
+    assert abs(out['centerline_jump_max_m'] - 0.5) < 1e-9
+    assert abs(out['selected_edge_churn_ratio'] - 0.2) < 1e-9
+
+
 def test_parse_planner_diag_with_control_debug_keys():
     msg = _Diag([
         _Status(

@@ -64,23 +64,6 @@ delaunay_planner_node:
       publish_rate_hz: 180.0
       log_throttle_s: 1.0
 
-    control:
-      controller_type: "stanley"  # Supported value: stanley
-
-    stanley:
-      k_gain: 1.2
-      softening_speed_mps: 0.0
-      heading_gain: 1.0
-      lookahead_idx_offset: 0
-      steering_limit_rad: 0.52
-      steering_lowpass_alpha: 1.0
-      steering_rate_limit_rad_s: 10.0
-      use_yaw_rate_damping: true
-      yaw_rate_damping_gain: 0.0
-      wheelbase_m: 1.65
-      cross_track_deadband_m: 0.0
-      stop_if_no_path: true
-
     speed_control:
       speed_min_mps: 1.0
       speed_max_mps: 4.0

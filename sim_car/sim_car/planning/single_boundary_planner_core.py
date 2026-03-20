@@ -1,4 +1,4 @@
-"""Core geometry for a simple hybrid boundary local planner."""
+"""Core geometry for the single-boundary planner."""
 
 from __future__ import annotations
 
@@ -12,13 +12,7 @@ from sim_car.cones.tracking.fusion import normalize_color
 
 
 @dataclass
-class HybridBoundaryConfig:
-    force_single_boundary: bool = False
-    force_single_boundary_min_chain_length: int = 2
-    force_single_boundary_min_path_points: int = 2
-    force_single_boundary_min_forward_extent_m: float = 1.0
-    force_single_boundary_max_near_field_lateral_jump_m: float = 5.0
-
+class SingleBoundaryPlannerConfig:
     max_cone_range_m: float = 25.0
     behind_drop_m: float = 5.0
     min_confidence: float = 0.3
@@ -33,7 +27,7 @@ class HybridBoundaryConfig:
     max_step_m: float = 6.0
     max_heading_change_rad: float = 1.0
     min_forward_progress_m: float = 0.2
-    min_chain_length: int = 3
+    min_chain_length: int = 2
 
     min_pair_width_m: float = 2.2
     max_pair_width_m: float = 5.5
@@ -53,17 +47,17 @@ class HybridBoundaryConfig:
     smoothing_window: int = 3
     max_heading_delta_rad: float = 0.75
 
-    min_path_points: int = 4
-    min_forward_extent_m: float = 2.0
+    min_path_points: int = 2
+    min_forward_extent_m: float = 1.0
     jump_check_horizon_m: float = 8.0
     max_near_field_lateral_jump_m: float = 0.6
     max_near_field_lateral_jump_m_sparse_pairs: float = 0.9
-    max_near_field_lateral_jump_m_single_boundary: float = 1.2
+    max_near_field_lateral_jump_m_single_boundary: float = 5.0
     max_start_heading_error_rad: float = 1.0
 
 
 @dataclass
-class HybridBoundaryPrior:
+class SingleBoundaryPlannerPrior:
     previous_centerline: Optional[np.ndarray] = None
     previous_width_m: Optional[float] = None
     previous_mode: str = "none"
@@ -71,7 +65,7 @@ class HybridBoundaryPrior:
 
 
 @dataclass
-class HybridBoundaryResult:
+class SingleBoundaryPlannerResult:
     filtered_points: np.ndarray
     filtered_colors: list[str]
     triangulation_edges: np.ndarray
@@ -139,16 +133,16 @@ class _BoundaryPair:
         return 0.5 * (self.left_global + self.right_global)
 
 
-def compute_hybrid_boundary_centerline(
+def compute_single_boundary_centerline(
     points_xy: np.ndarray,
     colors: list[str],
     confidences: np.ndarray,
     vehicle_xy: tuple[float, float],
     vehicle_yaw: float,
-    config: HybridBoundaryConfig,
-    prior: Optional[HybridBoundaryPrior] = None,
+    config: SingleBoundaryPlannerConfig,
+    prior: Optional[SingleBoundaryPlannerPrior] = None,
     track_ids: Optional[np.ndarray] = None,
-) -> HybridBoundaryResult:
+) -> SingleBoundaryPlannerResult:
     if points_xy.size == 0:
         return _empty_result("no cones available")
 
@@ -217,7 +211,7 @@ def compute_hybrid_boundary_centerline(
     candidate_count = 0
     measured_width_m = float("nan")
 
-    midpoint_possible = (not bool(config.force_single_boundary)) and (
+    pairing_possible = (
         (
             left_chain.filtered_indices.size >= int(config.min_chain_length)
             or right_chain.filtered_indices.size >= int(config.min_chain_length)
@@ -227,7 +221,7 @@ def compute_hybrid_boundary_centerline(
             or unknown_indices.size > 0
         )
     )
-    if midpoint_possible:
+    if pairing_possible:
         pairs, candidate_count, unknown_pair_count, pair_reject_counts = _pair_boundary_chains(
             filtered_points=filtered_points,
             filtered_local=filtered_local,
@@ -240,52 +234,40 @@ def compute_hybrid_boundary_centerline(
             prior=prior,
         )
         _merge_reject_counts(reject_counts, pair_reject_counts)
-        if len(pairs) >= int(config.min_pair_count):
-            midpoint_chain = np.vstack([pair.midpoint_global for pair in pairs]).astype(np.float64)
-            selected_edges = np.asarray(
-                [[pair.left_filtered_idx, pair.right_filtered_idx] for pair in pairs],
-                dtype=np.int64,
-            )
-            selected_pair_track_ids = np.asarray(
-                [[pair.left_track_id, pair.right_track_id] for pair in pairs],
-                dtype=np.int64,
-            )
+        if pairs:
             measured_width_m = float(np.median([pair.width_m for pair in pairs]))
-            planner_mode = "midpoint"
-        else:
-            unknown_pair_count = 0
-            selected_pair_track_ids = np.empty((0, 2), dtype=np.int64)
+        unknown_pair_count = 0
+        selected_pair_track_ids = np.empty((0, 2), dtype=np.int64)
     else:
         unknown_pair_count = 0
         selected_pair_track_ids = np.empty((0, 2), dtype=np.int64)
 
-    if planner_mode == "none":
-        fallback_chain, fallback_side = _select_fallback_chain(left_chain, right_chain, config)
-        if fallback_chain is not None:
-            planner_mode = "single_boundary"
-            active_boundary_side = fallback_side
-            used_fallback = True
-            raw_offset_path = _offset_boundary_chain(
-                chain=fallback_chain,
-                side=fallback_side,
-                width_m=expected_width,
-            )
-        else:
-            return _result_with_metadata(
-                result=_empty_result(
-                    "no reliable boundary chain",
-                    filtered_points=filtered_points,
-                    filtered_colors=filtered_colors,
-                    left_boundary=left_chain.global_points,
-                    right_boundary=right_chain.global_points,
-                    reject_counts=reject_counts,
-                    reject_reason="no reliable boundary chain",
-                ),
-                left_chain=left_chain,
-                right_chain=right_chain,
-                planner_mode="none",
-                filtered_track_width_m=expected_width,
-            )
+    fallback_chain, fallback_side = _select_fallback_chain(left_chain, right_chain, config)
+    if fallback_chain is not None:
+        planner_mode = "single_boundary"
+        active_boundary_side = fallback_side
+        used_fallback = True
+        raw_offset_path = _offset_boundary_chain(
+            chain=fallback_chain,
+            side=fallback_side,
+            width_m=expected_width,
+        )
+    else:
+        return _result_with_metadata(
+            result=_empty_result(
+                "no reliable boundary chain",
+                filtered_points=filtered_points,
+                filtered_colors=filtered_colors,
+                left_boundary=left_chain.global_points,
+                right_boundary=right_chain.global_points,
+                reject_counts=reject_counts,
+                reject_reason="no reliable boundary chain",
+            ),
+            left_chain=left_chain,
+            right_chain=right_chain,
+            planner_mode="none",
+            filtered_track_width_m=expected_width,
+        )
 
     raw_curve = midpoint_chain if planner_mode == "midpoint" else raw_offset_path
     centerline = _finalize_path(raw_curve, config)
@@ -305,11 +287,6 @@ def compute_hybrid_boundary_centerline(
             continuity_threshold_m,
             float(config.max_near_field_lateral_jump_m_single_boundary),
         )
-        if bool(config.force_single_boundary):
-            continuity_threshold_m = max(
-                continuity_threshold_m,
-                float(config.force_single_boundary_max_near_field_lateral_jump_m),
-            )
     elif len(pairs) <= max(3, int(config.min_pair_count)):
         continuity_threshold_m = max(
             continuity_threshold_m,
@@ -320,16 +297,6 @@ def compute_hybrid_boundary_centerline(
     reject_reason = ""
     min_path_points = int(config.min_path_points)
     min_forward_extent_m = float(config.min_forward_extent_m)
-    if planner_mode == "single_boundary" and bool(config.force_single_boundary):
-        min_path_points = min(
-            min_path_points,
-            int(config.force_single_boundary_min_path_points),
-        )
-        min_forward_extent_m = min(
-            min_forward_extent_m,
-            float(config.force_single_boundary_min_forward_extent_m),
-        )
-
     if centerline.shape[0] < min_path_points:
         status = "path has too few points"
         reject_reason = status
@@ -360,7 +327,7 @@ def compute_hybrid_boundary_centerline(
     if status != "ok":
         centerline = np.empty((0, 2), dtype=np.float64)
 
-    result = HybridBoundaryResult(
+    result = SingleBoundaryPlannerResult(
         filtered_points=filtered_points,
         filtered_colors=filtered_colors,
         triangulation_edges=np.empty((0, 2), dtype=np.int64),
@@ -407,7 +374,7 @@ def compute_hybrid_boundary_centerline(
 def update_track_width_estimate(
     previous_width_m: Optional[float],
     measured_width_m: Optional[float],
-    config: HybridBoundaryConfig,
+    config: SingleBoundaryPlannerConfig,
 ) -> float:
     width = (
         config.initial_width_m if previous_width_m is None or not math.isfinite(float(previous_width_m))
@@ -428,7 +395,7 @@ def update_track_width_estimate(
     return _clamp(updated, config.min_width_m, config.max_width_m)
 
 
-def _geometry_filter(local_points: np.ndarray, config: HybridBoundaryConfig) -> np.ndarray:
+def _geometry_filter(local_points: np.ndarray, config: SingleBoundaryPlannerConfig) -> np.ndarray:
     distance = np.hypot(local_points[:, 0], local_points[:, 1])
     return (
         np.isfinite(local_points[:, 0])
@@ -466,7 +433,7 @@ def _build_boundary_chain(
     filtered_points: np.ndarray,
     filtered_local: np.ndarray,
     side_indices: np.ndarray,
-    config: HybridBoundaryConfig,
+    config: SingleBoundaryPlannerConfig,
 ) -> _BoundaryChain:
     if side_indices.size == 0:
         return _BoundaryChain(
@@ -648,8 +615,8 @@ def _pair_boundary_chains(
     right_chain: _BoundaryChain,
     unknown_indices: np.ndarray,
     expected_width_m: float,
-    config: HybridBoundaryConfig,
-    prior: Optional[HybridBoundaryPrior],
+    config: SingleBoundaryPlannerConfig,
+    prior: Optional[SingleBoundaryPlannerPrior],
 ) -> tuple[list[_BoundaryPair], int, int, dict[str, int]]:
     reject_counts = _default_reject_counts()
     candidate_count = 0
@@ -855,15 +822,10 @@ def _pair_boundary_chains(
 def _select_fallback_chain(
     left_chain: _BoundaryChain,
     right_chain: _BoundaryChain,
-    config: HybridBoundaryConfig,
+    config: SingleBoundaryPlannerConfig,
 ) -> tuple[Optional[_BoundaryChain], str]:
     candidates: list[tuple[tuple[float, float, float, int], _BoundaryChain, str]] = []
     min_chain_length = int(config.min_chain_length)
-    if bool(config.force_single_boundary):
-        min_chain_length = min(
-            min_chain_length,
-            int(config.force_single_boundary_min_chain_length),
-        )
 
     if left_chain.filtered_indices.size >= min_chain_length:
         candidates.append(
@@ -950,7 +912,7 @@ def _estimate_tangents(points: np.ndarray) -> np.ndarray:
     return tangents
 
 
-def _finalize_path(points: np.ndarray, config: HybridBoundaryConfig) -> np.ndarray:
+def _finalize_path(points: np.ndarray, config: SingleBoundaryPlannerConfig) -> np.ndarray:
     if points.shape[0] == 0:
         return np.empty((0, 2), dtype=np.float64)
     path = np.asarray(points, dtype=np.float64)
@@ -1155,8 +1117,8 @@ def _empty_result(
     right_boundary: Optional[np.ndarray] = None,
     reject_counts: Optional[dict[str, int]] = None,
     reject_reason: str = "",
-) -> HybridBoundaryResult:
-    return HybridBoundaryResult(
+) -> SingleBoundaryPlannerResult:
+    return SingleBoundaryPlannerResult(
         filtered_points=(
             np.asarray(filtered_points, dtype=np.float64)
             if filtered_points is not None
@@ -1188,12 +1150,12 @@ def _empty_result(
 
 def _result_with_metadata(
     *,
-    result: HybridBoundaryResult,
+    result: SingleBoundaryPlannerResult,
     left_chain: _BoundaryChain,
     right_chain: _BoundaryChain,
     planner_mode: str,
     filtered_track_width_m: float,
-) -> HybridBoundaryResult:
+) -> SingleBoundaryPlannerResult:
     result.left_chain_length = int(left_chain.filtered_indices.size)
     result.right_chain_length = int(right_chain.filtered_indices.size)
     result.left_boundary = left_chain.global_points

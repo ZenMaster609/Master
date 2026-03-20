@@ -1,12 +1,5 @@
-hybrid_boundary_planner_node:
+midpoint_planner_node:
   ros__parameters:
-    planner:
-      force_single_boundary: false
-      force_single_boundary_min_chain_length: 2
-      force_single_boundary_min_path_points: 2
-      force_single_boundary_min_forward_extent_m: 1.0
-      force_single_boundary_max_near_field_lateral_jump_m: 5.0
-
     frames:
       planning_frame: "odom"
       odom_frame: "odom"
@@ -47,10 +40,6 @@ hybrid_boundary_planner_node:
       pair_hold_time_s: 1.25
       pair_reassignment_margin: 0.25
 
-    mode_hysteresis:
-      enter_good_frames: 2
-      exit_bad_frames: 3
-
     width_estimation:
       initial_width_m: 3.6
       min_width_m: 2.4
@@ -85,23 +74,6 @@ hybrid_boundary_planner_node:
       publish_rate_hz: 180.0
       log_throttle_s: 1.0
 
-    control:
-      controller_type: "stanley"
-
-    stanley:
-      k_gain: 2.0
-      softening_speed_mps: 0.0
-      heading_gain: 3.0
-      lookahead_idx_offset: 0
-      steering_limit_rad: 0.52
-      steering_lowpass_alpha: 1.0
-      steering_rate_limit_rad_s: 10.0
-      use_yaw_rate_damping: true
-      yaw_rate_damping_gain: 0.0
-      wheelbase_m: 1.65
-      cross_track_deadband_m: 0.0
-      stop_if_no_path: true
-
     speed_control:
       speed_min_mps: 1.0
       speed_max_mps: 4.0
@@ -114,7 +86,6 @@ hybrid_boundary_planner_node:
       jump_check_horizon_m: 8.0
       max_near_field_lateral_jump_m: 0.6
       max_near_field_lateral_jump_m_sparse_pairs: 0.9
-      max_near_field_lateral_jump_m_single_boundary: 1.2
       max_start_heading_error_rad: 1.0
       hold_last_valid_s: 2.5
       hold_exit_clean_frames: 2
@@ -124,7 +95,7 @@ hybrid_boundary_planner_node:
       candidate_min_extent_m: 2.0
 
     diagnostics:
-      topic: "/delaunay_planner/diagnostics"
+      topic: "/midpoint_planner/diagnostics"
       centerline_jump_horizon_m: 8.0
       edge_quantization_m: 0.05
       jump_warn_threshold_m: 0.8

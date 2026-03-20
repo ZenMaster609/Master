@@ -30,6 +30,19 @@ import yaml
 def generate_launch_description():
     sim_car_share = FindPackageShare('sim_car')
     vehicle_plotter_share = FindPackageShare('vehicle_plotter')
+    controller_config = PathJoinSubstitution([
+        sim_car_share,
+        'config',
+        'controllers',
+        PythonExpression([
+            "'stanley.yaml' if '",
+            LaunchConfiguration('controller'),
+            "'.lower() == 'stanley' else "
+            "'pure_pursuit.yaml' if '",
+            LaunchConfiguration('controller'),
+            "'.lower() == 'pure_pursuit' else 'none.yaml'",
+        ]),
+    ])
 
     headless_arg = DeclareLaunchArgument(
         'headless',
@@ -207,20 +220,14 @@ def generate_launch_description():
 
     planner_arg = DeclareLaunchArgument(
         'planner',
-        default_value='hybrid_boundary',
-        description="Planner to launch: 'delaunay', 'hybrid_boundary', or 'none'"
-    )
-
-    hybrid_force_single_boundary_arg = DeclareLaunchArgument(
-        'hybrid_force_single_boundary',
-        default_value='false',
-        description='Force hybrid_boundary_planner_node to use single-boundary mode only'
+        default_value='midpoint',
+        description="Planner to launch: 'delaunay', 'midpoint', 'single_boundary', or 'none'"
     )
 
     controller_arg = DeclareLaunchArgument(
         'controller',
         default_value='stanley',
-        description="Controller to use: 'stanley' only"
+        description="Controller to use: 'stanley', 'pure_pursuit', or 'none'"
     )
 
     rviz_arg = DeclareLaunchArgument(
@@ -426,7 +433,6 @@ def generate_launch_description():
         'measure',
         'sensor_nodes',
         'planner',
-        'hybrid_force_single_boundary',
         'controller',
         'rviz',
         'use_rviz',
@@ -641,7 +647,14 @@ def generate_launch_description():
             'controller_diagnostics_joint_states_topic': '/sim/joint_states',
             'controller_diagnostics_odom_topic': '/sim/odom',
             'controller_diagnostics_path_topic': '/planned_centerline',
-            'controller_diagnostics_planner_diag_topic': '/delaunay_planner/diagnostics',
+            'controller_diagnostics_planner_diag_topic': PythonExpression([
+                "'/midpoint_planner/diagnostics' if '",
+                LaunchConfiguration('planner'),
+                "'.lower() == 'midpoint' else "
+                "'/single_boundary_planner/diagnostics' if '",
+                LaunchConfiguration('planner'),
+                "'.lower() == 'single_boundary' else '/delaunay_planner/diagnostics'",
+            ]),
             'controller_diagnostics_live_plot_enabled': LaunchConfiguration('controller_diagnostics_live_plot_enabled'),
             'controller_diagnostics_live_plot_rate_hz': LaunchConfiguration('controller_diagnostics_live_plot_rate_hz'),
             'controller_diagnostics_live_buffer_sec': LaunchConfiguration('controller_diagnostics_live_buffer_sec'),
@@ -903,6 +916,7 @@ def generate_launch_description():
         output='screen',
         parameters=[
             PathJoinSubstitution([sim_car_share, 'config', 'delaunay_planner.yaml']),
+            controller_config,
             {
                 'use_sim_time': ParameterValue(
                     LaunchConfiguration('use_sim_time'),
@@ -916,11 +930,6 @@ def generate_launch_description():
                     "' + '/stereo/perception/cones_3d'",
                 ]),
                 'topics.odom_topic': '/sim/odom',
-                'control.controller_type': LaunchConfiguration('controller'),
-                'planner.force_single_boundary': ParameterValue(
-                    LaunchConfiguration('hybrid_force_single_boundary'),
-                    value_type=bool,
-                ),
                 'runtime.publish_rate_hz': ParameterValue(
                     LaunchConfiguration('planner_rate_hz'),
                     value_type=float,
@@ -942,13 +951,14 @@ def generate_launch_description():
         ])),
     )
 
-    hybrid_boundary_planner_node = Node(
+    midpoint_planner_node = Node(
         package='sim_car',
-        executable='hybrid_boundary_planner_node',
-        name='hybrid_boundary_planner_node',
+        executable='midpoint_planner_node',
+        name='midpoint_planner_node',
         output='screen',
         parameters=[
-            PathJoinSubstitution([sim_car_share, 'config', 'hybrid_boundary_planner.yaml']),
+            PathJoinSubstitution([sim_car_share, 'config', 'midpoint_planner.yaml']),
+            controller_config,
             {
                 'use_sim_time': ParameterValue(
                     LaunchConfiguration('use_sim_time'),
@@ -962,11 +972,6 @@ def generate_launch_description():
                     "' + '/stereo/perception/cones_3d'",
                 ]),
                 'topics.odom_topic': '/sim/odom',
-                'control.controller_type': LaunchConfiguration('controller'),
-                'planner.force_single_boundary': ParameterValue(
-                    LaunchConfiguration('hybrid_force_single_boundary'),
-                    value_type=bool,
-                ),
                 'runtime.publish_rate_hz': ParameterValue(
                     LaunchConfiguration('planner_rate_hz'),
                     value_type=float,
@@ -980,7 +985,45 @@ def generate_launch_description():
         condition=IfCondition(PythonExpression([
             "'",
             LaunchConfiguration('planner'),
-            "'.lower() == 'hybrid_boundary'"
+            "'.lower() == 'midpoint'"
+        ])),
+    )
+
+    single_boundary_planner_node = Node(
+        package='sim_car',
+        executable='single_boundary_planner_node',
+        name='single_boundary_planner_node',
+        output='screen',
+        parameters=[
+            PathJoinSubstitution([sim_car_share, 'config', 'single_boundary_planner.yaml']),
+            controller_config,
+            {
+                'use_sim_time': ParameterValue(
+                    LaunchConfiguration('use_sim_time'),
+                    value_type=bool,
+                ),
+                'topics.tracked_cones_topic': PythonExpression([
+                    "'/tracked_cones' if '",
+                    LaunchConfiguration('cone_memory_enabled'),
+                    "'.lower() == 'true' else '",
+                    topic_prefix,
+                    "' + '/stereo/perception/cones_3d'",
+                ]),
+                'topics.odom_topic': '/sim/odom',
+                'runtime.publish_rate_hz': ParameterValue(
+                    LaunchConfiguration('planner_rate_hz'),
+                    value_type=float,
+                ),
+                'diagnostics.publish_thesis_context': ParameterValue(
+                    LaunchConfiguration('thesis_controller_diagnostics'),
+                    value_type=bool,
+                ),
+            },
+        ],
+        condition=IfCondition(PythonExpression([
+            "'",
+            LaunchConfiguration('planner'),
+            "'.lower() == 'single_boundary'"
         ])),
     )
 
@@ -1058,7 +1101,6 @@ def generate_launch_description():
         measure_arg,
         sensor_nodes_arg,
         planner_arg,
-        hybrid_force_single_boundary_arg,
         controller_arg,
         rviz_arg,
         use_rviz_arg,
@@ -1102,7 +1144,8 @@ def generate_launch_description():
         lidar_cone_evaluator_node,
         cone_memory_node,
         delaunay_planner_node,
-        hybrid_boundary_planner_node,
+        midpoint_planner_node,
+        single_boundary_planner_node,
         camera_debug_viewer_node,
         rviz_node,
         steering_gui_node,
@@ -1163,8 +1206,8 @@ def _validate_planner_and_controller_args(context, *_args, **_kwargs):
     controller = LaunchConfiguration('controller').perform(context).strip().lower()
 
     supported_bridges = {'ackermann'}
-    supported_planners = {'delaunay', 'hybrid_boundary', 'none'}
-    supported_controllers = {'stanley'}
+    supported_planners = {'delaunay', 'midpoint', 'single_boundary', 'none'}
+    supported_controllers = {'stanley', 'pure_pursuit', 'none'}
 
     if bridge not in supported_bridges:
         raise RuntimeError(
@@ -1173,12 +1216,12 @@ def _validate_planner_and_controller_args(context, *_args, **_kwargs):
         )
     if planner not in supported_planners:
         raise RuntimeError(
-            "Unsupported launch argument planner='%s'. Supported values: delaunay, hybrid_boundary, none"
+            "Unsupported launch argument planner='%s'. Supported values: delaunay, midpoint, single_boundary, none"
             % planner
         )
     if controller not in supported_controllers:
         raise RuntimeError(
-            "Unsupported launch argument controller='%s'. Supported value: stanley"
+            "Unsupported launch argument controller='%s'. Supported values: stanley, pure_pursuit, none"
             % controller
         )
     return []
