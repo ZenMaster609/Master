@@ -85,6 +85,26 @@ def generate_launch_description():
         default_value="false",
         description="Enable thesis controller diagnostics CSV and summaries in the logger",
     )
+    path_tracking_eval_enabled_arg = DeclareLaunchArgument(
+        "path_tracking_eval_enabled",
+        default_value="false",
+        description="Enable GT midline path-tracking evaluation in the logger",
+    )
+    path_tracking_eval_gt_track_topic_arg = DeclareLaunchArgument(
+        "path_tracking_eval_gt_track_topic",
+        default_value="/ground_truth/track",
+        description="Ground-truth track cones topic for path-tracking evaluation",
+    )
+    path_tracking_eval_odom_topic_arg = DeclareLaunchArgument(
+        "path_tracking_eval_odom_topic",
+        default_value="/sim/odom",
+        description="Odometry topic for path-tracking evaluation",
+    )
+    path_tracking_eval_planner_path_topic_arg = DeclareLaunchArgument(
+        "path_tracking_eval_planner_path_topic",
+        default_value="/planned_centerline",
+        description="Planner path topic for path-tracking evaluation",
+    )
     controller_diagnostics_rate_hz_arg = DeclareLaunchArgument(
         "controller_diagnostics_rate_hz",
         default_value="50.0",
@@ -355,6 +375,19 @@ def generate_launch_description():
                 LaunchConfiguration("thesis_controller_diagnostics_enabled"),
                 value_type=bool,
             ),
+            "path_tracking_eval_enabled": ParameterValue(
+                LaunchConfiguration("path_tracking_eval_enabled"),
+                value_type=bool,
+            ),
+            "path_tracking_eval_gt_track_topic": LaunchConfiguration(
+                "path_tracking_eval_gt_track_topic"
+            ),
+            "path_tracking_eval_odom_topic": LaunchConfiguration(
+                "path_tracking_eval_odom_topic"
+            ),
+            "path_tracking_eval_planner_path_topic": LaunchConfiguration(
+                "path_tracking_eval_planner_path_topic"
+            ),
             "controller_diagnostics_rate_hz": ParameterValue(
                 LaunchConfiguration("controller_diagnostics_rate_hz"),
                 value_type=float,
@@ -411,6 +444,10 @@ def generate_launch_description():
         camera_source_arg,
         controller_diagnostics_enabled_arg,
         thesis_controller_diagnostics_enabled_arg,
+        path_tracking_eval_enabled_arg,
+        path_tracking_eval_gt_track_topic_arg,
+        path_tracking_eval_odom_topic_arg,
+        path_tracking_eval_planner_path_topic_arg,
         controller_diagnostics_rate_hz_arg,
         controller_diagnostics_cmd_topic_arg,
         controller_diagnostics_steering_topic_arg,

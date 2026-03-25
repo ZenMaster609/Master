@@ -158,6 +158,12 @@ def generate_launch_description():
         description='Enable live thesis controller diagnostics plot window'
     )
 
+    path_tracking_eval_arg = DeclareLaunchArgument(
+        'path_tracking_eval',
+        default_value='false',
+        description='Enable GT midline planner/controller path evaluation logging in the main logger'
+    )
+
     logging_arg = DeclareLaunchArgument(
         'logging',
         default_value='false',
@@ -422,6 +428,7 @@ def generate_launch_description():
         'controller_diagnostics_live_buffer_sec',
         'thesis_controller_diagnostics',
         'thesis_controller_diagnostics_live_plot_enabled',
+        'path_tracking_eval',
         'logging',
         'close_plots',
         'rosbagging',
@@ -499,6 +506,8 @@ def generate_launch_description():
         LaunchConfiguration('controller_diagnostics'),
         "'.lower() == 'true' or '",
         LaunchConfiguration('thesis_controller_diagnostics'),
+        "'.lower() == 'true' or '",
+        LaunchConfiguration('path_tracking_eval'),
         "'.lower() == 'true') else 'false'"
     ])
     topic_prefix = PythonExpression([
@@ -607,6 +616,8 @@ def generate_launch_description():
                 LaunchConfiguration('controller_diagnostics'),
                 "'.lower() == 'true' or '",
                 LaunchConfiguration('thesis_controller_diagnostics'),
+                "'.lower() == 'true' or '",
+                LaunchConfiguration('path_tracking_eval'),
                 "'.lower() == 'true') else 'false'"
             ]),
             'enable_state_logging': PythonExpression([
@@ -659,6 +670,10 @@ def generate_launch_description():
             'controller_diagnostics_live_plot_rate_hz': LaunchConfiguration('controller_diagnostics_live_plot_rate_hz'),
             'controller_diagnostics_live_buffer_sec': LaunchConfiguration('controller_diagnostics_live_buffer_sec'),
             'thesis_controller_diagnostics_enabled': LaunchConfiguration('thesis_controller_diagnostics'),
+            'path_tracking_eval_enabled': LaunchConfiguration('path_tracking_eval'),
+            'path_tracking_eval_gt_track_topic': '/ground_truth/track',
+            'path_tracking_eval_odom_topic': '/sim/odom',
+            'path_tracking_eval_planner_path_topic': '/planned_centerline',
         }.items(),
     )
 
@@ -1090,6 +1105,7 @@ def generate_launch_description():
         controller_diagnostics_live_buffer_sec_arg,
         thesis_controller_diagnostics_arg,
         thesis_controller_diagnostics_live_plot_enabled_arg,
+        path_tracking_eval_arg,
         logging_arg,
         close_plots_on_shutdown_arg,
         rosbagging_arg,

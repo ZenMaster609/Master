@@ -34,6 +34,17 @@ def test_full_launch_declares_and_passes_thesis_controller_diagnostics():
     assert "'diagnostics.publish_thesis_context': ParameterValue(" in content
 
 
+def test_full_launch_declares_and_passes_path_tracking_eval():
+    content = FULL_LAUNCH.read_text(encoding='utf-8')
+
+    assert "DeclareLaunchArgument(\n        'path_tracking_eval'" in content
+    assert "'path_tracking_eval'" in content
+    assert "'path_tracking_eval_enabled': LaunchConfiguration('path_tracking_eval')" in content
+    assert "'path_tracking_eval_gt_track_topic': '/ground_truth/track'" in content
+    assert "'path_tracking_eval_odom_topic': '/sim/odom'" in content
+    assert "'path_tracking_eval_planner_path_topic': '/planned_centerline'" in content
+
+
 def test_full_launch_declares_camera_cone_rmse_plotting_and_wires_it():
     content = FULL_LAUNCH.read_text(encoding='utf-8')
 

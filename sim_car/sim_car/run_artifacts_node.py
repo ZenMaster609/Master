@@ -3,7 +3,7 @@
 RunArtifactsNode - Writes per-run config snapshots under multidata/<run_id>/configs.
 
 Subscribes to /run_session and saves:
-1) A copy of sim_car config YAML files.
+1) A recursive copy of sim_car config YAML files.
 2) launch_parameters.yaml with resolved full_sim launch argument values.
 """
 
@@ -17,6 +17,20 @@ from rclpy.node import Node
 import yaml
 
 from vehicle_plotter_msgs.msg import RunSession
+
+
+def copy_config_snapshot(source_dir: Path, target_dir: Path, copy_glob: str) -> int:
+    """Copy matching config files recursively while preserving relative paths."""
+    copied = 0
+    for src in sorted(source_dir.rglob(copy_glob)):
+        if not src.is_file():
+            continue
+        relative_path = src.relative_to(source_dir)
+        destination = target_dir / relative_path
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(src, destination)
+        copied += 1
+    return copied
 
 
 class RunArtifactsNode(Node):
@@ -107,12 +121,7 @@ class RunArtifactsNode(Node):
             self.get_logger().warn(f'config_source_dir does not exist: {self._config_source_dir}')
             return
 
-        copied = 0
-        for src in sorted(self._config_source_dir.glob(self._copy_glob)):
-            if not src.is_file():
-                continue
-            shutil.copy2(src, target_dir / src.name)
-            copied += 1
+        copied = copy_config_snapshot(self._config_source_dir, target_dir, self._copy_glob)
         self.get_logger().info(f'Copied {copied} config file(s) from {self._config_source_dir}')
 
     def _write_launch_parameters(self, launch_params_path: Path) -> None:

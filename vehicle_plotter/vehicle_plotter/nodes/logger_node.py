@@ -16,6 +16,8 @@ Where <prefix> is 'sim' for simulation.
 
 import rclpy
 from rclpy.node import Node
+from rclpy.duration import Duration
+from rclpy.time import Time
 from pathlib import Path
 from typing import Dict, List, Optional
 import csv
@@ -25,8 +27,10 @@ import numpy as np
 
 from ackermann_msgs.msg import AckermannDriveStamped
 from diagnostic_msgs.msg import DiagnosticArray
+from eufs_msgs.msg import ConeArrayWithCovariance
 from nav_msgs.msg import Odometry, Path as NavPath
 from sensor_msgs.msg import JointState
+from tf2_ros import Buffer, TransformException, TransformListener
 from vehicle_plotter_msgs.msg import VehicleState as VehicleStateMsg
 from vehicle_plotter_msgs.msg import RunSession as RunSessionMsg
 from std_msgs.msg import Float32, String
@@ -36,6 +40,24 @@ from ..core.run_session import RunSession
 from ..core.qos_profiles import PLOTTER_QOS, RELIABLE_SENSOR_QOS
 from ..logging.log_writer import LogWriter
 from ..logging.log_config import LogConfig
+from ..logging.path_tracking_eval import (
+    PATH_TRACKING_EVAL_FIELDNAMES,
+    GTMidline,
+    analyze_path_tracking_csv,
+    build_gt_midline_from_cones,
+    build_stitched_reference_trace,
+    compare_planner_path_to_gt,
+    nearest_point_on_polyline as eval_nearest_point_on_polyline,
+    signed_cross_track_error as eval_signed_cross_track_error,
+    should_assume_identity_transform,
+    transform_xy_point,
+    transform_xy_points,
+    write_path_tracking_summary_files,
+)
+from ..logging.path_tracking_eval_plots import (
+    generate_path_tracking_cte_plot,
+    generate_path_tracking_overlay_plot,
+)
 from ..logging.steering_diagnostics import (
     PLANNER_DIAG_DEFAULTS,
     analyze_csv,
@@ -113,6 +135,15 @@ class LoggerNode(Node):
         self.declare_parameter('thesis_controller_diagnostics_filename', 'thesis_controller_diagnostics.csv')
         self.declare_parameter('thesis_controller_diagnostics_summary_json', 'thesis_controller_diagnostics_summary.json')
         self.declare_parameter('thesis_controller_diagnostics_summary_txt', 'thesis_controller_diagnostics_summary.txt')
+        self.declare_parameter('path_tracking_eval_enabled', False)
+        self.declare_parameter('path_tracking_eval_rate_hz', 20.0)
+        self.declare_parameter('path_tracking_eval_gt_track_topic', '/ground_truth/track')
+        self.declare_parameter('path_tracking_eval_odom_topic', '/sim/odom')
+        self.declare_parameter('path_tracking_eval_planner_path_topic', '/planned_centerline')
+        self.declare_parameter('path_tracking_eval_tf_timeout_sec', 0.05)
+        self.declare_parameter('path_tracking_eval_filename', 'path_tracking_eval.csv')
+        self.declare_parameter('path_tracking_eval_summary_json', 'path_tracking_eval_summary.json')
+        self.declare_parameter('path_tracking_eval_summary_txt', 'path_tracking_eval_summary.txt')
 
         # Get parameters
         self._log_format = self.get_parameter('format').value
@@ -181,6 +212,35 @@ class LoggerNode(Node):
         self._thesis_diag_summary_txt = str(
             self.get_parameter('thesis_controller_diagnostics_summary_txt').value
         ).strip() or 'thesis_controller_diagnostics_summary.txt'
+        self._path_tracking_eval_enabled = bool(
+            self.get_parameter('path_tracking_eval_enabled').value
+        )
+        self._path_tracking_eval_rate_hz = max(
+            1.0,
+            float(self.get_parameter('path_tracking_eval_rate_hz').value),
+        )
+        self._path_tracking_eval_gt_track_topic = str(
+            self.get_parameter('path_tracking_eval_gt_track_topic').value
+        ).strip() or '/ground_truth/track'
+        self._path_tracking_eval_odom_topic = str(
+            self.get_parameter('path_tracking_eval_odom_topic').value
+        ).strip() or '/sim/odom'
+        self._path_tracking_eval_planner_path_topic = str(
+            self.get_parameter('path_tracking_eval_planner_path_topic').value
+        ).strip() or '/planned_centerline'
+        self._path_tracking_eval_tf_timeout_sec = max(
+            0.0,
+            float(self.get_parameter('path_tracking_eval_tf_timeout_sec').value),
+        )
+        self._path_tracking_eval_filename = str(
+            self.get_parameter('path_tracking_eval_filename').value
+        ).strip() or 'path_tracking_eval.csv'
+        self._path_tracking_eval_summary_json = str(
+            self.get_parameter('path_tracking_eval_summary_json').value
+        ).strip() or 'path_tracking_eval_summary.json'
+        self._path_tracking_eval_summary_txt = str(
+            self.get_parameter('path_tracking_eval_summary_txt').value
+        ).strip() or 'path_tracking_eval_summary.txt'
 
         # Parse base path
         if base_path_str:
@@ -223,6 +283,33 @@ class LoggerNode(Node):
         self._diag_flush_counter = 0
         self._diag_flush_stride = max(1, int(self._steering_diag_rate_hz * 2.0))
         self._diag_timer = None
+        self._path_eval_tf_buffer = None
+        self._path_eval_tf_listener = None
+        self._path_eval_latest_gt_msg: Optional[ConeArrayWithCovariance] = None
+        self._path_eval_gt_midline_source: Optional[GTMidline] = None
+        self._path_eval_last_gt_midline_xy = np.empty((0, 2), dtype=np.float64)
+        self._path_eval_last_gt_left_xy = np.empty((0, 2), dtype=np.float64)
+        self._path_eval_last_gt_right_xy = np.empty((0, 2), dtype=np.float64)
+        self._path_eval_last_target_frame = ''
+        self._path_eval_start_xy: Optional[np.ndarray] = None
+        self._path_eval_start_heading_xy: Optional[np.ndarray] = None
+        self._path_eval_vehicle_xy = np.asarray([float('nan'), float('nan')], dtype=np.float64)
+        self._path_eval_vehicle_frame = ''
+        self._path_eval_vehicle_stamp = None
+        self._path_eval_planner_xy = np.empty((0, 2), dtype=np.float64)
+        self._path_eval_planner_frame = ''
+        self._path_eval_planner_stamp = None
+        self._path_eval_reference_trace_points: list[np.ndarray] = []
+        self._path_eval_file_handle = None
+        self._path_eval_csv_writer: Optional[csv.DictWriter] = None
+        self._path_eval_flush_counter = 0
+        self._path_eval_flush_stride = max(1, int(self._path_tracking_eval_rate_hz * 2.0))
+        self._path_eval_timer = None
+        self._path_eval_identity_warned_pairs: set[tuple[str, str]] = set()
+
+        if self._path_tracking_eval_enabled:
+            self._path_eval_tf_buffer = Buffer(cache_time=Duration(seconds=10.0))
+            self._path_eval_tf_listener = TransformListener(self._path_eval_tf_buffer, self)
 
         if enable_logging:
             # Subscribe to run session for multi-machine sync
@@ -248,6 +335,7 @@ class LoggerNode(Node):
 
         self._setup_cone_subscriptions()
         self._setup_steering_diag_subscriptions()
+        self._setup_path_tracking_eval_subscriptions()
 
         if self._enable_state_logging:
             self.state_sub = self.create_subscription(
@@ -358,6 +446,34 @@ class LoggerNode(Node):
             f'oscillation={self._steering_diag_enabled} thesis={self._thesis_diag_enabled}'
         )
 
+    def _setup_path_tracking_eval_subscriptions(self) -> None:
+        if not self._path_tracking_eval_enabled:
+            return
+        self._path_eval_gt_sub = self.create_subscription(
+            ConeArrayWithCovariance,
+            self._path_tracking_eval_gt_track_topic,
+            self._path_tracking_eval_gt_callback,
+            10,
+        )
+        self._path_eval_odom_sub = self.create_subscription(
+            Odometry,
+            self._path_tracking_eval_odom_topic,
+            self._path_tracking_eval_odom_callback,
+            10,
+        )
+        self._path_eval_path_sub = self.create_subscription(
+            NavPath,
+            self._path_tracking_eval_planner_path_topic,
+            self._path_tracking_eval_path_callback,
+            10,
+        )
+        self.get_logger().info(
+            'Path tracking evaluation subscriptions enabled: '
+            f'gt_track={self._path_tracking_eval_gt_track_topic} '
+            f'odom={self._path_tracking_eval_odom_topic} '
+            f'planner_path={self._path_tracking_eval_planner_path_topic}'
+        )
+
     def _steering_diag_cmd_callback(self, msg: AckermannDriveStamped) -> None:
         self._diag_desired_steering_rad = float(msg.drive.steering_angle)
         self._diag_desired_speed_mps = float(msg.drive.speed)
@@ -428,6 +544,62 @@ class LoggerNode(Node):
 
     def _steering_diag_planner_callback(self, msg: DiagnosticArray) -> None:
         self._diag_planner_metrics = parse_planner_diag(msg)
+
+    def _path_tracking_eval_gt_callback(self, msg: ConeArrayWithCovariance) -> None:
+        self._path_eval_latest_gt_msg = msg
+        self._path_tracking_eval_rebuild_gt_midline()
+
+    def _path_tracking_eval_odom_callback(self, msg: Odometry) -> None:
+        x = float(msg.pose.pose.position.x)
+        y = float(msg.pose.pose.position.y)
+        self._path_eval_vehicle_xy = np.asarray([x, y], dtype=np.float64)
+        self._path_eval_vehicle_frame = str(msg.header.frame_id).strip() or 'odom'
+        self._path_eval_vehicle_stamp = msg.header.stamp
+
+        q = msg.pose.pose.orientation
+        yaw = self._yaw_from_quat(float(q.x), float(q.y), float(q.z), float(q.w))
+        heading_xy = np.asarray([math.cos(yaw), math.sin(yaw)], dtype=np.float64)
+        if self._path_eval_start_xy is None:
+            self._path_eval_start_xy = np.asarray([x, y], dtype=np.float64)
+            self._path_eval_start_heading_xy = heading_xy
+            self._path_tracking_eval_rebuild_gt_midline()
+
+    def _path_tracking_eval_path_callback(self, msg: NavPath) -> None:
+        if not msg.poses:
+            self._path_eval_planner_xy = np.empty((0, 2), dtype=np.float64)
+            self._path_eval_planner_frame = str(msg.header.frame_id).strip() or self._path_eval_planner_frame
+            self._path_eval_planner_stamp = msg.header.stamp
+            return
+        points = np.empty((len(msg.poses), 2), dtype=np.float64)
+        for idx, pose_stamped in enumerate(msg.poses):
+            points[idx, 0] = float(pose_stamped.pose.position.x)
+            points[idx, 1] = float(pose_stamped.pose.position.y)
+        self._path_eval_planner_xy = points
+        self._path_eval_planner_frame = str(msg.header.frame_id).strip() or 'odom'
+        self._path_eval_planner_stamp = msg.header.stamp
+
+    def _path_tracking_eval_rebuild_gt_midline(self) -> None:
+        if self._path_eval_latest_gt_msg is None:
+            return
+        if self._path_eval_start_xy is None or self._path_eval_start_heading_xy is None:
+            return
+
+        blue_xy = []
+        yellow_xy = []
+        for cone in self._path_eval_latest_gt_msg.blue_cones:
+            blue_xy.append((float(cone.point.x), float(cone.point.y)))
+        for cone in self._path_eval_latest_gt_msg.yellow_cones:
+            yellow_xy.append((float(cone.point.x), float(cone.point.y)))
+
+        frame_id = str(self._path_eval_latest_gt_msg.header.frame_id).strip() or 'map'
+        self._path_eval_gt_midline_source = build_gt_midline_from_cones(
+            blue_xy=np.asarray(blue_xy, dtype=np.float64),
+            yellow_xy=np.asarray(yellow_xy, dtype=np.float64),
+            start_xy=self._path_eval_start_xy,
+            heading_xy=self._path_eval_start_heading_xy,
+            frame_id=frame_id,
+            resolution_m=0.5,
+        )
 
     @staticmethod
     def _derive_cone_metrics_prefix(cone_eval_topic: str) -> str:
@@ -567,6 +739,7 @@ class LoggerNode(Node):
         # Create flush timer
         self._flush_timer = self.create_timer(self._flush_interval, self.flush_callback)
         self._initialize_steering_diag_output()
+        self._initialize_path_tracking_eval_output()
 
         # Flush any buffered states
         for state in self._buffered_states:
@@ -647,6 +820,23 @@ class LoggerNode(Node):
             self.get_logger().info(f'Thesis controller diagnostics CSV: {thesis_path}')
         self._diag_flush_counter = 0
         self._diag_timer = self.create_timer(1.0 / self._steering_diag_rate_hz, self._steering_diag_sample)
+
+    def _initialize_path_tracking_eval_output(self) -> None:
+        if not self._path_tracking_eval_enabled or self._run_session is None:
+            return
+        eval_path = self._run_session.logs_path / self._path_tracking_eval_filename
+        self._path_eval_file_handle = open(eval_path, 'w', newline='', encoding='utf-8')
+        self._path_eval_csv_writer = csv.DictWriter(
+            self._path_eval_file_handle,
+            fieldnames=PATH_TRACKING_EVAL_FIELDNAMES,
+        )
+        self._path_eval_csv_writer.writeheader()
+        self._path_eval_flush_counter = 0
+        self._path_eval_timer = self.create_timer(
+            1.0 / self._path_tracking_eval_rate_hz,
+            self._path_tracking_eval_sample,
+        )
+        self.get_logger().info(f'Path tracking evaluation CSV: {eval_path}')
 
     def _steering_diag_sample(self) -> None:
         if (
@@ -807,6 +997,158 @@ class LoggerNode(Node):
                 self._thesis_diag_file_handle.flush()
             self._diag_flush_counter = 0
 
+    def _path_tracking_eval_sample(self) -> None:
+        if self._path_eval_csv_writer is None or self._path_eval_file_handle is None:
+            return
+
+        now_sec = float(self.get_clock().now().nanoseconds) * 1e-9
+        row = {
+            'timestamp_sec': now_sec,
+            'sample_valid_flag': 0.0,
+            'status': 'waiting_for_inputs',
+            'frame_id': '',
+            'gt_source_frame': '',
+            'vehicle_x_m': float('nan'),
+            'vehicle_y_m': float('nan'),
+            'planner_reference_x_m': float('nan'),
+            'planner_reference_y_m': float('nan'),
+            'gt_reference_x_m': float('nan'),
+            'gt_reference_y_m': float('nan'),
+            'controller_vs_planner_cte_m': float('nan'),
+            'controller_vs_gt_cte_m': float('nan'),
+            'planner_vs_gt_cte_rms_m': float('nan'),
+            'planner_vs_gt_cte_p95_m': float('nan'),
+            'planner_vs_gt_cte_max_m': float('nan'),
+        }
+
+        if not np.all(np.isfinite(self._path_eval_vehicle_xy)) or not self._path_eval_vehicle_frame:
+            row['status'] = 'waiting_for_odom'
+            self._path_eval_csv_writer.writerow(row)
+            return
+
+        vehicle_xy = np.asarray(self._path_eval_vehicle_xy, dtype=np.float64)
+        vehicle_frame = str(self._path_eval_vehicle_frame).strip() or 'odom'
+
+        if self._path_eval_gt_midline_source is None or self._path_eval_gt_midline_source.midline_xy.shape[0] < 2:
+            row['status'] = 'waiting_for_gt_track'
+            self._path_eval_csv_writer.writerow(row)
+            return
+
+        gt_source = self._path_eval_gt_midline_source
+        row['gt_source_frame'] = gt_source.frame_id
+
+        planner_available = self._path_eval_planner_xy.shape[0] >= 2 and bool(self._path_eval_planner_frame)
+        target_frame = self._path_eval_planner_frame if planner_available else vehicle_frame
+        row['frame_id'] = target_frame
+
+        vehicle_xy_target = self._path_eval_transform_point_to_frame(
+            vehicle_xy,
+            source_frame=vehicle_frame,
+            target_frame=target_frame,
+            stamp=self._path_eval_vehicle_stamp,
+        )
+        if vehicle_xy_target is None:
+            row['status'] = 'frame_transform_unavailable'
+            self._path_eval_csv_writer.writerow(row)
+            return
+        row['vehicle_x_m'] = float(vehicle_xy_target[0])
+        row['vehicle_y_m'] = float(vehicle_xy_target[1])
+
+        gt_midline_target = self._path_eval_transform_path_to_frame(
+            gt_source.midline_xy,
+            source_frame=gt_source.frame_id,
+            target_frame=target_frame,
+            stamp=self._path_eval_planner_stamp if planner_available else self._path_eval_vehicle_stamp,
+        )
+        if gt_midline_target is None or gt_midline_target.shape[0] < 2:
+            row['status'] = 'frame_transform_unavailable'
+            self._path_eval_csv_writer.writerow(row)
+            return
+        gt_left_target = self._path_eval_transform_path_to_frame(
+            gt_source.left_xy,
+            source_frame=gt_source.frame_id,
+            target_frame=target_frame,
+            stamp=self._path_eval_planner_stamp if planner_available else self._path_eval_vehicle_stamp,
+        )
+        gt_right_target = self._path_eval_transform_path_to_frame(
+            gt_source.right_xy,
+            source_frame=gt_source.frame_id,
+            target_frame=target_frame,
+            stamp=self._path_eval_planner_stamp if planner_available else self._path_eval_vehicle_stamp,
+        )
+
+        self._path_eval_last_gt_midline_xy = gt_midline_target
+        self._path_eval_last_gt_left_xy = (
+            np.asarray(gt_left_target, dtype=np.float64)
+            if gt_left_target is not None
+            else np.empty((0, 2), dtype=np.float64)
+        )
+        self._path_eval_last_gt_right_xy = (
+            np.asarray(gt_right_target, dtype=np.float64)
+            if gt_right_target is not None
+            else np.empty((0, 2), dtype=np.float64)
+        )
+        self._path_eval_last_target_frame = target_frame
+
+        gt_nearest_idx, gt_nearest_point = eval_nearest_point_on_polyline(
+            float(vehicle_xy_target[0]),
+            float(vehicle_xy_target[1]),
+            gt_midline_target,
+        )
+        if gt_nearest_idx >= 0:
+            controller_vs_gt_cte, _ = eval_signed_cross_track_error(
+                float(vehicle_xy_target[0]),
+                float(vehicle_xy_target[1]),
+                gt_midline_target,
+            )
+            row['controller_vs_gt_cte_m'] = controller_vs_gt_cte
+            row['gt_reference_x_m'] = float(gt_nearest_point[0])
+            row['gt_reference_y_m'] = float(gt_nearest_point[1])
+
+        if planner_available:
+            planner_nearest_idx, planner_nearest_point = eval_nearest_point_on_polyline(
+                float(vehicle_xy_target[0]),
+                float(vehicle_xy_target[1]),
+                self._path_eval_planner_xy,
+            )
+            if planner_nearest_idx >= 0:
+                controller_vs_planner_cte, _ = eval_signed_cross_track_error(
+                    float(vehicle_xy_target[0]),
+                    float(vehicle_xy_target[1]),
+                    self._path_eval_planner_xy,
+                )
+                row['controller_vs_planner_cte_m'] = controller_vs_planner_cte
+                row['planner_reference_x_m'] = float(planner_nearest_point[0])
+                row['planner_reference_y_m'] = float(planner_nearest_point[1])
+                self._path_eval_reference_trace_points.append(np.asarray(planner_nearest_point, dtype=np.float64))
+
+            planner_metrics = compare_planner_path_to_gt(
+                planner_xy=self._path_eval_planner_xy,
+                gt_midline_xy=gt_midline_target,
+                vehicle_xy=vehicle_xy_target,
+                resolution_m=0.5,
+            )
+            row['planner_vs_gt_cte_rms_m'] = float(planner_metrics.get('planner_vs_gt_cte_rms_m', float('nan')))
+            row['planner_vs_gt_cte_p95_m'] = float(planner_metrics.get('planner_vs_gt_cte_p95_m', float('nan')))
+            row['planner_vs_gt_cte_max_m'] = float(planner_metrics.get('planner_vs_gt_cte_max_m', float('nan')))
+            if (
+                math.isfinite(row['controller_vs_planner_cte_m'])
+                and math.isfinite(row['controller_vs_gt_cte_m'])
+                and math.isfinite(row['planner_vs_gt_cte_rms_m'])
+            ):
+                row['sample_valid_flag'] = 1.0
+                row['status'] = 'ok'
+            else:
+                row['status'] = 'partial_metrics'
+        else:
+            row['status'] = 'waiting_for_planner_path'
+
+        self._path_eval_csv_writer.writerow(row)
+        self._path_eval_flush_counter += 1
+        if self._path_eval_flush_counter >= self._path_eval_flush_stride:
+            self._path_eval_file_handle.flush()
+            self._path_eval_flush_counter = 0
+
     def state_callback(self, msg: VehicleStateMsg) -> None:
         """Handle incoming vehicle state message."""
         if not self._enable_logging:
@@ -829,6 +1171,8 @@ class LoggerNode(Node):
             self._diag_file_handle.flush()
         if self._thesis_diag_file_handle is not None:
             self._thesis_diag_file_handle.flush()
+        if self._path_eval_file_handle is not None:
+            self._path_eval_file_handle.flush()
 
     def status_callback(self) -> None:
         """Log periodic status update."""
@@ -859,6 +1203,7 @@ class LoggerNode(Node):
             if self._run_session is not None:
                 self._save_cone_range_rmse_samples_csv()
                 self._finalize_steering_diag_outputs()
+                self._finalize_path_tracking_eval_outputs()
 
             # Auto-generate plots if enabled
             if self._auto_plot and self._run_session is not None:
@@ -932,6 +1277,64 @@ class LoggerNode(Node):
                     self._safe_log_warn('Thesis controller diagnostics plot skipped: no diagnostics rows')
             except Exception as exc:
                 self._safe_log_warn(f'Failed thesis controller diagnostics plot generation: {exc}')
+
+    def _finalize_path_tracking_eval_outputs(self) -> None:
+        if not self._path_tracking_eval_enabled or self._run_session is None:
+            return
+        if self._path_eval_timer is not None:
+            self._path_eval_timer.cancel()
+            self._path_eval_timer = None
+        if self._path_eval_file_handle is not None:
+            self._path_eval_file_handle.flush()
+            self._path_eval_file_handle.close()
+            self._path_eval_file_handle = None
+        self._path_eval_csv_writer = None
+
+        csv_path = self._run_session.logs_path / self._path_tracking_eval_filename
+        summary_json = self._run_session.logs_path / self._path_tracking_eval_summary_json
+        summary_txt = self._run_session.logs_path / self._path_tracking_eval_summary_txt
+        try:
+            summary = analyze_path_tracking_csv(csv_path)
+            write_path_tracking_summary_files(summary, summary_json, summary_txt)
+            self._safe_log_info(
+                'Path tracking evaluation summary: '
+                f"planner_vs_gt_rms={summary.get('planner_vs_gt_cte_rms_m', float('nan')):.4f} m "
+                f"ctrl_vs_planner_rms={summary.get('controller_vs_planner_cte_rms_m', float('nan')):.4f} m "
+                f"ctrl_vs_gt_rms={summary.get('controller_vs_gt_cte_rms_m', float('nan')):.4f} m"
+            )
+        except Exception as exc:
+            self._safe_log_warn(f'Failed path tracking evaluation analysis: {exc}')
+
+        planner_trace_xy = build_stitched_reference_trace(
+            np.asarray(self._path_eval_reference_trace_points, dtype=np.float64),
+            min_spacing_m=0.1,
+        )
+        try:
+            cte_plot_path = self._run_session.plots_path / 'path_tracking_eval_cte.png'
+            generated_cte = generate_path_tracking_cte_plot(csv_path, cte_plot_path)
+            if generated_cte is not None:
+                self._safe_log_info(f'Generated path tracking CTE plot: {generated_cte}')
+            else:
+                self._safe_log_warn('Path tracking CTE plot skipped: no path tracking evaluation rows')
+        except Exception as exc:
+            self._safe_log_warn(f'Failed path tracking CTE plot generation: {exc}')
+
+        try:
+            overlay_path = self._run_session.plots_path / 'path_tracking_eval_overlay.png'
+            generated_overlay = generate_path_tracking_overlay_plot(
+                csv_path,
+                overlay_path,
+                gt_midline_xy=self._path_eval_last_gt_midline_xy,
+                gt_left_xy=self._path_eval_last_gt_left_xy,
+                gt_right_xy=self._path_eval_last_gt_right_xy,
+                planner_trace_xy=planner_trace_xy,
+            )
+            if generated_overlay is not None:
+                self._safe_log_info(f'Generated path tracking overlay plot: {generated_overlay}')
+            else:
+                self._safe_log_warn('Path tracking overlay plot skipped: GT midline unavailable')
+        except Exception as exc:
+            self._safe_log_warn(f'Failed path tracking overlay plot generation: {exc}')
 
     def _save_cone_range_rmse_samples_csv(self) -> None:
         if self._run_session is None:
@@ -1012,6 +1415,112 @@ class LoggerNode(Node):
         if suffix:
             return f'{clean_stem}_{suffix}.{clean_ext}'
         return f'{clean_stem}.{clean_ext}'
+
+    def _path_eval_lookup_transform(self, *, target_frame: str, source_frame: str, stamp):
+        if self._path_eval_tf_buffer is None:
+            return None
+        timeout = Duration(seconds=float(self._path_tracking_eval_tf_timeout_sec))
+        try:
+            stamp_time = Time.from_msg(stamp) if stamp is not None else Time()
+            return self._path_eval_tf_buffer.lookup_transform(
+                target_frame,
+                source_frame,
+                stamp_time,
+                timeout=timeout,
+            )
+        except (TransformException, ValueError):
+            pass
+        try:
+            return self._path_eval_tf_buffer.lookup_transform(
+                target_frame,
+                source_frame,
+                Time(),
+                timeout=timeout,
+            )
+        except TransformException:
+            return None
+
+    def _path_eval_transform_path_to_frame(
+        self,
+        path_xy: np.ndarray,
+        *,
+        source_frame: str,
+        target_frame: str,
+        stamp,
+    ) -> Optional[np.ndarray]:
+        source_frame = str(source_frame).strip()
+        target_frame = str(target_frame).strip()
+        if source_frame == target_frame:
+            return np.asarray(path_xy, dtype=np.float64)
+        if should_assume_identity_transform(source_frame, target_frame):
+            self._path_eval_warn_identity_transform(source_frame, target_frame)
+            return np.asarray(path_xy, dtype=np.float64)
+        transform = self._path_eval_lookup_transform(
+            target_frame=target_frame,
+            source_frame=source_frame,
+            stamp=stamp,
+        )
+        if transform is None:
+            return None
+        translation = transform.transform.translation
+        rotation = transform.transform.rotation
+        yaw = self._yaw_from_quat(
+            float(rotation.x),
+            float(rotation.y),
+            float(rotation.z),
+            float(rotation.w),
+        )
+        return transform_xy_points(
+            np.asarray(path_xy, dtype=np.float64),
+            translation_xy=np.asarray([float(translation.x), float(translation.y)], dtype=np.float64),
+            yaw_rad=yaw,
+        )
+
+    def _path_eval_transform_point_to_frame(
+        self,
+        point_xy: np.ndarray,
+        *,
+        source_frame: str,
+        target_frame: str,
+        stamp,
+    ) -> Optional[np.ndarray]:
+        source_frame = str(source_frame).strip()
+        target_frame = str(target_frame).strip()
+        if source_frame == target_frame:
+            return np.asarray(point_xy, dtype=np.float64)
+        if should_assume_identity_transform(source_frame, target_frame):
+            self._path_eval_warn_identity_transform(source_frame, target_frame)
+            return np.asarray(point_xy, dtype=np.float64)
+        transform = self._path_eval_lookup_transform(
+            target_frame=target_frame,
+            source_frame=source_frame,
+            stamp=stamp,
+        )
+        if transform is None:
+            return None
+        translation = transform.transform.translation
+        rotation = transform.transform.rotation
+        yaw = self._yaw_from_quat(
+            float(rotation.x),
+            float(rotation.y),
+            float(rotation.z),
+            float(rotation.w),
+        )
+        return transform_xy_point(
+            np.asarray(point_xy, dtype=np.float64),
+            translation_xy=np.asarray([float(translation.x), float(translation.y)], dtype=np.float64),
+            yaw_rad=yaw,
+        )
+
+    def _path_eval_warn_identity_transform(self, source_frame: str, target_frame: str) -> None:
+        pair = tuple(sorted((str(source_frame).strip().lower(), str(target_frame).strip().lower())))
+        if pair in self._path_eval_identity_warned_pairs:
+            return
+        self._path_eval_identity_warned_pairs.add(pair)
+        self._safe_log_warn(
+            'Path tracking evaluation is assuming identity transform between '
+            f'{source_frame} and {target_frame}; no TF was provided for this world-frame pair.'
+        )
 
     @staticmethod
     def _yaw_from_quat(qx: float, qy: float, qz: float, qw: float) -> float:
