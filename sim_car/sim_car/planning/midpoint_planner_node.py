@@ -45,13 +45,20 @@ from sim_car.planning.tracked_cone_planner_base import TrackedConePlannerBase
 MSG_TRACK_STATE_TENTATIVE = int(getattr(ConeDetection, "TRACK_STATE_TENTATIVE", 0))
 MSG_TRACK_STATE_CONFIRMED = int(getattr(ConeDetection, "TRACK_STATE_CONFIRMED", 1))
 MSG_TRACK_STATE_STALE = int(getattr(ConeDetection, "TRACK_STATE_STALE", 2))
+_PAIR_PASSED_MARGIN_M = 0.5
+_MIN_PROJECTABLE_PAIR_COUNT = 2
 
 
 @dataclass
 class _PairMemoryEntry:
     left_track_id: int
     right_track_id: int
-    last_valid_sec: float
+    midpoint_x_odom: float
+    midpoint_y_odom: float
+    left_x_odom: float
+    left_y_odom: float
+    right_x_odom: float
+    right_y_odom: float
 
 
 class MidpointPlannerNode(TrackedConePlannerBase):
@@ -159,6 +166,11 @@ class MidpointPlannerNode(TrackedConePlannerBase):
             "filtering.behind_drop_m": 5.0,
             "filtering.min_confidence": 0.3,
             "filtering.min_required_cones": 4,
+            "filtering.infer_unknown_by_side": True,
+            "filtering.infer_orange_by_side": True,
+            "filtering.orange_min_lateral_m": 0.9,
+            "filtering.orange_neighbor_radius_m": 3.5,
+            "filtering.orange_neighbor_margin_m": 0.75,
             "filtering.allow_unknown_pair_completion": True,
             "filtering.unknown_pair_search_radius_m": 1.25,
             "filtering.unknown_pair_max_longitudinal_error_m": 1.5,
@@ -262,6 +274,15 @@ class MidpointPlannerNode(TrackedConePlannerBase):
         self.viz_topic = str(self.get_parameter("topics.viz_topic").value)
         self.points_topic = str(self.get_parameter("topics.points_topic").value)
         self.odom_topic = str(self.get_parameter("topics.odom_topic").value)
+        self.infer_unknown_by_side = bool(self.get_parameter("filtering.infer_unknown_by_side").value)
+        self.infer_orange_by_side = bool(self.get_parameter("filtering.infer_orange_by_side").value)
+        self.orange_min_lateral_m = float(self.get_parameter("filtering.orange_min_lateral_m").value)
+        self.orange_neighbor_radius_m = float(
+            self.get_parameter("filtering.orange_neighbor_radius_m").value
+        )
+        self.orange_neighbor_margin_m = float(
+            self.get_parameter("filtering.orange_neighbor_margin_m").value
+        )
 
         self.centerline_path_resolution_m = max(
             0.05,
@@ -571,7 +592,13 @@ class MidpointPlannerNode(TrackedConePlannerBase):
             return
 
         vehicle_x, vehicle_y, vehicle_yaw = pose
-        points_xy, colors, confidences = self._convert_cones_to_frame(cones_msg, source_frame, target_frame)
+        points_xy, colors, confidences = self._convert_cones_to_frame(
+            cones_msg,
+            source_frame,
+            target_frame,
+            vehicle_xy=(vehicle_x, vehicle_y),
+            vehicle_yaw=vehicle_yaw,
+        )
         if points_xy is None:
             if target_frame != self.odom_frame:
                 self._warn_throttled(
@@ -594,7 +621,13 @@ class MidpointPlannerNode(TrackedConePlannerBase):
                     )
                     return
                 vehicle_x, vehicle_y, vehicle_yaw = pose
-                points_xy, colors, confidences = self._convert_cones_to_frame(cones_msg, source_frame, target_frame)
+                points_xy, colors, confidences = self._convert_cones_to_frame(
+                    cones_msg,
+                    source_frame,
+                    target_frame,
+                    vehicle_xy=(vehicle_x, vehicle_y),
+                    vehicle_yaw=vehicle_yaw,
+                )
 
         if points_xy is None:
             zero_cmd_sent = int(self._apply_no_path_behavior())
@@ -621,6 +654,11 @@ class MidpointPlannerNode(TrackedConePlannerBase):
             (track_ids > 0)
             & (track_states == MSG_TRACK_STATE_TENTATIVE)
         ] = 0.0
+        remembered_pair_entries = self._active_pair_memory_entries(
+            vehicle_x=vehicle_x,
+            vehicle_y=vehicle_y,
+            vehicle_yaw=vehicle_yaw,
+        )
 
         result = compute_midpoint_centerline(
             points_xy=points_xy,
@@ -638,11 +676,14 @@ class MidpointPlannerNode(TrackedConePlannerBase):
                         np.array(self._last_valid_centerline, copy=True)
                         if self._last_valid_centerline is not None
                         else None
-                    )
+                )
                 ),
                 previous_width_m=self._filtered_track_width_m,
                 previous_mode=self._active_planner_mode,
-                previous_pairs=self._active_pair_memory(now_sec),
+                previous_pairs=[
+                    (entry.left_track_id, entry.right_track_id)
+                    for entry in remembered_pair_entries
+                ],
             ),
         )
         if (
@@ -659,6 +700,44 @@ class MidpointPlannerNode(TrackedConePlannerBase):
         raw_centerline, candidate_source = self._select_candidate_centerline(result)
         raw_midpoint_chain = np.array(result.midpoints_raw, copy=True)
         pair_segments_for_viz = np.array(result.pair_segments, copy=True)
+        live_pair_entries = self._pair_entries_from_segments(
+            pair_track_ids=result.selected_pair_track_ids,
+            pair_segments=result.pair_segments,
+            frame_id=target_frame,
+            vehicle_x=vehicle_x,
+            vehicle_y=vehicle_y,
+            vehicle_yaw=vehicle_yaw,
+        )
+        combined_pair_entries = self._merge_pair_entries(
+            remembered_entries=remembered_pair_entries,
+            live_entries=live_pair_entries,
+        )
+        combined_pair_segments, combined_midpoint_chain = self._pair_geometry_from_memory(
+            combined_pair_entries
+        )
+        if combined_pair_segments.size > 0:
+            pair_segments_for_viz = combined_pair_segments
+        if combined_midpoint_chain.size > 0:
+            raw_midpoint_chain = combined_midpoint_chain
+        projected_pair_candidate = self._project_midpoint_chain_candidate(
+            midpoint_chain=raw_midpoint_chain,
+            frame_id=target_frame,
+            vehicle_x=vehicle_x,
+            vehicle_y=vehicle_y,
+            vehicle_yaw=vehicle_yaw,
+        )
+        if projected_pair_candidate.shape[0] > 0 and (
+            raw_centerline.shape[0] == 0
+            or self._candidate_forward_extent_m(
+                centerline=raw_centerline,
+                frame_id=target_frame,
+                vehicle_x=vehicle_x,
+                vehicle_y=vehicle_y,
+                vehicle_yaw=vehicle_yaw,
+            ) < self._minimum_projected_forward_extent_m()
+        ):
+            raw_centerline = projected_pair_candidate
+            candidate_source = "projected_pairs"
         result.planner_mode = self._planner_identity.planner_mode
 
         tracked_delta_p95_m = tracked_cones_frame_delta_p95(self._previous_tracked_points, points_xy)
@@ -708,16 +787,10 @@ class MidpointPlannerNode(TrackedConePlannerBase):
             result=result,
             candidate_source=candidate_source,
         )
-        if not candidate_update_ok and candidate_update_reason == "candidate_jump_rejected":
-            self._candidate_jump_reject_streak += 1
-            if self._candidate_jump_reject_streak >= self.candidate_jump_recover_frames:
-                self._midline_buffer_path = None
-                self._midline_buffer_confidence = 0.0
-                self._midline_buffer_last_update_sec = -1.0
-                candidate_update_ok = True
-                candidate_update_reason = "candidate_jump_recovery"
-        else:
-            self._candidate_jump_reject_streak = 0
+        candidate_update_ok, candidate_update_reason = self._update_candidate_jump_reject_streak(
+            candidate_update_ok=candidate_update_ok,
+            candidate_update_reason=candidate_update_reason,
+        )
         centerline = self._update_midline_buffer(
             candidate_centerline=raw_centerline,
             candidate_source=candidate_source,
@@ -751,15 +824,26 @@ class MidpointPlannerNode(TrackedConePlannerBase):
         if candidate_source != "validated" and raw_centerline.shape[0] > 0:
             status = f"{status}; using {candidate_source}"
         if centerline.shape[0] > 0 and raw_centerline.shape[0] > 0:
-            self._remember_pairs(result=result, now_sec=now_sec)
-            self._last_valid_pair_segments = pair_segments_for_viz if pair_segments_for_viz.size > 0 else self._last_valid_pair_segments
+            self._remember_pairs(
+                result=result,
+                frame_id=target_frame,
+                vehicle_x=vehicle_x,
+                vehicle_y=vehicle_y,
+                vehicle_yaw=vehicle_yaw,
+                track_ids=track_ids,
+                track_states=track_states,
+                planner_confidences=planner_confidences,
+            )
+            self._last_valid_pair_segments = (
+                np.array(pair_segments_for_viz, copy=True)
+                if pair_segments_for_viz.size > 0
+                else self._last_valid_pair_segments
+            )
             self._last_valid_pair_track_ids = (
                 np.array(result.selected_pair_track_ids, copy=True)
                 if result.selected_pair_track_ids.size > 0
                 else self._last_valid_pair_track_ids
             )
-        elif self._last_valid_pair_segments is not None and centerline.shape[0] > 0:
-            pair_segments_for_viz = np.array(self._last_valid_pair_segments, copy=True)
 
         plan_valid = False
         plan_hold_active = False
@@ -794,8 +878,13 @@ class MidpointPlannerNode(TrackedConePlannerBase):
 
         if plan_hold_active:
             hold_reason = result.reject_reason or candidate_update_reason or status
-            if self._last_valid_pair_segments is not None:
-                pair_segments_for_viz = np.array(self._last_valid_pair_segments, copy=True)
+
+        if publish_mode == "held" and centerline.shape[0] > 0:
+            held_pair_segments, held_raw_midpoint_chain = self._held_pair_geometry(now_sec=now_sec)
+            if pair_segments_for_viz.size == 0 and held_pair_segments is not None:
+                pair_segments_for_viz = held_pair_segments
+            if raw_midpoint_chain.size == 0 and held_raw_midpoint_chain is not None:
+                raw_midpoint_chain = held_raw_midpoint_chain
 
         centerline = self._prepare_centerline_for_current_pose(
             centerline=centerline,
@@ -967,7 +1056,7 @@ class MidpointPlannerNode(TrackedConePlannerBase):
         )
         self._active_left_chain_length = int(result.left_chain_length)
         self._active_right_chain_length = int(result.right_chain_length)
-        self._active_pair_count = int(pair_segments_for_viz.shape[0]) if pair_segments_for_viz.size > 0 else int(result.accepted_pair_count)
+        self._active_pair_count = self._published_pair_count(pair_segments_for_viz, result)
         self._active_unknown_pair_count = int(result.unknown_pair_count)
         self._active_filtered_track_width_m = float(self._filtered_track_width_m)
         self._active_held_path_flag = 1 if publish_mode == "held" and centerline.shape[0] > 0 else 0
@@ -1093,28 +1182,265 @@ class MidpointPlannerNode(TrackedConePlannerBase):
             np.asarray(track_confidences, dtype=np.float64),
         )
 
-    def _active_pair_memory(self, now_sec: float) -> list[tuple[int, int]]:
-        active: list[tuple[int, int]] = []
+    def _active_pair_memory_entries(
+        self,
+        *,
+        vehicle_x: float,
+        vehicle_y: float,
+        vehicle_yaw: float,
+    ) -> list[_PairMemoryEntry]:
         keep: list[_PairMemoryEntry] = []
         for entry in self._pair_memory:
-            if (now_sec - entry.last_valid_sec) <= self.pair_hold_time_s:
+            midpoint_x_base, midpoint_y_base = self._odom_point_to_base(
+                entry.midpoint_x_odom,
+                entry.midpoint_y_odom,
+                vehicle_x,
+                vehicle_y,
+                vehicle_yaw,
+            )
+            del midpoint_y_base
+            if midpoint_x_base >= -_PAIR_PASSED_MARGIN_M:
                 keep.append(entry)
-                active.append((entry.left_track_id, entry.right_track_id))
         self._pair_memory = keep
-        return active
+        return keep
 
-    def _remember_pairs(self, *, result: MidpointPlannerResult, now_sec: float) -> None:
-        if result.selected_pair_track_ids.size == 0:
+    def _active_pair_memory(
+        self,
+        *,
+        vehicle_x: float,
+        vehicle_y: float,
+        vehicle_yaw: float,
+    ) -> list[tuple[int, int]]:
+        return [
+            (entry.left_track_id, entry.right_track_id)
+            for entry in self._active_pair_memory_entries(
+                vehicle_x=vehicle_x,
+                vehicle_y=vehicle_y,
+                vehicle_yaw=vehicle_yaw,
+            )
+        ]
+
+    @staticmethod
+    def _pair_geometry_from_memory(
+        entries: list[_PairMemoryEntry],
+    ) -> tuple[np.ndarray, np.ndarray]:
+        if not entries:
+            return (
+                np.empty((0, 2, 2), dtype=np.float64),
+                np.empty((0, 2), dtype=np.float64),
+            )
+        pair_segments = np.empty((len(entries), 2, 2), dtype=np.float64)
+        midpoint_chain = np.empty((len(entries), 2), dtype=np.float64)
+        for idx, entry in enumerate(entries):
+            pair_segments[idx, 0, 0] = float(entry.left_x_odom)
+            pair_segments[idx, 0, 1] = float(entry.left_y_odom)
+            pair_segments[idx, 1, 0] = float(entry.right_x_odom)
+            pair_segments[idx, 1, 1] = float(entry.right_y_odom)
+            midpoint_chain[idx, 0] = float(entry.midpoint_x_odom)
+            midpoint_chain[idx, 1] = float(entry.midpoint_y_odom)
+        return pair_segments, midpoint_chain
+
+    def _pair_entries_from_segments(
+        self,
+        *,
+        pair_track_ids: np.ndarray,
+        pair_segments: np.ndarray,
+        frame_id: str,
+        vehicle_x: float,
+        vehicle_y: float,
+        vehicle_yaw: float,
+    ) -> list[_PairMemoryEntry]:
+        if pair_track_ids.size == 0 or pair_segments.size == 0:
+            return []
+        entries: list[_PairMemoryEntry] = []
+        for pair_ids, pair_segment in zip(
+            np.asarray(pair_track_ids, dtype=np.int64),
+            np.asarray(pair_segments, dtype=np.float64),
+        ):
+            if pair_segment.shape != (2, 2):
+                continue
+            left_point = np.asarray(pair_segment[0], dtype=np.float64)
+            right_point = np.asarray(pair_segment[1], dtype=np.float64)
+            midpoint = 0.5 * (left_point + right_point)
+            left_x_odom = float(left_point[0])
+            left_y_odom = float(left_point[1])
+            right_x_odom = float(right_point[0])
+            right_y_odom = float(right_point[1])
+            midpoint_x_odom = float(midpoint[0])
+            midpoint_y_odom = float(midpoint[1])
+            if self._is_alias(frame_id, self.base_frame):
+                left_x_odom, left_y_odom = self._base_point_to_odom(
+                    left_x_odom,
+                    left_y_odom,
+                    vehicle_x,
+                    vehicle_y,
+                    vehicle_yaw,
+                )
+                right_x_odom, right_y_odom = self._base_point_to_odom(
+                    right_x_odom,
+                    right_y_odom,
+                    vehicle_x,
+                    vehicle_y,
+                    vehicle_yaw,
+                )
+                midpoint_x_odom, midpoint_y_odom = self._base_point_to_odom(
+                    midpoint_x_odom,
+                    midpoint_y_odom,
+                    vehicle_x,
+                    vehicle_y,
+                    vehicle_yaw,
+                )
+            elif not self._is_alias(frame_id, self.odom_frame):
+                continue
+            entries.append(
+                _PairMemoryEntry(
+                    left_track_id=int(pair_ids[0]),
+                    right_track_id=int(pair_ids[1]),
+                    midpoint_x_odom=float(midpoint_x_odom),
+                    midpoint_y_odom=float(midpoint_y_odom),
+                    left_x_odom=float(left_x_odom),
+                    left_y_odom=float(left_y_odom),
+                    right_x_odom=float(right_x_odom),
+                    right_y_odom=float(right_y_odom),
+                )
+            )
+        return entries
+
+    @staticmethod
+    def _merge_pair_entries(
+        *,
+        remembered_entries: list[_PairMemoryEntry],
+        live_entries: list[_PairMemoryEntry],
+    ) -> list[_PairMemoryEntry]:
+        merged: dict[tuple[int, int], _PairMemoryEntry] = {}
+        for entry in remembered_entries:
+            merged[(entry.left_track_id, entry.right_track_id)] = entry
+        for entry in live_entries:
+            merged[(entry.left_track_id, entry.right_track_id)] = entry
+        return list(merged.values())
+
+    def _remember_pairs(
+        self,
+        *,
+        result: MidpointPlannerResult,
+        frame_id: str,
+        vehicle_x: float,
+        vehicle_y: float,
+        vehicle_yaw: float,
+        track_ids: np.ndarray,
+        track_states: np.ndarray,
+        planner_confidences: np.ndarray,
+    ) -> None:
+        if result.selected_pair_track_ids.size == 0 or result.pair_segments.size == 0:
             self._active_pair_count = 0
             return
-        self._pair_memory = [
-            _PairMemoryEntry(
-                left_track_id=int(pair_ids[0]),
-                right_track_id=int(pair_ids[1]),
-                last_valid_sec=now_sec,
+
+        track_state_by_id = {
+            int(track_id): int(track_state)
+            for track_id, track_state in zip(track_ids, track_states)
+        }
+        del planner_confidences
+        remembered_pairs: list[_PairMemoryEntry] = []
+        for pair_ids, pair_segment in zip(
+            np.asarray(result.selected_pair_track_ids, dtype=np.int64),
+            np.asarray(result.pair_segments, dtype=np.float64),
+        ):
+            if pair_segment.shape != (2, 2):
+                continue
+            left_track_id = int(pair_ids[0])
+            right_track_id = int(pair_ids[1])
+            left_state = track_state_by_id.get(left_track_id, MSG_TRACK_STATE_TENTATIVE)
+            right_state = track_state_by_id.get(right_track_id, MSG_TRACK_STATE_TENTATIVE)
+            if left_state == MSG_TRACK_STATE_TENTATIVE or right_state == MSG_TRACK_STATE_TENTATIVE:
+                continue
+            left_point = np.asarray(pair_segment[0], dtype=np.float64)
+            right_point = np.asarray(pair_segment[1], dtype=np.float64)
+            midpoint = 0.5 * (left_point + right_point)
+            left_x_odom = float(left_point[0])
+            left_y_odom = float(left_point[1])
+            right_x_odom = float(right_point[0])
+            right_y_odom = float(right_point[1])
+            midpoint_x_odom = float(midpoint[0])
+            midpoint_y_odom = float(midpoint[1])
+            if self._is_alias(frame_id, self.base_frame):
+                left_x_odom, left_y_odom = self._base_point_to_odom(
+                    left_x_odom,
+                    left_y_odom,
+                    vehicle_x,
+                    vehicle_y,
+                    vehicle_yaw,
+                )
+                right_x_odom, right_y_odom = self._base_point_to_odom(
+                    right_x_odom,
+                    right_y_odom,
+                    vehicle_x,
+                    vehicle_y,
+                    vehicle_yaw,
+                )
+                midpoint_x_odom, midpoint_y_odom = self._base_point_to_odom(
+                    midpoint_x_odom,
+                    midpoint_y_odom,
+                    vehicle_x,
+                    vehicle_y,
+                    vehicle_yaw,
+                )
+            elif not self._is_alias(frame_id, self.odom_frame):
+                continue
+            remembered_pairs.append(
+                _PairMemoryEntry(
+                    left_track_id=left_track_id,
+                    right_track_id=right_track_id,
+                    midpoint_x_odom=float(midpoint_x_odom),
+                    midpoint_y_odom=float(midpoint_y_odom),
+                    left_x_odom=float(left_x_odom),
+                    left_y_odom=float(left_y_odom),
+                    right_x_odom=float(right_x_odom),
+                    right_y_odom=float(right_y_odom),
+                )
             )
-            for pair_ids in np.asarray(result.selected_pair_track_ids, dtype=np.int64)
-        ]
+        self._pair_memory = remembered_pairs
+
+    def _held_pair_geometry(
+        self,
+        *,
+        now_sec: float,
+    ) -> tuple[Optional[np.ndarray], Optional[np.ndarray]]:
+        if self._last_valid_time_sec < 0.0:
+            return None, None
+        if self._hold_remaining_s(now_sec) <= 0.0:
+            return None, None
+        pair_segments = (
+            np.array(self._last_valid_pair_segments, copy=True)
+            if self._last_valid_pair_segments is not None
+            else None
+        )
+        raw_midpoint_chain = (
+            np.array(self._last_valid_raw_midpoint_chain, copy=True)
+            if self._last_valid_raw_midpoint_chain is not None
+            else None
+        )
+        return pair_segments, raw_midpoint_chain
+
+    @staticmethod
+    def _published_pair_count(
+        pair_segments_for_viz: np.ndarray,
+        result: MidpointPlannerResult,
+    ) -> int:
+        if pair_segments_for_viz.size > 0:
+            return int(pair_segments_for_viz.shape[0])
+        return int(result.accepted_pair_count)
+
+    def _update_candidate_jump_reject_streak(
+        self,
+        *,
+        candidate_update_ok: bool,
+        candidate_update_reason: str,
+    ) -> tuple[bool, str]:
+        if not candidate_update_ok and candidate_update_reason == "candidate_jump_rejected":
+            self._candidate_jump_reject_streak += 1
+        else:
+            self._candidate_jump_reject_streak = 0
+        return candidate_update_ok, candidate_update_reason
 
     def _apply_mode_hysteresis(self, candidate_mode: str) -> str:
         return "midpoint" if candidate_mode != "none" else "none"
@@ -1184,7 +1510,6 @@ class MidpointPlannerNode(TrackedConePlannerBase):
             self._midline_buffer_confidence = min(1.0, self._midline_buffer_confidence + 0.25)
             return updated
 
-        self._midline_buffer_confidence = max(0.0, self._midline_buffer_confidence - 0.10)
         if self._midline_buffer_path is None or self._midline_buffer_path.shape[0] < 2:
             return np.empty((0, 2), dtype=np.float64)
         if self._midline_buffer_last_update_sec < 0.0:
@@ -1192,9 +1517,9 @@ class MidpointPlannerNode(TrackedConePlannerBase):
         if (now_sec - self._midline_buffer_last_update_sec) > self.midline_hold_last_valid_duration_s:
             self._midline_buffer_path = None
             return np.empty((0, 2), dtype=np.float64)
-        if self._midline_buffer_confidence < self.midline_min_buffer_confidence:
-            self._midline_buffer_path = None
-            return np.empty((0, 2), dtype=np.float64)
+        # Midline dropout retention is governed by elapsed hold time. Per-cycle
+        # confidence decay made the stored path expire in a few frames at high
+        # planner rates, which defeats the configured hold window.
         if stored_forward is not None and stored_forward.shape[0] >= 2:
             return self._resample_midline_stations(stored_forward)
         return np.array(self._midline_buffer_path, copy=True)
@@ -1224,7 +1549,11 @@ class MidpointPlannerNode(TrackedConePlannerBase):
             return False, "candidate_no_local_path"
         if self._path_forward_extent_local(candidate_local) < self.candidate_min_extent_m:
             return False, "candidate_extent_too_short"
-        if self._midline_buffer_path is not None and self._midline_buffer_path.shape[0] >= 2:
+        if (
+            not self._hold_mode_active
+            and self._midline_buffer_path is not None
+            and self._midline_buffer_path.shape[0] >= 2
+        ):
             jump = compute_centerline_jump_max(
                 candidate_centerline,
                 self._midline_buffer_path,
@@ -1232,11 +1561,91 @@ class MidpointPlannerNode(TrackedConePlannerBase):
             )
             if jump > self.candidate_jump_reject_threshold_m:
                 return False, "candidate_jump_rejected"
-        if candidate_source == "single_boundary_raw_offset":
-            return True, "single_boundary_raw_offset_soft_accept"
+        if candidate_source in {"single_boundary_raw_offset", "remembered_pairs", "projected_pairs"}:
+            return True, f"{candidate_source}_soft_accept"
         if result.status != "ok":
             return False, result.reject_reason or result.status
         return True, "ok"
+
+    def _minimum_projected_forward_extent_m(self) -> float:
+        return max(
+            float(self.candidate_min_extent_m),
+            float(getattr(self._core_config, "min_forward_extent_m", self.candidate_min_extent_m)),
+        )
+
+    def _candidate_forward_extent_m(
+        self,
+        *,
+        centerline: np.ndarray,
+        frame_id: str,
+        vehicle_x: float,
+        vehicle_y: float,
+        vehicle_yaw: float,
+    ) -> float:
+        if centerline.shape[0] == 0:
+            return 0.0
+        local_path = self._centerline_to_vehicle_frame(
+            centerline=centerline,
+            frame_id=frame_id,
+            vehicle_x=vehicle_x,
+            vehicle_y=vehicle_y,
+            vehicle_yaw=vehicle_yaw,
+        )
+        return self._path_forward_extent_local(local_path)
+
+    def _project_midpoint_chain_candidate(
+        self,
+        *,
+        midpoint_chain: np.ndarray,
+        frame_id: str,
+        vehicle_x: float,
+        vehicle_y: float,
+        vehicle_yaw: float,
+    ) -> np.ndarray:
+        if midpoint_chain.shape[0] < _MIN_PROJECTABLE_PAIR_COUNT:
+            return np.empty((0, 2), dtype=np.float64)
+        local_chain = self._centerline_to_vehicle_frame(
+            centerline=midpoint_chain,
+            frame_id=frame_id,
+            vehicle_x=vehicle_x,
+            vehicle_y=vehicle_y,
+            vehicle_yaw=vehicle_yaw,
+        )
+        if local_chain.shape[0] < _MIN_PROJECTABLE_PAIR_COUNT:
+            return np.empty((0, 2), dtype=np.float64)
+
+        projected_local = np.array(local_chain, copy=True)
+        target_extent_m = self._minimum_projected_forward_extent_m()
+        if self._path_forward_extent_local(projected_local) < target_extent_m:
+            tail_count = min(3, projected_local.shape[0])
+            direction = projected_local[-1] - projected_local[-tail_count]
+            direction_norm = float(np.hypot(direction[0], direction[1]))
+            if direction_norm <= 1e-9 and projected_local.shape[0] >= 2:
+                direction = projected_local[-1] - projected_local[-2]
+                direction_norm = float(np.hypot(direction[0], direction[1]))
+            if direction_norm <= 1e-9 or float(direction[0]) <= 1e-6:
+                direction = np.asarray([1.0, 0.0], dtype=np.float64)
+            else:
+                direction = direction / direction_norm
+            step_m = max(0.25, float(self.centerline_path_resolution_m))
+            while self._path_forward_extent_local(projected_local) < target_extent_m:
+                next_point = projected_local[-1] + (direction * step_m)
+                if next_point[0] <= projected_local[-1, 0]:
+                    next_point[0] = projected_local[-1, 0] + step_m
+                projected_local = np.vstack((projected_local, next_point))
+
+        projected_global = np.empty_like(projected_local)
+        for idx in range(projected_local.shape[0]):
+            ox, oy = self._base_point_to_odom(
+                float(projected_local[idx, 0]),
+                float(projected_local[idx, 1]),
+                vehicle_x,
+                vehicle_y,
+                vehicle_yaw,
+            )
+            projected_global[idx, 0] = ox
+            projected_global[idx, 1] = oy
+        return _finalize_path(projected_global, self._core_config)
 
     def _select_candidate_centerline(
         self,

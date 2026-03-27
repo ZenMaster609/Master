@@ -11,6 +11,7 @@ from pathlib import Path
 import time
 from typing import Optional
 
+import numpy as np
 import rclpy
 from geometry_msgs.msg import Point
 from nav_msgs.msg import Odometry
@@ -29,7 +30,7 @@ from sim_car.cones.tracking.fusion import (
     choose_position_source,
     clamp_camera_range,
     normalize_color,
-    resolve_boundary_color_by_lateral_position,
+    resolve_boundary_colors_for_planning,
 )
 from sim_car.cones.tracking.pose import base_point_to_odom, convert_odom_child_pose_to_base_frame, odom_point_to_base
 from sim_car.cones.tracking.tracker import (
@@ -536,7 +537,14 @@ class ConeMemoryNode(Node):
             heading_y=heading_y,
         )
 
-        self._publish_tracked_cones(planner_tracks, now)
+        self._publish_tracked_cones(
+            planner_tracks,
+            now,
+            vehicle_x=veh_x,
+            vehicle_y=veh_y,
+            heading_x=heading_x,
+            heading_y=heading_y,
+        )
         self._publish_local_markers(confirmed=confirmed, stale=stale, tentative=tentative, now=now)
         self._publish_track_markers(tracks=planner_tracks, left=viz_left, right=viz_right, center=viz_center, now=now)
         if self.enable_raw_debug_viz:
@@ -564,6 +572,7 @@ class ConeMemoryNode(Node):
         heading_x: float,
         heading_y: float,
     ) -> tuple[list[tuple[float, float]], list[tuple[float, float]], list[tuple[float, float]]]:
+        filtered_tracks: list[ConeTrack] = []
         left: list[tuple[float, float]] = []
         right: list[tuple[float, float]] = []
         for track in tracks:
@@ -572,15 +581,23 @@ class ConeMemoryNode(Node):
             label, color_conf = track.class_label()
             if float(color_conf) < float(min_color_confidence):
                 continue
-            dx = float(track.x) - float(vehicle_x)
-            dy = float(track.y) - float(vehicle_y)
-            lateral_y = (-float(heading_y) * dx) + (float(heading_x) * dy)
-            resolved = resolve_boundary_color_by_lateral_position(
-                label,
-                lateral_y,
-                infer_unknown=True,
-                infer_orange=True,
+            filtered_tracks.append(track)
+
+        if filtered_tracks:
+            points_xy = np.asarray(
+                [[float(track.x), float(track.y)] for track in filtered_tracks],
+                dtype=np.float64,
             )
+            resolved_colors = resolve_boundary_colors_for_planning(
+                points_xy=points_xy,
+                raw_colors=[track.class_label()[0] for track in filtered_tracks],
+                vehicle_xy=(float(vehicle_x), float(vehicle_y)),
+                vehicle_yaw=math.atan2(float(heading_y), float(heading_x)),
+            )
+        else:
+            resolved_colors = []
+
+        for track, resolved in zip(filtered_tracks, resolved_colors):
             if resolved == 'blue':
                 left.append((float(track.x), float(track.y)))
             elif resolved == 'yellow':
@@ -791,14 +808,33 @@ class ConeMemoryNode(Node):
         unmatched_camera = [idx for idx in range(len(camera)) if idx not in taken_camera]
         return pairs, unmatched_lidar, unmatched_camera
 
-    def _publish_tracked_cones(self, tracks: list[ConeTrack], now: Time) -> None:
+    def _publish_tracked_cones(
+        self,
+        tracks: list[ConeTrack],
+        now: Time,
+        *,
+        vehicle_x: float,
+        vehicle_y: float,
+        heading_x: float,
+        heading_y: float,
+    ) -> None:
         msg = ConeDetectionArray()
         msg.header.stamp = self._last_tracker_update_stamp if self._last_tracker_update_stamp is not None else now.to_msg()
         msg.header.frame_id = self.odom_frame
-        for track in tracks:
+        planner_boundary_colors = resolve_boundary_colors_for_planning(
+            points_xy=np.asarray(
+                [[float(track.x), float(track.y)] for track in tracks],
+                dtype=np.float64,
+            ) if tracks else np.empty((0, 2), dtype=np.float64),
+            raw_colors=[track.class_label()[0] for track in tracks],
+            vehicle_xy=(float(vehicle_x), float(vehicle_y)),
+            vehicle_yaw=math.atan2(float(heading_y), float(heading_x)),
+        )
+        for track, boundary_color in zip(tracks, planner_boundary_colors):
             label, class_conf = track.class_label()
             cone = ConeDetection()
             cone.color = label
+            self._set_cone_message_field(cone, 'boundary_color', boundary_color)
             cone.confidence = float(max(0.0, min(1.0, track.track_confidence)))
             cone.position.x = float(track.x)
             cone.position.y = float(track.y)

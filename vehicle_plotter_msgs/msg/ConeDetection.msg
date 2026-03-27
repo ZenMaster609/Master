@@ -6,6 +6,7 @@ uint8 TRACK_STATE_CONFIRMED=1
 uint8 TRACK_STATE_STALE=2
 
 string color
+string boundary_color
 geometry_msgs/Point position
 float32 confidence
 uint32 track_id

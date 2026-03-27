@@ -6,6 +6,8 @@ from dataclasses import dataclass
 import math
 from typing import Optional
 
+import numpy as np
+
 
 CLASS_NAMES = ("unknown", "blue", "yellow", "orange")
 CLASS_TO_INDEX = {name: idx for idx, name in enumerate(CLASS_NAMES)}
@@ -64,6 +66,139 @@ def resolve_boundary_color_by_lateral_position(
             return normalized
         return 'blue' if float(lateral_y) >= 0.0 else 'yellow'
     return normalized
+
+
+def normalize_boundary_color(label: Optional[str]) -> str:
+    normalized = normalize_color(label or '')
+    if normalized in {'blue', 'yellow'}:
+        return normalized
+    return ''
+
+
+def resolve_boundary_colors_for_planning(
+    *,
+    points_xy: np.ndarray,
+    raw_colors: list[str],
+    vehicle_xy: tuple[float, float],
+    vehicle_yaw: float,
+    boundary_hints: Optional[list[str]] = None,
+    infer_unknown: bool = True,
+    infer_orange: bool = True,
+    orange_min_lateral_m: float = 0.9,
+    orange_neighbor_radius_m: float = 3.5,
+    orange_neighbor_margin_m: float = 0.75,
+) -> list[str]:
+    """Resolve raw cone classes to planner-facing boundary colors.
+
+    Output colors are limited to blue/yellow/unknown. Any provided boundary hint
+    takes precedence over raw color so `/tracked_cones` can carry both raw class
+    and planner-facing side at the same time.
+    """
+
+    if points_xy.size == 0 or not raw_colors:
+        return []
+
+    normalized_raw = [normalize_color(color) for color in raw_colors]
+    resolved = ['unknown'] * len(normalized_raw)
+    normalized_hints = (
+        [normalize_boundary_color(color) for color in boundary_hints]
+        if boundary_hints is not None
+        else [''] * len(normalized_raw)
+    )
+    if len(normalized_hints) != len(normalized_raw):
+        normalized_hints = [''] * len(normalized_raw)
+
+    rel = np.asarray(points_xy, dtype=np.float64) - np.asarray(vehicle_xy, dtype=np.float64).reshape(1, 2)
+    vx, vy = _rotate_into_vehicle(rel, float(vehicle_yaw))
+
+    for idx, raw_color in enumerate(normalized_raw):
+        hint = normalized_hints[idx]
+        if hint:
+            resolved[idx] = hint
+            continue
+        if raw_color in {'blue', 'yellow'}:
+            resolved[idx] = raw_color
+
+    blue_idx = np.asarray([idx for idx, color in enumerate(resolved) if color == 'blue'], dtype=np.int64)
+    yellow_idx = np.asarray([idx for idx, color in enumerate(resolved) if color == 'yellow'], dtype=np.int64)
+
+    for idx, raw_color in enumerate(normalized_raw):
+        if resolved[idx] in {'blue', 'yellow'}:
+            continue
+        lateral_y = float(vy[idx])
+        if raw_color == 'unknown':
+            if infer_unknown:
+                resolved[idx] = resolve_boundary_color_by_lateral_position(
+                    raw_color,
+                    lateral_y,
+                    infer_unknown=True,
+                    infer_orange=False,
+                )
+            continue
+        if raw_color == 'orange':
+            if not infer_orange:
+                continue
+            resolved[idx] = _infer_orange_boundary_color(
+                idx=idx,
+                vx=vx,
+                vy=vy,
+                blue_idx=blue_idx,
+                yellow_idx=yellow_idx,
+                min_lateral_m=orange_min_lateral_m,
+                neighbor_radius_m=orange_neighbor_radius_m,
+                neighbor_margin_m=orange_neighbor_margin_m,
+            )
+
+    return [color if color in {'blue', 'yellow'} else 'unknown' for color in resolved]
+
+
+def _rotate_into_vehicle(points_xy: np.ndarray, vehicle_yaw: float) -> tuple[np.ndarray, np.ndarray]:
+    cos_yaw = math.cos(float(vehicle_yaw))
+    sin_yaw = math.sin(float(vehicle_yaw))
+    vx = (cos_yaw * points_xy[:, 0]) + (sin_yaw * points_xy[:, 1])
+    vy = (-sin_yaw * points_xy[:, 0]) + (cos_yaw * points_xy[:, 1])
+    return vx, vy
+
+
+def _infer_orange_boundary_color(
+    *,
+    idx: int,
+    vx: np.ndarray,
+    vy: np.ndarray,
+    blue_idx: np.ndarray,
+    yellow_idx: np.ndarray,
+    min_lateral_m: float,
+    neighbor_radius_m: float,
+    neighbor_margin_m: float,
+) -> str:
+    d_blue = _nearest_neighbor_distance(idx=idx, vx=vx, vy=vy, candidate_idx=blue_idx)
+    d_yellow = _nearest_neighbor_distance(idx=idx, vx=vx, vy=vy, candidate_idx=yellow_idx)
+    neighbor_radius_m = float(max(0.0, neighbor_radius_m))
+    neighbor_margin_m = float(max(0.0, neighbor_margin_m))
+
+    if math.isfinite(d_blue) and d_blue <= neighbor_radius_m and (d_yellow - d_blue) >= neighbor_margin_m:
+        return 'blue'
+    if math.isfinite(d_yellow) and d_yellow <= neighbor_radius_m and (d_blue - d_yellow) >= neighbor_margin_m:
+        return 'yellow'
+
+    lateral_y = float(vy[idx])
+    if abs(lateral_y) >= float(max(0.0, min_lateral_m)):
+        return 'blue' if lateral_y >= 0.0 else 'yellow'
+    return 'blue' if lateral_y >= 0.0 else 'yellow'
+
+
+def _nearest_neighbor_distance(
+    *,
+    idx: int,
+    vx: np.ndarray,
+    vy: np.ndarray,
+    candidate_idx: np.ndarray,
+) -> float:
+    if candidate_idx.size == 0:
+        return float('inf')
+    dx = vx[candidate_idx] - float(vx[idx])
+    dy = vy[candidate_idx] - float(vy[idx])
+    return float(np.min(np.hypot(dx, dy)))
 
 
 def clamp_camera_range(camera_range_m: float) -> float:

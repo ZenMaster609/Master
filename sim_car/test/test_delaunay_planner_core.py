@@ -10,6 +10,7 @@ PACKAGE_ROOT = TEST_DIR.parent
 if str(PACKAGE_ROOT) not in sys.path:
     sys.path.insert(0, str(PACKAGE_ROOT))
 
+from sim_car.cones.tracking.fusion import resolve_boundary_colors_for_planning
 import sim_car.planning.delaunay_planner_core as core
 
 
@@ -224,6 +225,25 @@ def test_candidate_progress_is_measured_from_vehicle_not_previous_seed():
     assert result.reject_counts['progress'] == 0
     assert result.selected_chain_length >= 3
     assert np.allclose(result.midpoints_raw[0], np.array([2.0, 0.0]))
+
+
+def test_all_orange_track_is_resolved_to_delaunay_path():
+    points = np.array(
+        [[2.0, 1.8], [2.0, -1.8], [4.0, 1.8], [4.0, -1.8], [6.0, 1.8], [6.0, -1.8]],
+        dtype=np.float64,
+    )
+    colors = resolve_boundary_colors_for_planning(
+        points_xy=points,
+        raw_colors=['orange'] * len(points),
+        vehicle_xy=(0.0, 0.0),
+        vehicle_yaw=0.0,
+    )
+    conf = np.ones((6,), dtype=np.float64)
+
+    result = core.compute_centerline(points, colors, conf, (0.0, 0.0), 0.0, _cfg())
+
+    assert result.status == 'ok'
+    assert result.selected_chain_length >= 3
 
 
 def test_startup_tangent_comes_from_cone_geometry_not_vehicle_yaw():

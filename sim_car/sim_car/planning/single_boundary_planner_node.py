@@ -158,6 +158,11 @@ class SingleBoundaryPlannerNode(TrackedConePlannerBase):
             "filtering.behind_drop_m": 5.0,
             "filtering.min_confidence": 0.3,
             "filtering.min_required_cones": 4,
+            "filtering.infer_unknown_by_side": True,
+            "filtering.infer_orange_by_side": True,
+            "filtering.orange_min_lateral_m": 0.9,
+            "filtering.orange_neighbor_radius_m": 3.5,
+            "filtering.orange_neighbor_margin_m": 0.75,
             "filtering.allow_unknown_pair_completion": True,
             "filtering.unknown_pair_search_radius_m": 1.25,
             "filtering.unknown_pair_max_longitudinal_error_m": 1.5,
@@ -261,6 +266,15 @@ class SingleBoundaryPlannerNode(TrackedConePlannerBase):
         self.viz_topic = str(self.get_parameter("topics.viz_topic").value)
         self.points_topic = str(self.get_parameter("topics.points_topic").value)
         self.odom_topic = str(self.get_parameter("topics.odom_topic").value)
+        self.infer_unknown_by_side = bool(self.get_parameter("filtering.infer_unknown_by_side").value)
+        self.infer_orange_by_side = bool(self.get_parameter("filtering.infer_orange_by_side").value)
+        self.orange_min_lateral_m = float(self.get_parameter("filtering.orange_min_lateral_m").value)
+        self.orange_neighbor_radius_m = float(
+            self.get_parameter("filtering.orange_neighbor_radius_m").value
+        )
+        self.orange_neighbor_margin_m = float(
+            self.get_parameter("filtering.orange_neighbor_margin_m").value
+        )
 
         self.centerline_path_resolution_m = max(
             0.05,
@@ -572,7 +586,13 @@ class SingleBoundaryPlannerNode(TrackedConePlannerBase):
             return
 
         vehicle_x, vehicle_y, vehicle_yaw = pose
-        points_xy, colors, confidences = self._convert_cones_to_frame(cones_msg, source_frame, target_frame)
+        points_xy, colors, confidences = self._convert_cones_to_frame(
+            cones_msg,
+            source_frame,
+            target_frame,
+            vehicle_xy=(vehicle_x, vehicle_y),
+            vehicle_yaw=vehicle_yaw,
+        )
         if points_xy is None:
             if target_frame != self.odom_frame:
                 self._warn_throttled(
@@ -595,7 +615,13 @@ class SingleBoundaryPlannerNode(TrackedConePlannerBase):
                     )
                     return
                 vehicle_x, vehicle_y, vehicle_yaw = pose
-                points_xy, colors, confidences = self._convert_cones_to_frame(cones_msg, source_frame, target_frame)
+                points_xy, colors, confidences = self._convert_cones_to_frame(
+                    cones_msg,
+                    source_frame,
+                    target_frame,
+                    vehicle_xy=(vehicle_x, vehicle_y),
+                    vehicle_yaw=vehicle_yaw,
+                )
 
         if points_xy is None:
             zero_cmd_sent = int(self._apply_no_path_behavior())

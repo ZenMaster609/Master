@@ -22,7 +22,7 @@ from tf2_ros import Buffer, TransformException, TransformListener
 from vehicle_plotter_msgs.msg import ConeDetectionArray
 from visualization_msgs.msg import Marker, MarkerArray
 
-from sim_car.cones.tracking.fusion import normalize_color
+from sim_car.cones.tracking.fusion import normalize_color, resolve_boundary_colors_for_planning
 from sim_car.controllers.factory import create_steering_controller
 from sim_car.controllers.stanley_controller import StanleyConfig
 from sim_car.planning.delaunay_planner_core import (
@@ -273,6 +273,15 @@ class DelaunayPlannerNode(Node):
         self.viz_topic = str(self.get_parameter('topics.viz_topic').value)
         self.points_topic = str(self.get_parameter('topics.points_topic').value)
         self.odom_topic = str(self.get_parameter('topics.odom_topic').value)
+        self.infer_unknown_by_side = bool(self.get_parameter('filtering.infer_unknown_by_side').value)
+        self.infer_orange_by_side = bool(self.get_parameter('filtering.infer_orange_by_side').value)
+        self.orange_min_lateral_m = float(self.get_parameter('filtering.orange_min_lateral_m').value)
+        self.orange_neighbor_radius_m = float(
+            self.get_parameter('filtering.orange_neighbor_radius_m').value
+        )
+        self.orange_neighbor_margin_m = float(
+            self.get_parameter('filtering.orange_neighbor_margin_m').value
+        )
 
         self.enable_temporal_smoothing = bool(self.get_parameter('centerline.enable_temporal_smoothing').value)
         self.centerline_path_resolution_m = max(
@@ -416,12 +425,7 @@ class DelaunayPlannerNode(Node):
             behind_drop_m=float(self.get_parameter('filtering.behind_drop_m').value),
             min_confidence=float(self.get_parameter('filtering.min_confidence').value),
             use_unknown_cones=bool(self.get_parameter('filtering.use_unknown_cones').value),
-            infer_unknown_by_side=bool(self.get_parameter('filtering.infer_unknown_by_side').value),
-            infer_orange_by_side=bool(self.get_parameter('filtering.infer_orange_by_side').value),
             include_orange=bool(self.get_parameter('filtering.include_orange').value),
-            orange_min_lateral_m=float(self.get_parameter('filtering.orange_min_lateral_m').value),
-            orange_neighbor_radius_m=float(self.get_parameter('filtering.orange_neighbor_radius_m').value),
-            orange_neighbor_margin_m=float(self.get_parameter('filtering.orange_neighbor_margin_m').value),
             min_colored_cones=max(1, int(self.get_parameter('filtering.min_colored_cones').value)),
             min_required_cones=max(2, int(self.get_parameter('filtering.min_required_cones').value)),
             min_cross_edge_m=float(self.get_parameter('edge_selection.min_cross_edge_m').value),
@@ -529,7 +533,13 @@ class DelaunayPlannerNode(Node):
             return
 
         vehicle_x, vehicle_y, vehicle_yaw = pose
-        points_xy, colors, confidences = self._convert_cones_to_frame(cones_msg, source_frame, target_frame)
+        points_xy, colors, confidences = self._convert_cones_to_frame(
+            cones_msg,
+            source_frame,
+            target_frame,
+            vehicle_xy=(vehicle_x, vehicle_y),
+            vehicle_yaw=vehicle_yaw,
+        )
         if points_xy is None:
             if target_frame != self.odom_frame:
                 self._warn_throttled(
@@ -552,7 +562,13 @@ class DelaunayPlannerNode(Node):
                     )
                     return
                 vehicle_x, vehicle_y, vehicle_yaw = pose
-                points_xy, colors, confidences = self._convert_cones_to_frame(cones_msg, source_frame, target_frame)
+                points_xy, colors, confidences = self._convert_cones_to_frame(
+                    cones_msg,
+                    source_frame,
+                    target_frame,
+                    vehicle_xy=(vehicle_x, vehicle_y),
+                    vehicle_yaw=vehicle_yaw,
+                )
 
         if points_xy is None:
             zero_cmd_sent = int(self._apply_no_path_behavior())
@@ -1067,6 +1083,9 @@ class DelaunayPlannerNode(Node):
         msg: ConeDetectionArray,
         source_frame: str,
         target_frame: str,
+        *,
+        vehicle_xy: tuple[float, float],
+        vehicle_yaw: float,
     ) -> tuple[Optional[np.ndarray], list[str], np.ndarray]:
         tf_msg = None
         if not self._is_alias(source_frame, target_frame):
@@ -1076,13 +1095,20 @@ class DelaunayPlannerNode(Node):
                 msg.header.stamp,
             )
             if tf_msg is None:
-                fallback = self._convert_with_odom_pose_fallback(msg, source_frame, target_frame)
+                fallback = self._convert_with_odom_pose_fallback(
+                    msg,
+                    source_frame,
+                    target_frame,
+                    vehicle_xy=vehicle_xy,
+                    vehicle_yaw=vehicle_yaw,
+                )
                 if fallback is None:
                     return None, [], np.empty((0,), dtype=np.float64)
                 return fallback
 
         points: list[tuple[float, float]] = []
-        colors: list[str] = []
+        raw_colors: list[str] = []
+        boundary_hints: list[str] = []
         confs: list[float] = []
         for cone in msg.cones:
             x = float(cone.position.x)
@@ -1091,18 +1117,35 @@ class DelaunayPlannerNode(Node):
             if tf_msg is not None:
                 x, y, z = self._transform_point(tf_msg, x, y, z)
             points.append((x, y))
-            colors.append(normalize_color(cone.color))
+            raw_colors.append(normalize_color(cone.color))
+            boundary_hints.append(str(getattr(cone, 'boundary_color', '')).strip())
             confs.append(float(np.clip(float(cone.confidence), 0.0, 1.0)))
 
         if not points:
             return np.empty((0, 2), dtype=np.float64), [], np.empty((0,), dtype=np.float64)
-        return np.asarray(points, dtype=np.float64), colors, np.asarray(confs, dtype=np.float64)
+        points_xy = np.asarray(points, dtype=np.float64)
+        colors = resolve_boundary_colors_for_planning(
+            points_xy=points_xy,
+            raw_colors=raw_colors,
+            boundary_hints=boundary_hints,
+            vehicle_xy=vehicle_xy,
+            vehicle_yaw=vehicle_yaw,
+            infer_unknown=self.infer_unknown_by_side,
+            infer_orange=self.infer_orange_by_side,
+            orange_min_lateral_m=self.orange_min_lateral_m,
+            orange_neighbor_radius_m=self.orange_neighbor_radius_m,
+            orange_neighbor_margin_m=self.orange_neighbor_margin_m,
+        )
+        return points_xy, colors, np.asarray(confs, dtype=np.float64)
 
     def _convert_with_odom_pose_fallback(
         self,
         msg: ConeDetectionArray,
         source_frame: str,
         target_frame: str,
+        *,
+        vehicle_xy: tuple[float, float],
+        vehicle_yaw: float,
     ) -> Optional[tuple[np.ndarray, list[str], np.ndarray]]:
         odom_pose = self._resolve_vehicle_pose(self.odom_frame, msg.header.stamp)
         if odom_pose is None:
@@ -1115,7 +1158,8 @@ class DelaunayPlannerNode(Node):
 
         if source_is_odom and target_is_base:
             points: list[tuple[float, float]] = []
-            colors: list[str] = []
+            raw_colors: list[str] = []
+            boundary_hints: list[str] = []
             confs: list[float] = []
             for cone in msg.cones:
                 x_base, y_base = self._odom_point_to_base(
@@ -1126,15 +1170,30 @@ class DelaunayPlannerNode(Node):
                     odom_yaw,
                 )
                 points.append((x_base, y_base))
-                colors.append(normalize_color(cone.color))
+                raw_colors.append(normalize_color(cone.color))
+                boundary_hints.append(str(getattr(cone, 'boundary_color', '')).strip())
                 confs.append(float(np.clip(float(cone.confidence), 0.0, 1.0)))
-            return np.asarray(points, dtype=np.float64), colors, np.asarray(confs, dtype=np.float64)
+            points_xy = np.asarray(points, dtype=np.float64)
+            colors = resolve_boundary_colors_for_planning(
+                points_xy=points_xy,
+                raw_colors=raw_colors,
+                boundary_hints=boundary_hints,
+                vehicle_xy=vehicle_xy,
+                vehicle_yaw=vehicle_yaw,
+                infer_unknown=self.infer_unknown_by_side,
+                infer_orange=self.infer_orange_by_side,
+                orange_min_lateral_m=self.orange_min_lateral_m,
+                orange_neighbor_radius_m=self.orange_neighbor_radius_m,
+                orange_neighbor_margin_m=self.orange_neighbor_margin_m,
+            )
+            return points_xy, colors, np.asarray(confs, dtype=np.float64)
 
         if source_is_base and self._is_alias(target_frame, self.odom_frame):
             cos_y = math.cos(odom_yaw)
             sin_y = math.sin(odom_yaw)
             points = []
-            colors = []
+            raw_colors = []
+            boundary_hints = []
             confs = []
             for cone in msg.cones:
                 xb = float(cone.position.x)
@@ -1142,9 +1201,23 @@ class DelaunayPlannerNode(Node):
                 xo = odom_x + (cos_y * xb) - (sin_y * yb)
                 yo = odom_y + (sin_y * xb) + (cos_y * yb)
                 points.append((xo, yo))
-                colors.append(normalize_color(cone.color))
+                raw_colors.append(normalize_color(cone.color))
+                boundary_hints.append(str(getattr(cone, 'boundary_color', '')).strip())
                 confs.append(float(np.clip(float(cone.confidence), 0.0, 1.0)))
-            return np.asarray(points, dtype=np.float64), colors, np.asarray(confs, dtype=np.float64)
+            points_xy = np.asarray(points, dtype=np.float64)
+            colors = resolve_boundary_colors_for_planning(
+                points_xy=points_xy,
+                raw_colors=raw_colors,
+                boundary_hints=boundary_hints,
+                vehicle_xy=vehicle_xy,
+                vehicle_yaw=vehicle_yaw,
+                infer_unknown=self.infer_unknown_by_side,
+                infer_orange=self.infer_orange_by_side,
+                orange_min_lateral_m=self.orange_min_lateral_m,
+                orange_neighbor_radius_m=self.orange_neighbor_radius_m,
+                orange_neighbor_margin_m=self.orange_neighbor_margin_m,
+            )
+            return points_xy, colors, np.asarray(confs, dtype=np.float64)
 
         return None
 

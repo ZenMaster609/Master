@@ -19,6 +19,11 @@ midpoint_planner_node:
       behind_drop_m: 5.0
       min_confidence: 0.3
       min_required_cones: 4
+      infer_unknown_by_side: true
+      infer_orange_by_side: true
+      orange_min_lateral_m: 0.9
+      orange_neighbor_radius_m: 3.5
+      orange_neighbor_margin_m: 0.75
       allow_unknown_pair_completion: true
       unknown_pair_search_radius_m: 1.25
       unknown_pair_max_longitudinal_error_m: 1.5

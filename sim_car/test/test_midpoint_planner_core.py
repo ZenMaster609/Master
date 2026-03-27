@@ -10,6 +10,7 @@ PACKAGE_ROOT = TEST_DIR.parent
 if str(PACKAGE_ROOT) not in sys.path:
     sys.path.insert(0, str(PACKAGE_ROOT))
 
+from sim_car.cones.tracking.fusion import resolve_boundary_colors_for_planning  # noqa: E402
 from sim_car.planning.midpoint_planner_core import (  # noqa: E402
     MidpointPlannerConfig,
     MidpointPlannerPrior,
@@ -82,3 +83,29 @@ def test_width_estimate_updates_slowly_and_clamps_delta():
     updated = update_track_width_estimate(3.6, 4.5, cfg)
     assert abs(updated - 3.63) < 1e-9
 
+
+def test_all_orange_track_is_resolved_to_midpoint_path():
+    points = np.array(
+        [[2.0, 1.8], [2.0, -1.8], [4.0, 1.8], [4.0, -1.8], [6.0, 1.8], [6.0, -1.8]],
+        dtype=np.float64,
+    )
+    colors = resolve_boundary_colors_for_planning(
+        points_xy=points,
+        raw_colors=["orange"] * len(points),
+        vehicle_xy=(0.0, 0.0),
+        vehicle_yaw=0.0,
+    )
+    conf = np.ones((6,), dtype=np.float64)
+
+    result = compute_midpoint_centerline(
+        points,
+        colors,
+        conf,
+        (0.0, 0.0),
+        0.0,
+        _cfg(),
+        MidpointPlannerPrior(previous_width_m=3.6),
+    )
+
+    assert result.status == "ok"
+    assert result.planner_mode == "midpoint"

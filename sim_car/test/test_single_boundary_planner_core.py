@@ -10,6 +10,7 @@ PACKAGE_ROOT = TEST_DIR.parent
 if str(PACKAGE_ROOT) not in sys.path:
     sys.path.insert(0, str(PACKAGE_ROOT))
 
+from sim_car.cones.tracking.fusion import resolve_boundary_colors_for_planning  # noqa: E402
 from sim_car.planning.single_boundary_planner_core import (  # noqa: E402
     SingleBoundaryPlannerConfig,
     SingleBoundaryPlannerPrior,
@@ -100,3 +101,29 @@ def test_single_boundary_accepts_short_shorter_path_than_midpoint_defaults():
     assert result.status == "ok"
     assert result.centerline.shape[0] >= 2
 
+
+def test_all_orange_track_is_resolved_to_single_boundary_path():
+    points = np.array(
+        [[2.0, 1.8], [2.0, -1.8], [4.0, 1.8], [4.0, -1.8], [6.0, 1.8], [6.0, -1.8]],
+        dtype=np.float64,
+    )
+    colors = resolve_boundary_colors_for_planning(
+        points_xy=points,
+        raw_colors=["orange"] * len(points),
+        vehicle_xy=(0.0, 0.0),
+        vehicle_yaw=0.0,
+    )
+    conf = np.ones((6,), dtype=np.float64)
+
+    result = compute_single_boundary_centerline(
+        points,
+        colors,
+        conf,
+        (0.0, 0.0),
+        0.0,
+        _cfg(),
+        SingleBoundaryPlannerPrior(previous_width_m=3.6),
+    )
+
+    assert result.status == "ok"
+    assert result.centerline.shape[0] >= 3

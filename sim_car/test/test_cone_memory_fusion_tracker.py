@@ -1,6 +1,9 @@
+import numpy as np
+
 from sim_car.cones.tracking.fusion import (
     choose_position_source,
     class_from_probs,
+    resolve_boundary_colors_for_planning,
     resolve_boundary_color_by_lateral_position,
     update_class_probs,
 )
@@ -91,6 +94,49 @@ def test_resolve_boundary_color_by_lateral_position_maps_orange_to_track_side():
     assert resolve_boundary_color_by_lateral_position('orange', -1.0) == 'yellow'
     assert resolve_boundary_color_by_lateral_position('unknown', 1.0) == 'blue'
     assert resolve_boundary_color_by_lateral_position('unknown', -1.0) == 'yellow'
+
+
+def test_resolve_boundary_colors_for_planning_prefers_neighbor_context_for_orange():
+    points = np.asarray(
+        [
+            [4.0, 1.8],
+            [4.0, -1.8],
+            [4.2, -0.1],
+        ],
+        dtype=np.float64,
+    )
+    colors = ['blue', 'yellow', 'orange']
+
+    resolved = resolve_boundary_colors_for_planning(
+        points_xy=points,
+        raw_colors=colors,
+        vehicle_xy=(0.0, 0.0),
+        vehicle_yaw=0.0,
+        orange_neighbor_radius_m=2.5,
+        orange_neighbor_margin_m=0.5,
+    )
+
+    assert resolved == ['blue', 'yellow', 'yellow']
+
+
+def test_resolve_boundary_colors_for_planning_falls_back_to_lateral_without_neighbors():
+    points = np.asarray(
+        [
+            [3.0, 1.0],
+            [3.0, -1.0],
+        ],
+        dtype=np.float64,
+    )
+    colors = ['orange', 'orange']
+
+    resolved = resolve_boundary_colors_for_planning(
+        points_xy=points,
+        raw_colors=colors,
+        vehicle_xy=(0.0, 0.0),
+        vehicle_yaw=0.0,
+    )
+
+    assert resolved == ['blue', 'yellow']
 
 
 def test_local_tracker_association_and_confirmation():

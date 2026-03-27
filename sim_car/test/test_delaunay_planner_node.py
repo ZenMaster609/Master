@@ -5,6 +5,7 @@ import sys
 
 import numpy as np
 from builtin_interfaces.msg import Time as TimeMsg
+from vehicle_plotter_msgs.msg import ConeDetection, ConeDetectionArray
 
 TEST_DIR = pathlib.Path(__file__).resolve().parent
 PACKAGE_ROOT = TEST_DIR.parent
@@ -13,6 +14,7 @@ if str(PACKAGE_ROOT) not in sys.path:
 
 from sim_car.planning.delaunay_planner_core import CoreResult
 from sim_car.planning.delaunay_planner_node import DelaunayPlannerNode
+from sim_car.planning.planner_runtime_types import PlannerIdentity
 
 
 class _FakePublisher:
@@ -54,6 +56,12 @@ class _FakeLogger:
 
 def _make_node() -> DelaunayPlannerNode:
     node = object.__new__(DelaunayPlannerNode)
+    node._planner_identity = PlannerIdentity(
+        node_name='delaunay_planner_node',
+        planner_mode='delaunay',
+        diagnostics_prefix='delaunay_planner',
+        diagnostics_topic='/delaunay_planner/diagnostics',
+    )
     node.show_raw_cones = False
     node.show_delaunay_edges = False
     node.show_candidate_edges = False
@@ -65,6 +73,11 @@ def _make_node() -> DelaunayPlannerNode:
     node.publish_points_topic = True
     node.odom_frame = 'odom'
     node.base_frame = 'front_axle'
+    node.infer_unknown_by_side = True
+    node.infer_orange_by_side = True
+    node.orange_min_lateral_m = 0.9
+    node.orange_neighbor_radius_m = 3.5
+    node.orange_neighbor_margin_m = 0.75
     node._path_pub = _FakePublisher()
     node._points_pub = _FakePublisher()
     node._viz_pub = _FakePublisher()
@@ -115,6 +128,22 @@ def _sample_result() -> CoreResult:
         used_fallback=False,
         status='ok',
     )
+
+
+def _cone_msg(points: list[tuple[float, float]], *, color: str, boundary_color: str = '') -> ConeDetectionArray:
+    msg = ConeDetectionArray()
+    msg.header.frame_id = 'odom'
+    msg.header.stamp = TimeMsg(sec=0, nanosec=0)
+    for x, y in points:
+        cone = ConeDetection()
+        cone.color = color
+        cone.boundary_color = boundary_color
+        cone.confidence = 0.9
+        cone.position.x = float(x)
+        cone.position.y = float(y)
+        cone.position.z = 0.0
+        msg.cones.append(cone)
+    return msg
 
 
 def _marker_map(marker_array) -> dict[str, object]:
@@ -271,6 +300,45 @@ def test_publish_diagnostics_includes_planner_metrics():
     assert values['hold_remaining_s'] == '1.200000'
     assert values['control_path_point_count'] == '4'
     assert values['zero_cmd_sent_flag'] == '1'
+
+
+def test_convert_cones_to_frame_matches_boundary_hint_and_direct_fallback():
+    node = _make_node()
+    points = [(2.0, 1.8), (2.0, -1.8), (4.0, 1.8), (4.0, -1.8)]
+
+    direct_msg = _cone_msg(points, color='orange')
+    hinted_msg = ConeDetectionArray()
+    hinted_msg.header = direct_msg.header
+    expected_colors = ['blue', 'yellow', 'blue', 'yellow']
+    for (x, y), boundary_color in zip(points, expected_colors):
+        cone = ConeDetection()
+        cone.color = 'orange'
+        cone.boundary_color = boundary_color
+        cone.confidence = 0.9
+        cone.position.x = float(x)
+        cone.position.y = float(y)
+        cone.position.z = 0.0
+        hinted_msg.cones.append(cone)
+
+    direct_points, direct_colors, direct_conf = node._convert_cones_to_frame(
+        direct_msg,
+        'odom',
+        'odom',
+        vehicle_xy=(0.0, 0.0),
+        vehicle_yaw=0.0,
+    )
+    hinted_points, hinted_colors, hinted_conf = node._convert_cones_to_frame(
+        hinted_msg,
+        'odom',
+        'odom',
+        vehicle_xy=(0.0, 0.0),
+        vehicle_yaw=0.0,
+    )
+
+    assert np.allclose(direct_points, hinted_points)
+    assert direct_colors == expected_colors
+    assert hinted_colors == expected_colors
+    assert np.allclose(direct_conf, hinted_conf)
 
 
 def test_near_field_freeze_splices_previous_prefix_into_fresh_path():

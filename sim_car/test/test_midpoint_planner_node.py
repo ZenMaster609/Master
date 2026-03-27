@@ -14,6 +14,12 @@ if str(PACKAGE_ROOT) not in sys.path:
 
 try:
     from sim_car.planning.midpoint_planner_core import MidpointPlannerResult  # noqa: E402
+    from sim_car.planning.midpoint_planner_node import (  # noqa: E402
+        MSG_TRACK_STATE_CONFIRMED,
+        MSG_TRACK_STATE_STALE,
+        MSG_TRACK_STATE_TENTATIVE,
+        _PairMemoryEntry,
+    )
     from sim_car.planning.midpoint_planner_node import MidpointPlannerNode  # noqa: E402
     from sim_car.planning.planner_runtime_types import PlannerIdentity  # noqa: E402
 except ImportError as exc:  # pragma: no cover - depends on generated ROS interfaces
@@ -59,6 +65,43 @@ def _make_node() -> MidpointPlannerNode:
     node._hold_mode_active = False
     node._hold_clean_frame_count = 0
     node._active_planner_mode = "midpoint"
+    node.odom_frame = "odom"
+    node.base_frame = "front_axle"
+    node._pair_memory = []
+    node._core_config = type(
+        "Cfg",
+        (),
+        {
+            "min_confidence": 0.3,
+            "min_forward_extent_m": 2.0,
+            "path_resolution_m": 0.5,
+            "max_path_length_m": 30.0,
+            "smoothing_window": 1,
+        },
+    )()
+    node.show_raw_cones = False
+    node.show_boundary_chains = False
+    node.show_pair_lines = True
+    node.show_raw_midpoint_chain = True
+    node.show_raw_offset_path = False
+    node.show_raw_prevalidation_centerline = False
+    node.show_lookahead_point = False
+    node._current_pair_segments_for_viz = None
+    node._last_viz_left_boundary = None
+    node._last_viz_right_boundary = None
+    node._last_viz_raw_offset_path = None
+    node._last_valid_centerline = None
+    node._last_valid_raw_midpoint_chain = None
+    node._last_valid_pair_segments = None
+    node._last_valid_time_sec = -1.0
+    node.hold_last_valid_s = 1.25
+    node.centerline_path_resolution_m = 0.5
+    node.candidate_min_points = 2
+    node.candidate_min_extent_m = 0.5
+    node.midline_horizon_m = 30.0
+    node.centerline_jump_horizon_m = 8.0
+    node.candidate_jump_reject_threshold_m = 1.0
+    node._is_alias = lambda frame_a, frame_b: frame_a == frame_b
     node.get_clock = lambda: _FakeClock(TimeMsg(sec=1, nanosec=0))
     return node
 
@@ -78,7 +121,21 @@ def _sample_result() -> MidpointPlannerResult:
         used_fallback=False,
         status="ok",
         planner_mode="midpoint",
+        pair_segments=np.empty((0, 2, 2), dtype=np.float64),
+        accepted_pair_count=0,
     )
+
+
+def _marker_map(marker_array) -> dict[str, object]:
+    return {
+        marker.ns: marker
+        for marker in marker_array.markers
+        if getattr(marker, "ns", "")
+    }
+
+
+def _marker_xy(marker) -> np.ndarray:
+    return np.asarray([[point.x, point.y] for point in marker.points], dtype=np.float64)
 
 
 def test_publish_diagnostics_uses_midpoint_identity():
@@ -103,3 +160,390 @@ def test_normalize_core_reject_reason_maps_to_no_safe_chain():
     result.status = "no reliable midpoint chain"
     result.reject_reason = result.status
     assert node._normalize_core_reject_reason(result) == "no_safe_chain"
+
+
+def test_held_pair_geometry_returns_last_valid_geometry_within_hold_timeout():
+    node = _make_node()
+    node._last_valid_time_sec = 10.0
+    node._last_valid_centerline = np.array([[0.0, 0.0], [2.0, 0.0]], dtype=np.float64)
+    node._last_valid_pair_segments = np.array(
+        [
+            [[1.0, 1.0], [1.0, -1.0]],
+            [[3.0, 1.0], [3.0, -1.0]],
+        ],
+        dtype=np.float64,
+    )
+    node._last_valid_raw_midpoint_chain = np.array([[1.0, 0.0], [3.0, 0.0]], dtype=np.float64)
+
+    held_pair_segments, held_raw_midpoint_chain = node._held_pair_geometry(now_sec=10.5)
+
+    assert np.allclose(held_pair_segments, node._last_valid_pair_segments)
+    assert np.allclose(held_raw_midpoint_chain, node._last_valid_raw_midpoint_chain)
+
+
+def test_held_pair_geometry_expires_with_hold_timeout():
+    node = _make_node()
+    node._last_valid_time_sec = 10.0
+    node._last_valid_centerline = np.array([[0.0, 0.0], [2.0, 0.0]], dtype=np.float64)
+    node._last_valid_pair_segments = np.array(
+        [[[1.0, 1.0], [1.0, -1.0]]],
+        dtype=np.float64,
+    )
+    node._last_valid_raw_midpoint_chain = np.array([[1.0, 0.0], [3.0, 0.0]], dtype=np.float64)
+
+    held_pair_segments, held_raw_midpoint_chain = node._held_pair_geometry(
+        now_sec=10.0 + node.hold_last_valid_s + 0.01
+    )
+
+    assert held_pair_segments is None
+    assert held_raw_midpoint_chain is None
+
+
+def test_build_markers_publish_held_pair_geometry_when_current_frame_loses_pairs():
+    node = _make_node()
+    held_pair_segments = np.array(
+        [
+            [[1.0, 1.0], [1.0, -1.0]],
+            [[3.0, 1.0], [3.0, -1.0]],
+        ],
+        dtype=np.float64,
+    )
+    held_raw_midpoint_chain = np.array([[1.0, 0.0], [3.0, 0.0]], dtype=np.float64)
+    node._current_pair_segments_for_viz = np.array(held_pair_segments, copy=True)
+    result = _sample_result()
+
+    markers = node._build_markers(
+        now=TimeMsg(sec=9, nanosec=1),
+        frame_id="odom",
+        result=result,
+        centerline=np.array([[0.0, 0.0], [2.0, 0.0]], dtype=np.float64),
+        raw_centerline=np.empty((0, 2), dtype=np.float64),
+        raw_midpoint_chain=held_raw_midpoint_chain,
+        status="ok",
+        operator_state="held",
+        control_target_frame=None,
+    )
+
+    by_ns = _marker_map(markers)
+    assert np.allclose(_marker_xy(by_ns["accepted_pairs"]), held_pair_segments.reshape(-1, 2))
+    assert np.allclose(_marker_xy(by_ns["raw_midpoint_chain"]), held_raw_midpoint_chain)
+
+
+def test_build_markers_clear_pair_geometry_after_hold_timeout():
+    node = _make_node()
+    result = _sample_result()
+
+    markers = node._build_markers(
+        now=TimeMsg(sec=9, nanosec=1),
+        frame_id="odom",
+        result=result,
+        centerline=np.empty((0, 2), dtype=np.float64),
+        raw_centerline=np.empty((0, 2), dtype=np.float64),
+        raw_midpoint_chain=np.empty((0, 2), dtype=np.float64),
+        status="expired",
+        operator_state="stopped",
+        control_target_frame=None,
+    )
+
+    by_ns = _marker_map(markers)
+    assert _marker_xy(by_ns["accepted_pairs"]).size == 0
+    assert _marker_xy(by_ns["raw_midpoint_chain"]).size == 0
+
+
+def test_published_pair_count_prefers_held_pair_geometry():
+    node = _make_node()
+    result = _sample_result()
+    held_pair_segments = np.array(
+        [
+            [[1.0, 1.0], [1.0, -1.0]],
+            [[3.0, 1.0], [3.0, -1.0]],
+        ],
+        dtype=np.float64,
+    )
+
+    assert node._published_pair_count(held_pair_segments, result) == 2
+
+
+def test_active_pair_memory_keeps_pairs_until_vehicle_has_passed_them():
+    node = _make_node()
+    node._pair_memory = [
+        _PairMemoryEntry(1, 2, 2.0, 0.0, 2.0, 1.0, 2.0, -1.0),
+        _PairMemoryEntry(3, 4, -0.4, 0.0, -0.4, 1.0, -0.4, -1.0),
+        _PairMemoryEntry(5, 6, -0.6, 0.0, -0.6, 1.0, -0.6, -1.0),
+    ]
+
+    active = node._active_pair_memory(vehicle_x=0.0, vehicle_y=0.0, vehicle_yaw=0.0)
+
+    assert active == [(1, 2), (3, 4)]
+    assert [(entry.left_track_id, entry.right_track_id) for entry in node._pair_memory] == [(1, 2), (3, 4)]
+
+
+def test_pair_geometry_from_memory_restores_pair_segments_and_midpoints():
+    node = _make_node()
+    entries = [
+        _PairMemoryEntry(1, 2, 2.0, 0.0, 2.0, 1.0, 2.0, -1.0),
+        _PairMemoryEntry(3, 4, 4.0, 0.0, 4.0, 1.2, 4.0, -1.2),
+    ]
+
+    pair_segments, midpoint_chain = node._pair_geometry_from_memory(entries)
+
+    assert np.allclose(
+        pair_segments,
+        np.array(
+            [
+                [[2.0, 1.0], [2.0, -1.0]],
+                [[4.0, 1.2], [4.0, -1.2]],
+            ],
+            dtype=np.float64,
+        ),
+    )
+    assert np.allclose(midpoint_chain, np.array([[2.0, 0.0], [4.0, 0.0]], dtype=np.float64))
+
+
+def test_merge_pair_entries_keeps_live_pairs_and_retains_missing_remembered_pairs():
+    node = _make_node()
+    remembered_entries = [
+        _PairMemoryEntry(1, 2, 2.0, 0.0, 2.0, 1.0, 2.0, -1.0),
+        _PairMemoryEntry(3, 4, 4.0, 0.0, 4.0, 1.0, 4.0, -1.0),
+        _PairMemoryEntry(5, 6, 6.0, 0.0, 6.0, 1.0, 6.0, -1.0),
+    ]
+    live_entries = [
+        _PairMemoryEntry(3, 4, 4.1, 0.1, 4.1, 1.1, 4.1, -0.9),
+    ]
+
+    merged = node._merge_pair_entries(
+        remembered_entries=remembered_entries,
+        live_entries=live_entries,
+    )
+
+    assert [(entry.left_track_id, entry.right_track_id) for entry in merged] == [(1, 2), (3, 4), (5, 6)]
+    assert abs(merged[1].midpoint_x_odom - 4.1) < 1e-9
+    assert abs(merged[1].midpoint_y_odom - 0.1) < 1e-9
+
+
+def test_remember_pairs_keeps_confirmed_and_stale_pairs_with_sufficient_confidence():
+    node = _make_node()
+    result = _sample_result()
+    result.selected_pair_track_ids = np.array([[11, 12]], dtype=np.int64)
+    result.pair_segments = np.array([[[2.0, 1.0], [2.0, -1.0]]], dtype=np.float64)
+
+    node._remember_pairs(
+        result=result,
+        frame_id="odom",
+        vehicle_x=0.0,
+        vehicle_y=0.0,
+        vehicle_yaw=0.0,
+        track_ids=np.array([11, 12], dtype=np.int64),
+        track_states=np.array([MSG_TRACK_STATE_CONFIRMED, MSG_TRACK_STATE_STALE], dtype=np.int64),
+        planner_confidences=np.array([0.9, 0.8], dtype=np.float64),
+    )
+
+    assert len(node._pair_memory) == 1
+    assert node._pair_memory[0].left_track_id == 11
+    assert node._pair_memory[0].right_track_id == 12
+    assert abs(node._pair_memory[0].midpoint_x_odom - 2.0) < 1e-9
+    assert abs(node._pair_memory[0].midpoint_y_odom - 0.0) < 1e-9
+    assert abs(node._pair_memory[0].left_x_odom - 2.0) < 1e-9
+    assert abs(node._pair_memory[0].right_y_odom + 1.0) < 1e-9
+
+
+def test_remember_pairs_rejects_tentative_tracks():
+    node = _make_node()
+    result = _sample_result()
+    result.selected_pair_track_ids = np.array([[21, 22]], dtype=np.int64)
+    result.pair_segments = np.array([[[2.0, 1.0], [2.0, -1.0]]], dtype=np.float64)
+
+    node._remember_pairs(
+        result=result,
+        frame_id="odom",
+        vehicle_x=0.0,
+        vehicle_y=0.0,
+        vehicle_yaw=0.0,
+        track_ids=np.array([21, 22], dtype=np.int64),
+        track_states=np.array([MSG_TRACK_STATE_TENTATIVE, MSG_TRACK_STATE_CONFIRMED], dtype=np.int64),
+        planner_confidences=np.array([0.9, 0.9], dtype=np.float64),
+    )
+
+    assert node._pair_memory == []
+
+
+def test_remember_pairs_keeps_non_tentative_pairs_even_with_low_confidence_metadata():
+    node = _make_node()
+    result = _sample_result()
+    result.selected_pair_track_ids = np.array([[31, 32]], dtype=np.int64)
+    result.pair_segments = np.array([[[2.0, 1.0], [2.0, -1.0]]], dtype=np.float64)
+
+    node._remember_pairs(
+        result=result,
+        frame_id="odom",
+        vehicle_x=0.0,
+        vehicle_y=0.0,
+        vehicle_yaw=0.0,
+        track_ids=np.array([31, 32], dtype=np.int64),
+        track_states=np.array([MSG_TRACK_STATE_CONFIRMED, MSG_TRACK_STATE_CONFIRMED], dtype=np.int64),
+        planner_confidences=np.array([0.29, 0.9], dtype=np.float64),
+    )
+
+    assert len(node._pair_memory) == 1
+    assert node._pair_memory[0].left_track_id == 31
+    assert node._pair_memory[0].right_track_id == 32
+
+
+def test_project_midpoint_chain_candidate_extends_sparse_pairs_to_minimum_extent():
+    node = _make_node()
+
+    candidate = node._project_midpoint_chain_candidate(
+        midpoint_chain=np.array([[0.8, 0.0], [1.3, 0.2]], dtype=np.float64),
+        frame_id="odom",
+        vehicle_x=0.0,
+        vehicle_y=0.0,
+        vehicle_yaw=0.0,
+    )
+
+    assert candidate.shape[0] >= 2
+    assert node._candidate_forward_extent_m(
+        centerline=candidate,
+        frame_id="odom",
+        vehicle_x=0.0,
+        vehicle_y=0.0,
+        vehicle_yaw=0.0,
+    ) >= node._minimum_projected_forward_extent_m()
+
+
+def test_update_midline_buffer_holds_stored_path_until_timeout_even_across_many_failed_cycles():
+    node = _make_node()
+    stored_path = np.array([[0.0, 0.0], [2.0, 0.0], [4.0, 0.0]], dtype=np.float64)
+    node._midline_buffer_path = np.array(stored_path, copy=True)
+    node._midline_buffer_confidence = 1.0
+    node._midline_buffer_last_update_sec = 10.0
+    node.midline_hold_last_valid_duration_s = 2.5
+    node.midline_min_buffer_confidence = 0.2
+    node.midline_station_spacing_m = 0.5
+    node._extract_forward_path_from_pose = lambda path, vehicle_xy, resolution_m: np.array(path, copy=True)
+    node._resample_midline_stations = lambda path: np.array(path, copy=True)
+    node._is_alias = lambda frame_a, frame_b: frame_a == frame_b
+
+    result = _sample_result()
+
+    for failed_now_sec in np.linspace(10.01, 12.40, 12):
+        held = node._update_midline_buffer(
+            candidate_centerline=np.empty((0, 2), dtype=np.float64),
+            candidate_source="none",
+            candidate_update_ok=False,
+            frame_id="odom",
+            vehicle_x=0.0,
+            vehicle_y=0.0,
+            vehicle_yaw=0.0,
+            result=result,
+            now_sec=float(failed_now_sec),
+        )
+        assert np.allclose(held, stored_path)
+
+    expired = node._update_midline_buffer(
+        candidate_centerline=np.empty((0, 2), dtype=np.float64),
+        candidate_source="none",
+        candidate_update_ok=False,
+        frame_id="odom",
+        vehicle_x=0.0,
+        vehicle_y=0.0,
+        vehicle_yaw=0.0,
+        result=result,
+        now_sec=12.51,
+    )
+
+    assert expired.size == 0
+
+
+def test_candidate_jump_reject_streak_does_not_clear_midline_buffer():
+    node = _make_node()
+    stored_path = np.array([[0.0, 0.0], [2.0, 0.0], [4.0, 0.0]], dtype=np.float64)
+    node._candidate_jump_reject_streak = 0
+    node._midline_buffer_path = np.array(stored_path, copy=True)
+    node._midline_buffer_confidence = 1.0
+    node._midline_buffer_last_update_sec = 10.0
+    node.candidate_jump_recover_frames = 3
+
+    for _ in range(4):
+        candidate_update_ok, candidate_update_reason = node._update_candidate_jump_reject_streak(
+            candidate_update_ok=False,
+            candidate_update_reason="candidate_jump_rejected",
+        )
+        assert not candidate_update_ok
+        assert candidate_update_reason == "candidate_jump_rejected"
+
+    assert node._candidate_jump_reject_streak == 4
+    assert np.allclose(node._midline_buffer_path, stored_path)
+    assert node._midline_buffer_confidence == 1.0
+    assert node._midline_buffer_last_update_sec == 10.0
+
+
+def test_candidate_path_can_recover_from_jump_while_hold_mode_active():
+    node = _make_node()
+    node._midline_buffer_path = np.array([[0.0, 0.0], [2.0, 0.0], [4.0, 0.0]], dtype=np.float64)
+    candidate = np.array([[0.0, 2.0], [2.0, 2.0], [4.0, 2.0]], dtype=np.float64)
+    result = _sample_result()
+
+    node._hold_mode_active = False
+    reject_ok, reject_reason = node._candidate_path_is_updateable(
+        candidate_centerline=candidate,
+        vehicle_x=0.0,
+        vehicle_y=0.0,
+        vehicle_yaw=0.0,
+        result=result,
+        candidate_source="validated",
+    )
+
+    node._hold_mode_active = True
+    recover_ok, recover_reason = node._candidate_path_is_updateable(
+        candidate_centerline=candidate,
+        vehicle_x=0.0,
+        vehicle_y=0.0,
+        vehicle_yaw=0.0,
+        result=result,
+        candidate_source="validated",
+    )
+
+    assert not reject_ok
+    assert reject_reason == "candidate_jump_rejected"
+    assert recover_ok
+    assert recover_reason == "ok"
+
+
+def test_candidate_path_accepts_remembered_pairs_soft_source_even_if_core_status_is_not_ok():
+    node = _make_node()
+    candidate = np.array([[0.0, 0.0], [2.0, 0.0], [4.0, 0.0]], dtype=np.float64)
+    result = _sample_result()
+    result.status = "no reliable midpoint chain"
+    result.reject_reason = result.status
+
+    candidate_ok, candidate_reason = node._candidate_path_is_updateable(
+        candidate_centerline=candidate,
+        vehicle_x=0.0,
+        vehicle_y=0.0,
+        vehicle_yaw=0.0,
+        result=result,
+        candidate_source="remembered_pairs",
+    )
+
+    assert candidate_ok
+    assert candidate_reason == "remembered_pairs_soft_accept"
+
+
+def test_candidate_path_accepts_projected_pairs_soft_source_even_if_core_status_is_not_ok():
+    node = _make_node()
+    candidate = np.array([[0.0, 0.0], [2.0, 0.0], [4.0, 0.0]], dtype=np.float64)
+    result = _sample_result()
+    result.status = "no reliable midpoint chain"
+    result.reject_reason = result.status
+
+    candidate_ok, candidate_reason = node._candidate_path_is_updateable(
+        candidate_centerline=candidate,
+        vehicle_x=0.0,
+        vehicle_y=0.0,
+        vehicle_yaw=0.0,
+        result=result,
+        candidate_source="projected_pairs",
+    )
+
+    assert candidate_ok
+    assert candidate_reason == "projected_pairs_soft_accept"

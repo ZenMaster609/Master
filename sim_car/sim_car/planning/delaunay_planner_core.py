@@ -8,7 +8,7 @@ from typing import Optional
 
 import numpy as np
 
-from sim_car.cones.tracking.fusion import normalize_color, resolve_boundary_color_by_lateral_position
+from sim_car.cones.tracking.fusion import normalize_color
 
 try:
     from scipy.spatial import Delaunay as _ScipyDelaunay
@@ -143,18 +143,6 @@ def compute_centerline(
 
     normalized = [normalize_color(c) for c in colors]
     inferred_side_mask = np.zeros((len(normalized),), dtype=bool)
-    if config.infer_unknown_by_side or config.infer_orange_by_side:
-        normalized, inferred_side_mask = _infer_unmapped_by_side(
-            points_xy=points_xy,
-            colors=normalized,
-            vehicle_xy=vehicle_xy,
-            vehicle_yaw=vehicle_yaw,
-            infer_unknown=config.infer_unknown_by_side,
-            infer_orange=config.infer_orange_by_side,
-            orange_min_lateral_m=config.orange_min_lateral_m,
-            orange_neighbor_radius_m=config.orange_neighbor_radius_m,
-            orange_neighbor_margin_m=config.orange_neighbor_margin_m,
-        )
 
     mask_geom = _geometry_filter(points_xy, vehicle_xy, vehicle_yaw, config)
     mask_conf = confidences >= float(config.min_confidence)
@@ -1339,99 +1327,6 @@ def _deterministic_point_order(points: np.ndarray, colors: list[str]) -> np.ndar
     color_rank = np.asarray([color_index.get(color, 9) for color in colors], dtype=np.int64)
     order = np.lexsort((color_rank, np.round(points[:, 1], 3), np.round(points[:, 0], 3)))
     return np.asarray(order, dtype=np.int64)
-
-
-def _infer_unmapped_by_side(
-    *,
-    points_xy: np.ndarray,
-    colors: list[str],
-    vehicle_xy: tuple[float, float],
-    vehicle_yaw: float,
-    infer_unknown: bool,
-    infer_orange: bool,
-    orange_min_lateral_m: float,
-    orange_neighbor_radius_m: float,
-    orange_neighbor_margin_m: float,
-) -> tuple[list[str], np.ndarray]:
-    if points_xy.size == 0 or not colors:
-        return colors, np.zeros((len(colors),), dtype=bool)
-
-    rel = points_xy - np.asarray(vehicle_xy, dtype=np.float64).reshape(1, 2)
-    vx, vy = _rotate_into_vehicle(rel, vehicle_yaw)
-    inferred = list(colors)
-    inferred_mask = np.zeros((len(colors),), dtype=bool)
-    blue_idx = np.asarray([idx for idx, color in enumerate(colors) if color == 'blue'], dtype=np.int64)
-    yellow_idx = np.asarray([idx for idx, color in enumerate(colors) if color == 'yellow'], dtype=np.int64)
-    for idx, color in enumerate(colors):
-        if color == 'unknown':
-            resolved = resolve_boundary_color_by_lateral_position(
-                color,
-                float(vy[idx]),
-                infer_unknown=infer_unknown,
-                infer_orange=False,
-            )
-            inferred[idx] = resolved
-            inferred_mask[idx] = resolved != color
-            continue
-        if color != 'orange' or not infer_orange:
-            continue
-        resolved = _infer_orange_boundary(
-            idx=idx,
-            vx=vx,
-            vy=vy,
-            blue_idx=blue_idx,
-            yellow_idx=yellow_idx,
-            min_lateral_m=orange_min_lateral_m,
-            neighbor_radius_m=orange_neighbor_radius_m,
-            neighbor_margin_m=orange_neighbor_margin_m,
-        )
-        if resolved is not None:
-            inferred[idx] = resolved
-            inferred_mask[idx] = True
-    return inferred, inferred_mask
-
-
-def _infer_orange_boundary(
-    *,
-    idx: int,
-    vx: np.ndarray,
-    vy: np.ndarray,
-    blue_idx: np.ndarray,
-    yellow_idx: np.ndarray,
-    min_lateral_m: float,
-    neighbor_radius_m: float,
-    neighbor_margin_m: float,
-) -> Optional[str]:
-    lateral_y = float(vy[idx])
-    if abs(lateral_y) >= float(min_lateral_m):
-        return 'blue' if lateral_y >= 0.0 else 'yellow'
-
-    d_blue = _nearest_neighbor_distance(idx=idx, vx=vx, vy=vy, candidate_idx=blue_idx)
-    d_yellow = _nearest_neighbor_distance(idx=idx, vx=vx, vy=vy, candidate_idx=yellow_idx)
-    neighbor_radius_m = float(max(0.0, neighbor_radius_m))
-    neighbor_margin_m = float(max(0.0, neighbor_margin_m))
-
-    if math.isfinite(d_blue) and d_blue <= neighbor_radius_m and (d_yellow - d_blue) >= neighbor_margin_m:
-        return 'blue'
-    if math.isfinite(d_yellow) and d_yellow <= neighbor_radius_m and (d_blue - d_yellow) >= neighbor_margin_m:
-        return 'yellow'
-    return None
-
-
-def _nearest_neighbor_distance(
-    *,
-    idx: int,
-    vx: np.ndarray,
-    vy: np.ndarray,
-    candidate_idx: np.ndarray,
-) -> float:
-    if candidate_idx.size == 0:
-        return float('inf')
-    dx = vx[candidate_idx] - float(vx[idx])
-    dy = vy[candidate_idx] - float(vy[idx])
-    return float(np.min(np.hypot(dx, dy)))
-
-
 def _build_edges(points: np.ndarray) -> tuple[np.ndarray, bool]:
     if points.shape[0] < 3:
         return np.empty((0, 2), dtype=np.int64), False
