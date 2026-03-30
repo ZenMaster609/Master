@@ -69,6 +69,7 @@ class CorridorPlannerResult:
     selected_pair_track_ids: np.ndarray
     midpoints_raw: np.ndarray
     centerline: np.ndarray
+    prevalidation_centerline: np.ndarray
     left_boundary: np.ndarray
     right_boundary: np.ndarray
     used_fallback: bool
@@ -255,6 +256,7 @@ def compute_corridor_centerline(
     heading_delta_max = _path_heading_delta_max(centerline_local)
     curvature_max = _path_curvature_abs_max(centerline_local)
 
+    prevalidation_centerline = np.array(centerline, copy=True)
     status = "ok"
     reject_reason = ""
     if corridor_sample_count < int(config.min_required_corridor_samples):
@@ -324,6 +326,7 @@ def compute_corridor_centerline(
         selected_pair_track_ids=np.empty((0, 2), dtype=np.int64),
         midpoints_raw=center_anchors,
         centerline=centerline,
+        prevalidation_centerline=prevalidation_centerline,
         left_boundary=left_boundary,
         right_boundary=right_boundary,
         used_fallback=False,
@@ -1330,6 +1333,7 @@ def _empty_result(
         selected_pair_track_ids=np.empty((0, 2), dtype=np.int64),
         midpoints_raw=np.empty((0, 2), dtype=np.float64),
         centerline=np.empty((0, 2), dtype=np.float64),
+        prevalidation_centerline=np.empty((0, 2), dtype=np.float64),
         left_boundary=(
             np.asarray(left_boundary, dtype=np.float64)
             if left_boundary is not None

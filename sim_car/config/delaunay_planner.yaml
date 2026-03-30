@@ -85,7 +85,7 @@ delaunay_planner_node:
 
     debug:
       enable_markers: true
-      show_raw_cones: false
+      show_raw_cones: true
       show_delaunay_edges: false
       show_candidate_edges: true
       show_selected_edges: true

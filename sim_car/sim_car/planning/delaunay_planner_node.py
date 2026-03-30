@@ -18,6 +18,7 @@ from rclpy.executors import ExternalShutdownException
 from rclpy.node import Node
 from rclpy.qos import qos_profile_sensor_data
 from rclpy.time import Time
+from std_msgs.msg import ColorRGBA
 from tf2_ros import Buffer, TransformException, TransformListener
 from vehicle_plotter_msgs.msg import ConeDetectionArray
 from visualization_msgs.msg import Marker, MarkerArray
@@ -130,6 +131,8 @@ class DelaunayPlannerNode(Node):
         self._last_operator_state: Optional[str] = None
         self._last_operator_reason: Optional[str] = None
         self._active_planner_mode = self._planner_identity.planner_mode
+        self._remembered_cone_viz_points = np.empty((0, 2), dtype=np.float64)
+        self._remembered_cone_viz_colors: list[str] = []
 
         self._cmd_pub = self.create_publisher(AckermannDriveStamped, self.cmd_topic, 10)
         self._path_pub = self.create_publisher(Path, self.centerline_topic, 10)
@@ -584,6 +587,7 @@ class DelaunayPlannerNode(Node):
             )
             return
 
+        self._update_remembered_cone_viz(points_xy=points_xy, colors=colors)
         result = compute_centerline(
             points_xy=points_xy,
             colors=colors,
@@ -1961,18 +1965,13 @@ class DelaunayPlannerNode(Node):
             )
             return arr
 
-        if self.show_raw_cones and result.filtered_points.shape[0] > 0:
-            marker = self._make_points_marker(
-                frame_id=frame_id,
-                stamp=now,
-                marker_id=marker_id,
-                ns='filtered_cones',
-                points=result.filtered_points,
-                color=(0.8, 0.8, 0.8, 0.65),
-                scale=0.18,
+        if self.show_raw_cones:
+            marker_id = self._append_remembered_cone_marker(
+                arr,
+                marker_id,
+                frame_id,
+                now,
             )
-            arr.markers.append(marker)
-            marker_id += 1
 
         if self.show_delaunay_edges:
             arr.markers.append(
@@ -2168,6 +2167,111 @@ class DelaunayPlannerNode(Node):
             pt.z = 0.03
             marker.points.append(pt)
         return marker
+
+    def _update_remembered_cone_viz(
+        self,
+        *,
+        points_xy: np.ndarray,
+        colors: list[str],
+    ) -> None:
+        points = np.asarray(points_xy, dtype=np.float64)
+        if points.ndim != 2 or points.shape[1] != 2 or points.shape[0] == 0:
+            self._remembered_cone_viz_points = np.empty((0, 2), dtype=np.float64)
+            self._remembered_cone_viz_colors = []
+            return
+
+        normalized_colors = [normalize_color(color) for color in colors]
+        if len(normalized_colors) < points.shape[0]:
+            normalized_colors.extend(['unknown'] * (points.shape[0] - len(normalized_colors)))
+        elif len(normalized_colors) > points.shape[0]:
+            normalized_colors = normalized_colors[: points.shape[0]]
+
+        finite_mask = np.all(np.isfinite(points), axis=1)
+        self._remembered_cone_viz_points = np.array(points[finite_mask], copy=True)
+        self._remembered_cone_viz_colors = [
+            color
+            for color, keep in zip(normalized_colors, finite_mask)
+            if bool(keep)
+        ]
+
+    def _append_remembered_cone_marker(
+        self,
+        markers: MarkerArray,
+        marker_id: int,
+        frame_id: str,
+        stamp,
+    ) -> int:
+        points = np.asarray(
+            getattr(self, '_remembered_cone_viz_points', np.empty((0, 2), dtype=np.float64)),
+            dtype=np.float64,
+        )
+        colors = list(getattr(self, '_remembered_cone_viz_colors', []))
+        if points.ndim != 2 or points.shape[1] != 2 or points.shape[0] == 0:
+            return marker_id
+        if len(colors) < points.shape[0]:
+            colors.extend(['unknown'] * (points.shape[0] - len(colors)))
+        elif len(colors) > points.shape[0]:
+            colors = colors[: points.shape[0]]
+
+        markers.markers.append(
+            self._make_colored_points_marker(
+                frame_id=frame_id,
+                stamp=stamp,
+                marker_id=marker_id,
+                ns='remembered_cones',
+                points=points,
+                colors=colors,
+                scale=0.18,
+            )
+        )
+        return marker_id + 1
+
+    @classmethod
+    def _make_colored_points_marker(
+        cls,
+        *,
+        frame_id: str,
+        stamp,
+        marker_id: int,
+        ns: str,
+        points: np.ndarray,
+        colors: list[str],
+        scale: float,
+    ) -> Marker:
+        marker = Marker()
+        marker.header.frame_id = frame_id
+        marker.header.stamp = stamp
+        marker.ns = ns
+        marker.id = marker_id
+        marker.type = Marker.SPHERE_LIST
+        marker.action = Marker.ADD
+        marker.scale.x = scale
+        marker.scale.y = scale
+        marker.scale.z = scale
+        marker.color.a = 1.0
+        marker.pose.orientation.w = 1.0
+        for (x, y), color_name in zip(np.asarray(points, dtype=np.float64), colors):
+            pt = Point()
+            pt.x = float(x)
+            pt.y = float(y)
+            pt.z = 0.03
+            marker.points.append(pt)
+
+            rgba = ColorRGBA()
+            rgba.r, rgba.g, rgba.b, rgba.a = cls._cone_marker_rgba(color_name)
+            marker.colors.append(rgba)
+        return marker
+
+    @staticmethod
+    def _cone_marker_rgba(color_name: str) -> tuple[float, float, float, float]:
+        color = normalize_color(color_name)
+        if color == 'blue':
+            return 0.2, 0.55, 1.0, 0.95
+        if color == 'yellow':
+            return 1.0, 0.92, 0.25, 0.95
+        if color == 'orange':
+            return 1.0, 0.55, 0.15, 0.95
+        return 0.8, 0.8, 0.8, 0.80
 
     @staticmethod
     def _make_edge_list_marker(

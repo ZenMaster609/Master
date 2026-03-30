@@ -10,6 +10,8 @@ import numpy as np
 
 from sim_car.cones.tracking.fusion import normalize_color
 
+_MIDPOINT_CHAIN_BACKTRACK_TOLERANCE_M = 0.25
+
 
 @dataclass
 class MidpointPlannerConfig:
@@ -34,6 +36,8 @@ class MidpointPlannerConfig:
     max_width_jump_m: float = 0.8
     min_pair_count: int = 3
     pair_reassignment_margin: float = 0.25
+    pair_inward_projection_tolerance_m: float = 0.15
+    pairing_tangent_neighbor_count: int = 4
 
     initial_width_m: float = 3.6
     min_width_m: float = 2.4
@@ -46,6 +50,10 @@ class MidpointPlannerConfig:
     max_path_length_m: float = 30.0
     smoothing_window: int = 3
     max_heading_delta_rad: float = 0.75
+    max_midpoint_segment_length_m: float = 6.0
+    midpoint_order_reference_handoff_m: float = 6.0
+    midpoint_order_history_size: int = 3
+    midpoint_order_backtrack_tolerance_m: float = 0.35
 
     min_path_points: int = 4
     min_forward_extent_m: float = 2.0
@@ -73,6 +81,7 @@ class MidpointPlannerResult:
     selected_pair_track_ids: np.ndarray
     midpoints_raw: np.ndarray
     centerline: np.ndarray
+    prevalidation_centerline: np.ndarray
     left_boundary: np.ndarray
     right_boundary: np.ndarray
     used_fallback: bool
@@ -130,6 +139,10 @@ class _BoundaryPair:
     @property
     def midpoint_global(self) -> np.ndarray:
         return 0.5 * (self.left_global + self.right_global)
+
+    @property
+    def midpoint_local(self) -> np.ndarray:
+        return 0.5 * (self.left_local + self.right_local)
 
 
 def compute_midpoint_centerline(
@@ -210,29 +223,32 @@ def compute_midpoint_centerline(
     candidate_count = 0
     measured_width_m = float("nan")
 
-    pairing_possible = (
-        (
-            left_chain.filtered_indices.size >= int(config.min_chain_length)
-            or right_chain.filtered_indices.size >= int(config.min_chain_length)
-        ) and (
-            right_chain.filtered_indices.size > 0
-            or left_chain.filtered_indices.size > 0
-            or unknown_indices.size > 0
-        )
+    left_boundary_count = int(left_indices.size)
+    right_boundary_count = int(right_indices.size)
+    pairing_possible = left_boundary_count > 0 and (
+        right_boundary_count > 0 or unknown_indices.size > 0
     )
     if pairing_possible:
         pairs, candidate_count, unknown_pair_count, pair_reject_counts = _pair_boundary_chains(
             filtered_points=filtered_points,
             filtered_local=filtered_local,
             filtered_track_ids=filtered_track_ids,
-            left_chain=left_chain,
-            right_chain=right_chain,
+            left_indices=left_indices,
+            right_indices=right_indices,
             unknown_indices=unknown_indices,
             expected_width_m=expected_width,
             config=config,
             prior=prior,
         )
         _merge_reject_counts(reject_counts, pair_reject_counts)
+        pairs = _order_pairs_into_midpoint_chain(
+            pairs,
+            config=config,
+        )
+        pairs = _trim_pairs_by_midpoint_step_length(
+            pairs,
+            max_segment_length_m=float(config.max_midpoint_segment_length_m),
+        )
         if pairs:
             measured_width_m = float(np.median([pair.width_m for pair in pairs]))
         if len(pairs) >= int(config.min_pair_count):
@@ -268,6 +284,8 @@ def compute_midpoint_centerline(
             right_chain=right_chain,
             planner_mode="none",
             filtered_track_width_m=expected_width,
+            left_boundary_count=left_boundary_count,
+            right_boundary_count=right_boundary_count,
         )
 
     raw_curve = midpoint_chain
@@ -289,6 +307,7 @@ def compute_midpoint_centerline(
             float(config.max_near_field_lateral_jump_m_sparse_pairs),
         )
 
+    prevalidation_centerline = np.array(centerline, copy=True)
     status = "ok"
     reject_reason = ""
     min_path_points = int(config.min_path_points)
@@ -332,6 +351,7 @@ def compute_midpoint_centerline(
         selected_pair_track_ids=selected_pair_track_ids,
         midpoints_raw=midpoint_chain,
         centerline=centerline,
+        prevalidation_centerline=prevalidation_centerline,
         left_boundary=left_chain.global_points,
         right_boundary=right_chain.global_points,
         used_fallback=False,
@@ -359,8 +379,8 @@ def compute_midpoint_centerline(
             dtype=np.float64,
         ) if pairs else np.empty((0, 2, 2), dtype=np.float64),
         accepted_pair_count=len(pairs),
-        left_chain_length=int(left_chain.filtered_indices.size),
-        right_chain_length=int(right_chain.filtered_indices.size),
+        left_chain_length=left_boundary_count,
+        right_chain_length=right_boundary_count,
         filtered_track_width_m=float(expected_width),
         unknown_pair_count=int(unknown_pair_count),
     )
@@ -515,7 +535,7 @@ def _build_boundary_chain(
         heading = best_heading
         heading_changes.append(best_heading_change)
 
-    filtered_indices = side_indices[np.asarray(chain_positions, dtype=np.int64)]
+    filtered_indices = side_indices[chain_positions]
     global_points = filtered_points[filtered_indices]
     local_points = filtered_local[filtered_indices]
     tangents_local = _estimate_tangents(local_points)
@@ -607,61 +627,75 @@ def _pair_boundary_chains(
     filtered_points: np.ndarray,
     filtered_local: np.ndarray,
     filtered_track_ids: np.ndarray,
-    left_chain: _BoundaryChain,
-    right_chain: _BoundaryChain,
+    left_indices: Optional[np.ndarray] = None,
+    right_indices: Optional[np.ndarray] = None,
     unknown_indices: np.ndarray,
     expected_width_m: float,
     config: MidpointPlannerConfig,
     prior: Optional[MidpointPlannerPrior],
+    left_chain: Optional[_BoundaryChain] = None,
+    right_chain: Optional[_BoundaryChain] = None,
 ) -> tuple[list[_BoundaryPair], int, int, dict[str, int]]:
     reject_counts = _default_reject_counts()
     candidate_count = 0
     unknown_pair_count = 0
-
-    if left_chain.filtered_indices.size >= right_chain.filtered_indices.size:
-        anchor_chain = left_chain
-        other_chain = right_chain
-        anchor_side = "blue"
-    elif right_chain.filtered_indices.size > 0:
-        anchor_chain = right_chain
-        other_chain = left_chain
-        anchor_side = "yellow"
-    elif left_chain.filtered_indices.size > 0:
-        anchor_chain = left_chain
-        other_chain = right_chain
-        anchor_side = "blue"
+    use_legacy_side_gate = left_indices is None and left_chain is not None
+    inward_projection_tolerance_m = max(
+        0.0,
+        float(config.pair_inward_projection_tolerance_m),
+    )
+    if left_indices is None:
+        left_indices = (
+            np.asarray(left_chain.filtered_indices, dtype=np.int64)
+            if left_chain is not None
+            else np.empty((0,), dtype=np.int64)
+        )
     else:
-        anchor_chain = right_chain
-        other_chain = left_chain
-        anchor_side = "yellow"
+        left_indices = np.asarray(left_indices, dtype=np.int64)
+    if right_indices is None:
+        right_indices = (
+            np.asarray(right_chain.filtered_indices, dtype=np.int64)
+            if right_chain is not None
+            else np.empty((0,), dtype=np.int64)
+        )
+    else:
+        right_indices = np.asarray(right_indices, dtype=np.int64)
+    if left_indices.size == 0 or (right_indices.size == 0 and unknown_indices.size == 0):
+        return [], 0, 0, reject_counts
 
-    pairs: list[_BoundaryPair] = []
-    next_other_start = 0
-    last_width: Optional[float] = None
-    last_partner_progress = float("-inf")
-    used_unknown_indices: set[int] = set()
-    consecutive_unknown_pairs = 0
+    left_local = filtered_local[left_indices]
+    if (
+        use_legacy_side_gate
+        and left_chain is not None
+        and left_chain.tangents_local.shape[0] == left_indices.size
+    ):
+        left_tangents = np.asarray(left_chain.tangents_local, dtype=np.float64)
+    else:
+        left_tangents = _estimate_side_tangents(
+            side_local=left_local,
+            side="blue",
+            neighbor_count=max(2, int(config.pairing_tangent_neighbor_count)),
+        )
+
     previous_pairs = list(prior.previous_pairs) if prior is not None else []
-    previous_partner_by_anchor: dict[int, int] = {}
-    for left_track_id, right_track_id in previous_pairs:
-        if anchor_side == 'blue':
-            previous_partner_by_anchor[int(left_track_id)] = int(right_track_id)
-        else:
-            previous_partner_by_anchor[int(right_track_id)] = int(left_track_id)
+    previous_partner_by_left_track: dict[int, int] = {
+        int(left_track_id): int(right_track_id)
+        for left_track_id, right_track_id in previous_pairs
+    }
+    candidate_options: list[dict[str, object]] = []
 
-    for anchor_pos in range(anchor_chain.filtered_indices.size):
-        anchor_local = anchor_chain.local_points[anchor_pos]
-        anchor_global = anchor_chain.global_points[anchor_pos]
-        anchor_tangent = anchor_chain.tangents_local[anchor_pos]
-        anchor_filtered_idx = int(anchor_chain.filtered_indices[anchor_pos])
+    for left_pos, anchor_filtered_idx in enumerate(left_indices):
+        anchor_filtered_idx = int(anchor_filtered_idx)
+        anchor_local = np.asarray(filtered_local[anchor_filtered_idx], dtype=np.float64)
+        anchor_global = np.asarray(filtered_points[anchor_filtered_idx], dtype=np.float64)
+        anchor_tangent = np.asarray(left_tangents[left_pos], dtype=np.float64)
         anchor_track_id = int(filtered_track_ids[anchor_filtered_idx])
-        inward_normal = _inward_normal(anchor_tangent, anchor_side)
-        candidate_options: list[dict[str, object]] = []
-        for other_pos in range(next_other_start, other_chain.filtered_indices.size):
-            other_local = other_chain.local_points[other_pos]
-            if float(other_local[0]) < (last_partner_progress - float(config.min_forward_progress_m)):
-                reject_counts["progress"] += 1
-                continue
+        inward_normal = _inward_normal(anchor_tangent, "blue")
+        anchor_options: list[dict[str, object]] = []
+
+        for partner_filtered_idx in right_indices:
+            partner_filtered_idx = int(partner_filtered_idx)
+            other_local = np.asarray(filtered_local[partner_filtered_idx], dtype=np.float64)
             delta = other_local - anchor_local
             width_m = float(np.hypot(delta[0], delta[1]))
             if width_m < float(config.min_pair_width_m) or width_m > float(config.max_pair_width_m):
@@ -669,29 +703,55 @@ def _pair_boundary_chains(
                 continue
 
             inward_distance = float(np.dot(delta, inward_normal))
-            if inward_distance <= 0.0:
+            lateral_progress = float(anchor_local[1] - other_local[1])
+            if use_legacy_side_gate:
+                wrong_side = inward_distance <= -inward_projection_tolerance_m
+            else:
+                wrong_side = (
+                    inward_distance <= -inward_projection_tolerance_m
+                    and lateral_progress <= inward_projection_tolerance_m
+                )
+            if wrong_side:
                 reject_counts["wrong_side"] += 1
                 continue
 
             candidate_count += 1
-            longitudinal_offset = abs(float(np.dot(delta, anchor_tangent)))
-            cost = longitudinal_offset + abs(width_m - float(expected_width_m))
-            partner_filtered_idx = int(other_chain.filtered_indices[other_pos])
-            candidate_options.append(
+            longitudinal_offset = abs(float(other_local[0] - anchor_local[0]))
+            progress_offset = abs(
+                float(np.hypot(other_local[0], other_local[1]))
+                - float(np.hypot(anchor_local[0], anchor_local[1]))
+            )
+            inward_penalty = max(0.0, -inward_distance)
+            midpoint_local = 0.5 * (anchor_local + other_local)
+            cost = (
+                (1.15 * longitudinal_offset)
+                + (0.35 * progress_offset)
+                + abs(width_m - float(expected_width_m))
+                + (0.10 * abs(float(midpoint_local[1])))
+                + inward_penalty
+            )
+            anchor_options.append(
                 {
-                    'use_unknown': False,
-                    'other_pos': other_pos,
-                    'partner_filtered_idx': partner_filtered_idx,
-                    'partner_track_id': int(filtered_track_ids[partner_filtered_idx]),
-                    'partner_global': np.asarray(other_chain.global_points[other_pos], dtype=np.float64),
-                    'partner_local': np.asarray(other_chain.local_points[other_pos], dtype=np.float64),
-                    'width_m': float(width_m),
-                    'cost': float(cost),
-                    'sort_key': (
+                    "use_unknown": False,
+                    "anchor_filtered_idx": anchor_filtered_idx,
+                    "anchor_track_id": anchor_track_id,
+                    "anchor_global": anchor_global,
+                    "anchor_local": anchor_local,
+                    "partner_filtered_idx": partner_filtered_idx,
+                    "partner_track_id": int(filtered_track_ids[partner_filtered_idx]),
+                    "partner_global": np.asarray(filtered_points[partner_filtered_idx], dtype=np.float64),
+                    "partner_local": other_local,
+                    "width_m": float(width_m),
+                    "cost": float(cost),
+                    "selection_cost": float(cost),
+                    "sort_key": (
+                        inward_penalty,
                         longitudinal_offset,
+                        progress_offset,
                         abs(width_m - float(expected_width_m)),
+                        abs(float(midpoint_local[1])),
                         width_m,
-                        other_pos,
+                        partner_filtered_idx,
                     ),
                 }
             )
@@ -700,17 +760,20 @@ def _pair_boundary_chains(
             expected_partner_local = anchor_local + (inward_normal * float(expected_width_m))
             for filtered_idx in unknown_indices:
                 unknown_idx = int(filtered_idx)
-                if unknown_idx in used_unknown_indices:
-                    continue
                 unknown_local = filtered_local[unknown_idx]
-                if float(unknown_local[0]) < (last_partner_progress - float(config.min_forward_progress_m)):
-                    continue
                 delta = unknown_local - anchor_local
                 width_m = float(np.hypot(delta[0], delta[1]))
                 if width_m < float(config.min_pair_width_m) or width_m > float(config.max_pair_width_m):
                     continue
                 inward_distance = float(np.dot(delta, inward_normal))
-                if inward_distance <= 0.0:
+                if use_legacy_side_gate:
+                    wrong_side = inward_distance <= -inward_projection_tolerance_m
+                else:
+                    wrong_side = (
+                        inward_distance <= -inward_projection_tolerance_m
+                        and float(anchor_local[1] - unknown_local[1]) <= inward_projection_tolerance_m
+                    )
+                if wrong_side:
                     continue
                 longitudinal_error = abs(float(np.dot(unknown_local - expected_partner_local, anchor_tangent)))
                 width_error = abs(width_m - float(expected_width_m))
@@ -722,17 +785,27 @@ def _pair_boundary_chains(
                 if radial_error > float(config.unknown_pair_search_radius_m):
                     continue
                 candidate_count += 1
-                candidate_options.append(
+                inward_penalty = max(0.0, -inward_distance)
+                anchor_options.append(
                     {
-                        'use_unknown': True,
-                        'other_pos': -1,
-                        'partner_filtered_idx': unknown_idx,
-                        'partner_track_id': int(filtered_track_ids[unknown_idx]),
-                        'partner_global': np.asarray(filtered_points[unknown_idx], dtype=np.float64),
-                        'partner_local': np.asarray(filtered_local[unknown_idx], dtype=np.float64),
-                        'width_m': float(width_m),
-                        'cost': float(longitudinal_error + width_error + radial_error + 0.05),
-                        'sort_key': (
+                        "use_unknown": True,
+                        "anchor_filtered_idx": anchor_filtered_idx,
+                        "anchor_track_id": anchor_track_id,
+                        "anchor_global": anchor_global,
+                        "anchor_local": anchor_local,
+                        "partner_filtered_idx": unknown_idx,
+                        "partner_track_id": int(filtered_track_ids[unknown_idx]),
+                        "partner_global": np.asarray(filtered_points[unknown_idx], dtype=np.float64),
+                        "partner_local": np.asarray(filtered_local[unknown_idx], dtype=np.float64),
+                        "width_m": float(width_m),
+                        "cost": float(
+                            longitudinal_error + width_error + radial_error + inward_penalty + 0.05
+                        ),
+                        "selection_cost": float(
+                            longitudinal_error + width_error + radial_error + inward_penalty + 0.05
+                        ),
+                        "sort_key": (
+                            inward_penalty,
                             longitudinal_error,
                             width_error,
                             radial_error,
@@ -740,79 +813,287 @@ def _pair_boundary_chains(
                         ),
                     }
                 )
-
-        if not candidate_options:
+        if not anchor_options:
             continue
-        candidate_options.sort(key=lambda option: option['sort_key'])
-        chosen = candidate_options[0]
-        preferred_partner_track_id = previous_partner_by_anchor.get(anchor_track_id)
+        anchor_options.sort(key=lambda option: option["sort_key"])
+        best_cost = float(anchor_options[0]["cost"])
+        preferred_partner_track_id = previous_partner_by_left_track.get(anchor_track_id)
         if preferred_partner_track_id is not None:
-            preferred = next(
-                (option for option in candidate_options if int(option['partner_track_id']) == preferred_partner_track_id),
-                None,
-            )
-            if preferred is not None:
-                best_cost = float(chosen['cost'])
-                preferred_cost = float(preferred['cost'])
-                if preferred_cost <= (best_cost + float(config.pair_reassignment_margin)):
-                    chosen = preferred
+            for option in anchor_options:
+                if int(option["partner_track_id"]) != preferred_partner_track_id:
+                    continue
+                if float(option["cost"]) <= (best_cost + float(config.pair_reassignment_margin)):
+                    option["selection_cost"] = best_cost - 1e-3
+                    break
+        candidate_options.extend(anchor_options)
 
-        use_unknown = bool(chosen['use_unknown'])
-        if use_unknown and consecutive_unknown_pairs >= int(config.max_consecutive_unknown_pairs):
-            non_unknown = next((option for option in candidate_options if not bool(option['use_unknown'])), None)
-            if non_unknown is None:
-                continue
-            chosen = non_unknown
-            use_unknown = False
+    candidate_options.sort(
+        key=lambda option: (
+            float(option["selection_cost"]),
+            1 if bool(option["use_unknown"]) else 0,
+            float(np.hypot(option["anchor_local"][0], option["anchor_local"][1])),
+            float(option["anchor_local"][0]),
+            abs(float(option["anchor_local"][1])),
+            int(option["anchor_track_id"]),
+            int(option["partner_track_id"]),
+        )
+    )
 
-        candidate_width = float(chosen['width_m'])
-        if last_width is not None and abs(candidate_width - last_width) > float(config.max_width_jump_m):
-            reject_counts["width"] += 1
+    pairs: list[_BoundaryPair] = []
+    used_left_indices: set[int] = set()
+    used_partner_indices: set[int] = set()
+    used_unknown_indices: set[int] = set()
+    for chosen in candidate_options:
+        left_filtered_idx = int(chosen["anchor_filtered_idx"])
+        partner_filtered_idx = int(chosen["partner_filtered_idx"])
+        if left_filtered_idx in used_left_indices or partner_filtered_idx in used_partner_indices:
             continue
-
-        if anchor_side == "blue":
-            right_filtered_idx = int(chosen['partner_filtered_idx'])
-            right_global = np.asarray(chosen['partner_global'], dtype=np.float64)
-            right_local = np.asarray(chosen['partner_local'], dtype=np.float64)
-            pair = _BoundaryPair(
-                left_filtered_idx=anchor_filtered_idx,
-                right_filtered_idx=right_filtered_idx,
-                left_track_id=anchor_track_id,
-                right_track_id=int(chosen['partner_track_id']),
-                left_global=np.asarray(anchor_global, dtype=np.float64),
-                right_global=right_global,
-                left_local=np.asarray(anchor_local, dtype=np.float64),
-                right_local=right_local,
-                width_m=float(candidate_width),
-            )
-        else:
-            left_filtered_idx = int(chosen['partner_filtered_idx'])
-            left_global = np.asarray(chosen['partner_global'], dtype=np.float64)
-            left_local = np.asarray(chosen['partner_local'], dtype=np.float64)
-            pair = _BoundaryPair(
-                left_filtered_idx=left_filtered_idx,
-                right_filtered_idx=anchor_filtered_idx,
-                left_track_id=int(chosen['partner_track_id']),
-                right_track_id=anchor_track_id,
-                left_global=left_global,
-                right_global=np.asarray(anchor_global, dtype=np.float64),
-                left_local=left_local,
-                right_local=np.asarray(anchor_local, dtype=np.float64),
-                width_m=float(candidate_width),
-            )
+        if bool(chosen["use_unknown"]) and partner_filtered_idx in used_unknown_indices:
+            continue
+        pair = _BoundaryPair(
+            left_filtered_idx=left_filtered_idx,
+            right_filtered_idx=partner_filtered_idx,
+            left_track_id=int(chosen["anchor_track_id"]),
+            right_track_id=int(chosen["partner_track_id"]),
+            left_global=np.asarray(chosen["anchor_global"], dtype=np.float64),
+            right_global=np.asarray(chosen["partner_global"], dtype=np.float64),
+            left_local=np.asarray(chosen["anchor_local"], dtype=np.float64),
+            right_local=np.asarray(chosen["partner_local"], dtype=np.float64),
+            width_m=float(chosen["width_m"]),
+        )
         pairs.append(pair)
-        if use_unknown:
-            used_unknown_indices.add(int(chosen['partner_filtered_idx']))
+        used_left_indices.add(left_filtered_idx)
+        used_partner_indices.add(partner_filtered_idx)
+        if bool(chosen["use_unknown"]):
+            used_unknown_indices.add(partner_filtered_idx)
             unknown_pair_count += 1
-            consecutive_unknown_pairs += 1
-            last_partner_progress = float(filtered_local[int(chosen['partner_filtered_idx']), 0])
-        else:
-            next_other_start = int(chosen['other_pos']) + 1
-            consecutive_unknown_pairs = 0
-            last_partner_progress = float(np.asarray(chosen['partner_local'])[0])
-        last_width = candidate_width
 
     return pairs, candidate_count, unknown_pair_count, reject_counts
+
+
+def _trim_pairs_by_midpoint_step_length(
+    pairs: list[_BoundaryPair],
+    *,
+    max_segment_length_m: float,
+) -> list[_BoundaryPair]:
+    if len(pairs) <= 1:
+        return list(pairs)
+    limit_m = float(max_segment_length_m)
+    if not math.isfinite(limit_m) or limit_m <= 0.0:
+        return list(pairs)
+
+    trimmed: list[_BoundaryPair] = [pairs[0]]
+    previous_midpoint = np.asarray(pairs[0].midpoint_global, dtype=np.float64)
+    for pair in pairs[1:]:
+        midpoint = np.asarray(pair.midpoint_global, dtype=np.float64)
+        if float(np.hypot(*(midpoint - previous_midpoint))) > limit_m:
+            break
+        trimmed.append(pair)
+        previous_midpoint = midpoint
+    return trimmed
+
+
+def _order_pairs_into_midpoint_chain(
+    pairs: list[_BoundaryPair],
+    *,
+    config: Optional[MidpointPlannerConfig] = None,
+    max_segment_length_m: Optional[float] = None,
+) -> list[_BoundaryPair]:
+    if len(pairs) <= 1:
+        return list(pairs)
+
+    if config is None:
+        config = MidpointPlannerConfig()
+        if max_segment_length_m is not None:
+            config.max_midpoint_segment_length_m = float(max_segment_length_m)
+
+    limit_m = float(config.max_midpoint_segment_length_m)
+    if not math.isfinite(limit_m) or limit_m <= 0.0:
+        return list(pairs)
+
+    local_midpoints = [
+        np.asarray(pair.midpoint_local, dtype=np.float64)
+        for pair in pairs
+    ]
+    ordered_path_length_m = 0.0
+
+    def _start_key(idx: int) -> tuple[float, float, float, int]:
+        midpoint = local_midpoints[idx]
+        x_val = float(midpoint[0])
+        y_val = float(midpoint[1])
+        return (
+            0.0 if x_val >= -_MIDPOINT_CHAIN_BACKTRACK_TOLERANCE_M else 1.0,
+            max(0.0, x_val),
+            abs(y_val),
+            idx,
+        )
+
+    start_idx = min(range(len(pairs)), key=_start_key)
+    ordered: list[_BoundaryPair] = [pairs[start_idx]]
+    used_indices: set[int] = {start_idx}
+    current_midpoint = np.asarray(local_midpoints[start_idx], dtype=np.float64)
+
+    while len(ordered) < len(pairs):
+        reference_direction, use_vehicle_progress = _midpoint_progress_reference(
+            ordered_pairs=ordered,
+            handoff_distance_m=float(config.midpoint_order_reference_handoff_m),
+            history_size=max(2, int(config.midpoint_order_history_size)),
+            ordered_path_length_m=float(ordered_path_length_m),
+        )
+        best_idx: Optional[int] = None
+        best_cost = float("inf")
+
+        for idx, midpoint in enumerate(local_midpoints):
+            if idx in used_indices:
+                continue
+            delta = midpoint - current_midpoint
+            distance = float(np.hypot(delta[0], delta[1]))
+            if distance <= 1e-9 or distance > limit_m:
+                continue
+
+            direction = delta / distance
+            forward_progress_m = float(np.dot(delta, reference_direction))
+            if forward_progress_m <= max(0.05, 0.5 * float(config.min_forward_progress_m)):
+                continue
+
+            if use_vehicle_progress:
+                if (
+                    float(midpoint[0])
+                    < (
+                        float(current_midpoint[0])
+                        - float(config.midpoint_order_backtrack_tolerance_m)
+                    )
+                ):
+                    continue
+
+            heading_penalty = abs(_angle_between(reference_direction, direction))
+            lateral_penalty = abs(
+                float((reference_direction[0] * delta[1]) - (reference_direction[1] * delta[0]))
+            )
+            backward_x = max(0.0, float(current_midpoint[0] - midpoint[0]))
+            width_jump_penalty = max(
+                0.0,
+                abs(float(pairs[idx].width_m) - float(ordered[-1].width_m))
+                - float(config.max_width_jump_m),
+            )
+            cost = (
+                distance
+                + (1.75 * heading_penalty)
+                + (0.30 * lateral_penalty)
+                + (2.00 * width_jump_penalty)
+                + ((4.0 * backward_x) if use_vehicle_progress else (0.35 * backward_x))
+            )
+            if cost < best_cost:
+                best_cost = cost
+                best_idx = idx
+
+        if best_idx is None:
+            break
+
+        step_delta = np.asarray(local_midpoints[best_idx], dtype=np.float64) - current_midpoint
+        ordered_path_length_m += float(np.hypot(step_delta[0], step_delta[1]))
+        ordered.append(pairs[best_idx])
+        used_indices.add(best_idx)
+        current_midpoint = np.asarray(local_midpoints[best_idx], dtype=np.float64)
+
+    return ordered
+
+
+def _midpoint_progress_reference(
+    *,
+    ordered_pairs: list[_BoundaryPair],
+    handoff_distance_m: float,
+    history_size: int,
+    ordered_path_length_m: float,
+) -> tuple[np.ndarray, bool]:
+    vehicle_forward = np.asarray([1.0, 0.0], dtype=np.float64)
+    if len(ordered_pairs) <= 1:
+        return vehicle_forward, True
+
+    midpoint_history = np.asarray(
+        [pair.midpoint_local for pair in ordered_pairs],
+        dtype=np.float64,
+    )
+    trend_start = max(0, midpoint_history.shape[0] - int(history_size))
+    trend_delta = midpoint_history[-1] - midpoint_history[trend_start]
+    trend_norm = float(np.hypot(trend_delta[0], trend_delta[1]))
+    if trend_norm <= 1e-9:
+        trend_delta = midpoint_history[-1] - midpoint_history[-2]
+        trend_norm = float(np.hypot(trend_delta[0], trend_delta[1]))
+    if trend_norm <= 1e-9:
+        return vehicle_forward, True
+    trend_direction = trend_delta / trend_norm
+
+    handoff_distance_m = max(0.5, float(handoff_distance_m))
+    if ordered_path_length_m >= handoff_distance_m:
+        return trend_direction, False
+
+    alpha = float(np.clip(ordered_path_length_m / handoff_distance_m, 0.0, 1.0))
+    blended = ((1.0 - alpha) * vehicle_forward) + (alpha * trend_direction)
+    blended_norm = float(np.hypot(blended[0], blended[1]))
+    if blended_norm <= 1e-9:
+        return vehicle_forward, True
+    return (blended / blended_norm), True
+
+
+def _estimate_side_tangents(
+    *,
+    side_local: np.ndarray,
+    side: str,
+    neighbor_count: int,
+) -> np.ndarray:
+    if side_local.shape[0] == 0:
+        return np.empty((0, 2), dtype=np.float64)
+    if side_local.shape[0] == 1:
+        return np.asarray([[1.0, 0.0]], dtype=np.float64)
+
+    tangents = np.empty((side_local.shape[0], 2), dtype=np.float64)
+    for idx, anchor in enumerate(side_local):
+        delta = side_local - anchor
+        distance = np.hypot(delta[:, 0], delta[:, 1])
+        neighbor_order = np.argsort(distance)
+        support_indices = [
+            int(pos)
+            for pos in neighbor_order
+            if int(pos) != idx
+        ][: max(1, min(int(neighbor_count), side_local.shape[0] - 1))]
+        support = np.vstack((anchor[None, :], side_local[support_indices]))
+        centered = support - np.mean(support, axis=0, keepdims=True)
+        _, _, vh = np.linalg.svd(centered, full_matrices=False)
+        tangent = np.asarray(vh[0], dtype=np.float64)
+        tangent_norm = float(np.hypot(tangent[0], tangent[1]))
+        if tangent_norm <= 1e-9:
+            tangent = np.asarray([1.0, 0.0], dtype=np.float64)
+        else:
+            tangent = tangent / tangent_norm
+        tangents[idx] = _orient_tangent_for_side(
+            tangent=tangent,
+            side=side,
+            anchor_local=np.asarray(anchor, dtype=np.float64),
+        )
+    return tangents
+
+
+def _orient_tangent_for_side(
+    *,
+    tangent: np.ndarray,
+    side: str,
+    anchor_local: np.ndarray,
+) -> np.ndarray:
+    best_tangent = np.asarray(tangent, dtype=np.float64)
+    best_score: Optional[tuple[float, float, float]] = None
+    center_hint = -np.asarray(anchor_local, dtype=np.float64)
+    for candidate in (tangent, -tangent):
+        inward = _inward_normal(np.asarray(candidate, dtype=np.float64), side)
+        score = (
+            float(np.dot(inward, center_hint)),
+            float(candidate[0]),
+            -abs(float(candidate[1])),
+        )
+        if best_score is None or score > best_score:
+            best_score = score
+            best_tangent = np.asarray(candidate, dtype=np.float64)
+    return best_tangent
 
 
 def _select_fallback_chain(
@@ -959,6 +1240,11 @@ def _path_cumulative_lengths(points: np.ndarray) -> np.ndarray:
     diffs = np.diff(points, axis=0)
     lengths = np.hypot(diffs[:, 0], diffs[:, 1])
     return np.concatenate(([0.0], np.cumsum(lengths))).astype(np.float64)
+
+
+def _path_length(points: np.ndarray) -> float:
+    cumulative = _path_cumulative_lengths(np.asarray(points, dtype=np.float64))
+    return float(cumulative[-1]) if cumulative.size > 0 else 0.0
 
 
 def _near_field_delta_metrics(
@@ -1127,6 +1413,7 @@ def _empty_result(
         selected_pair_track_ids=np.empty((0, 2), dtype=np.int64),
         midpoints_raw=np.empty((0, 2), dtype=np.float64),
         centerline=np.empty((0, 2), dtype=np.float64),
+        prevalidation_centerline=np.empty((0, 2), dtype=np.float64),
         left_boundary=(
             np.asarray(left_boundary, dtype=np.float64)
             if left_boundary is not None
@@ -1151,9 +1438,19 @@ def _result_with_metadata(
     right_chain: _BoundaryChain,
     planner_mode: str,
     filtered_track_width_m: float,
+    left_boundary_count: Optional[int] = None,
+    right_boundary_count: Optional[int] = None,
 ) -> MidpointPlannerResult:
-    result.left_chain_length = int(left_chain.filtered_indices.size)
-    result.right_chain_length = int(right_chain.filtered_indices.size)
+    result.left_chain_length = (
+        int(left_chain.filtered_indices.size)
+        if left_boundary_count is None
+        else int(left_boundary_count)
+    )
+    result.right_chain_length = (
+        int(right_chain.filtered_indices.size)
+        if right_boundary_count is None
+        else int(right_boundary_count)
+    )
     result.left_boundary = left_chain.global_points
     result.right_boundary = right_chain.global_points
     result.planner_mode = planner_mode

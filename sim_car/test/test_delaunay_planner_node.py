@@ -214,6 +214,37 @@ def test_build_markers_omit_new_raw_paths_when_disabled():
     assert 'centerline' in by_ns
 
 
+def test_build_markers_show_remembered_cones_instead_of_filtered_subset():
+    node = _make_node()
+    node.show_raw_cones = True
+    result = _sample_result()
+    result.filtered_points = np.array([[9.0, 9.0]], dtype=np.float64)
+    node._update_remembered_cone_viz(
+        points_xy=np.array([[1.0, 1.0], [2.0, -2.0]], dtype=np.float64),
+        colors=['blue', 'yellow'],
+    )
+
+    markers = node._build_markers(
+        now=TimeMsg(sec=9, nanosec=1),
+        frame_id='odom',
+        result=result,
+        centerline=result.centerline,
+        raw_centerline=result.centerline,
+        raw_midpoint_chain=result.midpoints_raw,
+        status='ok',
+        operator_state='fresh',
+        control_target_frame=None,
+    )
+
+    by_ns = _marker_map(markers)
+    assert 'remembered_cones' in by_ns
+    assert np.allclose(
+        _marker_xy(by_ns['remembered_cones']),
+        np.array([[1.0, 1.0], [2.0, -2.0]], dtype=np.float64),
+    )
+    assert len(by_ns['remembered_cones'].colors) == 2
+
+
 def test_publish_outputs_keeps_path_topic_on_final_centerline_only():
     node = _make_node()
     result = _sample_result()

@@ -252,6 +252,29 @@ def test_deeper_turn_keeps_extending_both_boundary_chains():
     assert result.centerline.shape[0] >= 5
 
 
+def test_prevalidation_centerline_is_preserved_when_validation_rejects_corridor_path():
+    points = np.array(
+        [[2.0, 1.8], [2.0, -1.8], [4.0, 1.8], [4.0, -1.8], [6.0, 1.8], [6.0, -1.8], [8.0, 1.8], [8.0, -1.8]],
+        dtype=np.float64,
+    )
+    colors = ["blue", "yellow", "blue", "yellow", "blue", "yellow", "blue", "yellow"]
+    conf = np.ones((8,), dtype=np.float64)
+
+    result = compute_corridor_centerline(
+        points,
+        colors,
+        conf,
+        (0.0, 0.0),
+        0.0,
+        _cfg(max_initial_heading_error_rad=-1.0),
+        CorridorPlannerPrior(previous_width_m=3.6),
+    )
+
+    assert result.status == "path heading flip near vehicle"
+    assert result.centerline.shape[0] == 0
+    assert result.prevalidation_centerline.shape[0] >= 2
+
+
 def test_concentric_arc_corridor_pairs_boundaries_through_turn():
     theta = np.linspace(0.0, 1.0, 7, dtype=np.float64)
     left = np.column_stack((6.5 * np.sin(theta), 6.5 * (1.0 - np.cos(theta)) + 1.8))

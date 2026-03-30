@@ -96,12 +96,12 @@ def _make_node() -> CorridorPlannerNode:
     node.midline_near_distance_m = 4.0
     node.midline_mid_distance_m = 12.0
     node.midline_control_handoff_distance_m = 1.5
-    node.midline_near_alpha = 0.12
-    node.midline_mid_alpha = 0.28
-    node.midline_far_alpha = 0.45
-    node.midline_near_max_shift_m = 0.12
-    node.midline_mid_max_shift_m = 0.24
-    node.midline_far_max_shift_m = 0.45
+    node.midline_near_alpha = 0.06
+    node.midline_mid_alpha = 0.18
+    node.midline_far_alpha = 0.35
+    node.midline_near_max_shift_m = 0.10
+    node.midline_mid_max_shift_m = 0.20
+    node.midline_far_max_shift_m = 0.40
     node.centerline_jump_horizon_m = 8.0
     node.centerline_path_resolution_m = 0.5
     node.candidate_jump_reject_threshold_m = 1.0
@@ -117,6 +117,7 @@ def _make_node() -> CorridorPlannerNode:
         min_required_corridor_samples=3,
     )
     node._filtered_track_width_m = 3.6
+    node._is_alias = lambda frame_a, frame_b: frame_a == frame_b
     node.get_clock = lambda: _FakeClock(TimeMsg(sec=1, nanosec=0))
     return node
 
@@ -137,6 +138,7 @@ def _sample_result() -> CorridorPlannerResult:
         selected_pair_track_ids=np.empty((0, 2), dtype=np.int64),
         midpoints_raw=anchors,
         centerline=np.array([[2.0, 0.0], [4.0, 0.0], [6.0, 0.0]], dtype=np.float64),
+        prevalidation_centerline=np.array([[2.0, 0.0], [4.0, 0.0], [6.0, 0.0]], dtype=np.float64),
         left_boundary=left,
         right_boundary=right,
         used_fallback=False,
@@ -158,6 +160,10 @@ def _marker_map(marker_array) -> dict[str, object]:
         for marker in marker_array.markers
         if getattr(marker, "ns", "")
     }
+
+
+def _marker_xy(marker) -> np.ndarray:
+    return np.asarray([[point.x, point.y] for point in marker.points], dtype=np.float64)
 
 
 def test_publish_diagnostics_uses_corridor_identity():
@@ -216,6 +222,35 @@ def test_build_markers_include_corridor_anchor_and_rung_namespaces():
     assert "centerline" in by_ns
 
 
+def test_build_markers_show_remembered_cones_instead_of_filtered_subset():
+    node = _make_node()
+    node.show_raw_cones = True
+    result = _sample_result()
+    result.filtered_points = np.array([[8.0, 8.0]], dtype=np.float64)
+    node._update_remembered_cone_viz(
+        points_xy=np.array([[1.0, 1.0], [2.0, -2.0]], dtype=np.float64),
+        colors=["blue", "yellow"],
+    )
+
+    markers = node._build_markers(
+        now=TimeMsg(sec=1, nanosec=0),
+        frame_id="odom",
+        result=result,
+        centerline=result.centerline,
+        raw_centerline=result.centerline,
+        raw_midpoint_chain=result.midpoints_raw,
+        status="ok",
+        operator_state="fresh",
+        control_target_frame=None,
+    )
+    by_ns = _marker_map(markers)
+    assert "remembered_cones" in by_ns
+    assert np.allclose(
+        _marker_xy(by_ns["remembered_cones"]),
+        np.array([[1.0, 1.0], [2.0, -2.0]], dtype=np.float64),
+    )
+
+
 def test_held_centerline_returns_last_valid_path_within_timeout():
     node = _make_node()
     node._last_valid_centerline = np.array([[1.0, 0.0], [3.0, 0.0]], dtype=np.float64)
@@ -226,7 +261,7 @@ def test_held_centerline_returns_last_valid_path_within_timeout():
     assert np.allclose(held, node._last_valid_centerline)
 
 
-def test_candidate_path_is_updateable_soft_accepts_projected_corridor():
+def test_candidate_path_rejects_projected_corridor_when_core_status_is_not_ok():
     node = _make_node()
     result = _sample_result()
     result.status = "no reliable corridor boundaries"
@@ -242,11 +277,11 @@ def test_candidate_path_is_updateable_soft_accepts_projected_corridor():
         candidate_source="projected_corridor",
     )
 
-    assert ok is True
-    assert reason == "projected_corridor_soft_accept"
+    assert ok is False
+    assert reason == result.status
 
 
-def test_candidate_path_is_updateable_soft_accepts_short_live_corridor():
+def test_candidate_path_rejects_soft_corridor_when_core_status_is_not_ok():
     node = _make_node()
     result = _sample_result()
     result.status = "path forward extent too short"
@@ -262,8 +297,8 @@ def test_candidate_path_is_updateable_soft_accepts_short_live_corridor():
         candidate_source="soft_corridor",
     )
 
-    assert ok is True
-    assert reason == "soft_corridor_accept"
+    assert ok is False
+    assert reason == "candidate_extent_too_short"
 
 
 def test_remembered_corridor_geometry_can_project_candidate():
@@ -295,3 +330,95 @@ def test_remembered_corridor_geometry_can_project_candidate():
     assert pair_segments.shape[0] == 3
     assert midpoint_chain.shape[0] == 3
     assert candidate.shape[0] >= 3
+
+
+def test_valid_live_corridor_candidate_blends_into_existing_buffer():
+    node = _make_node()
+    stored_path = np.array([[0.0, 0.8], [1.0, 0.8], [2.0, 0.8], [3.0, 0.8]], dtype=np.float64)
+    candidate = np.array([[0.0, 0.2], [1.0, 0.2], [2.0, 0.2], [3.0, 0.2]], dtype=np.float64)
+    node._midline_buffer_path = np.array(stored_path, copy=True)
+    node._midline_buffer_confidence = 1.0
+    node._midline_buffer_last_update_sec = 10.0
+    node._extract_forward_path_from_pose = lambda path, vehicle_xy, resolution_m: np.array(path, copy=True)
+    node._resample_midline_stations = lambda path: np.array(path, copy=True)
+    result = _sample_result()
+
+    updated = node._update_midline_buffer(
+        candidate_centerline=candidate,
+        candidate_source="validated",
+        candidate_update_ok=True,
+        frame_id="odom",
+        vehicle_x=0.0,
+        vehicle_y=0.0,
+        vehicle_yaw=0.0,
+        result=result,
+        now_sec=11.0,
+    )
+
+    assert node._last_midline_update_mode == "blend"
+    assert not np.allclose(updated, candidate)
+    assert abs(updated[1, 1] - stored_path[1, 1]) <= node.midline_near_max_shift_m + 1e-9
+    assert updated[1, 1] > candidate[1, 1]
+
+
+def test_candidate_path_rejects_projected_corridor_jump_against_stored_midline():
+    node = _make_node()
+    node._midline_buffer_path = np.array([[0.0, 0.0], [2.0, 0.0], [4.0, 0.0]], dtype=np.float64)
+    candidate = np.array([[0.0, 1.2], [2.0, 1.2], [4.0, 1.2]], dtype=np.float64)
+    result = _sample_result()
+    result.status = "no reliable corridor boundaries"
+    result.reject_reason = result.status
+
+    ok, reason = node._candidate_path_is_updateable(
+        candidate_centerline=candidate,
+        vehicle_x=0.0,
+        vehicle_y=0.0,
+        vehicle_yaw=0.0,
+        result=result,
+        candidate_source="projected_corridor",
+    )
+
+    assert ok is False
+    assert reason == "candidate_jump_rejected"
+
+
+def test_select_candidate_centerline_recovers_live_corridor_after_near_field_reject():
+    node = _make_node()
+    result = _sample_result()
+    result.status = "near-field continuity rejected fresh path"
+    result.reject_reason = result.status
+
+    centerline, source = node._select_candidate_centerline(
+        result=result,
+        support_chain=result.midpoints_raw,
+        frame_id="odom",
+        vehicle_x=0.0,
+        vehicle_y=0.0,
+        vehicle_yaw=0.0,
+    )
+
+    assert source == "recoverable_live_path"
+    assert np.allclose(centerline, result.prevalidation_centerline)
+
+
+def test_select_candidate_centerline_completes_recoverable_corridor_prefix():
+    node = _make_node()
+    result = _sample_result()
+    result.status = "too few valid corridor samples"
+    result.reject_reason = result.status
+    result.centerline = np.array([[0.5, 0.0], [2.8, 0.1]], dtype=np.float64)
+    result.prevalidation_centerline = np.array([[0.5, 0.0], [2.8, 0.1]], dtype=np.float64)
+    result.midpoints_raw = np.array([[0.5, 0.0], [2.8, 0.1]], dtype=np.float64)
+
+    centerline, source = node._select_candidate_centerline(
+        result=result,
+        support_chain=result.midpoints_raw,
+        frame_id="odom",
+        vehicle_x=0.0,
+        vehicle_y=0.0,
+        vehicle_yaw=0.0,
+    )
+
+    assert source == "completed_live_prefix"
+    assert centerline.shape[0] >= result.prevalidation_centerline.shape[0]
+    assert np.allclose(centerline[: result.prevalidation_centerline.shape[0]], result.prevalidation_centerline)

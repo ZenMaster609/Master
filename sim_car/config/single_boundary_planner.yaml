@@ -110,7 +110,7 @@ single_boundary_planner_node:
 
     debug:
       enable_markers: true
-      show_raw_cones: false
+      show_raw_cones: true
       show_boundary_chains: true
       show_pair_lines: true
       show_raw_midpoint_chain: true

@@ -637,6 +637,7 @@ class SingleBoundaryPlannerNode(TrackedConePlannerBase):
             )
             return
 
+        self._update_remembered_cone_viz(points_xy=points_xy, colors=colors)
         now_sec = float(self.get_clock().now().nanoseconds) * 1e-9
         track_ids, track_states, track_confidences = self._extract_cone_metadata(cones_msg)
         self._active_remembered_cone_count = int(len(cones_msg.cones))
@@ -1586,19 +1587,13 @@ class SingleBoundaryPlannerNode(TrackedConePlannerBase):
             )
             return arr
 
-        if self.show_raw_cones and result.filtered_points.shape[0] > 0:
-            arr.markers.append(
-                self._make_points_marker(
-                    frame_id=frame_id,
-                    stamp=now,
-                    marker_id=marker_id,
-                    ns="filtered_cones",
-                    points=result.filtered_points,
-                    color=(0.8, 0.8, 0.8, 0.65),
-                    scale=0.18,
-                )
+        if self.show_raw_cones:
+            marker_id = self._append_remembered_cone_marker(
+                arr,
+                marker_id,
+                frame_id,
+                now,
             )
-            marker_id += 1
 
         left_boundary = np.array(result.left_boundary, copy=True)
         right_boundary = np.array(result.right_boundary, copy=True)

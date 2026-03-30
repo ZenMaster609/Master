@@ -110,12 +110,12 @@ def _make_node() -> MidpointPlannerNode:
     node.midline_control_handoff_distance_m = 1.5
     node.midline_near_distance_m = 4.0
     node.midline_mid_distance_m = 12.0
-    node.midline_near_alpha = 0.35
-    node.midline_mid_alpha = 0.55
-    node.midline_far_alpha = 0.75
-    node.midline_near_max_shift_m = 0.20
-    node.midline_mid_max_shift_m = 0.35
-    node.midline_far_max_shift_m = 0.60
+    node.midline_near_alpha = 0.06
+    node.midline_mid_alpha = 0.18
+    node.midline_far_alpha = 0.35
+    node.midline_near_max_shift_m = 0.10
+    node.midline_mid_max_shift_m = 0.20
+    node.midline_far_max_shift_m = 0.40
     node.midline_horizon_m = 30.0
     node.centerline_jump_horizon_m = 8.0
     node.candidate_jump_reject_threshold_m = 1.0
@@ -125,6 +125,18 @@ def _make_node() -> MidpointPlannerNode:
     node._midline_buffer_confidence = 0.0
     node._midline_buffer_last_update_sec = -1.0
     node._last_midline_update_mode = "hold"
+    node._active_left_chain_length = 0
+    node._active_right_chain_length = 0
+    node._active_pair_count = 0
+    node._active_unknown_pair_count = 0
+    node._active_filtered_track_width_m = 3.6
+    node._active_held_path_flag = 0
+    node._active_chain_stage = "waiting"
+    node._active_reject_wrong_side_count = 0
+    node._active_reject_width_count = 0
+    node._active_reject_width_range_count = 0
+    node._active_reject_progress_count = 0
+    node._active_reject_orientation_count = 0
     node._is_alias = lambda frame_a, frame_b: frame_a == frame_b
     node.get_clock = lambda: _FakeClock(TimeMsg(sec=1, nanosec=0))
     return node
@@ -140,6 +152,7 @@ def _sample_result() -> MidpointPlannerResult:
         selected_pair_track_ids=np.empty((0, 2), dtype=np.int64),
         midpoints_raw=np.array([[2.0, 0.0], [4.0, 0.0]], dtype=np.float64),
         centerline=np.array([[2.0, 0.0], [4.0, 0.0]], dtype=np.float64),
+        prevalidation_centerline=np.array([[2.0, 0.0], [4.0, 0.0]], dtype=np.float64),
         left_boundary=np.empty((0, 2), dtype=np.float64),
         right_boundary=np.empty((0, 2), dtype=np.float64),
         used_fallback=False,
@@ -207,6 +220,71 @@ def test_publish_diagnostics_uses_midpoint_identity():
     assert values["boundary_hint_count"] == "2"
     assert values["candidate_source"] == "validated"
     assert values["midline_update_mode"] == "direct"
+
+
+def test_build_operator_status_text_shows_chain_stage_and_pair_rejects():
+    node = _make_node()
+    node._active_planner_mode = "midpoint"
+    node._active_left_chain_length = 4
+    node._active_right_chain_length = 4
+    node._active_pair_count = 1
+    node._active_unknown_pair_count = 0
+    node._active_chain_stage = "pairing"
+    node._active_reject_wrong_side_count = 5
+    node._active_reject_width_count = 1
+    node._active_reject_width_range_count = 3
+    node._active_reject_progress_count = 0
+    node._active_reject_orientation_count = 0
+
+    text = node._build_operator_status_text(
+        operator_state="fresh",
+        operator_reason="none",
+        centerline_point_count=3,
+        cmd_speed=1.2,
+        cmd_steering=0.1,
+        lookahead=2.0,
+        candidate_diagonal_count=99,
+        selected_chain_length=77,
+        seed_midpoint_distance_m=1.0,
+        near_field_lateral_max_m=0.2,
+        near_field_midpoint_kink_max_rad=0.1,
+        hold_remaining_s=0.5,
+    )
+
+    assert "FLOW: stage=PAIRING" in text
+    assert "wrong=5" in text
+    assert "range=3" in text
+    assert "NF:" not in text
+    assert "seed=" not in text
+
+
+def test_build_markers_show_remembered_cones_instead_of_filtered_subset():
+    node = _make_node()
+    node.show_raw_cones = True
+    result = _sample_result()
+    result.filtered_points = np.array([[9.0, 9.0]], dtype=np.float64)
+    node._update_remembered_cone_viz(
+        points_xy=np.array([[1.0, 1.0], [2.0, -2.0]], dtype=np.float64),
+        colors=["blue", "yellow"],
+    )
+
+    markers = node._build_markers(
+        now=TimeMsg(sec=1, nanosec=0),
+        frame_id="odom",
+        result=result,
+        centerline=result.centerline,
+        raw_centerline=result.centerline,
+        raw_midpoint_chain=result.midpoints_raw,
+        status="ok",
+        operator_state="fresh",
+        control_target_frame=None,
+    )
+    by_ns = _marker_map(markers)
+    assert "remembered_cones" in by_ns
+    assert np.allclose(
+        _marker_xy(by_ns["remembered_cones"]),
+        np.array([[1.0, 1.0], [2.0, -2.0]], dtype=np.float64),
+    )
 
 
 def test_convert_cones_to_frame_resolves_orange_with_and_without_boundary_hints():
@@ -538,7 +616,7 @@ def test_blend_midline_samples_snaps_to_candidate_when_within_allowed_shift():
     node = _make_node()
     stored = np.array([[0.0, 0.0], [1.0, 0.0], [2.0, 0.0], [3.0, 0.0], [4.0, 0.0]], dtype=np.float64)
     candidate = np.array(
-        [[0.0, 0.0], [1.0, 0.15], [2.0, 0.18], [3.0, 0.16], [4.0, 0.14]],
+        [[0.0, 0.0], [1.0, 0.08], [2.0, 0.09], [3.0, 0.08], [4.0, 0.07]],
         dtype=np.float64,
     )
 
@@ -578,7 +656,7 @@ def test_blend_midline_samples_moves_toward_candidate_more_aggressively_when_far
     assert updated[5, 1] > 0.0
 
 
-def test_update_midline_buffer_holds_stored_path_until_timeout_even_across_many_failed_cycles():
+def test_update_midline_buffer_expires_stored_path_when_confidence_drops_below_minimum():
     node = _make_node()
     stored_path = np.array([[0.0, 0.0], [2.0, 0.0], [4.0, 0.0]], dtype=np.float64)
     node._midline_buffer_path = np.array(stored_path, copy=True)
@@ -593,7 +671,7 @@ def test_update_midline_buffer_holds_stored_path_until_timeout_even_across_many_
 
     result = _sample_result()
 
-    for failed_now_sec in np.linspace(10.01, 12.40, 12):
+    for failed_now_sec in np.linspace(10.01, 10.80, 8):
         held = node._update_midline_buffer(
             candidate_centerline=np.empty((0, 2), dtype=np.float64),
             candidate_source="none",
@@ -616,7 +694,7 @@ def test_update_midline_buffer_holds_stored_path_until_timeout_even_across_many_
         vehicle_y=0.0,
         vehicle_yaw=0.0,
         result=result,
-        now_sec=12.51,
+        now_sec=10.81,
     )
 
     assert expired.size == 0
@@ -654,11 +732,10 @@ def test_candidate_jump_reject_streak_triggers_buffer_reset_and_recovery():
 
 def test_recovery_directly_replaces_stored_midline_and_preserves_live_pair_shape_near_vehicle():
     node = _make_node()
-    stored_path = np.array([[0.0, 1.0], [1.0, 1.0], [2.0, 1.0], [3.0, 1.0]], dtype=np.float64)
     candidate = np.array([[0.0, 0.2], [1.0, 0.2], [2.0, 0.2], [3.0, 0.2]], dtype=np.float64)
-    node._midline_buffer_path = np.array(stored_path, copy=True)
-    node._midline_buffer_confidence = 1.0
-    node._midline_buffer_last_update_sec = 10.0
+    node._midline_buffer_path = None
+    node._midline_buffer_confidence = 0.0
+    node._midline_buffer_last_update_sec = -1.0
     node._extract_forward_path_from_pose = lambda path, vehicle_xy, resolution_m: np.array(path, copy=True)
     node._resample_midline_stations = lambda path: np.array(path, copy=True)
     result = _sample_result()
@@ -692,7 +769,7 @@ def test_recovery_directly_replaces_stored_midline_and_preserves_live_pair_shape
     assert np.allclose(anchored[1:], candidate[1:])
 
 
-def test_strong_live_midpoint_candidate_bypasses_blend_and_uses_direct_mode():
+def test_valid_live_midpoint_candidate_blends_into_existing_buffer():
     node = _make_node()
     stored_path = np.array([[0.0, 0.9], [1.0, 0.9], [2.0, 0.9], [3.0, 0.9]], dtype=np.float64)
     candidate = np.array([[0.0, 0.2], [1.0, 0.2], [2.0, 0.2], [3.0, 0.2]], dtype=np.float64)
@@ -717,11 +794,14 @@ def test_strong_live_midpoint_candidate_bypasses_blend_and_uses_direct_mode():
         now_sec=11.0,
     )
 
-    assert np.allclose(updated, candidate)
-    assert node._last_midline_update_mode == "direct"
+    assert node._last_midline_update_mode == "blend"
+    assert not np.allclose(updated, candidate)
+    assert np.allclose(updated[0], candidate[0])
+    assert abs(updated[1, 1] - stored_path[1, 1]) <= node.midline_near_max_shift_m + 1e-9
+    assert updated[1, 1] > candidate[1, 1]
 
 
-def test_candidate_path_can_recover_from_jump_while_hold_mode_active():
+def test_candidate_path_rejects_large_jump_even_while_hold_mode_active():
     node = _make_node()
     node._midline_buffer_path = np.array([[0.0, 0.0], [2.0, 0.0], [4.0, 0.0]], dtype=np.float64)
     candidate = np.array([[0.0, 2.0], [2.0, 2.0], [4.0, 2.0]], dtype=np.float64)
@@ -749,11 +829,11 @@ def test_candidate_path_can_recover_from_jump_while_hold_mode_active():
 
     assert not reject_ok
     assert reject_reason == "candidate_jump_rejected"
-    assert recover_ok
-    assert recover_reason == "ok"
+    assert not recover_ok
+    assert recover_reason == "candidate_jump_rejected"
 
 
-def test_candidate_path_accepts_remembered_pairs_soft_source_even_if_core_status_is_not_ok():
+def test_candidate_path_rejects_remembered_pairs_when_core_status_is_not_ok():
     node = _make_node()
     candidate = np.array([[0.0, 0.0], [2.0, 0.0], [4.0, 0.0]], dtype=np.float64)
     result = _sample_result()
@@ -769,13 +849,14 @@ def test_candidate_path_accepts_remembered_pairs_soft_source_even_if_core_status
         candidate_source="remembered_pairs",
     )
 
-    assert candidate_ok
-    assert candidate_reason == "remembered_pairs_soft_accept"
+    assert not candidate_ok
+    assert candidate_reason == result.status
 
 
-def test_candidate_path_accepts_projected_pairs_soft_source_even_if_core_status_is_not_ok():
+def test_candidate_path_rejects_projected_pairs_on_jump_against_stored_midline():
     node = _make_node()
-    candidate = np.array([[0.0, 0.0], [2.0, 0.0], [4.0, 0.0]], dtype=np.float64)
+    node._midline_buffer_path = np.array([[0.0, 0.0], [2.0, 0.0], [4.0, 0.0]], dtype=np.float64)
+    candidate = np.array([[0.0, 1.2], [2.0, 1.2], [4.0, 1.2]], dtype=np.float64)
     result = _sample_result()
     result.status = "no reliable midpoint chain"
     result.reject_reason = result.status
@@ -789,5 +870,108 @@ def test_candidate_path_accepts_projected_pairs_soft_source_even_if_core_status_
         candidate_source="projected_pairs",
     )
 
+    assert not candidate_ok
+    assert candidate_reason == "candidate_jump_rejected"
+
+
+def test_select_candidate_centerline_recovers_live_path_after_near_field_reject():
+    node = _make_node()
+    result = _sample_result()
+    result.status = "near-field continuity rejected fresh path"
+    result.reject_reason = result.status
+
+    centerline, source = node._select_candidate_centerline(
+        result=result,
+        support_chain=result.midpoints_raw,
+        frame_id="odom",
+        vehicle_x=0.0,
+        vehicle_y=0.0,
+        vehicle_yaw=0.0,
+    )
+
+    assert source == "recoverable_live_path"
+    assert np.allclose(centerline, result.prevalidation_centerline)
+
+
+def test_select_candidate_centerline_completes_recoverable_live_prefix():
+    node = _make_node()
+    result = _sample_result()
+    result.status = "path forward extent too short"
+    result.reject_reason = result.status
+    result.centerline = np.empty((0, 2), dtype=np.float64)
+    result.prevalidation_centerline = np.array([[0.5, 0.0], [2.7, 0.1]], dtype=np.float64)
+    result.midpoints_raw = np.array([[0.5, 0.0], [2.7, 0.1]], dtype=np.float64)
+
+    centerline, source = node._select_candidate_centerline(
+        result=result,
+        support_chain=result.midpoints_raw,
+        frame_id="odom",
+        vehicle_x=0.0,
+        vehicle_y=0.0,
+        vehicle_yaw=0.0,
+    )
+
+    assert source == "completed_live_prefix"
+    assert centerline.shape[0] >= result.prevalidation_centerline.shape[0]
+    assert np.allclose(centerline[: result.prevalidation_centerline.shape[0]], result.prevalidation_centerline)
+
+
+def test_select_candidate_centerline_bridges_to_live_pair_midline_when_path_disappears():
+    node = _make_node()
+    result = _sample_result()
+    result.status = "path heading delta exceeded limit"
+    result.reject_reason = result.status
+    result.centerline = np.empty((0, 2), dtype=np.float64)
+    result.prevalidation_centerline = np.empty((0, 2), dtype=np.float64)
+    result.accepted_pair_count = 3
+    result.midpoints_raw = np.array(
+        [[2.0, 1.0], [4.0, 1.0], [6.0, 1.0]],
+        dtype=np.float64,
+    )
+
+    centerline, source = node._select_candidate_centerline(
+        result=result,
+        support_chain=result.midpoints_raw,
+        frame_id="odom",
+        vehicle_x=0.0,
+        vehicle_y=0.0,
+        vehicle_yaw=0.0,
+    )
+
+    assert source == "pair_midline_bridge"
+    assert centerline.shape[0] >= result.midpoints_raw.shape[0]
+    assert np.allclose(centerline[0], np.array([0.0, 0.0], dtype=np.float64))
+    assert np.allclose(centerline[-1], result.midpoints_raw[-1])
+
+
+def test_candidate_path_accepts_pair_midline_bridge_from_live_pairs():
+    node = _make_node()
+    result = _sample_result()
+    result.status = "path heading delta exceeded limit"
+    result.reject_reason = result.status
+    result.centerline = np.empty((0, 2), dtype=np.float64)
+    result.prevalidation_centerline = np.empty((0, 2), dtype=np.float64)
+    result.accepted_pair_count = 3
+    result.midpoints_raw = np.array(
+        [[2.0, 1.0], [4.0, 1.0], [6.0, 1.0]],
+        dtype=np.float64,
+    )
+    candidate = node._build_pair_midline_bridge_candidate(
+        pair_midline=result.midpoints_raw,
+        frame_id="odom",
+        vehicle_x=0.0,
+        vehicle_y=0.0,
+        vehicle_yaw=0.0,
+    )
+
+    candidate_ok, candidate_reason = node._candidate_path_is_updateable(
+        candidate_centerline=candidate,
+        vehicle_x=0.0,
+        vehicle_y=0.0,
+        vehicle_yaw=0.0,
+        result=result,
+        candidate_source="pair_midline_bridge",
+    )
+
     assert candidate_ok
-    assert candidate_reason == "projected_pairs_soft_accept"
+    assert candidate_reason == "ok"
