@@ -78,6 +78,19 @@ def test_full_launch_supports_controller_selection_via_controller_yaml():
     assert "'none.yaml'" in content
 
 
+def test_full_launch_supports_planner_specific_rviz_profiles():
+    content = FULL_LAUNCH.read_text(encoding='utf-8')
+
+    assert "default_value='planner'" in content
+    assert "'planner', 'clean', 'planner_debug', 'midpoint'," in content
+    assert "'single_boundary', or 'corridor'" in content
+    assert "'midpoint': 'midpoint_planner.rviz'" in content
+    assert "'single_boundary': 'single_boundary_planner.rviz'" in content
+    assert "'corridor': 'corridor_planner.rviz'" in content
+    assert "if rviz_profile in {'planner', 'auto'}:" in content
+    assert "resolved_filename = profile_to_filename.get(planner, 'driving_clean.rviz')" in content
+
+
 def test_full_launch_loads_controller_yaml_after_planner_yaml():
     content = FULL_LAUNCH.read_text(encoding='utf-8')
 

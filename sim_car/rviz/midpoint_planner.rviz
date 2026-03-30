@@ -1,0 +1,217 @@
+Panels:
+  - Class: rviz_common/Displays
+    Name: Displays
+    Property Tree Widget:
+      Expanded:
+        - /Global Options1
+        - /Cone Memory1
+        - /Planner Debug1
+        - /Planned Centerline1
+      Splitter Ratio: 0.5
+    Tree Height: 720
+  - Class: rviz_common/Selection
+    Name: Selection
+  - Class: rviz_common/Tool Properties
+    Name: Tool Properties
+    Splitter Ratio: 0.58
+  - Class: rviz_common/Views
+    Name: Views
+    Splitter Ratio: 0.5
+  - Class: rviz_common/Time
+    Name: Time
+    SyncMode: 0
+    SyncSource: ""
+Visualization Manager:
+  Class: ""
+  Displays:
+    - Class: rviz_default_plugins/Grid
+      Name: Grid
+      Enabled: true
+      Cell Size: 1
+      Plane: XY
+      Plane Cell Count: 40
+      Color: 160; 160; 164
+      Alpha: 0.4
+      Reference Frame: <Fixed Frame>
+      Value: true
+    - Class: rviz_default_plugins/TF
+      Name: TF
+      Enabled: true
+      Frame Timeout: 15
+      Marker Scale: 0.8
+      Show Arrows: true
+      Show Axes: true
+      Show Names: false
+      Frames:
+        All Enabled: true
+      Value: true
+    - Class: rviz_default_plugins/Odometry
+      Name: Odometry
+      Enabled: true
+      Topic:
+        Value: /sim/odom
+        Depth: 5
+        Durability Policy: Volatile
+        History Policy: Keep Last
+        Reliability Policy: Reliable
+      Shape: Arrow
+      Color: 255; 64; 64
+      Keep: 200
+      Position Tolerance: 0.1
+      Angle Tolerance: 0.1
+      Value: true
+    - Class: rviz_default_plugins/MarkerArray
+      Name: Cone Memory
+      Enabled: true
+      Topic:
+        Value: /local_cone_map_viz
+        Depth: 10
+        Durability Policy: Volatile
+        History Policy: Keep Last
+        Reliability Policy: Reliable
+      Queue Size: 100
+      Value: true
+    - Class: rviz_default_plugins/MarkerArray
+      Name: Global Track Hypothesis
+      Enabled: false
+      Topic:
+        Value: /cone_memory/believed_track_viz
+        Depth: 10
+        Durability Policy: Volatile
+        History Policy: Keep Last
+        Reliability Policy: Reliable
+      Queue Size: 100
+      Value: false
+    - Class: rviz_default_plugins/MarkerArray
+      Name: Planner Debug
+      Enabled: true
+      Topic:
+        Value: /planner_viz
+        Depth: 10
+        Durability Policy: Volatile
+        History Policy: Keep Last
+        Reliability Policy: Reliable
+      Namespaces:
+        accepted_pairs: true
+        boundary_left: false
+        boundary_left_points: false
+        boundary_right: false
+        boundary_right_points: false
+        centerline: false
+        lookahead: true
+        raw_midpoint_chain: true
+        raw_offset_path: true
+        raw_offset_path_points: true
+        raw_prevalidation_centerline: true
+        remembered_cones: false
+        single_boundary_active: true
+        status: true
+      Queue Size: 100
+      Value: true
+    - Class: rviz_default_plugins/Path
+      Name: Planned Centerline
+      Enabled: true
+      Topic:
+        Value: /planned_centerline
+        Depth: 10
+        Durability Policy: Volatile
+        History Policy: Keep Last
+        Reliability Policy: Reliable
+      Alpha: 1
+      Buffer Length: 1
+      Color: 255; 64; 64
+      Line Style: Lines
+      Line Width: 0.08
+      Offset:
+        X: 0
+        Y: 0
+        Z: 0
+      Pose Color: 255; 85; 85
+      Pose Style: None
+      Radius: 0.03
+      Shaft Length: 0.05
+      Shaft Radius: 0.01
+      Value: true
+    - Class: rviz_default_plugins/MarkerArray
+      Name: Raw Lidar Debug
+      Enabled: false
+      Topic:
+        Value: /local_cone_map_viz/raw_lidar
+        Depth: 5
+        Durability Policy: Volatile
+        History Policy: Keep Last
+        Reliability Policy: Reliable
+      Queue Size: 50
+      Value: false
+    - Class: rviz_default_plugins/MarkerArray
+      Name: Raw Camera Debug
+      Enabled: false
+      Topic:
+        Value: /local_cone_map_viz/raw_camera
+        Depth: 5
+        Durability Policy: Volatile
+        History Policy: Keep Last
+        Reliability Policy: Reliable
+      Queue Size: 50
+      Value: false
+  Enabled: true
+  Global Options:
+    Background Color: 48; 48; 48
+    Fixed Frame: odom
+    Frame Rate: 30
+  Name: root
+  Tools:
+    - Class: rviz_default_plugins/Interact
+      Hide Inactive Objects: true
+    - Class: rviz_default_plugins/MoveCamera
+    - Class: rviz_default_plugins/Select
+    - Class: rviz_default_plugins/FocusCamera
+    - Class: rviz_default_plugins/Measure
+      Line color: 128; 128; 0
+    - Class: rviz_default_plugins/SetInitialPose
+      Topic:
+        Value: /initialpose
+        Depth: 5
+        Durability Policy: Volatile
+        History Policy: Keep Last
+        Reliability Policy: Reliable
+    - Class: rviz_default_plugins/SetGoal
+      Topic:
+        Value: /goal_pose
+        Depth: 5
+        Durability Policy: Volatile
+        History Policy: Keep Last
+        Reliability Policy: Reliable
+    - Class: rviz_default_plugins/PublishPoint
+      Single click: true
+      Topic:
+        Value: /clicked_point
+        Depth: 5
+        Durability Policy: Volatile
+        History Policy: Keep Last
+        Reliability Policy: Reliable
+  Transformation:
+    Current:
+      Class: rviz_default_plugins/TF
+  Value: true
+  Views:
+    Current:
+      Class: rviz_default_plugins/Orbit
+      Name: Current View
+      Distance: 18
+      Focal Point:
+        X: 5
+        Y: 0
+        Z: 0
+      Pitch: 0.5
+      Yaw: 3.14
+      Near Clip Distance: 0.01
+      Target Frame: <Fixed Frame>
+      Value: Orbit (rviz_default_plugins)
+Window Geometry:
+  Height: 1000
+  Width: 1800
+  X: 60
+  Y: 25
+  Hide Left Dock: false
+  Hide Right Dock: false

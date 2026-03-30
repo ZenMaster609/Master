@@ -250,8 +250,12 @@ def generate_launch_description():
 
     rviz_profile_arg = DeclareLaunchArgument(
         'rviz_profile',
-        default_value='clean',
-        description="RViz profile to load when rviz_config is not provided: 'clean' or 'planner_debug'"
+        default_value='planner',
+        description=(
+            "RViz profile to load when rviz_config is not provided: "
+            "'planner', 'clean', 'planner_debug', 'midpoint', "
+            "'single_boundary', or 'corridor'"
+        )
     )
 
     rviz_config_arg = DeclareLaunchArgument(
@@ -1247,12 +1251,21 @@ def _configure_rviz_config(context, *_args, **_kwargs):
     else:
         sim_car_share = get_package_share_directory('sim_car')
         rviz_profile = LaunchConfiguration('rviz_profile').perform(context).strip().lower()
+        planner = LaunchConfiguration('planner').perform(context).strip().lower()
         profile_to_filename = {
             'clean': 'driving_clean.rviz',
             'planner_debug': 'planner_debug.rviz',
             'debug': 'planner_debug.rviz',
+            'midpoint': 'midpoint_planner.rviz',
+            'single_boundary': 'single_boundary_planner.rviz',
+            'corridor': 'corridor_planner.rviz',
+            'delaunay': 'driving_clean.rviz',
+            'none': 'driving_clean.rviz',
         }
-        resolved_filename = profile_to_filename.get(rviz_profile, 'driving_clean.rviz')
+        if rviz_profile in {'planner', 'auto'}:
+            resolved_filename = profile_to_filename.get(planner, 'driving_clean.rviz')
+        else:
+            resolved_filename = profile_to_filename.get(rviz_profile, 'driving_clean.rviz')
         resolved_config = str(Path(sim_car_share) / 'rviz' / resolved_filename)
 
     return [SetLaunchConfiguration('resolved_rviz_config', resolved_config)]

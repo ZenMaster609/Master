@@ -200,6 +200,8 @@ class MidpointPlannerNode(TrackedConePlannerBase):
             "pairing.pair_reassignment_margin": 0.25,
             "pairing.pair_inward_projection_tolerance_m": 0.15,
             "pairing.tangent_neighbor_count": 4,
+            "pairing.enforce_opposite_color_pairing": True,
+            "pairing.enforce_geometry_pairing_gate": True,
             "width_estimation.initial_width_m": 3.6,
             "width_estimation.min_width_m": 2.4,
             "width_estimation.max_width_m": 4.8,
@@ -211,7 +213,7 @@ class MidpointPlannerNode(TrackedConePlannerBase):
             "centerline.smoothing_window": 3,
             "centerline.temporal_alpha": 0.25,
             "centerline.max_heading_delta_rad": 0.75,
-            "centerline.max_midpoint_segment_length_m": 6.0,
+            "centerline.max_midpoint_segment_length_m": 7.5,
             "centerline.midpoint_order_reference_handoff_m": 6.0,
             "centerline.midpoint_order_history_size": 3,
             "centerline.midpoint_order_backtrack_tolerance_m": 0.35,
@@ -538,6 +540,12 @@ class MidpointPlannerNode(TrackedConePlannerBase):
                 2,
                 int(self.get_parameter("pairing.tangent_neighbor_count").value),
             ),
+            enforce_opposite_color_pairing=bool(
+                self.get_parameter("pairing.enforce_opposite_color_pairing").value
+            ),
+            enforce_geometry_pairing_gate=bool(
+                self.get_parameter("pairing.enforce_geometry_pairing_gate").value
+            ),
             initial_width_m=float(self.get_parameter("width_estimation.initial_width_m").value),
             min_width_m=float(self.get_parameter("width_estimation.min_width_m").value),
             max_width_m=float(self.get_parameter("width_estimation.max_width_m").value),
@@ -726,6 +734,10 @@ class MidpointPlannerNode(TrackedConePlannerBase):
             colors=colors,
             confidences=planner_confidences,
             track_ids=track_ids,
+            raw_colors=[
+                normalize_color(getattr(cone, "color", ""))
+                for cone in cones_msg.cones
+            ],
             vehicle_xy=(vehicle_x, vehicle_y),
             vehicle_yaw=vehicle_yaw,
             config=self._core_config,

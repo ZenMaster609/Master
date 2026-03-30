@@ -248,6 +248,7 @@ def test_pairing_allows_small_negative_inward_projection_with_tolerance():
         filtered_points=filtered_points,
         filtered_local=filtered_local,
         filtered_track_ids=filtered_track_ids,
+        filtered_raw_colors=["blue", "yellow"],
         left_chain=left_chain,
         right_chain=right_chain,
         unknown_indices=np.empty((0,), dtype=np.int64),
@@ -261,6 +262,7 @@ def test_pairing_allows_small_negative_inward_projection_with_tolerance():
         filtered_points=filtered_points,
         filtered_local=filtered_local,
         filtered_track_ids=filtered_track_ids,
+        filtered_raw_colors=["blue", "yellow"],
         left_chain=left_chain,
         right_chain=right_chain,
         unknown_indices=np.empty((0,), dtype=np.int64),
@@ -273,6 +275,184 @@ def test_pairing_allows_small_negative_inward_projection_with_tolerance():
     assert strict_rejects["wrong_side"] >= 1
     assert len(tolerant_pairs) == 1
     assert tolerant_rejects["wrong_side"] == 0
+
+
+def test_pairing_color_rule_blocks_same_explicit_cone_color_when_enabled():
+    filtered_points = np.array([[2.0, 1.8], [2.0, -1.8]], dtype=np.float64)
+    filtered_local = np.array(filtered_points, copy=True)
+    filtered_track_ids = np.array([101, 202], dtype=np.int64)
+    filtered_raw_colors = ["blue", "blue"]
+
+    enabled_pairs, _enabled_candidates, _enabled_unknown, enabled_rejects = _pair_boundary_chains(
+        filtered_points=filtered_points,
+        filtered_local=filtered_local,
+        filtered_track_ids=filtered_track_ids,
+        filtered_raw_colors=filtered_raw_colors,
+        left_indices=np.array([0], dtype=np.int64),
+        right_indices=np.array([1], dtype=np.int64),
+        unknown_indices=np.empty((0,), dtype=np.int64),
+        expected_width_m=3.6,
+        config=_cfg(enforce_opposite_color_pairing=True),
+        prior=None,
+    )
+    disabled_pairs, _disabled_candidates, _disabled_unknown, disabled_rejects = _pair_boundary_chains(
+        filtered_points=filtered_points,
+        filtered_local=filtered_local,
+        filtered_track_ids=filtered_track_ids,
+        filtered_raw_colors=filtered_raw_colors,
+        left_indices=np.array([0], dtype=np.int64),
+        right_indices=np.array([1], dtype=np.int64),
+        unknown_indices=np.empty((0,), dtype=np.int64),
+        expected_width_m=3.6,
+        config=_cfg(enforce_opposite_color_pairing=False),
+        prior=None,
+    )
+
+    assert len(enabled_pairs) == 0
+    assert enabled_rejects["color"] >= 1
+    assert len(disabled_pairs) == 1
+    assert disabled_rejects["color"] == 0
+
+
+def test_pairing_color_rule_blocks_unknown_raw_color_when_enabled():
+    filtered_points = np.array([[2.0, 1.8], [2.0, -1.8]], dtype=np.float64)
+    filtered_local = np.array(filtered_points, copy=True)
+    filtered_track_ids = np.array([101, 202], dtype=np.int64)
+    filtered_raw_colors = ["blue", "unknown"]
+
+    enabled_pairs, _enabled_candidates, _enabled_unknown, enabled_rejects = _pair_boundary_chains(
+        filtered_points=filtered_points,
+        filtered_local=filtered_local,
+        filtered_track_ids=filtered_track_ids,
+        filtered_raw_colors=filtered_raw_colors,
+        left_indices=np.array([0], dtype=np.int64),
+        right_indices=np.array([1], dtype=np.int64),
+        unknown_indices=np.empty((0,), dtype=np.int64),
+        expected_width_m=3.6,
+        config=_cfg(enforce_opposite_color_pairing=True),
+        prior=None,
+    )
+    disabled_pairs, _disabled_candidates, _disabled_unknown, disabled_rejects = _pair_boundary_chains(
+        filtered_points=filtered_points,
+        filtered_local=filtered_local,
+        filtered_track_ids=filtered_track_ids,
+        filtered_raw_colors=filtered_raw_colors,
+        left_indices=np.array([0], dtype=np.int64),
+        right_indices=np.array([1], dtype=np.int64),
+        unknown_indices=np.empty((0,), dtype=np.int64),
+        expected_width_m=3.6,
+        config=_cfg(enforce_opposite_color_pairing=False),
+        prior=None,
+    )
+
+    assert len(enabled_pairs) == 0
+    assert enabled_rejects["color"] >= 1
+    assert len(disabled_pairs) == 1
+    assert disabled_rejects["color"] == 0
+
+
+def test_pairing_color_rule_disables_unknown_pair_completion_when_enabled():
+    filtered_points = np.array([[2.0, 1.8], [2.0, -1.8]], dtype=np.float64)
+    filtered_local = np.array(filtered_points, copy=True)
+    filtered_track_ids = np.array([101, 202], dtype=np.int64)
+    filtered_raw_colors = ["blue", "unknown"]
+
+    enabled_pairs, _enabled_candidates, _enabled_unknown, enabled_rejects = _pair_boundary_chains(
+        filtered_points=filtered_points,
+        filtered_local=filtered_local,
+        filtered_track_ids=filtered_track_ids,
+        filtered_raw_colors=filtered_raw_colors,
+        left_indices=np.array([0], dtype=np.int64),
+        right_indices=np.empty((0,), dtype=np.int64),
+        unknown_indices=np.array([1], dtype=np.int64),
+        expected_width_m=3.6,
+        config=_cfg(enforce_opposite_color_pairing=True),
+        prior=None,
+    )
+    disabled_pairs, _disabled_candidates, _disabled_unknown, disabled_rejects = _pair_boundary_chains(
+        filtered_points=filtered_points,
+        filtered_local=filtered_local,
+        filtered_track_ids=filtered_track_ids,
+        filtered_raw_colors=filtered_raw_colors,
+        left_indices=np.array([0], dtype=np.int64),
+        right_indices=np.empty((0,), dtype=np.int64),
+        unknown_indices=np.array([1], dtype=np.int64),
+        expected_width_m=3.6,
+        config=_cfg(enforce_opposite_color_pairing=False),
+        prior=None,
+    )
+
+    assert len(enabled_pairs) == 0
+    assert enabled_rejects["color"] >= 1
+    assert len(disabled_pairs) == 1
+    assert disabled_rejects["color"] == 0
+
+
+def test_pairing_geometry_rule_blocks_same_side_pair_when_enabled():
+    filtered_points = np.array([[2.0, 1.8], [4.0, 0.7]], dtype=np.float64)
+    filtered_local = np.array(filtered_points, copy=True)
+    filtered_track_ids = np.array([101, 202], dtype=np.int64)
+
+    enabled_pairs, _enabled_candidates, _enabled_unknown, enabled_rejects = _pair_boundary_chains(
+        filtered_points=filtered_points,
+        filtered_local=filtered_local,
+        filtered_track_ids=filtered_track_ids,
+        filtered_raw_colors=["blue", "yellow"],
+        left_indices=np.array([0], dtype=np.int64),
+        right_indices=np.array([1], dtype=np.int64),
+        unknown_indices=np.empty((0,), dtype=np.int64),
+        expected_width_m=3.6,
+        config=_cfg(enforce_geometry_pairing_gate=True),
+        prior=None,
+    )
+    disabled_pairs, _disabled_candidates, _disabled_unknown, disabled_rejects = _pair_boundary_chains(
+        filtered_points=filtered_points,
+        filtered_local=filtered_local,
+        filtered_track_ids=filtered_track_ids,
+        filtered_raw_colors=["blue", "yellow"],
+        left_indices=np.array([0], dtype=np.int64),
+        right_indices=np.array([1], dtype=np.int64),
+        unknown_indices=np.empty((0,), dtype=np.int64),
+        expected_width_m=3.6,
+        config=_cfg(enforce_geometry_pairing_gate=False),
+        prior=None,
+    )
+
+    assert len(enabled_pairs) == 0
+    assert enabled_rejects["wrong_side"] >= 1
+    assert len(disabled_pairs) == 1
+    assert disabled_rejects["wrong_side"] == 0
+
+
+def test_pairing_prefers_closest_valid_opposite_color_in_turns():
+    filtered_points = np.array(
+        [
+            [6.0, 2.8],
+            [5.1, -0.6],
+            [6.3, -0.8],
+        ],
+        dtype=np.float64,
+    )
+    filtered_local = np.array(filtered_points, copy=True)
+    filtered_track_ids = np.array([101, 202, 303], dtype=np.int64)
+    filtered_raw_colors = ["blue", "yellow", "yellow"]
+
+    pairs, _candidates, _unknown_pairs, _rejects = _pair_boundary_chains(
+        filtered_points=filtered_points,
+        filtered_local=filtered_local,
+        filtered_track_ids=filtered_track_ids,
+        filtered_raw_colors=filtered_raw_colors,
+        left_indices=np.array([0], dtype=np.int64),
+        right_indices=np.array([1, 2], dtype=np.int64),
+        unknown_indices=np.empty((0,), dtype=np.int64),
+        expected_width_m=3.6,
+        config=_cfg(),
+        prior=MidpointPlannerPrior(previous_pairs=[(101, 303)]),
+    )
+
+    assert len(pairs) == 1
+    assert pairs[0].left_track_id == 101
+    assert pairs[0].right_track_id == 202
 
 
 def test_midpoint_chain_is_trimmed_at_first_oversized_midpoint_jump():
@@ -365,6 +545,162 @@ def test_midpoint_chain_order_prefers_forward_geometric_continuation():
     )
 
     assert [pair.left_track_id for pair in ordered] == [10, 11]
+
+
+def test_midpoint_chain_starts_from_closest_forward_midpoint():
+    pairs = [
+        _BoundaryPair(
+            left_filtered_idx=0,
+            right_filtered_idx=1,
+            left_track_id=10,
+            right_track_id=20,
+            left_global=np.array([0.6, 3.0], dtype=np.float64),
+            right_global=np.array([0.6, -0.6], dtype=np.float64),
+            left_local=np.array([0.6, 3.0], dtype=np.float64),
+            right_local=np.array([0.6, -0.6], dtype=np.float64),
+            width_m=3.6,
+        ),
+        _BoundaryPair(
+            left_filtered_idx=2,
+            right_filtered_idx=3,
+            left_track_id=11,
+            right_track_id=21,
+            left_global=np.array([0.9, 1.9], dtype=np.float64),
+            right_global=np.array([0.9, -1.7], dtype=np.float64),
+            left_local=np.array([0.9, 1.9], dtype=np.float64),
+            right_local=np.array([0.9, -1.7], dtype=np.float64),
+            width_m=3.6,
+        ),
+        _BoundaryPair(
+            left_filtered_idx=4,
+            right_filtered_idx=5,
+            left_track_id=12,
+            right_track_id=22,
+            left_global=np.array([-0.1, 1.8], dtype=np.float64),
+            right_global=np.array([-0.1, -1.8], dtype=np.float64),
+            left_local=np.array([-0.1, 1.8], dtype=np.float64),
+            right_local=np.array([-0.1, -1.8], dtype=np.float64),
+            width_m=3.6,
+        ),
+    ]
+
+    ordered = _order_pairs_into_midpoint_chain(
+        pairs,
+        config=_cfg(max_midpoint_segment_length_m=7.5),
+    )
+
+    assert ordered[0].left_track_id == 11
+
+
+def test_midpoint_chain_prefers_closest_reachable_midpoint_around_turn():
+    pairs = [
+        _BoundaryPair(
+            left_filtered_idx=0,
+            right_filtered_idx=1,
+            left_track_id=10,
+            right_track_id=20,
+            left_global=np.array([1.0, 1.8], dtype=np.float64),
+            right_global=np.array([1.0, -1.8], dtype=np.float64),
+            left_local=np.array([1.0, 1.8], dtype=np.float64),
+            right_local=np.array([1.0, -1.8], dtype=np.float64),
+            width_m=3.6,
+        ),
+        _BoundaryPair(
+            left_filtered_idx=2,
+            right_filtered_idx=3,
+            left_track_id=11,
+            right_track_id=21,
+            left_global=np.array([1.8, 2.7], dtype=np.float64),
+            right_global=np.array([1.8, -0.9], dtype=np.float64),
+            left_local=np.array([1.8, 2.7], dtype=np.float64),
+            right_local=np.array([1.8, -0.9], dtype=np.float64),
+            width_m=3.6,
+        ),
+        _BoundaryPair(
+            left_filtered_idx=4,
+            right_filtered_idx=5,
+            left_track_id=12,
+            right_track_id=22,
+            left_global=np.array([2.4, 1.9], dtype=np.float64),
+            right_global=np.array([2.4, -1.7], dtype=np.float64),
+            left_local=np.array([2.4, 1.9], dtype=np.float64),
+            right_local=np.array([2.4, -1.7], dtype=np.float64),
+            width_m=3.6,
+        ),
+        _BoundaryPair(
+            left_filtered_idx=6,
+            right_filtered_idx=7,
+            left_track_id=13,
+            right_track_id=23,
+            left_global=np.array([1.6, 3.7], dtype=np.float64),
+            right_global=np.array([1.6, 0.1], dtype=np.float64),
+            left_local=np.array([1.6, 3.7], dtype=np.float64),
+            right_local=np.array([1.6, 0.1], dtype=np.float64),
+            width_m=3.6,
+        ),
+    ]
+
+    ordered = _order_pairs_into_midpoint_chain(
+        pairs,
+        config=_cfg(
+            max_midpoint_segment_length_m=7.5,
+            midpoint_order_reference_handoff_m=1.5,
+            midpoint_order_history_size=2,
+            midpoint_order_backtrack_tolerance_m=0.1,
+        ),
+    )
+
+    assert [pair.left_track_id for pair in ordered] == [10, 11, 12]
+
+
+def test_midpoint_chain_prefers_closest_visible_next_midpoint_over_farther_aligned_one():
+    pairs = [
+        _BoundaryPair(
+            left_filtered_idx=0,
+            right_filtered_idx=1,
+            left_track_id=10,
+            right_track_id=20,
+            left_global=np.array([1.0, 1.8], dtype=np.float64),
+            right_global=np.array([1.0, -1.8], dtype=np.float64),
+            left_local=np.array([1.0, 1.8], dtype=np.float64),
+            right_local=np.array([1.0, -1.8], dtype=np.float64),
+            width_m=3.6,
+        ),
+        _BoundaryPair(
+            left_filtered_idx=2,
+            right_filtered_idx=3,
+            left_track_id=11,
+            right_track_id=21,
+            left_global=np.array([1.7, 3.0], dtype=np.float64),
+            right_global=np.array([1.7, -0.6], dtype=np.float64),
+            left_local=np.array([1.7, 3.0], dtype=np.float64),
+            right_local=np.array([1.7, -0.6], dtype=np.float64),
+            width_m=3.6,
+        ),
+        _BoundaryPair(
+            left_filtered_idx=4,
+            right_filtered_idx=5,
+            left_track_id=12,
+            right_track_id=22,
+            left_global=np.array([4.8, 2.0], dtype=np.float64),
+            right_global=np.array([4.8, -1.6], dtype=np.float64),
+            left_local=np.array([4.8, 2.0], dtype=np.float64),
+            right_local=np.array([4.8, -1.6], dtype=np.float64),
+            width_m=3.6,
+        ),
+    ]
+
+    ordered = _order_pairs_into_midpoint_chain(
+        pairs,
+        config=_cfg(
+            max_midpoint_segment_length_m=7.5,
+            midpoint_order_reference_handoff_m=6.0,
+            midpoint_order_history_size=2,
+            midpoint_order_backtrack_tolerance_m=0.1,
+        ),
+    )
+
+    assert [pair.left_track_id for pair in ordered] == [10, 11, 12]
 
 
 def test_midpoint_chain_order_hands_off_from_vehicle_forward_to_recent_midline_trend():

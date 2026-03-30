@@ -38,6 +38,8 @@ class MidpointPlannerConfig:
     pair_reassignment_margin: float = 0.25
     pair_inward_projection_tolerance_m: float = 0.15
     pairing_tangent_neighbor_count: int = 4
+    enforce_opposite_color_pairing: bool = True
+    enforce_geometry_pairing_gate: bool = True
 
     initial_width_m: float = 3.6
     min_width_m: float = 2.4
@@ -50,7 +52,7 @@ class MidpointPlannerConfig:
     max_path_length_m: float = 30.0
     smoothing_window: int = 3
     max_heading_delta_rad: float = 0.75
-    max_midpoint_segment_length_m: float = 6.0
+    max_midpoint_segment_length_m: float = 7.5
     midpoint_order_reference_handoff_m: float = 6.0
     midpoint_order_history_size: int = 3
     midpoint_order_backtrack_tolerance_m: float = 0.35
@@ -154,6 +156,7 @@ def compute_midpoint_centerline(
     config: MidpointPlannerConfig,
     prior: Optional[MidpointPlannerPrior] = None,
     track_ids: Optional[np.ndarray] = None,
+    raw_colors: Optional[list[str]] = None,
 ) -> MidpointPlannerResult:
     if points_xy.size == 0:
         return _empty_result("no cones available")
@@ -164,6 +167,10 @@ def compute_midpoint_centerline(
         track_ids = np.asarray(track_ids, dtype=np.int64)
 
     normalized = [normalize_color(color) for color in colors]
+    if raw_colors is not None and len(raw_colors) == len(colors):
+        normalized_raw = [normalize_color(color) for color in raw_colors]
+    else:
+        normalized_raw = list(normalized)
     local_points = _to_vehicle_frame(points_xy, vehicle_xy, vehicle_yaw)
 
     mask_geom = _geometry_filter(local_points, config)
@@ -178,6 +185,7 @@ def compute_midpoint_centerline(
     filtered_local = local_points[selected_mask]
     filtered_track_ids = track_ids[selected_mask]
     filtered_colors = [normalized[idx] for idx in np.where(selected_mask)[0]]
+    filtered_raw_colors = [normalized_raw[idx] for idx in np.where(selected_mask)[0]]
     colored_count = int(np.count_nonzero(np.array([color in {"blue", "yellow"} for color in filtered_colors], dtype=bool)))
     if colored_count == 0:
         return _empty_result(
@@ -190,6 +198,7 @@ def compute_midpoint_centerline(
     filtered_local = filtered_local[order]
     filtered_track_ids = filtered_track_ids[order]
     filtered_colors = [filtered_colors[idx] for idx in order]
+    filtered_raw_colors = [filtered_raw_colors[idx] for idx in order]
 
     if colored_count < int(config.min_required_cones):
         return _empty_result(
@@ -233,12 +242,15 @@ def compute_midpoint_centerline(
             filtered_points=filtered_points,
             filtered_local=filtered_local,
             filtered_track_ids=filtered_track_ids,
+            filtered_raw_colors=filtered_raw_colors,
             left_indices=left_indices,
             right_indices=right_indices,
             unknown_indices=unknown_indices,
             expected_width_m=expected_width,
             config=config,
             prior=prior,
+            left_chain=left_chain,
+            right_chain=right_chain,
         )
         _merge_reject_counts(reject_counts, pair_reject_counts)
         pairs = _order_pairs_into_midpoint_chain(
@@ -627,6 +639,7 @@ def _pair_boundary_chains(
     filtered_points: np.ndarray,
     filtered_local: np.ndarray,
     filtered_track_ids: np.ndarray,
+    filtered_raw_colors: Optional[list[str]] = None,
     left_indices: Optional[np.ndarray] = None,
     right_indices: Optional[np.ndarray] = None,
     unknown_indices: np.ndarray,
@@ -677,11 +690,6 @@ def _pair_boundary_chains(
             neighbor_count=max(2, int(config.pairing_tangent_neighbor_count)),
         )
 
-    previous_pairs = list(prior.previous_pairs) if prior is not None else []
-    previous_partner_by_left_track: dict[int, int] = {
-        int(left_track_id): int(right_track_id)
-        for left_track_id, right_track_id in previous_pairs
-    }
     candidate_options: list[dict[str, object]] = []
 
     for left_pos, anchor_filtered_idx in enumerate(left_indices):
@@ -690,12 +698,26 @@ def _pair_boundary_chains(
         anchor_global = np.asarray(filtered_points[anchor_filtered_idx], dtype=np.float64)
         anchor_tangent = np.asarray(left_tangents[left_pos], dtype=np.float64)
         anchor_track_id = int(filtered_track_ids[anchor_filtered_idx])
+        anchor_raw_color = (
+            normalize_color(filtered_raw_colors[anchor_filtered_idx])
+            if filtered_raw_colors is not None and anchor_filtered_idx < len(filtered_raw_colors)
+            else "unknown"
+        )
         inward_normal = _inward_normal(anchor_tangent, "blue")
         anchor_options: list[dict[str, object]] = []
 
         for partner_filtered_idx in right_indices:
             partner_filtered_idx = int(partner_filtered_idx)
             other_local = np.asarray(filtered_local[partner_filtered_idx], dtype=np.float64)
+            partner_raw_color = (
+                normalize_color(filtered_raw_colors[partner_filtered_idx])
+                if filtered_raw_colors is not None and partner_filtered_idx < len(filtered_raw_colors)
+                else "unknown"
+            )
+            if config.enforce_opposite_color_pairing:
+                if {anchor_raw_color, partner_raw_color} != {"blue", "yellow"}:
+                    reject_counts["color"] += 1
+                    continue
             delta = other_local - anchor_local
             width_m = float(np.hypot(delta[0], delta[1]))
             if width_m < float(config.min_pair_width_m) or width_m > float(config.max_pair_width_m):
@@ -703,17 +725,23 @@ def _pair_boundary_chains(
                 continue
 
             inward_distance = float(np.dot(delta, inward_normal))
+            midpoint_local = 0.5 * (anchor_local + other_local)
             lateral_progress = float(anchor_local[1] - other_local[1])
-            if use_legacy_side_gate:
-                wrong_side = inward_distance <= -inward_projection_tolerance_m
-            else:
-                wrong_side = (
-                    inward_distance <= -inward_projection_tolerance_m
-                    and lateral_progress <= inward_projection_tolerance_m
+            if config.enforce_geometry_pairing_gate:
+                if use_legacy_side_gate:
+                    wrong_side = inward_distance <= -inward_projection_tolerance_m
+                else:
+                    wrong_side = (
+                        inward_distance <= -inward_projection_tolerance_m
+                        and lateral_progress <= inward_projection_tolerance_m
+                    )
+                midpoint_outside_pair_span = (
+                    abs(float(midpoint_local[1]))
+                    > (0.5 * width_m)
                 )
-            if wrong_side:
-                reject_counts["wrong_side"] += 1
-                continue
+                if wrong_side or midpoint_outside_pair_span:
+                    reject_counts["wrong_side"] += 1
+                    continue
 
             candidate_count += 1
             longitudinal_offset = abs(float(other_local[0] - anchor_local[0]))
@@ -721,15 +749,9 @@ def _pair_boundary_chains(
                 float(np.hypot(other_local[0], other_local[1]))
                 - float(np.hypot(anchor_local[0], anchor_local[1]))
             )
+            width_error = abs(width_m - float(expected_width_m))
             inward_penalty = max(0.0, -inward_distance)
-            midpoint_local = 0.5 * (anchor_local + other_local)
-            cost = (
-                (1.15 * longitudinal_offset)
-                + (0.35 * progress_offset)
-                + abs(width_m - float(expected_width_m))
-                + (0.10 * abs(float(midpoint_local[1])))
-                + inward_penalty
-            )
+            cost = float(width_m)
             anchor_options.append(
                 {
                     "use_unknown": False,
@@ -745,12 +767,12 @@ def _pair_boundary_chains(
                     "cost": float(cost),
                     "selection_cost": float(cost),
                     "sort_key": (
-                        inward_penalty,
+                        width_m,
+                        width_error,
                         longitudinal_offset,
                         progress_offset,
-                        abs(width_m - float(expected_width_m)),
+                        inward_penalty,
                         abs(float(midpoint_local[1])),
-                        width_m,
                         partner_filtered_idx,
                     ),
                 }
@@ -760,21 +782,31 @@ def _pair_boundary_chains(
             expected_partner_local = anchor_local + (inward_normal * float(expected_width_m))
             for filtered_idx in unknown_indices:
                 unknown_idx = int(filtered_idx)
+                if config.enforce_opposite_color_pairing:
+                    reject_counts["color"] += 1
+                    continue
                 unknown_local = filtered_local[unknown_idx]
                 delta = unknown_local - anchor_local
                 width_m = float(np.hypot(delta[0], delta[1]))
                 if width_m < float(config.min_pair_width_m) or width_m > float(config.max_pair_width_m):
                     continue
                 inward_distance = float(np.dot(delta, inward_normal))
-                if use_legacy_side_gate:
-                    wrong_side = inward_distance <= -inward_projection_tolerance_m
-                else:
-                    wrong_side = (
-                        inward_distance <= -inward_projection_tolerance_m
-                        and float(anchor_local[1] - unknown_local[1]) <= inward_projection_tolerance_m
+                midpoint_local = 0.5 * (anchor_local + unknown_local)
+                if config.enforce_geometry_pairing_gate:
+                    if use_legacy_side_gate:
+                        wrong_side = inward_distance <= -inward_projection_tolerance_m
+                    else:
+                        wrong_side = (
+                            inward_distance <= -inward_projection_tolerance_m
+                            and float(anchor_local[1] - unknown_local[1]) <= inward_projection_tolerance_m
+                        )
+                    midpoint_outside_pair_span = (
+                        abs(float(midpoint_local[1]))
+                        > (0.5 * width_m)
                     )
-                if wrong_side:
-                    continue
+                    if wrong_side or midpoint_outside_pair_span:
+                        reject_counts["wrong_side"] += 1
+                        continue
                 longitudinal_error = abs(float(np.dot(unknown_local - expected_partner_local, anchor_tangent)))
                 width_error = abs(width_m - float(expected_width_m))
                 radial_error = float(np.hypot(*(unknown_local - expected_partner_local)))
@@ -816,21 +848,13 @@ def _pair_boundary_chains(
         if not anchor_options:
             continue
         anchor_options.sort(key=lambda option: option["sort_key"])
-        best_cost = float(anchor_options[0]["cost"])
-        preferred_partner_track_id = previous_partner_by_left_track.get(anchor_track_id)
-        if preferred_partner_track_id is not None:
-            for option in anchor_options:
-                if int(option["partner_track_id"]) != preferred_partner_track_id:
-                    continue
-                if float(option["cost"]) <= (best_cost + float(config.pair_reassignment_margin)):
-                    option["selection_cost"] = best_cost - 1e-3
-                    break
         candidate_options.extend(anchor_options)
 
     candidate_options.sort(
         key=lambda option: (
             float(option["selection_cost"]),
             1 if bool(option["use_unknown"]) else 0,
+            float(option["width_m"]),
             float(np.hypot(option["anchor_local"][0], option["anchor_local"][1])),
             float(option["anchor_local"][0]),
             abs(float(option["anchor_local"][1])),
@@ -917,13 +941,15 @@ def _order_pairs_into_midpoint_chain(
     ]
     ordered_path_length_m = 0.0
 
-    def _start_key(idx: int) -> tuple[float, float, float, int]:
+    def _start_key(idx: int) -> tuple[float, float, float, float, int]:
         midpoint = local_midpoints[idx]
         x_val = float(midpoint[0])
         y_val = float(midpoint[1])
+        distance = float(np.hypot(x_val, y_val))
         return (
-            0.0 if x_val >= -_MIDPOINT_CHAIN_BACKTRACK_TOLERANCE_M else 1.0,
-            max(0.0, x_val),
+            0.0 if x_val >= 0.0 else 1.0,
+            distance,
+            max(0.0, -x_val),
             abs(y_val),
             idx,
         )
@@ -951,26 +977,16 @@ def _order_pairs_into_midpoint_chain(
             if distance <= 1e-9 or distance > limit_m:
                 continue
 
-            direction = delta / distance
             forward_progress_m = float(np.dot(delta, reference_direction))
-            if forward_progress_m <= max(0.05, 0.5 * float(config.min_forward_progress_m)):
+            max_backward_step_m = max(
+                float(config.midpoint_order_backtrack_tolerance_m),
+                0.5 * float(config.min_forward_progress_m),
+            )
+            if forward_progress_m < -max_backward_step_m:
                 continue
 
-            if use_vehicle_progress:
-                if (
-                    float(midpoint[0])
-                    < (
-                        float(current_midpoint[0])
-                        - float(config.midpoint_order_backtrack_tolerance_m)
-                    )
-                ):
-                    continue
-
-            heading_penalty = abs(_angle_between(reference_direction, direction))
-            lateral_penalty = abs(
-                float((reference_direction[0] * delta[1]) - (reference_direction[1] * delta[0]))
-            )
             backward_x = max(0.0, float(current_midpoint[0] - midpoint[0]))
+            backward_progress_penalty = max(0.0, -forward_progress_m)
             width_jump_penalty = max(
                 0.0,
                 abs(float(pairs[idx].width_m) - float(ordered[-1].width_m))
@@ -978,10 +994,9 @@ def _order_pairs_into_midpoint_chain(
             )
             cost = (
                 distance
-                + (1.75 * heading_penalty)
-                + (0.30 * lateral_penalty)
-                + (2.00 * width_jump_penalty)
-                + ((4.0 * backward_x) if use_vehicle_progress else (0.35 * backward_x))
+                + (2.0 * backward_progress_penalty)
+                + (0.25 * width_jump_penalty)
+                + ((3.0 * backward_x) if use_vehicle_progress else (0.25 * backward_x))
             )
             if cost < best_cost:
                 best_cost = cost
@@ -1378,6 +1393,7 @@ def _merge_reject_counts(target: dict[str, int], source: dict[str, int]) -> None
 
 def _default_reject_counts() -> dict[str, int]:
     return {
+        "color": 0,
         "wrong_side": 0,
         "width": 0,
         "width_range": 0,

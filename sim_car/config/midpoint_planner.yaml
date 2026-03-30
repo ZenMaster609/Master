@@ -46,6 +46,8 @@ midpoint_planner_node:
       pair_reassignment_margin: 0.25
       pair_inward_projection_tolerance_m: 0.15
       tangent_neighbor_count: 4
+      enforce_opposite_color_pairing: true
+      enforce_geometry_pairing_gate: false
 
     width_estimation:
       initial_width_m: 3.6
@@ -61,7 +63,7 @@ midpoint_planner_node:
       smoothing_window: 3
       temporal_alpha: 0.25
       max_heading_delta_rad: 0.75
-      max_midpoint_segment_length_m: 8.0
+      max_midpoint_segment_length_m: 4.5
       midpoint_order_reference_handoff_m: 6.0
       midpoint_order_history_size: 3
       midpoint_order_backtrack_tolerance_m: 0.35
