@@ -13,6 +13,7 @@ if str(PACKAGE_ROOT) not in sys.path:
     sys.path.insert(0, str(PACKAGE_ROOT))
 
 try:
+    from vehicle_plotter_msgs.msg import ConeDetection, ConeDetectionArray  # noqa: E402
     from sim_car.planning.midpoint_planner_core import MidpointPlannerResult  # noqa: E402
     from sim_car.planning.midpoint_planner_node import (  # noqa: E402
         MSG_TRACK_STATE_CONFIRMED,
@@ -67,6 +68,11 @@ def _make_node() -> MidpointPlannerNode:
     node._active_planner_mode = "midpoint"
     node.odom_frame = "odom"
     node.base_frame = "front_axle"
+    node.infer_unknown_by_side = True
+    node.infer_orange_by_side = True
+    node.orange_min_lateral_m = 0.9
+    node.orange_neighbor_radius_m = 3.5
+    node.orange_neighbor_margin_m = 0.75
     node._pair_memory = []
     node._core_config = type(
         "Cfg",
@@ -74,6 +80,8 @@ def _make_node() -> MidpointPlannerNode:
         {
             "min_confidence": 0.3,
             "min_forward_extent_m": 2.0,
+            "min_pair_count": 3,
+            "min_trustworthy_pairs": 3,
             "path_resolution_m": 0.5,
             "max_path_length_m": 30.0,
             "smoothing_window": 1,
@@ -98,9 +106,25 @@ def _make_node() -> MidpointPlannerNode:
     node.centerline_path_resolution_m = 0.5
     node.candidate_min_points = 2
     node.candidate_min_extent_m = 0.5
+    node.midline_station_spacing_m = 0.5
+    node.midline_control_handoff_distance_m = 1.5
+    node.midline_near_distance_m = 4.0
+    node.midline_mid_distance_m = 12.0
+    node.midline_near_alpha = 0.35
+    node.midline_mid_alpha = 0.55
+    node.midline_far_alpha = 0.75
+    node.midline_near_max_shift_m = 0.20
+    node.midline_mid_max_shift_m = 0.35
+    node.midline_far_max_shift_m = 0.60
     node.midline_horizon_m = 30.0
     node.centerline_jump_horizon_m = 8.0
     node.candidate_jump_reject_threshold_m = 1.0
+    node.candidate_jump_recover_frames = 3
+    node._candidate_jump_reject_streak = 0
+    node._midline_buffer_path = None
+    node._midline_buffer_confidence = 0.0
+    node._midline_buffer_last_update_sec = -1.0
+    node._last_midline_update_mode = "hold"
     node._is_alias = lambda frame_a, frame_b: frame_a == frame_b
     node.get_clock = lambda: _FakeClock(TimeMsg(sec=1, nanosec=0))
     return node
@@ -138,6 +162,22 @@ def _marker_xy(marker) -> np.ndarray:
     return np.asarray([[point.x, point.y] for point in marker.points], dtype=np.float64)
 
 
+def _cone_msg(points: list[tuple[float, float]], *, color: str, boundary_color: str = "") -> ConeDetectionArray:
+    msg = ConeDetectionArray()
+    msg.header.frame_id = "odom"
+    msg.header.stamp = TimeMsg(sec=0, nanosec=0)
+    for x, y in points:
+        cone = ConeDetection()
+        cone.color = color
+        cone.boundary_color = boundary_color
+        cone.confidence = 0.9
+        cone.position.x = float(x)
+        cone.position.y = float(y)
+        cone.position.z = 0.0
+        msg.cones.append(cone)
+    return msg
+
+
 def test_publish_diagnostics_uses_midpoint_identity():
     node = _make_node()
     node._publish_diagnostics(
@@ -148,10 +188,65 @@ def test_publish_diagnostics_uses_midpoint_identity():
         centerline_point_count=2,
         selected_edge_count=1,
         status="ok",
-        planner_metrics={"planner_mode": "midpoint"},
+        planner_metrics={
+            "planner_mode": "midpoint",
+            "raw_orange_count": 2,
+            "resolved_blue_count": 1,
+            "resolved_yellow_count": 1,
+            "boundary_hint_count": 2,
+            "candidate_source": "validated",
+            "midline_update_mode": "direct",
+        },
     )
     msg = node._diag_pub.messages[-1]
     assert msg.status[0].name == "midpoint_planner/stability"
+    values = {item.key: item.value for item in msg.status[0].values}
+    assert values["raw_orange_count"] == "2"
+    assert values["resolved_blue_count"] == "1"
+    assert values["resolved_yellow_count"] == "1"
+    assert values["boundary_hint_count"] == "2"
+    assert values["candidate_source"] == "validated"
+    assert values["midline_update_mode"] == "direct"
+
+
+def test_convert_cones_to_frame_resolves_orange_with_and_without_boundary_hints():
+    node = _make_node()
+    points = [(2.0, 1.8), (2.0, -1.8), (4.0, 1.8), (4.0, -1.8)]
+
+    direct_msg = _cone_msg(points, color="orange")
+    hinted_msg = ConeDetectionArray()
+    hinted_msg.header = direct_msg.header
+    expected_colors = ["blue", "yellow", "blue", "yellow"]
+    for (x, y), boundary_color in zip(points, expected_colors):
+        cone = ConeDetection()
+        cone.color = "orange"
+        cone.boundary_color = boundary_color
+        cone.confidence = 0.9
+        cone.position.x = float(x)
+        cone.position.y = float(y)
+        cone.position.z = 0.0
+        hinted_msg.cones.append(cone)
+
+    direct_points, direct_colors, direct_conf = node._convert_cones_to_frame(
+        direct_msg,
+        "odom",
+        "odom",
+        vehicle_xy=(0.0, 0.0),
+        vehicle_yaw=0.0,
+    )
+    hinted_points, hinted_colors, hinted_conf = node._convert_cones_to_frame(
+        hinted_msg,
+        "odom",
+        "odom",
+        vehicle_xy=(0.0, 0.0),
+        vehicle_yaw=0.0,
+    )
+
+    assert np.allclose(direct_points, hinted_points)
+    assert direct_colors == expected_colors
+    assert hinted_colors == expected_colors
+    assert np.allclose(direct_conf, 0.9)
+    assert np.allclose(hinted_conf, 0.9)
 
 
 def test_normalize_core_reject_reason_maps_to_no_safe_chain():
@@ -321,6 +416,35 @@ def test_merge_pair_entries_keeps_live_pairs_and_retains_missing_remembered_pair
     assert abs(merged[1].midpoint_y_odom - 0.1) < 1e-9
 
 
+def test_sort_pair_entries_by_forward_progress_orders_projected_pairs_deterministically():
+    node = _make_node()
+    entries = [
+        _PairMemoryEntry(5, 6, 4.0, 0.0, 4.0, 1.0, 4.0, -1.0),
+        _PairMemoryEntry(1, 2, 2.0, 0.0, 2.0, 1.0, 2.0, -1.0),
+        _PairMemoryEntry(3, 4, 3.0, 0.1, 3.0, 1.1, 3.0, -0.9),
+    ]
+
+    ordered = node._sort_pair_entries_by_forward_progress(
+        entries=entries,
+        vehicle_x=0.0,
+        vehicle_y=0.0,
+        vehicle_yaw=0.0,
+    )
+    _, midpoint_chain = node._pair_geometry_from_memory(ordered)
+    candidate = node._project_midpoint_chain_candidate(
+        midpoint_chain=midpoint_chain,
+        frame_id="odom",
+        vehicle_x=0.0,
+        vehicle_y=0.0,
+        vehicle_yaw=0.0,
+    )
+
+    assert [(entry.left_track_id, entry.right_track_id) for entry in ordered] == [(1, 2), (3, 4), (5, 6)]
+    assert np.all(np.diff(midpoint_chain[:, 0]) > 0.0)
+    assert candidate.shape[0] >= 2
+    assert np.all(np.diff(candidate[:, 0]) > -1e-9)
+
+
 def test_remember_pairs_keeps_confirmed_and_stale_pairs_with_sufficient_confidence():
     node = _make_node()
     result = _sample_result()
@@ -410,6 +534,50 @@ def test_project_midpoint_chain_candidate_extends_sparse_pairs_to_minimum_extent
     ) >= node._minimum_projected_forward_extent_m()
 
 
+def test_blend_midline_samples_snaps_to_candidate_when_within_allowed_shift():
+    node = _make_node()
+    stored = np.array([[0.0, 0.0], [1.0, 0.0], [2.0, 0.0], [3.0, 0.0], [4.0, 0.0]], dtype=np.float64)
+    candidate = np.array(
+        [[0.0, 0.0], [1.0, 0.15], [2.0, 0.18], [3.0, 0.16], [4.0, 0.14]],
+        dtype=np.float64,
+    )
+
+    updated = node._blend_midline_samples(
+        stored_samples=stored,
+        candidate_samples=candidate,
+        vehicle_x=0.0,
+        vehicle_y=0.0,
+        vehicle_yaw=0.0,
+    )
+
+    assert np.allclose(updated[4], candidate[4])
+
+
+def test_blend_midline_samples_moves_toward_candidate_more_aggressively_when_far_apart():
+    node = _make_node()
+    stored = np.array(
+        [[0.0, 0.0], [1.0, 0.0], [2.0, 0.0], [3.0, 0.0], [4.0, 0.0], [5.0, 0.0]],
+        dtype=np.float64,
+    )
+    candidate = np.array(
+        [[0.0, 0.0], [1.0, 0.6], [2.0, 0.8], [3.0, 1.0], [4.0, 1.0], [5.0, 1.0]],
+        dtype=np.float64,
+    )
+
+    updated = node._blend_midline_samples(
+        stored_samples=stored,
+        candidate_samples=candidate,
+        vehicle_x=0.0,
+        vehicle_y=0.0,
+        vehicle_yaw=0.0,
+    )
+
+    assert abs(updated[4, 1] - stored[4, 1]) <= node.midline_near_max_shift_m + 1e-9
+    assert updated[4, 1] > 0.0
+    assert abs(updated[5, 1] - stored[5, 1]) <= node.midline_near_max_shift_m + 1e-9
+    assert updated[5, 1] > 0.0
+
+
 def test_update_midline_buffer_holds_stored_path_until_timeout_even_across_many_failed_cycles():
     node = _make_node()
     stored_path = np.array([[0.0, 0.0], [2.0, 0.0], [4.0, 0.0]], dtype=np.float64)
@@ -454,7 +622,7 @@ def test_update_midline_buffer_holds_stored_path_until_timeout_even_across_many_
     assert expired.size == 0
 
 
-def test_candidate_jump_reject_streak_does_not_clear_midline_buffer():
+def test_candidate_jump_reject_streak_triggers_buffer_reset_and_recovery():
     node = _make_node()
     stored_path = np.array([[0.0, 0.0], [2.0, 0.0], [4.0, 0.0]], dtype=np.float64)
     node._candidate_jump_reject_streak = 0
@@ -463,7 +631,7 @@ def test_candidate_jump_reject_streak_does_not_clear_midline_buffer():
     node._midline_buffer_last_update_sec = 10.0
     node.candidate_jump_recover_frames = 3
 
-    for _ in range(4):
+    for _ in range(2):
         candidate_update_ok, candidate_update_reason = node._update_candidate_jump_reject_streak(
             candidate_update_ok=False,
             candidate_update_reason="candidate_jump_rejected",
@@ -471,10 +639,86 @@ def test_candidate_jump_reject_streak_does_not_clear_midline_buffer():
         assert not candidate_update_ok
         assert candidate_update_reason == "candidate_jump_rejected"
 
-    assert node._candidate_jump_reject_streak == 4
-    assert np.allclose(node._midline_buffer_path, stored_path)
-    assert node._midline_buffer_confidence == 1.0
-    assert node._midline_buffer_last_update_sec == 10.0
+    candidate_update_ok, candidate_update_reason = node._update_candidate_jump_reject_streak(
+        candidate_update_ok=False,
+        candidate_update_reason="candidate_jump_rejected",
+    )
+
+    assert candidate_update_ok
+    assert candidate_update_reason == "candidate_jump_recovery"
+    assert node._candidate_jump_reject_streak == 3
+    assert node._midline_buffer_path is None
+    assert node._midline_buffer_confidence == 0.0
+    assert node._midline_buffer_last_update_sec == -1.0
+
+
+def test_recovery_directly_replaces_stored_midline_and_preserves_live_pair_shape_near_vehicle():
+    node = _make_node()
+    stored_path = np.array([[0.0, 1.0], [1.0, 1.0], [2.0, 1.0], [3.0, 1.0]], dtype=np.float64)
+    candidate = np.array([[0.0, 0.2], [1.0, 0.2], [2.0, 0.2], [3.0, 0.2]], dtype=np.float64)
+    node._midline_buffer_path = np.array(stored_path, copy=True)
+    node._midline_buffer_confidence = 1.0
+    node._midline_buffer_last_update_sec = 10.0
+    node._extract_forward_path_from_pose = lambda path, vehicle_xy, resolution_m: np.array(path, copy=True)
+    node._resample_midline_stations = lambda path: np.array(path, copy=True)
+    result = _sample_result()
+    result.accepted_pair_count = 3
+    result.status = "ok"
+
+    updated = node._update_midline_buffer(
+        candidate_centerline=candidate,
+        candidate_source="validated",
+        candidate_update_ok=True,
+        candidate_update_reason="candidate_jump_recovery",
+        frame_id="odom",
+        vehicle_x=0.0,
+        vehicle_y=0.0,
+        vehicle_yaw=0.0,
+        result=result,
+        now_sec=11.0,
+    )
+    anchored = node._anchor_centerline_near_vehicle(
+        centerline=updated,
+        frame_id="odom",
+        vehicle_x=0.0,
+        vehicle_y=0.0,
+        vehicle_yaw=0.0,
+        preserve_live_lateral_near_vehicle=True,
+    )
+
+    assert np.allclose(updated, candidate)
+    assert node._last_midline_update_mode == "recovery"
+    assert np.allclose(anchored[0], np.array([0.0, 0.0], dtype=np.float64))
+    assert np.allclose(anchored[1:], candidate[1:])
+
+
+def test_strong_live_midpoint_candidate_bypasses_blend_and_uses_direct_mode():
+    node = _make_node()
+    stored_path = np.array([[0.0, 0.9], [1.0, 0.9], [2.0, 0.9], [3.0, 0.9]], dtype=np.float64)
+    candidate = np.array([[0.0, 0.2], [1.0, 0.2], [2.0, 0.2], [3.0, 0.2]], dtype=np.float64)
+    node._midline_buffer_path = np.array(stored_path, copy=True)
+    node._midline_buffer_confidence = 1.0
+    node._midline_buffer_last_update_sec = 10.0
+    node._extract_forward_path_from_pose = lambda path, vehicle_xy, resolution_m: np.array(path, copy=True)
+    node._resample_midline_stations = lambda path: np.array(path, copy=True)
+    result = _sample_result()
+    result.accepted_pair_count = 3
+    result.status = "ok"
+
+    updated = node._update_midline_buffer(
+        candidate_centerline=candidate,
+        candidate_source="validated",
+        candidate_update_ok=True,
+        frame_id="odom",
+        vehicle_x=0.0,
+        vehicle_y=0.0,
+        vehicle_yaw=0.0,
+        result=result,
+        now_sec=11.0,
+    )
+
+    assert np.allclose(updated, candidate)
+    assert node._last_midline_update_mode == "direct"
 
 
 def test_candidate_path_can_recover_from_jump_while_hold_mode_active():

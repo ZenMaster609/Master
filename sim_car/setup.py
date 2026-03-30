@@ -62,6 +62,7 @@ setup(
             'delaunay_planner_node = sim_car.planning.delaunay_planner_node:main',
             'midpoint_planner_node = sim_car.planning.midpoint_planner_node:main',
             'single_boundary_planner_node = sim_car.planning.single_boundary_planner_node:main',
+            'corridor_planner_node = sim_car.planning.corridor_planner_node:main',
             'cone_memory_node = sim_car.cones.nodes.memory_node:main',
             'run_artifacts_node = sim_car.run_artifacts_node:main',
         ],

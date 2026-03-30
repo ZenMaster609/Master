@@ -1,4 +1,4 @@
-midpoint_planner_node:
+corridor_planner_node:
   ros__parameters:
     frames:
       planning_frame: "odom"
@@ -16,6 +16,8 @@ midpoint_planner_node:
 
     filtering:
       max_cone_range_m: 25.0
+      planning_horizon_m: 25.0
+      max_lateral_range_m: 8.0
       behind_drop_m: 5.0
       min_confidence: 0.3
       min_required_cones: 4
@@ -24,11 +26,6 @@ midpoint_planner_node:
       orange_min_lateral_m: 0.9
       orange_neighbor_radius_m: 3.5
       orange_neighbor_margin_m: 0.75
-      allow_unknown_pair_completion: true
-      unknown_pair_search_radius_m: 1.25
-      unknown_pair_max_longitudinal_error_m: 1.5
-      unknown_pair_max_width_error_m: 0.9
-      max_consecutive_unknown_pairs: 2
 
     boundary_chain:
       min_step_m: 0.8
@@ -36,14 +33,6 @@ midpoint_planner_node:
       max_heading_change_rad: 0.95
       min_forward_progress_m: 0.2
       min_chain_length: 3
-
-    pairing:
-      min_pair_width_m: 2.2
-      max_pair_width_m: 5.4
-      max_width_jump_m: 0.75
-      min_pair_count: 3
-      pair_hold_time_s: 1.25
-      pair_reassignment_margin: 0.25
 
     width_estimation:
       initial_width_m: 3.6
@@ -53,12 +42,18 @@ midpoint_planner_node:
       max_delta_per_update_m: 0.2
       min_trustworthy_pairs: 3
 
+    corridor:
+      min_corridor_width_m: 2.2
+      max_corridor_width_m: 5.4
+      boundary_resample_dx: 0.5
+      min_required_corridor_samples: 5
+      path_fit_smoothing_window: 5
+      membership_margin_m: 0.15
+
     centerline:
       path_resolution_m: 0.5
       max_path_length_m: 30.0
-      smoothing_window: 3
       temporal_alpha: 0.25
-      max_heading_delta_rad: 0.75
 
     midline_memory:
       horizon_m: 30.0
@@ -72,8 +67,9 @@ midpoint_planner_node:
       near_max_lateral_shift_m: 0.20
       mid_max_lateral_shift_m: 0.35
       far_max_lateral_shift_m: 0.60
-      hold_last_valid_duration_s: 2.5
+      hold_last_valid_duration_s: 5.0
       min_buffer_confidence: 0.20
+      pair_memory_retention_s: 12.0
 
     runtime:
       publish_rate_hz: 180.0
@@ -89,18 +85,19 @@ midpoint_planner_node:
       min_path_points: 4
       min_forward_extent_m: 2.0
       jump_check_horizon_m: 8.0
-      max_near_field_lateral_jump_m: 0.6
-      max_near_field_lateral_jump_m_sparse_pairs: 0.9
-      max_start_heading_error_rad: 1.0
-      hold_last_valid_s: 2.5
+      max_near_field_lateral_jump_m: 0.8
+      max_heading_delta_rad: 0.75
+      max_initial_heading_error_rad: 1.0
+      max_curvature: 0.45
+      hold_last_valid_s: 5.0
       hold_exit_clean_frames: 2
-      candidate_jump_reject_threshold_m: 1.0
+      candidate_jump_reject_threshold_m: 1.6
       candidate_jump_recover_frames: 3
       candidate_min_points: 4
       candidate_min_extent_m: 2.0
 
     diagnostics:
-      topic: "/midpoint_planner/diagnostics"
+      topic: "/corridor_planner/diagnostics"
       centerline_jump_horizon_m: 8.0
       edge_quantization_m: 0.05
       jump_warn_threshold_m: 0.8
@@ -114,7 +111,6 @@ midpoint_planner_node:
       show_boundary_chains: true
       show_pair_lines: true
       show_raw_midpoint_chain: true
-      show_raw_offset_path: true
       show_raw_prevalidation_centerline: true
       publish_points_topic: false
       show_lookahead_point: true

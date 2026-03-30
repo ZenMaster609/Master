@@ -160,7 +160,7 @@ def generate_launch_description():
 
     path_tracking_eval_arg = DeclareLaunchArgument(
         'path_tracking_eval',
-        default_value='false',
+        default_value='true',
         description='Enable GT midline planner/controller path evaluation logging in the main logger'
     )
 
@@ -227,7 +227,7 @@ def generate_launch_description():
     planner_arg = DeclareLaunchArgument(
         'planner',
         default_value='midpoint',
-        description="Planner to launch: 'delaunay', 'midpoint', 'single_boundary', or 'none'"
+        description="Planner to launch: 'delaunay', 'midpoint', 'single_boundary', 'corridor', or 'none'"
     )
 
     controller_arg = DeclareLaunchArgument(
@@ -664,7 +664,10 @@ def generate_launch_description():
                 "'.lower() == 'midpoint' else "
                 "'/single_boundary_planner/diagnostics' if '",
                 LaunchConfiguration('planner'),
-                "'.lower() == 'single_boundary' else '/delaunay_planner/diagnostics'",
+                "'.lower() == 'single_boundary' else "
+                "'/corridor_planner/diagnostics' if '",
+                LaunchConfiguration('planner'),
+                "'.lower() == 'corridor' else '/delaunay_planner/diagnostics'",
             ]),
             'controller_diagnostics_live_plot_enabled': LaunchConfiguration('controller_diagnostics_live_plot_enabled'),
             'controller_diagnostics_live_plot_rate_hz': LaunchConfiguration('controller_diagnostics_live_plot_rate_hz'),
@@ -1042,6 +1045,44 @@ def generate_launch_description():
         ])),
     )
 
+    corridor_planner_node = Node(
+        package='sim_car',
+        executable='corridor_planner_node',
+        name='corridor_planner_node',
+        output='screen',
+        parameters=[
+            PathJoinSubstitution([sim_car_share, 'config', 'corridor_planner.yaml']),
+            controller_config,
+            {
+                'use_sim_time': ParameterValue(
+                    LaunchConfiguration('use_sim_time'),
+                    value_type=bool,
+                ),
+                'topics.tracked_cones_topic': PythonExpression([
+                    "'/tracked_cones' if '",
+                    LaunchConfiguration('cone_memory_enabled'),
+                    "'.lower() == 'true' else '",
+                    topic_prefix,
+                    "' + '/stereo/perception/cones_3d'",
+                ]),
+                'topics.odom_topic': '/sim/odom',
+                'runtime.publish_rate_hz': ParameterValue(
+                    LaunchConfiguration('planner_rate_hz'),
+                    value_type=float,
+                ),
+                'diagnostics.publish_thesis_context': ParameterValue(
+                    LaunchConfiguration('thesis_controller_diagnostics'),
+                    value_type=bool,
+                ),
+            },
+        ],
+        condition=IfCondition(PythonExpression([
+            "'",
+            LaunchConfiguration('planner'),
+            "'.lower() == 'corridor'"
+        ])),
+    )
+
     camera_debug_viewer_node = Node(
         package='rqt_image_view',
         executable='rqt_image_view',
@@ -1162,6 +1203,7 @@ def generate_launch_description():
         delaunay_planner_node,
         midpoint_planner_node,
         single_boundary_planner_node,
+        corridor_planner_node,
         camera_debug_viewer_node,
         rviz_node,
         steering_gui_node,
@@ -1222,7 +1264,7 @@ def _validate_planner_and_controller_args(context, *_args, **_kwargs):
     controller = LaunchConfiguration('controller').perform(context).strip().lower()
 
     supported_bridges = {'ackermann'}
-    supported_planners = {'delaunay', 'midpoint', 'single_boundary', 'none'}
+    supported_planners = {'delaunay', 'midpoint', 'single_boundary', 'corridor', 'none'}
     supported_controllers = {'stanley', 'pure_pursuit', 'none'}
 
     if bridge not in supported_bridges:
@@ -1232,7 +1274,7 @@ def _validate_planner_and_controller_args(context, *_args, **_kwargs):
         )
     if planner not in supported_planners:
         raise RuntimeError(
-            "Unsupported launch argument planner='%s'. Supported values: delaunay, midpoint, single_boundary, none"
+            "Unsupported launch argument planner='%s'. Supported values: delaunay, midpoint, single_boundary, corridor, none"
             % planner
         )
     if controller not in supported_controllers:

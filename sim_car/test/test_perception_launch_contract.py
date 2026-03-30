@@ -53,15 +53,17 @@ def test_full_launch_declares_camera_cone_rmse_plotting_and_wires_it():
     assert "'camera_cone_eval_topic': PythonExpression([" in content
 
 
-def test_full_launch_supports_midpoint_and_single_boundary_planners():
+def test_full_launch_supports_midpoint_single_boundary_and_corridor_planners():
     content = FULL_LAUNCH.read_text(encoding='utf-8')
 
-    assert "Planner to launch: 'delaunay', 'midpoint', 'single_boundary', or 'none'" in content
+    assert "Planner to launch: 'delaunay', 'midpoint', 'single_boundary', 'corridor', or 'none'" in content
     assert "executable='midpoint_planner_node'" in content
     assert "executable='single_boundary_planner_node'" in content
+    assert "executable='corridor_planner_node'" in content
     assert "\"'.lower() == 'midpoint'\"" in content
     assert "\"'.lower() == 'single_boundary'\"" in content
-    assert "supported_planners = {'delaunay', 'midpoint', 'single_boundary', 'none'}" in content
+    assert "\"'.lower() == 'corridor'\"" in content
+    assert "supported_planners = {'delaunay', 'midpoint', 'single_boundary', 'corridor', 'none'}" in content
     assert "hybrid_force_single_boundary" not in content
 
 
@@ -81,11 +83,13 @@ def test_full_launch_loads_controller_yaml_after_planner_yaml():
 
     delaunay_block = content.split("delaunay_planner_node = Node(", 1)[1].split("midpoint_planner_node = Node(", 1)[0]
     midpoint_block = content.split("midpoint_planner_node = Node(", 1)[1].split("single_boundary_planner_node = Node(", 1)[0]
-    single_boundary_block = content.split("single_boundary_planner_node = Node(", 1)[1].split("rviz_node = Node(", 1)[0]
+    single_boundary_block = content.split("single_boundary_planner_node = Node(", 1)[1].split("corridor_planner_node = Node(", 1)[0]
+    corridor_block = content.split("corridor_planner_node = Node(", 1)[1].split("rviz_node = Node(", 1)[0]
 
     assert delaunay_block.index("PathJoinSubstitution([sim_car_share, 'config', 'delaunay_planner.yaml'])") < delaunay_block.index("controller_config")
     assert midpoint_block.index("PathJoinSubstitution([sim_car_share, 'config', 'midpoint_planner.yaml'])") < midpoint_block.index("controller_config")
     assert single_boundary_block.index("PathJoinSubstitution([sim_car_share, 'config', 'single_boundary_planner.yaml'])") < single_boundary_block.index("controller_config")
+    assert corridor_block.index("PathJoinSubstitution([sim_car_share, 'config', 'corridor_planner.yaml'])") < corridor_block.index("controller_config")
 
 
 def test_stanley_controller_yaml_matches_pre_split_baseline():
