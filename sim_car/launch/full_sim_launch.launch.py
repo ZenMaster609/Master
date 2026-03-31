@@ -27,22 +27,19 @@ from ament_index_python.packages import get_package_share_directory
 import yaml
 
 
+SUPPORTED_TRACKS = {
+    'acceleration': 'acceleration.world',
+    'skidpad': 'skidpad.world',
+    'smalltrack': 'small_track.world',
+}
+MIGRATED_PLANNERS = {'midpoint', 'single_boundary', 'corridor'}
+SUPPORTED_PLANNERS = {'delaunay', 'midpoint', 'single_boundary', 'corridor', 'none'}
+SUPPORTED_CONTROLLERS = {'stanley', 'pure_pursuit', 'none'}
+
+
 def generate_launch_description():
     sim_car_share = FindPackageShare('sim_car')
     vehicle_plotter_share = FindPackageShare('vehicle_plotter')
-    controller_config = PathJoinSubstitution([
-        sim_car_share,
-        'config',
-        'controllers',
-        PythonExpression([
-            "'stanley.yaml' if '",
-            LaunchConfiguration('controller'),
-            "'.lower() == 'stanley' else "
-            "'pure_pursuit.yaml' if '",
-            LaunchConfiguration('controller'),
-            "'.lower() == 'pure_pursuit' else 'none.yaml'",
-        ]),
-    ])
 
     headless_arg = DeclareLaunchArgument(
         'headless',
@@ -80,22 +77,28 @@ def generate_launch_description():
         description='Render engine for injected Gazebo sensors plugin (ogre or ogre2)'
     )
 
+    track_arg = DeclareLaunchArgument(
+        'track',
+        default_value='smalltrack',
+        description="Track preset to load: 'acceleration', 'skidpad', or 'smalltrack'"
+    )
+
     world_arg = DeclareLaunchArgument(
         'world',
-        default_value=PathJoinSubstitution([sim_car_share, 'worlds', 'small_track.world']),
-        description='Full path to world file to load'
+        default_value='',
+        description='Optional full path to world file override'
     )
 
     spawn_x_arg = DeclareLaunchArgument(
         'spawn_x',
-        default_value='9.58',
-        description='Initial world X position for the car model (meters)'
+        default_value='',
+        description='Optional initial world X position override for the car model (meters)'
     )
 
     spawn_y_arg = DeclareLaunchArgument(
         'spawn_y',
-        default_value='-5.2',
-        description='Initial world Y position for the car model (meters)'
+        default_value='',
+        description='Optional initial world Y position override for the car model (meters)'
     )
 
     spawn_z_arg = DeclareLaunchArgument(
@@ -106,8 +109,8 @@ def generate_launch_description():
 
     spawn_yaw_arg = DeclareLaunchArgument(
         'spawn_yaw',
-        default_value='3.75',
-        description='Initial world yaw for the car model (radians)'
+        default_value='',
+        description='Optional initial world yaw override for the car model (radians)'
     )
 
     cone_rmse_plotting_arg = DeclareLaunchArgument(
@@ -232,8 +235,8 @@ def generate_launch_description():
 
     controller_arg = DeclareLaunchArgument(
         'controller',
-        default_value='stanley',
-        description="Controller to use: 'stanley', 'pure_pursuit', or 'none'"
+        default_value='',
+        description="Optional controller override: 'stanley', 'pure_pursuit', or 'none'"
     )
 
     rviz_arg = DeclareLaunchArgument(
@@ -419,6 +422,7 @@ def generate_launch_description():
         'perception_rate_hz',
         'planner_rate_hz',
         'sensors_render_engine',
+        'track',
         'world',
         'spawn_x',
         'spawn_y',
@@ -480,7 +484,14 @@ def generate_launch_description():
 
     resolved_measurement_config = LaunchConfiguration('resolved_measurement_config')
     resolved_rviz_config = LaunchConfiguration('resolved_rviz_config')
+    resolved_world = LaunchConfiguration('resolved_world')
+    resolved_spawn_x = LaunchConfiguration('resolved_spawn_x')
+    resolved_spawn_y = LaunchConfiguration('resolved_spawn_y')
+    resolved_spawn_yaw = LaunchConfiguration('resolved_spawn_yaw')
+    resolved_planner_config = LaunchConfiguration('resolved_planner_config')
+    resolved_controller_config = LaunchConfiguration('resolved_controller_config')
     launch_args_validation = OpaqueFunction(function=_validate_planner_and_controller_args)
+    track_selection_setup = OpaqueFunction(function=_configure_track_selection)
     measurement_config_setup = OpaqueFunction(function=_configure_measurement_config)
     rviz_config_setup = OpaqueFunction(function=_configure_rviz_config)
 
@@ -547,7 +558,7 @@ def generate_launch_description():
         ),
         launch_arguments={
             'headless': LaunchConfiguration('headless'),
-            'world': LaunchConfiguration('world'),
+            'world': resolved_world,
             'use_sim_time': LaunchConfiguration('use_sim_time'),
             'update_rate_hz': LaunchConfiguration('update_rate_hz'),
             'camera_rate_hz': LaunchConfiguration('camera_rate_hz'),
@@ -555,10 +566,10 @@ def generate_launch_description():
             'planner_rate_hz': LaunchConfiguration('planner_rate_hz'),
             'sensors_render_engine': LaunchConfiguration('sensors_render_engine'),
             'topic_prefix': topic_prefix,
-            'spawn_x': LaunchConfiguration('spawn_x'),
-            'spawn_y': LaunchConfiguration('spawn_y'),
+            'spawn_x': resolved_spawn_x,
+            'spawn_y': resolved_spawn_y,
             'spawn_z': LaunchConfiguration('spawn_z'),
-            'spawn_yaw': LaunchConfiguration('spawn_yaw'),
+            'spawn_yaw': resolved_spawn_yaw,
         }.items(),
     )
 
@@ -938,7 +949,7 @@ def generate_launch_description():
         output='screen',
         parameters=[
             PathJoinSubstitution([sim_car_share, 'config', 'delaunay_planner.yaml']),
-            controller_config,
+            resolved_controller_config,
             {
                 'use_sim_time': ParameterValue(
                     LaunchConfiguration('use_sim_time'),
@@ -979,8 +990,8 @@ def generate_launch_description():
         name='midpoint_planner_node',
         output='screen',
         parameters=[
-            PathJoinSubstitution([sim_car_share, 'config', 'midpoint_planner.yaml']),
-            controller_config,
+            resolved_planner_config,
+            resolved_controller_config,
             {
                 'use_sim_time': ParameterValue(
                     LaunchConfiguration('use_sim_time'),
@@ -1017,8 +1028,8 @@ def generate_launch_description():
         name='single_boundary_planner_node',
         output='screen',
         parameters=[
-            PathJoinSubstitution([sim_car_share, 'config', 'single_boundary_planner.yaml']),
-            controller_config,
+            resolved_planner_config,
+            resolved_controller_config,
             {
                 'use_sim_time': ParameterValue(
                     LaunchConfiguration('use_sim_time'),
@@ -1055,8 +1066,8 @@ def generate_launch_description():
         name='corridor_planner_node',
         output='screen',
         parameters=[
-            PathJoinSubstitution([sim_car_share, 'config', 'corridor_planner.yaml']),
-            controller_config,
+            resolved_planner_config,
+            resolved_controller_config,
             {
                 'use_sim_time': ParameterValue(
                     LaunchConfiguration('use_sim_time'),
@@ -1137,6 +1148,7 @@ def generate_launch_description():
         perception_rate_arg,
         planner_rate_arg,
         sensors_render_engine_arg,
+        track_arg,
         world_arg,
         spawn_x_arg,
         spawn_y_arg,
@@ -1192,6 +1204,7 @@ def generate_launch_description():
         yolo_ultralytics_pythonpath_arg,
         measurement_config_arg,
         launch_args_validation,
+        track_selection_setup,
         measurement_config_setup,
         rviz_config_setup,
         gazebo_launch,
@@ -1237,6 +1250,146 @@ def _load_control_config():
     }
 
 
+def _write_parameter_overlay(parameters: dict) -> str:
+    with tempfile.NamedTemporaryFile(mode='w', suffix='.yaml', delete=False) as temp_file:
+        yaml.safe_dump(parameters, temp_file, default_flow_style=False, sort_keys=True)
+        return temp_file.name
+
+
+def _resolve_track_bundle(sim_car_share: Path, track: str, planner: str) -> dict[str, str]:
+    normalized_track = str(track).strip().lower() or 'smalltrack'
+    normalized_planner = str(planner).strip().lower()
+
+    if normalized_track not in SUPPORTED_TRACKS:
+        raise RuntimeError(
+            "Unsupported launch argument track='%s'. Supported values: acceleration, skidpad, smalltrack"
+            % track
+        )
+    if normalized_planner not in SUPPORTED_PLANNERS:
+        raise RuntimeError(
+            "Unsupported launch argument planner='%s'. Supported values: delaunay, midpoint, single_boundary, corridor, none"
+            % planner
+        )
+
+    config_dir = sim_car_share / 'config' / normalized_track
+    bundle = {
+        'track': normalized_track,
+        'planner': normalized_planner,
+        'world': str(sim_car_share / 'worlds' / SUPPORTED_TRACKS[normalized_track]),
+        'spawn_config': str(config_dir / 'spawn.yaml'),
+        'planner_config': '',
+    }
+    if normalized_planner in MIGRATED_PLANNERS:
+        bundle['planner_config'] = str(config_dir / f'{normalized_planner}_planner.yaml')
+    elif normalized_planner == 'delaunay':
+        bundle['planner_config'] = str(sim_car_share / 'config' / 'delaunay_planner.yaml')
+    return bundle
+
+
+def _load_spawn_defaults(spawn_config_path: str) -> dict[str, str]:
+    try:
+        with open(spawn_config_path, 'r', encoding='utf-8') as config_file:
+            config = yaml.safe_load(config_file) or {}
+    except (OSError, yaml.YAMLError) as exc:
+        raise RuntimeError(f'Failed reading spawn config {spawn_config_path}: {exc}') from exc
+
+    values = config.get('spawn')
+    if not isinstance(values, dict):
+        raise RuntimeError(f"Spawn config missing 'spawn' mapping: {spawn_config_path}")
+
+    resolved = {}
+    for key in ('spawn_x', 'spawn_y', 'spawn_yaw'):
+        if key not in values:
+            raise RuntimeError(f"Spawn config missing '{key}': {spawn_config_path}")
+        resolved[key] = str(values[key])
+    return resolved
+
+
+def _resolve_launch_selection(
+    sim_car_share: Path,
+    *,
+    track: str,
+    planner: str,
+    world_override: str = '',
+    spawn_x_override: str = '',
+    spawn_y_override: str = '',
+    spawn_yaw_override: str = '',
+    controller_override: str = '',
+) -> dict[str, str]:
+    bundle = _resolve_track_bundle(sim_car_share, track, planner)
+    spawn_defaults = _load_spawn_defaults(bundle['spawn_config'])
+    normalized_controller = str(controller_override).strip().lower()
+
+    if normalized_controller and normalized_controller not in SUPPORTED_CONTROLLERS:
+        raise RuntimeError(
+            "Unsupported launch argument controller='%s'. Supported values: stanley, pure_pursuit, none"
+            % controller_override
+        )
+
+    selection = {
+        'track': bundle['track'],
+        'planner': bundle['planner'],
+        'world': str(world_override).strip() or bundle['world'],
+        'planner_config': bundle['planner_config'],
+        'spawn_config': bundle['spawn_config'],
+        'spawn_x': str(spawn_x_override).strip() or spawn_defaults['spawn_x'],
+        'spawn_y': str(spawn_y_override).strip() or spawn_defaults['spawn_y'],
+        'spawn_yaw': str(spawn_yaw_override).strip() or spawn_defaults['spawn_yaw'],
+        'controller_override': normalized_controller,
+        'delaunay_controller': normalized_controller or 'stanley',
+    }
+
+    if selection['planner'] in MIGRATED_PLANNERS and not Path(selection['planner_config']).exists():
+        raise RuntimeError(f"Planner config does not exist: {selection['planner_config']}")
+    if not Path(selection['spawn_config']).exists():
+        raise RuntimeError(f"Spawn config does not exist: {selection['spawn_config']}")
+
+    return selection
+
+
+def _configure_track_selection(context, *_args, **_kwargs):
+    sim_car_share = Path(get_package_share_directory('sim_car'))
+    selection = _resolve_launch_selection(
+        sim_car_share,
+        track=LaunchConfiguration('track').perform(context),
+        planner=LaunchConfiguration('planner').perform(context),
+        world_override=LaunchConfiguration('world').perform(context),
+        spawn_x_override=LaunchConfiguration('spawn_x').perform(context),
+        spawn_y_override=LaunchConfiguration('spawn_y').perform(context),
+        spawn_yaw_override=LaunchConfiguration('spawn_yaw').perform(context),
+        controller_override=LaunchConfiguration('controller').perform(context),
+    )
+
+    if selection['planner'] in MIGRATED_PLANNERS:
+        override_payload = {}
+        if selection['controller_override']:
+            override_payload = {
+                '/**': {
+                    'ros__parameters': {
+                        'control': {
+                            'controller_type': selection['controller_override'],
+                        },
+                    },
+                },
+            }
+        controller_config_path = _write_parameter_overlay(override_payload)
+    elif selection['planner'] == 'delaunay':
+        controller_config_path = str(
+            sim_car_share / 'config' / 'controllers' / f"{selection['delaunay_controller']}.yaml"
+        )
+    else:
+        controller_config_path = _write_parameter_overlay({})
+
+    return [
+        SetLaunchConfiguration('resolved_world', selection['world']),
+        SetLaunchConfiguration('resolved_spawn_x', selection['spawn_x']),
+        SetLaunchConfiguration('resolved_spawn_y', selection['spawn_y']),
+        SetLaunchConfiguration('resolved_spawn_yaw', selection['spawn_yaw']),
+        SetLaunchConfiguration('resolved_planner_config', selection['planner_config']),
+        SetLaunchConfiguration('resolved_controller_config', controller_config_path),
+    ]
+
+
 def _configure_measurement_config(context, *_args, **_kwargs):
     config_path = LaunchConfiguration('measurement_config').perform(context)
     planner_rate_hz = float(LaunchConfiguration('planner_rate_hz').perform(context))
@@ -1273,24 +1426,28 @@ def _configure_rviz_config(context, *_args, **_kwargs):
 
 def _validate_planner_and_controller_args(context, *_args, **_kwargs):
     bridge = LaunchConfiguration('bridge').perform(context).strip().lower()
+    track = LaunchConfiguration('track').perform(context).strip().lower()
     planner = LaunchConfiguration('planner').perform(context).strip().lower()
     controller = LaunchConfiguration('controller').perform(context).strip().lower()
 
     supported_bridges = {'ackermann'}
-    supported_planners = {'delaunay', 'midpoint', 'single_boundary', 'corridor', 'none'}
-    supported_controllers = {'stanley', 'pure_pursuit', 'none'}
 
     if bridge not in supported_bridges:
         raise RuntimeError(
             "Unsupported launch argument bridge='%s'. Supported value today: ackermann"
             % bridge
         )
-    if planner not in supported_planners:
+    if track not in SUPPORTED_TRACKS:
+        raise RuntimeError(
+            "Unsupported launch argument track='%s'. Supported values: acceleration, skidpad, smalltrack"
+            % track
+        )
+    if planner not in SUPPORTED_PLANNERS:
         raise RuntimeError(
             "Unsupported launch argument planner='%s'. Supported values: delaunay, midpoint, single_boundary, corridor, none"
             % planner
         )
-    if controller not in supported_controllers:
+    if controller and controller not in SUPPORTED_CONTROLLERS:
         raise RuntimeError(
             "Unsupported launch argument controller='%s'. Supported values: stanley, pure_pursuit, none"
             % controller

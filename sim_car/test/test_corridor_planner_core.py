@@ -307,22 +307,22 @@ def test_concentric_arc_corridor_pairs_boundaries_through_turn():
     assert np.max(result.centerline[:, 1]) > 0.6
 
 
-def test_boundary_chain_fallback_orders_wraparound_arc():
-    arc = np.array(
+def test_boundary_chain_uses_single_boundary_style_progression_instead_of_zigzagging():
+    points = np.array(
         [
-            [1.35075576, -2.10367746],
-            [0.54751672, -2.43930839],
-            [-0.32211124, -2.47916203],
-            [-1.15268173, -2.21840592],
-            [-1.84348429, -1.68865795],
+            [2.0, 1.8],
+            [4.0, 1.9],
+            [3.8, 3.0],
+            [6.0, 2.2],
+            [5.8, 3.6],
         ],
         dtype=np.float64,
     )
     chain = _build_boundary_chain(
-        filtered_points=arc,
-        filtered_local=arc,
-        side_indices=np.arange(arc.shape[0], dtype=np.int64),
+        filtered_points=points,
+        filtered_local=points,
+        side_indices=np.arange(points.shape[0], dtype=np.int64),
         config=_cfg(),
     )
 
-    assert chain.filtered_indices.size >= 4
+    assert chain.filtered_indices.tolist() == [0, 1, 3]

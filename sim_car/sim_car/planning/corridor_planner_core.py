@@ -454,40 +454,54 @@ def _build_boundary_chain(
 
     while remaining:
         current_local = side_local[chain_positions[-1]]
+        current_range = float(np.hypot(current_local[0], current_local[1]))
         best_pos = None
-        best_score: Optional[tuple[float, float, float, float, float, int]] = None
+        best_score: Optional[tuple[float, float, float, float, int]] = None
         best_heading = heading
         best_heading_change = 0.0
         for candidate_pos in remaining:
             candidate_local = side_local[candidate_pos]
+            candidate_range = float(np.hypot(candidate_local[0], candidate_local[1]))
+            radial_progress = candidate_range - current_range
+            min_radial_progress = max(0.05, 0.5 * float(config.min_forward_progress_m))
             delta = candidate_local - current_local
-            delta_x = float(delta[0])
-            lateral_shift = float(abs(delta[1]))
-            turn_progress = (
-                delta_x >= -max(0.5, float(config.min_forward_progress_m))
-                and lateral_shift >= max(0.10, 0.5 * float(config.min_forward_progress_m))
-            )
-            if not _candidate_progresses_from_vehicle(
-                current_local=current_local,
-                candidate_local=candidate_local,
-                min_progress_m=float(config.min_forward_progress_m),
-            ) and not turn_progress:
-                continue
             distance = float(np.hypot(delta[0], delta[1]))
-            min_step = float(config.min_step_m)
-            if turn_progress:
-                min_step = min(min_step, 0.35)
-            if distance < min_step or distance > float(config.max_step_m):
+            min_step_m = min(float(config.min_step_m), 0.35)
+            if distance < min_step_m or distance > float(config.max_step_m):
                 continue
             step_heading = delta / distance
             forward = float(np.dot(delta, heading))
-            if forward < float(config.min_forward_progress_m):
-                if not turn_progress or delta_x < -max(0.5, float(config.min_forward_progress_m)):
-                    continue
+            progresses_from_vehicle = _candidate_progresses_from_vehicle(
+                current_local=current_local,
+                candidate_local=candidate_local,
+                min_progress_m=float(config.min_forward_progress_m),
+            )
+            turn_forward_min = max(0.05, 0.5 * float(config.min_forward_progress_m))
+            turn_continuation = (
+                float(current_local[1]) * float(candidate_local[1]) >= 0.0
+                and float(candidate_local[0]) >= float(current_local[0]) - max(0.5, float(config.min_forward_progress_m))
+                and forward >= turn_forward_min
+            )
+            if not progresses_from_vehicle and not turn_continuation:
+                continue
+            tight_turn_step = radial_progress < min_radial_progress
+            max_negative_radial_progress = min_radial_progress
+            if turn_continuation:
+                max_negative_radial_progress = max(
+                    max_negative_radial_progress,
+                    0.30,
+                )
+            if radial_progress < -max_negative_radial_progress:
+                continue
+            forward_min = float(config.min_forward_progress_m)
+            if turn_continuation and not progresses_from_vehicle:
+                forward_min = turn_forward_min
+            if forward < forward_min:
+                continue
             heading_change = abs(_angle_between(heading, step_heading))
             max_heading_change = float(config.max_heading_change_rad)
-            if turn_progress:
-                max_heading_change = max(max_heading_change, 1.55)
+            if tight_turn_step and float(current_local[1]) * float(candidate_local[1]) >= 0.0:
+                max_heading_change = max(max_heading_change, 1.35)
             if heading_change > max_heading_change:
                 continue
             if _candidate_is_shadowed(
@@ -500,9 +514,8 @@ def _build_boundary_chain(
             score = (
                 distance,
                 heading_change,
-                -lateral_shift,
-                -max(delta_x, 0.0),
-                -max(forward, 0.0),
+                radial_progress,
+                -forward,
                 candidate_pos,
             )
             if best_score is None or score < best_score:
@@ -518,22 +531,13 @@ def _build_boundary_chain(
         heading = best_heading
         heading_changes.append(best_heading_change)
 
-    primary_chain = _make_boundary_chain_from_positions(
+    return _make_boundary_chain_from_positions(
         filtered_points=filtered_points,
         filtered_local=filtered_local,
         side_indices=side_indices,
         chain_positions=np.asarray(chain_positions, dtype=np.int64),
         heading_changes=heading_changes,
     )
-    fallback_chain = _bearing_sorted_boundary_chain(
-        filtered_points=filtered_points,
-        filtered_local=filtered_local,
-        side_indices=side_indices,
-        config=config,
-    )
-    if _should_prefer_fallback_chain(primary_chain, fallback_chain, config):
-        return fallback_chain
-    return primary_chain
 
 
 def _make_boundary_chain_from_positions(
@@ -571,93 +575,6 @@ def _make_boundary_chain_from_positions(
         mean_heading_change_rad=mean_heading_change,
         forward_extent_m=forward_extent,
     )
-
-
-def _bearing_sorted_boundary_chain(
-    *,
-    filtered_points: np.ndarray,
-    filtered_local: np.ndarray,
-    side_indices: np.ndarray,
-    config: CorridorPlannerConfig,
-) -> _BoundaryChain:
-    if side_indices.size == 0:
-        return _BoundaryChain(
-            filtered_indices=np.empty((0,), dtype=np.int64),
-            global_points=np.empty((0, 2), dtype=np.float64),
-            local_points=np.empty((0, 2), dtype=np.float64),
-            tangents_local=np.empty((0, 2), dtype=np.float64),
-            mean_heading_change_rad=float("inf"),
-            forward_extent_m=0.0,
-        )
-    side_local = filtered_local[side_indices]
-    seed_pos = _select_seed_index(side_local)
-    if seed_pos < 0:
-        ranges = np.hypot(side_local[:, 0], side_local[:, 1])
-        seed_pos = int(np.argmin(ranges))
-
-    bearings = np.arctan2(side_local[:, 1], side_local[:, 0])
-    seed_bearing = float(bearings[seed_pos])
-    deltas = np.arctan2(np.sin(bearings - seed_bearing), np.cos(bearings - seed_bearing))
-
-    negative_branch = sorted(
-        [idx for idx in range(side_local.shape[0]) if idx != seed_pos and deltas[idx] < -1e-3],
-        key=lambda idx: float(deltas[idx]),
-    )
-    positive_branch = sorted(
-        [idx for idx in range(side_local.shape[0]) if idx != seed_pos and deltas[idx] >= -1e-3],
-        key=lambda idx: float(deltas[idx]),
-    )
-    order = negative_branch + [seed_pos] + positive_branch
-
-    kept: list[int] = []
-    last_point: Optional[np.ndarray] = None
-    min_spacing = min(float(config.min_step_m), 0.35)
-    for pos in order:
-        point = side_local[int(pos)]
-        if last_point is not None:
-            step = float(np.hypot(point[0] - last_point[0], point[1] - last_point[1]))
-            if step < min_spacing:
-                continue
-        kept.append(int(pos))
-        last_point = point
-
-    heading_changes: list[float] = []
-    if len(kept) >= 3:
-        ordered_points = side_local[np.asarray(kept, dtype=np.int64)]
-        diffs = np.diff(ordered_points, axis=0)
-        for idx in range(diffs.shape[0] - 1):
-            a = diffs[idx]
-            b = diffs[idx + 1]
-            if float(np.hypot(a[0], a[1])) <= 1e-9 or float(np.hypot(b[0], b[1])) <= 1e-9:
-                continue
-            heading_changes.append(abs(_angle_between(a, b)))
-    return _make_boundary_chain_from_positions(
-        filtered_points=filtered_points,
-        filtered_local=filtered_local,
-        side_indices=side_indices,
-        chain_positions=np.asarray(kept, dtype=np.int64),
-        heading_changes=heading_changes,
-    )
-
-
-def _should_prefer_fallback_chain(
-    primary_chain: _BoundaryChain,
-    fallback_chain: _BoundaryChain,
-    config: CorridorPlannerConfig,
-) -> bool:
-    fallback_count = int(fallback_chain.filtered_indices.size)
-    primary_count = int(primary_chain.filtered_indices.size)
-    if fallback_count < int(config.min_chain_length):
-        return False
-    if fallback_count <= primary_count:
-        return False
-    if primary_count < int(config.min_chain_length):
-        return True
-    primary_length = _path_length(primary_chain.local_points)
-    fallback_length = _path_length(fallback_chain.local_points)
-    if fallback_count >= (primary_count + 2) and fallback_length >= (0.9 * primary_length):
-        return True
-    return False
 
 
 def _build_corridor(
