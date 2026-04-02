@@ -73,6 +73,7 @@ def test_full_launch_supports_midpoint_single_boundary_and_corridor_planners():
     content = FULL_LAUNCH.read_text(encoding='utf-8')
 
     assert "Planner to launch: 'delaunay', 'midpoint', 'single_boundary', 'corridor', or 'none'" in content
+    assert "executable='skidpad_router_node'" in content
     assert "executable='midpoint_planner_node'" in content
     assert "executable='single_boundary_planner_node'" in content
     assert "executable='corridor_planner_node'" in content
@@ -118,6 +119,17 @@ def test_full_launch_uses_resolved_planner_configs_for_migrated_planners():
     assert "PathJoinSubstitution([sim_car_share, 'config', 'midpoint_planner.yaml'])" not in midpoint_block
     assert "PathJoinSubstitution([sim_car_share, 'config', 'single_boundary_planner.yaml'])" not in single_boundary_block
     assert "PathJoinSubstitution([sim_car_share, 'config', 'corridor_planner.yaml'])" not in corridor_block
+
+
+def test_full_launch_wires_skidpad_router_output_into_migrated_planners() -> None:
+    content = FULL_LAUNCH.read_text(encoding='utf-8')
+
+    assert "skidpad_router_node = Node(" in content
+    assert "PathJoinSubstitution([sim_car_share, 'config', 'skidpad', 'skidpad_router.yaml'])" in content
+    assert "'topics.output_topic': '/tracked_cones/skidpad_routed'" in content
+    assert "'/tracked_cones/skidpad_routed' if '" in content
+    assert "'.lower() in ('skidpad', 'acceleration') else ('/tracked_cones' if '" in content
+    assert "'routing.event_mode': LaunchConfiguration('track')" in content
 
 
 def test_track_bundle_resolves_world_and_planner_config_paths():

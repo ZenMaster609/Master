@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import pathlib
 import sys
+from types import SimpleNamespace
 
 import numpy as np
 import pytest
@@ -23,6 +24,7 @@ try:
     )
     from sim_car.planning.midpoint_planner_node import MidpointPlannerNode  # noqa: E402
     from sim_car.planning.planner_runtime_types import PlannerIdentity  # noqa: E402
+    from sim_car.controllers.pure_pursuit_controller import PurePursuitController  # noqa: E402
 except ImportError as exc:  # pragma: no cover - depends on generated ROS interfaces
     pytest.skip(f"ROS planner node imports unavailable: {exc}", allow_module_level=True)
 
@@ -256,6 +258,46 @@ def test_build_operator_status_text_shows_chain_stage_and_pair_rejects():
     assert "range=3" in text
     assert "NF:" not in text
     assert "seed=" not in text
+
+
+def test_build_steering_controller_creates_active_pure_pursuit_controller():
+    params = {
+        "stanley.k_gain": 1.2,
+        "stanley.softening_speed_mps": 0.0,
+        "stanley.heading_gain": 1.6,
+        "stanley.lookahead_idx_offset": 0,
+        "stanley.steering_limit_rad": 0.52,
+        "stanley.steering_lowpass_alpha": 1.0,
+        "stanley.steering_rate_limit_rad_s": 10.0,
+        "stanley.use_yaw_rate_damping": True,
+        "stanley.yaw_rate_damping_gain": 0.0,
+        "stanley.wheelbase_m": 1.65,
+        "stanley.cross_track_deadband_m": 0.0,
+        "pure_pursuit.lookahead_m": 2.0,
+        "pure_pursuit.min_lookahead_m": 1.0,
+        "pure_pursuit.max_lookahead_m": 5.0,
+        "pure_pursuit.lookahead_gain": 0.5,
+        "pure_pursuit.steering_limit_rad": 0.52,
+        "pure_pursuit.steering_lowpass_alpha": 1.0,
+        "pure_pursuit.steering_rate_limit_rad_s": 0.0,
+        "pure_pursuit.wheelbase_m": 1.65,
+    }
+
+    node = object.__new__(MidpointPlannerNode)
+    node.controller_type = "pure_pursuit"
+    node.publish_rate_hz = 20.0
+    node.get_parameter = lambda name: SimpleNamespace(value=params[name])
+
+    controller = node._build_steering_controller()
+    output = controller.compute(
+        control_path=np.array([[2.0, 1.0], [12.0, 1.0]], dtype=np.float64),
+        speed_mps=3.0,
+        yaw_rate_rps=0.0,
+    )
+
+    assert isinstance(controller, PurePursuitController)
+    assert np.isfinite(output.steering_rad)
+    assert output.steering_rad > 0.0
 
 
 def test_build_markers_show_remembered_cones_instead_of_filtered_subset():

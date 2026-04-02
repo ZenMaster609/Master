@@ -24,6 +24,7 @@ from visualization_msgs.msg import Marker, MarkerArray
 
 from sim_car.cones.tracking.fusion import normalize_color
 from sim_car.controllers.factory import create_steering_controller
+from sim_car.controllers.pure_pursuit_controller import PurePursuitConfig
 from sim_car.controllers.stanley_controller import StanleyConfig
 from sim_car.planning.delaunay_planner_core import (
     compute_centerline_jump_max,
@@ -151,6 +152,70 @@ class CorridorPlannerNode(TrackedConePlannerBase):
             f"cones={self.tracked_cones_topic} odom={self.odom_topic} "
             f"cmd={self.cmd_topic} path={self.centerline_topic} viz={self.viz_topic} "
             f"planning_frame={self.planning_frame} controller={self.controller_type}"
+        )
+
+    def _build_steering_controller(self):
+        stanley_config = StanleyConfig(
+            k_gain=max(0.0, float(self.get_parameter("stanley.k_gain").value)),
+            softening_speed_mps=max(0.0, float(self.get_parameter("stanley.softening_speed_mps").value)),
+            heading_gain=float(self.get_parameter("stanley.heading_gain").value),
+            lookahead_idx_offset=max(0, int(self.get_parameter("stanley.lookahead_idx_offset").value)),
+            steering_limit_rad=max(0.01, float(self.get_parameter("stanley.steering_limit_rad").value)),
+            steering_lowpass_alpha=float(
+                np.clip(float(self.get_parameter("stanley.steering_lowpass_alpha").value), 0.0, 1.0)
+            ),
+            steering_rate_limit_rad_s=max(
+                0.0,
+                float(self.get_parameter("stanley.steering_rate_limit_rad_s").value),
+            ),
+            use_yaw_rate_damping=bool(self.get_parameter("stanley.use_yaw_rate_damping").value),
+            yaw_rate_damping_gain=max(
+                0.0,
+                float(self.get_parameter("stanley.yaw_rate_damping_gain").value),
+            ),
+            wheelbase_m=max(0.1, float(self.get_parameter("stanley.wheelbase_m").value)),
+            cross_track_deadband_m=max(
+                0.0,
+                float(self.get_parameter("stanley.cross_track_deadband_m").value),
+            ),
+        )
+        pure_pursuit_config = PurePursuitConfig(
+            lookahead_m=max(0.0, float(self.get_parameter("pure_pursuit.lookahead_m").value)),
+            min_lookahead_m=max(0.01, float(self.get_parameter("pure_pursuit.min_lookahead_m").value)),
+            max_lookahead_m=max(
+                0.01,
+                float(self.get_parameter("pure_pursuit.max_lookahead_m").value),
+            ),
+            lookahead_gain=max(0.0, float(self.get_parameter("pure_pursuit.lookahead_gain").value)),
+            steering_limit_rad=max(
+                0.01,
+                float(self.get_parameter("pure_pursuit.steering_limit_rad").value),
+            ),
+            steering_lowpass_alpha=float(
+                np.clip(float(self.get_parameter("pure_pursuit.steering_lowpass_alpha").value), 0.0, 1.0)
+            ),
+            steering_rate_limit_rad_s=max(
+                0.0,
+                float(self.get_parameter("pure_pursuit.steering_rate_limit_rad_s").value),
+            ),
+            wheelbase_m=max(0.1, float(self.get_parameter("pure_pursuit.wheelbase_m").value)),
+        )
+        if pure_pursuit_config.max_lookahead_m < pure_pursuit_config.min_lookahead_m:
+            pure_pursuit_config = PurePursuitConfig(
+                lookahead_m=pure_pursuit_config.lookahead_m,
+                min_lookahead_m=pure_pursuit_config.min_lookahead_m,
+                max_lookahead_m=pure_pursuit_config.min_lookahead_m,
+                lookahead_gain=pure_pursuit_config.lookahead_gain,
+                steering_limit_rad=pure_pursuit_config.steering_limit_rad,
+                steering_lowpass_alpha=pure_pursuit_config.steering_lowpass_alpha,
+                steering_rate_limit_rad_s=pure_pursuit_config.steering_rate_limit_rad_s,
+                wheelbase_m=pure_pursuit_config.wheelbase_m,
+            )
+        return create_steering_controller(
+            controller_type=self.controller_type,
+            stanley_config=stanley_config,
+            pure_pursuit_config=pure_pursuit_config,
+            publish_rate_hz=self.publish_rate_hz,
         )
 
     def _declare_parameters(self) -> None:
@@ -371,45 +436,9 @@ class CorridorPlannerNode(TrackedConePlannerBase):
                 "Unsupported control.controller_type '%s'. Supported values: stanley, pure_pursuit, none"
                 % self.controller_type
             )
-        stanley_config = StanleyConfig(
-            k_gain=max(0.0, float(self.get_parameter("stanley.k_gain").value)),
-            softening_speed_mps=max(0.0, float(self.get_parameter("stanley.softening_speed_mps").value)),
-            heading_gain=float(self.get_parameter("stanley.heading_gain").value),
-            lookahead_idx_offset=max(0, int(self.get_parameter("stanley.lookahead_idx_offset").value)),
-            steering_limit_rad=max(0.01, float(self.get_parameter("stanley.steering_limit_rad").value)),
-            steering_lowpass_alpha=float(
-                np.clip(float(self.get_parameter("stanley.steering_lowpass_alpha").value), 0.0, 1.0)
-            ),
-            steering_rate_limit_rad_s=max(
-                0.0,
-                float(self.get_parameter("stanley.steering_rate_limit_rad_s").value),
-            ),
-            use_yaw_rate_damping=bool(self.get_parameter("stanley.use_yaw_rate_damping").value),
-            yaw_rate_damping_gain=max(
-                0.0,
-                float(self.get_parameter("stanley.yaw_rate_damping_gain").value),
-            ),
-            wheelbase_m=max(0.1, float(self.get_parameter("stanley.wheelbase_m").value)),
-            cross_track_deadband_m=max(
-                0.0,
-                float(self.get_parameter("stanley.cross_track_deadband_m").value),
-            ),
-        )
-        self._controller = (
-            create_steering_controller(
-                controller_type=self.controller_type,
-                stanley_config=stanley_config,
-                publish_rate_hz=self.publish_rate_hz,
-            )
-            if self.controller_type == "stanley"
-            else None
-        )
+        self._controller = self._build_steering_controller() if self.controller_type != "none" else None
         self.stop_if_no_path = bool(self.get_parameter("control.stop_if_no_path").value)
-        if self.controller_type == "pure_pursuit":
-            self.get_logger().warn(
-                "control.controller_type 'pure_pursuit' is a placeholder; controller output is disabled"
-            )
-        elif self.controller_type == "none":
+        if self.controller_type == "none":
             self.get_logger().info("control.controller_type 'none'; controller output is disabled")
 
         self.speed_min_mps = max(0.0, float(self.get_parameter("speed_control.speed_min_mps").value))

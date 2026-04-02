@@ -1,0 +1,776 @@
+#!/usr/bin/env python3
+"""Skidpad-specific cone router for deterministic branch selection."""
+
+from __future__ import annotations
+
+from copy import deepcopy
+import math
+from typing import Optional
+
+import numpy as np
+import rclpy
+from ackermann_msgs.msg import AckermannDriveStamped
+from diagnostic_msgs.msg import DiagnosticArray, DiagnosticStatus, KeyValue
+from geometry_msgs.msg import Point
+from nav_msgs.msg import Odometry
+from rclpy.executors import ExternalShutdownException
+from rclpy.node import Node
+from rclpy.qos import qos_profile_sensor_data
+from vehicle_plotter_msgs.msg import ConeDetection, ConeDetectionArray
+from visualization_msgs.msg import Marker, MarkerArray
+
+from sim_car.cones.tracking.fusion import normalize_color
+from sim_car.planning.skidpad_router_core import (
+    SkidpadRouterSnapshot,
+    SkidpadStateMachine,
+    boundary_color_from_lateral_y,
+    config_from_parameters,
+    detect_stop_line_forward_distance_m,
+)
+
+
+class SkidpadRouterNode(Node):
+    """Republish cones for the currently active skidpad branch."""
+
+    def __init__(self) -> None:
+        super().__init__("skidpad_router_node")
+        self._declare_parameters()
+        self._read_parameters()
+
+        self._latest_pose_xy: Optional[tuple[float, float]] = None
+        self._latest_yaw_rad: float = 0.0
+        self._latest_speed_mps: float = 0.0
+        self._latest_odom_stamp = None
+        self._latest_snapshot = SkidpadRouterSnapshot(
+            stage_name="approach",
+            active_branch="right",
+            completed_laps=0,
+            route_index=0,
+            in_crossroads=False,
+            lap_angle_accum_rad=0.0,
+            lap_armed=False,
+            parked=False,
+            just_completed_lap=False,
+            just_entered_crossroads=False,
+        )
+        self._last_warn_sec = -1.0
+        self._parking_mode_active = False
+        self._orange_only_cone_count = 0
+        self._parking_boundary_override_count = 0
+        self._acceleration_parking_latched = False
+        self._stop_override_active = False
+        self._stop_line_forward_distance_m: float = float("nan")
+        self._stop_line_marker_points_odom: Optional[tuple[tuple[float, float], tuple[float, float]]] = None
+
+        self._cones_pub = self.create_publisher(ConeDetectionArray, self.output_topic, 10)
+        self._diag_pub = self.create_publisher(DiagnosticArray, self.diagnostics_topic, 10)
+        self._viz_pub = self.create_publisher(MarkerArray, self.viz_topic, 10)
+        self._cmd_pub = self.create_publisher(AckermannDriveStamped, self.cmd_topic, 10)
+        self._stop_override_timer = None
+        if self.stop_override_publish_period_s > 0.0:
+            self._stop_override_timer = self.create_timer(
+                self.stop_override_publish_period_s,
+                self._stop_override_timer_cb,
+            )
+
+        self.create_subscription(
+            ConeDetectionArray,
+            self.input_topic,
+            self._cones_cb,
+            qos_profile_sensor_data,
+        )
+        self.create_subscription(
+            Odometry,
+            self.odom_topic,
+            self._odom_cb,
+            qos_profile_sensor_data,
+        )
+
+        self.get_logger().info(
+            "skidpad_router_node ready "
+            f"in={self.input_topic} out={self.output_topic} odom={self.odom_topic}"
+        )
+
+    def _declare_parameters(self) -> None:
+        defaults = {
+            "frames.odom_frame": "odom",
+            "frames.base_frame_aliases": ["front_axle", "base_link", "base_footprint"],
+            "topics.input_topic": "/tracked_cones",
+            "topics.output_topic": "/tracked_cones/skidpad_routed",
+            "topics.odom_topic": "/sim/odom",
+            "topics.cmd_topic": "/cmd",
+            "topics.diagnostics_topic": "/skidpad_router/diagnostics",
+            "topics.viz_topic": "/skidpad_router/markers",
+            "routing.event_mode": "skidpad",
+            "geometry.crossroads_center_xy": [0.0, 0.0],
+            "geometry.crossroads_half_extents_xy": [3.0, 2.5],
+            "geometry.left_circle_center_xy": [-9.25, 0.0],
+            "geometry.right_circle_center_xy": [9.25, 0.0],
+            "geometry.circle_radius_window_m": [6.5, 11.5],
+            "routing.route_sequence": ["right", "right", "left", "left", "straight"],
+            "routing.lap_complete_angle_rad": 5.5,
+            "routing.lobe_radius_m": 12.5,
+            "routing.right_lobe_min_x_m": -1.0,
+            "routing.left_lobe_max_x_m": 1.0,
+            "routing.straight_corridor_half_width_m": 2.0,
+            "routing.straight_min_y_m": -1.0,
+            "parking.corridor_half_width_m": 2.0,
+            "parking.start_y_m": 8.5,
+            "parking.parked_speed_threshold_mps": 0.5,
+            "parking.parked_hold_time_s": 1.0,
+            "parking.test_park_only": False,
+            "parking.acceleration_activation_distance_m": 10.0,
+            "parking.stop_margin_m": 1.0,
+            "parking.stop_line_cluster_depth_m": 2.5,
+            "parking.stop_line_min_lateral_span_m": 1.0,
+            "parking.stop_line_min_cluster_count": 4,
+            "parking.stop_line_min_points_per_side": 1,
+            "parking.stop_override_publish_rate_hz": 50.0,
+            "synthetic.pair_half_width_m": 1.6375,
+            "synthetic.pair_y_m": [3.5, 5.5, 7.5],
+        }
+        for name, value in defaults.items():
+            self.declare_parameter(name, value)
+
+    def _read_parameters(self) -> None:
+        self.odom_frame = str(self.get_parameter("frames.odom_frame").value).strip() or "odom"
+        self.base_frame_aliases = {
+            str(value).strip()
+            for value in self.get_parameter("frames.base_frame_aliases").value
+            if str(value).strip()
+        }
+        self.input_topic = str(self.get_parameter("topics.input_topic").value).strip() or "/tracked_cones"
+        self.output_topic = str(self.get_parameter("topics.output_topic").value).strip() or "/tracked_cones/skidpad_routed"
+        self.odom_topic = str(self.get_parameter("topics.odom_topic").value).strip() or "/sim/odom"
+        self.cmd_topic = str(self.get_parameter("topics.cmd_topic").value).strip() or "/cmd"
+        self.diagnostics_topic = (
+            str(self.get_parameter("topics.diagnostics_topic").value).strip() or "/skidpad_router/diagnostics"
+        )
+        self.viz_topic = str(self.get_parameter("topics.viz_topic").value).strip() or "/skidpad_router/markers"
+        self.event_mode = str(self.get_parameter("routing.event_mode").value).strip().lower() or "skidpad"
+        self.acceleration_activation_distance_m = float(
+            self.get_parameter("parking.acceleration_activation_distance_m").value
+        )
+        self.stop_margin_m = float(self.get_parameter("parking.stop_margin_m").value)
+        self.stop_line_cluster_depth_m = float(self.get_parameter("parking.stop_line_cluster_depth_m").value)
+        self.stop_line_min_lateral_span_m = float(self.get_parameter("parking.stop_line_min_lateral_span_m").value)
+        self.stop_line_min_cluster_count = int(self.get_parameter("parking.stop_line_min_cluster_count").value)
+        self.stop_line_min_points_per_side = int(self.get_parameter("parking.stop_line_min_points_per_side").value)
+        stop_override_rate_hz = float(self.get_parameter("parking.stop_override_publish_rate_hz").value)
+        self.stop_override_publish_period_s = 0.0 if stop_override_rate_hz <= 0.0 else (1.0 / stop_override_rate_hz)
+
+        self._state_machine = SkidpadStateMachine(
+            config_from_parameters(
+                crossroads_center_xy=self.get_parameter("geometry.crossroads_center_xy").value,
+                crossroads_half_extents_xy=self.get_parameter("geometry.crossroads_half_extents_xy").value,
+                left_circle_center_xy=self.get_parameter("geometry.left_circle_center_xy").value,
+                right_circle_center_xy=self.get_parameter("geometry.right_circle_center_xy").value,
+                circle_radius_window_m=self.get_parameter("geometry.circle_radius_window_m").value,
+                route_sequence=self.get_parameter("routing.route_sequence").value,
+                synthetic_pair_y_m=self.get_parameter("synthetic.pair_y_m").value,
+                lap_complete_angle_rad=float(self.get_parameter("routing.lap_complete_angle_rad").value),
+                parking_corridor_half_width_m=float(self.get_parameter("parking.corridor_half_width_m").value),
+                parking_start_y_m=float(self.get_parameter("parking.start_y_m").value),
+                straight_corridor_half_width_m=float(
+                    self.get_parameter("routing.straight_corridor_half_width_m").value
+                ),
+                straight_min_y_m=float(self.get_parameter("routing.straight_min_y_m").value),
+                parked_speed_threshold_mps=float(self.get_parameter("parking.parked_speed_threshold_mps").value),
+                parked_hold_time_s=float(self.get_parameter("parking.parked_hold_time_s").value),
+                test_park_only=bool(self.get_parameter("parking.test_park_only").value),
+                synthetic_pair_half_width_m=float(self.get_parameter("synthetic.pair_half_width_m").value),
+                lobe_radius_m=float(self.get_parameter("routing.lobe_radius_m").value),
+                right_lobe_min_x_m=float(self.get_parameter("routing.right_lobe_min_x_m").value),
+                left_lobe_max_x_m=float(self.get_parameter("routing.left_lobe_max_x_m").value),
+            )
+        )
+
+    def _odom_cb(self, msg: Odometry) -> None:
+        x_m = float(msg.pose.pose.position.x)
+        y_m = float(msg.pose.pose.position.y)
+        yaw_rad = _yaw_from_quaternion(
+            float(msg.pose.pose.orientation.x),
+            float(msg.pose.pose.orientation.y),
+            float(msg.pose.pose.orientation.z),
+            float(msg.pose.pose.orientation.w),
+        )
+        speed_mps = math.hypot(float(msg.twist.twist.linear.x), float(msg.twist.twist.linear.y))
+        stamp_sec = float(msg.header.stamp.sec) + (float(msg.header.stamp.nanosec) * 1e-9)
+
+        self._latest_pose_xy = (x_m, y_m)
+        self._latest_yaw_rad = yaw_rad
+        self._latest_speed_mps = speed_mps
+        self._latest_odom_stamp = msg.header.stamp
+        self._latest_snapshot = self._state_machine.update(
+            x_m=x_m,
+            y_m=y_m,
+            speed_mps=speed_mps,
+            now_sec=stamp_sec,
+        )
+        self._update_latched_stop_line_distance_from_pose()
+        if self._stop_override_active:
+            self._publish_stop_cmd(msg.header.stamp)
+        self._publish_diagnostics(msg.header.stamp)
+        self._publish_markers(msg.header.stamp)
+
+    def _cones_cb(self, msg: ConeDetectionArray) -> None:
+        if self._latest_pose_xy is None:
+            self._throttled_warn("waiting for odom before routing skidpad cones")
+            return
+
+        cone_points_odom, converted_cones = self._convert_cones_to_odom(msg)
+        if cone_points_odom is None:
+            return
+
+        routed_msg = ConeDetectionArray()
+        routed_msg.header = deepcopy(msg.header)
+        routed_msg.header.frame_id = self.odom_frame
+        self._update_acceleration_parking_latch(converted_cones=converted_cones, cone_points_odom=cone_points_odom)
+        self._parking_mode_active = self._parking_mode_is_active()
+        self._orange_only_cone_count = 0
+        self._parking_boundary_override_count = 0
+        if not self._parking_mode_active:
+            self._clear_stop_line_state()
+        else:
+            self._update_latched_stop_line_distance_from_pose()
+
+        if self._parking_mode_active:
+            routed_msg.cones = self._route_parking_cones(
+                converted_cones=converted_cones,
+                cone_points_odom=cone_points_odom,
+            )
+        else:
+            mask = self._state_machine.route_mask(cone_points_odom)
+            routed_msg.cones = [cone for cone, keep in zip(converted_cones, mask) if keep]
+
+        if self._parking_mode_active:
+            existing = np.asarray(
+                [[cone.position.x, cone.position.y] for cone in routed_msg.cones],
+                dtype=np.float64,
+            ) if routed_msg.cones else np.empty((0, 2), dtype=np.float64)
+            routed_msg.cones.extend(self._build_synthetic_cones(existing_xy=existing, stamp=msg.header.stamp))
+
+        self._update_stop_override_from_routed_cones(routed_cones=routed_msg.cones)
+        if self._stop_override_active:
+            self._publish_stop_cmd(msg.header.stamp)
+        self._cones_pub.publish(routed_msg)
+
+    def _parking_mode_is_active(self) -> bool:
+        if self.event_mode == "acceleration":
+            return bool(self._acceleration_parking_latched)
+        return self._state_machine.active_branch() == "straight"
+
+    def _update_acceleration_parking_latch(
+        self,
+        *,
+        converted_cones: list[ConeDetection],
+        cone_points_odom: np.ndarray,
+    ) -> None:
+        if self.event_mode != "acceleration" or self._acceleration_parking_latched:
+            return
+
+        if self._latest_pose_xy is None or cone_points_odom.size == 0:
+            return
+
+        trigger_distance_m = max(0.0, float(self.acceleration_activation_distance_m))
+        for cone, point_xy in zip(converted_cones, cone_points_odom):
+            if normalize_color(getattr(cone, "color", "")) != "orange":
+                continue
+            dx = float(point_xy[0]) - float(self._latest_pose_xy[0])
+            dy = float(point_xy[1]) - float(self._latest_pose_xy[1])
+            if math.hypot(dx, dy) <= trigger_distance_m:
+                self._acceleration_parking_latched = True
+                return
+
+    def _route_parking_cones(
+        self,
+        *,
+        converted_cones: list[ConeDetection],
+        cone_points_odom: np.ndarray,
+    ) -> list[ConeDetection]:
+        if not converted_cones or cone_points_odom.size == 0:
+            return []
+
+        if self.event_mode == "acceleration":
+            mask = np.ones((cone_points_odom.shape[0],), dtype=bool)
+        else:
+            mask = self._state_machine.route_mask(cone_points_odom)
+        filtered_cones: list[ConeDetection] = []
+        filtered_points: list[np.ndarray] = []
+        for cone, point_xy, keep in zip(converted_cones, cone_points_odom, mask):
+            if not keep:
+                continue
+            if normalize_color(getattr(cone, "color", "")) != "orange":
+                continue
+            filtered_cones.append(cone)
+            filtered_points.append(np.asarray(point_xy, dtype=np.float64))
+
+        orange_points_odom = (
+            np.vstack(filtered_points) if filtered_points else np.empty((0, 2), dtype=np.float64)
+        )
+        stop_line_mask = self._detect_stop_line_cluster_mask(orange_points_odom)
+        if self._stop_line_marker_points_odom is not None and orange_points_odom.size > 0:
+            stop_line_mask = stop_line_mask | self._mask_points_on_latched_stop_line(orange_points_odom)
+        routed: list[ConeDetection] = []
+        orange_count = len(filtered_cones)
+        override_count = 0
+        for idx, (cone, point_xy) in enumerate(zip(filtered_cones, orange_points_odom)):
+            if idx < stop_line_mask.shape[0] and bool(stop_line_mask[idx]):
+                continue
+            routed_cone = deepcopy(cone)
+            boundary_color = self._boundary_color_for_odom_point(float(point_xy[0]), float(point_xy[1]))
+            existing_boundary = str(getattr(routed_cone, "boundary_color", "")).strip().lower()
+            if existing_boundary and existing_boundary != boundary_color:
+                override_count += 1
+            routed_cone.boundary_color = boundary_color
+            routed.append(routed_cone)
+
+        self._orange_only_cone_count = orange_count
+        self._parking_boundary_override_count = override_count
+        return routed
+
+    def _convert_cones_to_odom(
+        self,
+        msg: ConeDetectionArray,
+    ) -> tuple[Optional[np.ndarray], list[ConeDetection]]:
+        if self._latest_pose_xy is None:
+            return None, []
+
+        source_frame = str(msg.header.frame_id).strip() or self.odom_frame
+        odom_points: list[tuple[float, float]] = []
+        routed_cones: list[ConeDetection] = []
+        for cone in msg.cones:
+            x_odom, y_odom = self._point_to_odom(
+                x_m=float(cone.position.x),
+                y_m=float(cone.position.y),
+                source_frame=source_frame,
+            )
+            routed_cone = deepcopy(cone)
+            routed_cone.position.x = float(x_odom)
+            routed_cone.position.y = float(y_odom)
+            routed_cone.position.z = float(cone.position.z)
+            odom_points.append((x_odom, y_odom))
+            routed_cones.append(routed_cone)
+
+        return np.asarray(odom_points, dtype=np.float64), routed_cones
+
+    def _point_to_odom(self, *, x_m: float, y_m: float, source_frame: str) -> tuple[float, float]:
+        normalized = str(source_frame).strip()
+        if not normalized or normalized == self.odom_frame:
+            return float(x_m), float(y_m)
+        if normalized in self.base_frame_aliases:
+            odom_x, odom_y = self._latest_pose_xy if self._latest_pose_xy is not None else (0.0, 0.0)
+            cos_yaw = math.cos(self._latest_yaw_rad)
+            sin_yaw = math.sin(self._latest_yaw_rad)
+            x_odom = odom_x + (cos_yaw * float(x_m)) - (sin_yaw * float(y_m))
+            y_odom = odom_y + (sin_yaw * float(x_m)) + (cos_yaw * float(y_m))
+            return x_odom, y_odom
+
+        self._throttled_warn(f"unknown cone frame '{normalized}', assuming odom geometry")
+        return float(x_m), float(y_m)
+
+    def _vehicle_frame_lateral_y_for_odom_point(self, x_m: float, y_m: float) -> float:
+        odom_x, odom_y = self._latest_pose_xy if self._latest_pose_xy is not None else (0.0, 0.0)
+        dx = float(x_m) - float(odom_x)
+        dy = float(y_m) - float(odom_y)
+        return (-math.sin(self._latest_yaw_rad) * dx) + (math.cos(self._latest_yaw_rad) * dy)
+
+    def _boundary_color_for_odom_point(self, x_m: float, y_m: float) -> str:
+        lateral_y = self._vehicle_frame_lateral_y_for_odom_point(x_m, y_m)
+        return boundary_color_from_lateral_y(lateral_y)
+
+    def _odom_points_to_vehicle_frame(self, points_xy: np.ndarray) -> np.ndarray:
+        if points_xy.size == 0 or self._latest_pose_xy is None:
+            return np.empty((0, 2), dtype=np.float64)
+        rel = np.asarray(points_xy, dtype=np.float64) - np.asarray(self._latest_pose_xy, dtype=np.float64).reshape(1, 2)
+        cos_yaw = math.cos(self._latest_yaw_rad)
+        sin_yaw = math.sin(self._latest_yaw_rad)
+        x_forward = (cos_yaw * rel[:, 0]) + (sin_yaw * rel[:, 1])
+        y_lateral = (-sin_yaw * rel[:, 0]) + (cos_yaw * rel[:, 1])
+        return np.column_stack((x_forward, y_lateral))
+
+    def _update_stop_override_from_routed_cones(self, *, routed_cones: list[ConeDetection]) -> None:
+        if self._stop_line_marker_points_odom is not None:
+            self._update_latched_stop_line_distance_from_pose()
+            return
+
+        if not self._parking_mode_active or not routed_cones:
+            self._stop_line_forward_distance_m = float("nan")
+            return
+
+        orange_points = np.asarray(
+            [
+                [float(cone.position.x), float(cone.position.y)]
+                for cone in routed_cones
+                if normalize_color(getattr(cone, "color", "")) == "orange"
+            ],
+            dtype=np.float64,
+        ) if routed_cones else np.empty((0, 2), dtype=np.float64)
+        if orange_points.size == 0:
+            return
+
+        orange_vehicle_points = self._odom_points_to_vehicle_frame(orange_points)
+        stop_line_forward_m = detect_stop_line_forward_distance_m(
+            orange_vehicle_points,
+            cluster_depth_m=self.stop_line_cluster_depth_m,
+            min_lateral_span_m=self.stop_line_min_lateral_span_m,
+            min_cluster_count=self.stop_line_min_cluster_count,
+            min_points_per_side=self.stop_line_min_points_per_side,
+        )
+        if stop_line_forward_m is None:
+            self._stop_line_forward_distance_m = float("nan")
+            return
+
+        self._stop_line_forward_distance_m = float(stop_line_forward_m)
+        if float(stop_line_forward_m) <= max(0.0, float(self.stop_margin_m)):
+            self._stop_override_active = True
+
+    def _clear_stop_line_state(self) -> None:
+        self._stop_line_forward_distance_m = float("nan")
+        self._stop_line_marker_points_odom = None
+        self._stop_override_active = False
+
+    def _update_latched_stop_line_distance_from_pose(self) -> None:
+        if self._latest_pose_xy is None or self._stop_line_marker_points_odom is None:
+            if not self._stop_override_active:
+                self._stop_line_forward_distance_m = float("nan")
+            return
+
+        left_xy, right_xy = self._stop_line_marker_points_odom
+        midpoint = np.asarray(
+            [[0.5 * (float(left_xy[0]) + float(right_xy[0])), 0.5 * (float(left_xy[1]) + float(right_xy[1]))]],
+            dtype=np.float64,
+        )
+        midpoint_vehicle = self._odom_points_to_vehicle_frame(midpoint)
+        if midpoint_vehicle.size == 0:
+            return
+
+        self._stop_line_forward_distance_m = float(midpoint_vehicle[0, 0])
+        if float(self._stop_line_forward_distance_m) <= max(0.0, float(self.stop_margin_m)):
+            self._stop_override_active = True
+
+    def _mask_points_on_latched_stop_line(self, orange_points_odom: np.ndarray) -> np.ndarray:
+        if orange_points_odom.size == 0 or self._stop_line_marker_points_odom is None:
+            return np.zeros((orange_points_odom.shape[0],), dtype=bool)
+
+        left_xy, right_xy = self._stop_line_marker_points_odom
+        p0 = np.asarray(left_xy, dtype=np.float64)
+        p1 = np.asarray(right_xy, dtype=np.float64)
+        line_vec = p1 - p0
+        line_len = float(np.linalg.norm(line_vec))
+        if line_len <= 1e-6:
+            return np.zeros((orange_points_odom.shape[0],), dtype=bool)
+
+        tangent = line_vec / line_len
+        normal = np.asarray([-tangent[1], tangent[0]], dtype=np.float64)
+        rel = np.asarray(orange_points_odom, dtype=np.float64) - p0.reshape(1, 2)
+        along = rel @ tangent
+        normal_dist = np.abs(rel @ normal)
+        along_margin_m = 0.5
+        normal_margin_m = max(0.75, float(self.stop_line_cluster_depth_m))
+        return (
+            (along >= -along_margin_m)
+            & (along <= (line_len + along_margin_m))
+            & (normal_dist <= normal_margin_m)
+        )
+
+    def _detect_stop_line_cluster_mask(self, orange_points_odom: np.ndarray) -> np.ndarray:
+        if orange_points_odom.size == 0:
+            return np.empty((0,), dtype=bool)
+
+        orange_vehicle_points = self._odom_points_to_vehicle_frame(orange_points_odom)
+        valid_mask = np.isfinite(orange_vehicle_points).all(axis=1) & (orange_vehicle_points[:, 0] > 0.0)
+        min_cluster_count = int(max(2, self.stop_line_min_cluster_count))
+        if int(np.count_nonzero(valid_mask)) < min_cluster_count:
+            return np.zeros((orange_points_odom.shape[0],), dtype=bool)
+
+        max_forward_m = float(np.max(orange_vehicle_points[valid_mask, 0]))
+        cluster_mask = valid_mask & (
+            orange_vehicle_points[:, 0] >= (max_forward_m - max(0.0, float(self.stop_line_cluster_depth_m)))
+        )
+        cluster = orange_vehicle_points[cluster_mask]
+        if cluster.shape[0] < min_cluster_count:
+            return np.zeros((orange_points_odom.shape[0],), dtype=bool)
+
+        lateral_min_m = float(np.min(cluster[:, 1]))
+        lateral_max_m = float(np.max(cluster[:, 1]))
+        lateral_span_m = lateral_max_m - lateral_min_m
+        if lateral_span_m < max(0.0, float(self.stop_line_min_lateral_span_m)):
+            return np.zeros((orange_points_odom.shape[0],), dtype=bool)
+
+        left_count = int(np.count_nonzero(cluster[:, 1] >= 0.0))
+        right_count = int(np.count_nonzero(cluster[:, 1] < 0.0))
+        if left_count < int(max(0, self.stop_line_min_points_per_side)) or right_count < int(
+            max(0, self.stop_line_min_points_per_side)
+        ):
+            return np.zeros((orange_points_odom.shape[0],), dtype=bool)
+
+        forward_distance_m = float(np.median(cluster[:, 0]))
+        self._stop_line_forward_distance_m = forward_distance_m
+        lateral_padding_m = 0.1
+        self._stop_line_marker_points_odom = self._vehicle_line_to_odom_endpoints(
+            forward_distance_m=forward_distance_m,
+            lateral_min_m=lateral_min_m - lateral_padding_m,
+            lateral_max_m=lateral_max_m + lateral_padding_m,
+        )
+        return cluster_mask
+
+    def _vehicle_line_to_odom_endpoints(
+        self,
+        *,
+        forward_distance_m: float,
+        lateral_min_m: float,
+        lateral_max_m: float,
+    ) -> tuple[tuple[float, float], tuple[float, float]]:
+        odom_x, odom_y = self._latest_pose_xy if self._latest_pose_xy is not None else (0.0, 0.0)
+        cos_yaw = math.cos(self._latest_yaw_rad)
+        sin_yaw = math.sin(self._latest_yaw_rad)
+
+        def _to_odom(lateral_y_m: float) -> tuple[float, float]:
+            x_val = float(odom_x) + (float(forward_distance_m) * cos_yaw) - (float(lateral_y_m) * sin_yaw)
+            y_val = float(odom_y) + (float(forward_distance_m) * sin_yaw) + (float(lateral_y_m) * cos_yaw)
+            return (x_val, y_val)
+
+        return (_to_odom(lateral_min_m), _to_odom(lateral_max_m))
+
+    def _stop_override_timer_cb(self) -> None:
+        if not self._stop_override_active:
+            return
+
+        stamp = self._latest_odom_stamp
+        if stamp is None:
+            stamp = self.get_clock().now().to_msg()
+        self._publish_stop_cmd(stamp)
+
+    def _publish_stop_cmd(self, stamp) -> None:
+        msg = AckermannDriveStamped()
+        msg.header.stamp = stamp
+        msg.drive.speed = 0.0
+        msg.drive.steering_angle = 0.0
+        self._cmd_pub.publish(msg)
+
+    def _build_synthetic_cones(self, *, existing_xy: np.ndarray, stamp) -> list[ConeDetection]:
+        cones: list[ConeDetection] = []
+        for idx, point_xy in enumerate(self._state_machine.synthetic_cone_pairs()):
+            if existing_xy.size > 0:
+                distances = np.linalg.norm(existing_xy - point_xy.reshape(1, 2), axis=1)
+                if float(np.min(distances)) < 0.75:
+                    continue
+            cone = ConeDetection()
+            cone.color = "orange"
+            cone.boundary_color = self._boundary_color_for_odom_point(float(point_xy[0]), float(point_xy[1]))
+            cone.position.x = float(point_xy[0])
+            cone.position.y = float(point_xy[1])
+            cone.position.z = 0.0
+            cone.confidence = 1.0
+            cone.track_id = int(4_000_000_000 + idx)
+            cone.track_state = ConeDetection.TRACK_STATE_CONFIRMED
+            cone.track_confidence = 1.0
+            cone.color_confidence = 1.0
+            cone.seen_count = 1
+            cone.consecutive_seen_count = 1
+            cone.missed_count = 0
+            cone.first_seen = stamp
+            cone.last_seen = stamp
+            cones.append(cone)
+        return cones
+
+    def _publish_diagnostics(self, stamp) -> None:
+        snapshot = self._latest_snapshot
+        status = DiagnosticStatus()
+        status.name = "skidpad_router/state"
+        status.level = DiagnosticStatus.OK
+        status.message = snapshot.stage_name
+        status.hardware_id = self.get_name()
+        status.values = [
+            KeyValue(key="stage_name", value=snapshot.stage_name),
+            KeyValue(key="active_branch", value=snapshot.active_branch),
+            KeyValue(key="completed_laps", value=str(snapshot.completed_laps)),
+            KeyValue(key="route_index", value=str(snapshot.route_index)),
+            KeyValue(key="in_crossroads", value=str(int(snapshot.in_crossroads))),
+            KeyValue(key="lap_angle_accum_rad", value=f"{snapshot.lap_angle_accum_rad:.6f}"),
+            KeyValue(key="lap_armed", value=str(int(snapshot.lap_armed))),
+            KeyValue(key="parked", value=str(int(snapshot.parked))),
+            KeyValue(key="parking_mode_active", value=str(int(self._parking_mode_active))),
+            KeyValue(key="orange_only_cone_count", value=str(int(self._orange_only_cone_count))),
+            KeyValue(
+                key="parking_boundary_override_count",
+                value=str(int(self._parking_boundary_override_count)),
+            ),
+            KeyValue(key="stop_override_active", value=str(int(self._stop_override_active))),
+            KeyValue(key="stop_line_latched", value=str(int(self._stop_line_marker_points_odom is not None))),
+            KeyValue(key="stop_line_forward_distance_m", value=f"{self._stop_line_forward_distance_m:.6f}"),
+            KeyValue(key="vehicle_speed_mps", value=f"{self._latest_speed_mps:.6f}"),
+        ]
+        msg = DiagnosticArray()
+        msg.header.stamp = stamp
+        msg.header.frame_id = self.odom_frame
+        msg.status = [status]
+        self._diag_pub.publish(msg)
+
+    def _publish_markers(self, stamp) -> None:
+        snapshot = self._latest_snapshot
+        cfg = self._state_machine.config
+        markers = MarkerArray()
+
+        text_marker = Marker()
+        text_marker.header.frame_id = self.odom_frame
+        text_marker.header.stamp = stamp
+        text_marker.ns = "stage_text"
+        text_marker.id = 0
+        text_marker.type = Marker.TEXT_VIEW_FACING
+        text_marker.action = Marker.ADD
+        text_marker.pose.position.x = float(cfg.crossroads_center_xy[0])
+        text_marker.pose.position.y = float(cfg.crossroads_center_xy[1])
+        text_marker.pose.position.z = 1.5
+        text_marker.scale.z = 0.9
+        text_marker.color.a = 1.0
+        text_marker.color.r = 1.0
+        text_marker.color.g = 1.0
+        text_marker.color.b = 1.0
+        text_marker.text = (
+            f"stage={snapshot.stage_name} branch={snapshot.active_branch} "
+            f"laps={snapshot.completed_laps} armed={int(snapshot.lap_armed)}"
+        )
+        markers.markers.append(text_marker)
+
+        markers.markers.append(
+            self._make_circle_marker(
+                marker_id=1,
+                stamp=stamp,
+                center_xy=cfg.left_circle_center_xy,
+                radius_m=float(np.mean(cfg.circle_radius_window_m)),
+                color_rgb=(0.1, 0.5, 1.0),
+                ns="left_circle",
+            )
+        )
+        markers.markers.append(
+            self._make_circle_marker(
+                marker_id=2,
+                stamp=stamp,
+                center_xy=cfg.right_circle_center_xy,
+                radius_m=float(np.mean(cfg.circle_radius_window_m)),
+                color_rgb=(1.0, 0.85, 0.1),
+                ns="right_circle",
+            )
+        )
+        markers.markers.append(self._make_crossroads_marker(marker_id=3, stamp=stamp))
+        markers.markers.append(self._make_stop_line_marker(marker_id=4, stamp=stamp))
+        self._viz_pub.publish(markers)
+
+    def _make_crossroads_marker(self, *, marker_id: int, stamp) -> Marker:
+        cfg = self._state_machine.config
+        cx, cy = cfg.crossroads_center_xy
+        hx, hy = cfg.crossroads_half_extents_xy
+        corners = [
+            (cx - hx, cy - hy),
+            (cx + hx, cy - hy),
+            (cx + hx, cy + hy),
+            (cx - hx, cy + hy),
+            (cx - hx, cy - hy),
+        ]
+        marker = Marker()
+        marker.header.frame_id = self.odom_frame
+        marker.header.stamp = stamp
+        marker.ns = "crossroads"
+        marker.id = marker_id
+        marker.type = Marker.LINE_STRIP
+        marker.action = Marker.ADD
+        marker.scale.x = 0.15
+        marker.color.a = 1.0
+        marker.color.r = 1.0
+        marker.color.g = 0.5
+        marker.color.b = 0.0
+        marker.points = [Point(x=float(x), y=float(y), z=0.05) for x, y in corners]
+        return marker
+
+    def _make_circle_marker(
+        self,
+        *,
+        marker_id: int,
+        stamp,
+        center_xy: tuple[float, float],
+        radius_m: float,
+        color_rgb: tuple[float, float, float],
+        ns: str,
+    ) -> Marker:
+        marker = Marker()
+        marker.header.frame_id = self.odom_frame
+        marker.header.stamp = stamp
+        marker.ns = ns
+        marker.id = marker_id
+        marker.type = Marker.LINE_STRIP
+        marker.action = Marker.ADD
+        marker.scale.x = 0.12
+        marker.color.a = 0.85
+        marker.color.r = float(color_rgb[0])
+        marker.color.g = float(color_rgb[1])
+        marker.color.b = float(color_rgb[2])
+        cx, cy = center_xy
+        marker.points = [
+            Point(
+                x=float(cx + (radius_m * math.cos(theta))),
+                y=float(cy + (radius_m * math.sin(theta))),
+                z=0.05,
+            )
+            for theta in np.linspace(0.0, 2.0 * math.pi, 33)
+        ]
+        return marker
+
+    def _make_stop_line_marker(self, *, marker_id: int, stamp) -> Marker:
+        marker = Marker()
+        marker.header.frame_id = self.odom_frame
+        marker.header.stamp = stamp
+        marker.ns = "stop_line"
+        marker.id = marker_id
+        marker.type = Marker.LINE_STRIP
+        marker.scale.x = 0.18
+        marker.color.a = 1.0
+        marker.color.r = 1.0
+        marker.color.g = 0.0
+        marker.color.b = 0.0
+
+        if (
+            self._latest_pose_xy is None
+            or not self._parking_mode_active
+            or self._stop_line_marker_points_odom is None
+        ):
+            marker.action = Marker.DELETE
+            return marker
+
+        marker.action = Marker.ADD
+        left_point_xy, right_point_xy = self._stop_line_marker_points_odom
+        marker.points = [
+            Point(x=float(left_point_xy[0]), y=float(left_point_xy[1]), z=0.08),
+            Point(x=float(right_point_xy[0]), y=float(right_point_xy[1]), z=0.08),
+        ]
+        return marker
+
+    def _throttled_warn(self, message: str, throttle_s: float = 1.0) -> None:
+        now_sec = self.get_clock().now().nanoseconds * 1e-9
+        if self._last_warn_sec < 0.0 or (now_sec - self._last_warn_sec) >= float(throttle_s):
+            self.get_logger().warn(message)
+            self._last_warn_sec = now_sec
+
+
+def _yaw_from_quaternion(x: float, y: float, z: float, w: float) -> float:
+    siny_cosp = 2.0 * ((w * z) + (x * y))
+    cosy_cosp = 1.0 - (2.0 * ((y * y) + (z * z)))
+    return math.atan2(siny_cosp, cosy_cosp)
+
+
+def main(args: Optional[list[str]] = None) -> None:
+    rclpy.init(args=args)
+    node = SkidpadRouterNode()
+    try:
+        rclpy.spin(node)
+    except (KeyboardInterrupt, ExternalShutdownException):
+        pass
+    finally:
+        node.destroy_node()
+        if rclpy.ok():
+            rclpy.shutdown()
+
+
+if __name__ == "__main__":
+    main()

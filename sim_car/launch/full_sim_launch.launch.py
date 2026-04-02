@@ -984,6 +984,51 @@ def generate_launch_description():
         ])),
     )
 
+    planner_input_topic = PythonExpression([
+        "'/tracked_cones/skidpad_routed' if '",
+        LaunchConfiguration('track'),
+        "'.lower() in ('skidpad', 'acceleration') else ('/tracked_cones' if '",
+        LaunchConfiguration('cone_memory_enabled'),
+        "'.lower() == 'true' else '",
+        topic_prefix,
+        "' + '/stereo/perception/cones_3d')",
+    ])
+    router_input_topic = PythonExpression([
+        "'/tracked_cones' if '",
+        LaunchConfiguration('cone_memory_enabled'),
+        "'.lower() == 'true' else '",
+        topic_prefix,
+        "' + '/stereo/perception/cones_3d'",
+    ])
+
+    skidpad_router_node = Node(
+        package='sim_car',
+        executable='skidpad_router_node',
+        name='skidpad_router_node',
+        output='screen',
+        parameters=[
+            PathJoinSubstitution([sim_car_share, 'config', 'skidpad', 'skidpad_router.yaml']),
+            {
+                'use_sim_time': ParameterValue(
+                    LaunchConfiguration('use_sim_time'),
+                    value_type=bool,
+                ),
+                'topics.input_topic': router_input_topic,
+                'topics.output_topic': '/tracked_cones/skidpad_routed',
+                'topics.odom_topic': '/sim/odom',
+                'topics.cmd_topic': '/cmd',
+                'routing.event_mode': LaunchConfiguration('track'),
+            },
+        ],
+        condition=IfCondition(PythonExpression([
+            "'",
+            LaunchConfiguration('track'),
+            "'.lower() in ('skidpad', 'acceleration') and '",
+            LaunchConfiguration('planner'),
+            "'.lower() in ('midpoint', 'single_boundary', 'corridor')"
+        ])),
+    )
+
     midpoint_planner_node = Node(
         package='sim_car',
         executable='midpoint_planner_node',
@@ -997,13 +1042,7 @@ def generate_launch_description():
                     LaunchConfiguration('use_sim_time'),
                     value_type=bool,
                 ),
-                'topics.tracked_cones_topic': PythonExpression([
-                    "'/tracked_cones' if '",
-                    LaunchConfiguration('cone_memory_enabled'),
-                    "'.lower() == 'true' else '",
-                    topic_prefix,
-                    "' + '/stereo/perception/cones_3d'",
-                ]),
+                'topics.tracked_cones_topic': planner_input_topic,
                 'topics.odom_topic': '/sim/odom',
                 'runtime.publish_rate_hz': ParameterValue(
                     LaunchConfiguration('planner_rate_hz'),
@@ -1035,13 +1074,7 @@ def generate_launch_description():
                     LaunchConfiguration('use_sim_time'),
                     value_type=bool,
                 ),
-                'topics.tracked_cones_topic': PythonExpression([
-                    "'/tracked_cones' if '",
-                    LaunchConfiguration('cone_memory_enabled'),
-                    "'.lower() == 'true' else '",
-                    topic_prefix,
-                    "' + '/stereo/perception/cones_3d'",
-                ]),
+                'topics.tracked_cones_topic': planner_input_topic,
                 'topics.odom_topic': '/sim/odom',
                 'runtime.publish_rate_hz': ParameterValue(
                     LaunchConfiguration('planner_rate_hz'),
@@ -1073,13 +1106,7 @@ def generate_launch_description():
                     LaunchConfiguration('use_sim_time'),
                     value_type=bool,
                 ),
-                'topics.tracked_cones_topic': PythonExpression([
-                    "'/tracked_cones' if '",
-                    LaunchConfiguration('cone_memory_enabled'),
-                    "'.lower() == 'true' else '",
-                    topic_prefix,
-                    "' + '/stereo/perception/cones_3d'",
-                ]),
+                'topics.tracked_cones_topic': planner_input_topic,
                 'topics.odom_topic': '/sim/odom',
                 'runtime.publish_rate_hz': ParameterValue(
                     LaunchConfiguration('planner_rate_hz'),
@@ -1218,6 +1245,7 @@ def generate_launch_description():
         lidar_cone_evaluator_node,
         cone_memory_node,
         delaunay_planner_node,
+        skidpad_router_node,
         midpoint_planner_node,
         single_boundary_planner_node,
         corridor_planner_node,
