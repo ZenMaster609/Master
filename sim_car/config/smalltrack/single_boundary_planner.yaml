@@ -15,7 +15,7 @@ single_boundary_planner_node:
       odom_topic: "/sim/odom"
 
     filtering:
-      max_cone_range_m: 25.0
+      max_cone_range_m: 20.0
       behind_drop_m: 5.0
       min_confidence: 0.3
       min_required_cones: 4
@@ -60,7 +60,7 @@ single_boundary_planner_node:
       max_heading_delta_rad: 0.75
 
     midline_memory:
-      horizon_m: 30.0
+      horizon_m: 20.0
       station_spacing_m: 0.5
       near_distance_m: 4.0
       mid_distance_m: 12.0

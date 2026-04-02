@@ -55,6 +55,7 @@ from ..logging.path_tracking_eval import (
     write_path_tracking_summary_files,
 )
 from ..logging.path_tracking_eval_plots import (
+    build_skidpad_gt_overlay_segments,
     generate_path_tracking_cte_plot,
     generate_path_tracking_overlay_plot,
 )
@@ -140,6 +141,7 @@ class LoggerNode(Node):
         self.declare_parameter('path_tracking_eval_gt_track_topic', '/ground_truth/track')
         self.declare_parameter('path_tracking_eval_odom_topic', '/sim/odom')
         self.declare_parameter('path_tracking_eval_planner_path_topic', '/planned_centerline')
+        self.declare_parameter('path_tracking_eval_track_name', '')
         self.declare_parameter('path_tracking_eval_tf_timeout_sec', 0.05)
         self.declare_parameter('path_tracking_eval_filename', 'path_tracking_eval.csv')
         self.declare_parameter('path_tracking_eval_summary_json', 'path_tracking_eval_summary.json')
@@ -228,6 +230,9 @@ class LoggerNode(Node):
         self._path_tracking_eval_planner_path_topic = str(
             self.get_parameter('path_tracking_eval_planner_path_topic').value
         ).strip() or '/planned_centerline'
+        self._path_tracking_eval_track_name = str(
+            self.get_parameter('path_tracking_eval_track_name').value
+        ).strip().lower()
         self._path_tracking_eval_tf_timeout_sec = max(
             0.0,
             float(self.get_parameter('path_tracking_eval_tf_timeout_sec').value),
@@ -1321,13 +1326,40 @@ class LoggerNode(Node):
 
         try:
             overlay_path = self._run_session.plots_path / 'path_tracking_eval_overlay.png'
+            overlay_segments_xy = None
+            overlay_midline_xy = self._path_eval_last_gt_midline_xy
+            overlay_blue_xy = self._path_eval_last_gt_left_xy
+            overlay_yellow_xy = self._path_eval_last_gt_right_xy
+            if self._path_tracking_eval_track_name == 'skidpad':
+                overlay_segments_xy = build_skidpad_gt_overlay_segments()
+                overlay_midline_xy = np.empty((0, 2), dtype=np.float64)
+                overlay_blue_xy = np.empty((0, 2), dtype=np.float64)
+                overlay_yellow_xy = np.empty((0, 2), dtype=np.float64)
+                target_frame = str(self._path_eval_last_target_frame).strip()
+                stamp = self._path_eval_planner_stamp if self._path_eval_planner_stamp is not None else self._path_eval_vehicle_stamp
+                if target_frame and stamp is not None:
+                    transformed_segments: list[np.ndarray] = []
+                    for segment_xy in overlay_segments_xy:
+                        transformed_segment = self._path_eval_transform_path_to_frame(
+                            segment_xy,
+                            source_frame='map',
+                            target_frame=target_frame,
+                            stamp=stamp,
+                        )
+                        transformed_segments.append(
+                            np.asarray(transformed_segment, dtype=np.float64)
+                            if transformed_segment is not None
+                            else np.asarray(segment_xy, dtype=np.float64)
+                        )
+                    overlay_segments_xy = transformed_segments
             generated_overlay = generate_path_tracking_overlay_plot(
                 csv_path,
                 overlay_path,
-                gt_midline_xy=self._path_eval_last_gt_midline_xy,
-                gt_left_xy=self._path_eval_last_gt_left_xy,
-                gt_right_xy=self._path_eval_last_gt_right_xy,
+                gt_midline_xy=overlay_midline_xy,
+                gt_left_xy=overlay_blue_xy,
+                gt_right_xy=overlay_yellow_xy,
                 planner_trace_xy=planner_trace_xy,
+                gt_overlay_segments_xy=overlay_segments_xy,
             )
             if generated_overlay is not None:
                 self._safe_log_info(f'Generated path tracking overlay plot: {generated_overlay}')

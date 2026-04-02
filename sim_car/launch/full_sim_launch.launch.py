@@ -692,6 +692,7 @@ def generate_launch_description():
             'path_tracking_eval_gt_track_topic': '/ground_truth/track',
             'path_tracking_eval_odom_topic': '/sim/odom',
             'path_tracking_eval_planner_path_topic': '/planned_centerline',
+            'path_tracking_eval_track_name': LaunchConfiguration('track'),
         }.items(),
     )
 

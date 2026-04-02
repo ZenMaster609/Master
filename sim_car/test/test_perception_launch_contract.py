@@ -59,6 +59,7 @@ def test_full_launch_declares_and_passes_path_tracking_eval():
     assert "'path_tracking_eval_gt_track_topic': '/ground_truth/track'" in content
     assert "'path_tracking_eval_odom_topic': '/sim/odom'" in content
     assert "'path_tracking_eval_planner_path_topic': '/planned_centerline'" in content
+    assert "'path_tracking_eval_track_name': LaunchConfiguration('track')" in content
 
 
 def test_full_launch_declares_camera_cone_rmse_plotting_and_wires_it():

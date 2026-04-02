@@ -24,7 +24,9 @@ def test_logger_and_plotter_launch_expose_path_tracking_eval():
     assert "self.declare_parameter('path_tracking_eval_gt_track_topic', '/ground_truth/track')" in logger_content
     assert "self.declare_parameter('path_tracking_eval_odom_topic', '/sim/odom')" in logger_content
     assert "self.declare_parameter('path_tracking_eval_planner_path_topic', '/planned_centerline')" in logger_content
+    assert "self.declare_parameter('path_tracking_eval_track_name', '')" in logger_content
     assert '"path_tracking_eval_enabled"' in launch_content
     assert '"path_tracking_eval_gt_track_topic"' in launch_content
     assert '"path_tracking_eval_odom_topic"' in launch_content
     assert '"path_tracking_eval_planner_path_topic"' in launch_content
+    assert '"path_tracking_eval_track_name"' in launch_content

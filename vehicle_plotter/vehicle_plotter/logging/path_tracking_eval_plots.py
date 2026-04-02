@@ -108,6 +108,55 @@ def _mean_distance_to_polyline_m(points_xy: np.ndarray, path_xy: np.ndarray) -> 
     return float(np.mean(finite))
 
 
+def _normalize_polyline_set(paths_xy: Optional[list[np.ndarray]]) -> list[np.ndarray]:
+    if not paths_xy:
+        return []
+    normalized: list[np.ndarray] = []
+    for path_xy in paths_xy:
+        arr = np.asarray(path_xy, dtype=np.float64)
+        if arr.ndim == 2 and arr.shape[0] > 0:
+            normalized.append(arr)
+    return normalized
+
+
+def _point_to_polyline_set_distance_m(point_xy: np.ndarray, paths_xy: list[np.ndarray]) -> float:
+    if not paths_xy:
+        return float("nan")
+    best = float("inf")
+    for path_xy in paths_xy:
+        dist_m = _point_to_polyline_distance_m(point_xy, path_xy)
+        if math.isfinite(dist_m):
+            best = min(best, dist_m)
+    return best if math.isfinite(best) else float("nan")
+
+
+def _mean_distance_to_polyline_set_m(points_xy: np.ndarray, paths_xy: list[np.ndarray]) -> float:
+    points_xy = np.asarray(points_xy, dtype=np.float64)
+    if points_xy.ndim != 2 or points_xy.shape[0] == 0 or not paths_xy:
+        return float("nan")
+    distances = np.asarray(
+        [_point_to_polyline_set_distance_m(point_xy, paths_xy) for point_xy in points_xy],
+        dtype=np.float64,
+    )
+    finite = distances[np.isfinite(distances)]
+    if finite.size == 0:
+        return float("nan")
+    return float(np.mean(finite))
+
+
+def _estimate_average_track_width_m(left_xy: np.ndarray, right_xy: np.ndarray) -> float:
+    left_xy = np.asarray(left_xy, dtype=np.float64)
+    right_xy = np.asarray(right_xy, dtype=np.float64)
+    if left_xy.ndim != 2 or right_xy.ndim != 2 or left_xy.shape[0] == 0 or right_xy.shape[0] == 0:
+        return float("nan")
+    pair_cost = np.linalg.norm(left_xy[:, None, :] - right_xy[None, :, :], axis=2)
+    nearest = np.concatenate((np.min(pair_cost, axis=1), np.min(pair_cost, axis=0)))
+    finite = nearest[np.isfinite(nearest) & (nearest > 1e-6)]
+    if finite.size == 0:
+        return float("nan")
+    return float(np.mean(finite))
+
+
 def _mean_finite(values: np.ndarray) -> float:
     arr = np.asarray(values, dtype=np.float64)
     finite = arr[np.isfinite(arr)]
@@ -131,15 +180,129 @@ def _mean_abs_cross_track_to_polyline_m(points_xy: np.ndarray, path_xy: np.ndarr
     return float(np.mean(np.asarray(errors, dtype=np.float64)))
 
 
+def _circle_polyline(
+    center_xy: tuple[float, float],
+    radius_m: float,
+    *,
+    sample_count: int = 33,
+) -> np.ndarray:
+    cx, cy = center_xy
+    theta = np.linspace(0.0, 2.0 * math.pi, max(8, int(sample_count)), dtype=np.float64)
+    return np.column_stack(
+        (
+            float(cx) + (float(radius_m) * np.cos(theta)),
+            float(cy) + (float(radius_m) * np.sin(theta)),
+        )
+    ).astype(np.float64)
+
+
+def build_skidpad_gt_overlay_segments(
+    *,
+    left_circle_center_xy: tuple[float, float] = (-9.25, 0.0),
+    right_circle_center_xy: tuple[float, float] = (9.25, 0.0),
+    circle_radius_m: float = 9.0,
+    straight_x_m: float = 0.0,
+    straight_start_y_m: float = -11.0,
+    straight_end_y_m: float = 21.0,
+) -> list[np.ndarray]:
+    return [
+        _circle_polyline(left_circle_center_xy, circle_radius_m),
+        _circle_polyline(right_circle_center_xy, circle_radius_m),
+        np.asarray(
+            [
+                [float(straight_x_m), float(straight_start_y_m)],
+                [float(straight_x_m), float(straight_end_y_m)],
+            ],
+            dtype=np.float64,
+        ),
+    ]
+
+
+def build_skidpad_gt_color_borders() -> tuple[np.ndarray, np.ndarray]:
+    blue_xy = np.asarray(
+        [
+            [-1.637, 0.0],
+            [-2.216, -2.913],
+            [-3.867, -5.382],
+            [-6.336, -7.033],
+            [-9.25, -7.612],
+            [-12.16, -7.033],
+            [-14.63, -5.382],
+            [-16.28, -2.913],
+            [-16.86, 0.0],
+            [-16.28, 2.9131],
+            [-14.63, 5.3828],
+            [-12.16, 7.033],
+            [-9.25, 7.6125],
+            [-6.336, 7.033],
+            [-3.867, 5.3828],
+            [-2.216, 2.9131],
+            [1.7458, 7.5041],
+            [5.1887, 9.8046],
+            [9.25, 10.612],
+            [13.311, 9.8046],
+            [16.754, 7.5041],
+            [19.054, 4.0612],
+            [19.862, 0.0],
+            [19.054, -4.061],
+            [16.754, -7.504],
+            [13.311, -9.804],
+            [9.25, -10.61],
+            [5.1887, -9.804],
+            [1.7458, -7.504],
+            [-1.637, 0.0],
+        ],
+        dtype=np.float64,
+    )
+    yellow_xy = np.asarray(
+        [
+            [16.862, 0.0],
+            [16.283, -2.913],
+            [14.632, -5.382],
+            [12.163, -7.033],
+            [9.25, -7.612],
+            [6.3368, -7.033],
+            [3.8671, -5.382],
+            [2.2169, -2.913],
+            [1.6375, 0.0],
+            [2.2169, 2.9131],
+            [3.8671, 5.3828],
+            [6.3368, 7.033],
+            [9.25, 7.6125],
+            [12.163, 7.033],
+            [14.632, 5.3828],
+            [16.283, 2.9131],
+            [-1.745, 7.5041],
+            [-5.188, 9.8046],
+            [-9.25, 10.612],
+            [-13.31, 9.8046],
+            [-16.75, 7.5041],
+            [-19.05, 4.0612],
+            [-19.86, 0.0],
+            [-19.05, -4.061],
+            [-16.75, -7.504],
+            [-13.31, -9.8],
+            [-9.25, -10.61],
+            [-5.188, -9.804],
+            [-1.745, -7.504],
+            [16.862, 0.0],
+        ],
+        dtype=np.float64,
+    )
+    return blue_xy, yellow_xy
+
+
 def compute_path_tracking_overlay_average_distances(
     csv_path: Path,
     *,
     gt_midline_xy: np.ndarray,
     planner_trace_xy: np.ndarray,
+    gt_reference_segments_xy: Optional[list[np.ndarray]] = None,
 ) -> dict[str, float]:
     rows = _read_rows(csv_path)
     gt_midline_xy = np.asarray(gt_midline_xy, dtype=np.float64)
     planner_trace_xy = np.asarray(planner_trace_xy, dtype=np.float64)
+    gt_reference_segments_xy = _normalize_polyline_set(gt_reference_segments_xy)
     if not rows:
         return {
             "planner_vs_gt_avg_dist_m": float("nan"),
@@ -148,11 +311,18 @@ def compute_path_tracking_overlay_average_distances(
         }
 
     planner_reference_xy = _xy_series(rows, "planner_reference_x_m", "planner_reference_y_m")
+    vehicle_xy = _xy_series(rows, "vehicle_x_m", "vehicle_y_m")
     controller_vs_planner_cte = np.abs(_series(rows, "controller_vs_planner_cte_m"))
     controller_vs_gt_cte = np.abs(_series(rows, "controller_vs_gt_cte_m"))
+    if gt_reference_segments_xy:
+        planner_vs_gt_avg_dist_m = _mean_distance_to_polyline_set_m(planner_reference_xy, gt_reference_segments_xy)
+        controller_vs_gt_avg_dist_m = _mean_distance_to_polyline_set_m(vehicle_xy, gt_reference_segments_xy)
+    else:
+        planner_vs_gt_avg_dist_m = _mean_abs_cross_track_to_polyline_m(planner_reference_xy, gt_midline_xy)
+        controller_vs_gt_avg_dist_m = _mean_finite(controller_vs_gt_cte)
     return {
-        "planner_vs_gt_avg_dist_m": _mean_abs_cross_track_to_polyline_m(planner_reference_xy, gt_midline_xy),
-        "controller_vs_gt_avg_dist_m": _mean_finite(controller_vs_gt_cte),
+        "planner_vs_gt_avg_dist_m": planner_vs_gt_avg_dist_m,
+        "controller_vs_gt_avg_dist_m": controller_vs_gt_avg_dist_m,
         "controller_vs_planner_avg_dist_m": _mean_finite(controller_vs_planner_cte),
     }
 
@@ -161,6 +331,23 @@ def _format_distance_cm(value_m: float) -> str:
     if not math.isfinite(value_m):
         return "n/a"
     return f"{value_m * 100.0:.2f} cm"
+
+
+def _format_error_percent_of_half_width(value_m: float, track_width_m: float) -> str:
+    if not math.isfinite(value_m) or not math.isfinite(track_width_m):
+        return "n/a"
+    half_width_m = 0.5 * float(track_width_m)
+    if half_width_m <= 1e-9:
+        return "n/a"
+    return f"{(100.0 * float(value_m) / half_width_m):.2f}%"
+
+
+def _format_distance_with_half_width_percent(value_m: float, track_width_m: float) -> str:
+    distance_text = _format_distance_cm(value_m)
+    percent_text = _format_error_percent_of_half_width(value_m, track_width_m)
+    if distance_text == "n/a" or percent_text == "n/a":
+        return distance_text
+    return f"{distance_text} ({percent_text})"
 
 
 def generate_path_tracking_cte_plot(
@@ -180,12 +367,16 @@ def generate_path_tracking_cte_plot(
     import matplotlib.pyplot as plt
 
     t = _relative_time(rows)
+    planner_vs_gt = _series(rows, "planner_vs_gt_cte_rms_m")
     cte_planner = _series(rows, "controller_vs_planner_cte_m")
     cte_gt = _series(rows, "controller_vs_gt_cte_m")
 
     fig, ax = plt.subplots(figsize=(12.0, 5.0))
+    valid_planner_vs_gt = np.isfinite(t) & np.isfinite(planner_vs_gt)
     valid_planner = np.isfinite(t) & np.isfinite(cte_planner)
     valid_gt = np.isfinite(t) & np.isfinite(cte_gt)
+    if np.any(valid_planner_vs_gt):
+        ax.plot(t[valid_planner_vs_gt], planner_vs_gt[valid_planner_vs_gt], color="#2ca02c", linewidth=1.8, label="Planner vs GT")
     if np.any(valid_planner):
         ax.plot(t[valid_planner], cte_planner[valid_planner], color="#d62728", linewidth=1.8, label="Controller vs Planner")
     if np.any(valid_gt):
@@ -193,7 +384,7 @@ def generate_path_tracking_cte_plot(
     ax.axhline(0.0, color="#7f7f7f", linewidth=1.0, alpha=0.6)
     ax.set_title(title)
     ax.set_xlabel("Time (s)")
-    ax.set_ylabel("Signed CTE (m)")
+    ax.set_ylabel("CTE (m)")
     ax.grid(True, alpha=0.3)
     _legend_if_labeled(ax, loc="upper right")
 
@@ -212,6 +403,7 @@ def generate_path_tracking_overlay_plot(
     gt_left_xy: np.ndarray,
     gt_right_xy: np.ndarray,
     planner_trace_xy: np.ndarray,
+    gt_overlay_segments_xy: Optional[list[np.ndarray]] = None,
     title: str = "GT Midline vs Planner vs Driven Trajectory",
     dpi: int = 150,
 ) -> Optional[Path]:
@@ -220,7 +412,8 @@ def generate_path_tracking_overlay_plot(
     gt_left_xy = np.asarray(gt_left_xy, dtype=np.float64)
     gt_right_xy = np.asarray(gt_right_xy, dtype=np.float64)
     planner_trace_xy = np.asarray(planner_trace_xy, dtype=np.float64)
-    if not rows or gt_midline_xy.size == 0:
+    gt_overlay_segments_xy = _normalize_polyline_set(gt_overlay_segments_xy)
+    if not rows or (gt_midline_xy.size == 0 and not gt_overlay_segments_xy):
         return None
 
     import matplotlib
@@ -235,14 +428,26 @@ def generate_path_tracking_overlay_plot(
         csv_path,
         gt_midline_xy=gt_midline_xy,
         planner_trace_xy=planner_trace_xy,
+        gt_reference_segments_xy=gt_overlay_segments_xy,
     )
+    track_width_m = _estimate_average_track_width_m(gt_left_xy, gt_right_xy)
 
     fig, ax = plt.subplots(figsize=(9.0, 9.0))
     if gt_left_xy.ndim == 2 and gt_left_xy.shape[0] > 0:
         ax.plot(gt_left_xy[:, 0], gt_left_xy[:, 1], color="#1f77b4", linewidth=1.4, linestyle=":", label="GT blue border")
     if gt_right_xy.ndim == 2 and gt_right_xy.shape[0] > 0:
         ax.plot(gt_right_xy[:, 0], gt_right_xy[:, 1], color="#f1c40f", linewidth=1.4, linestyle=":", label="GT yellow border")
-    ax.plot(gt_midline_xy[:, 0], gt_midline_xy[:, 1], color="#111111", linewidth=2.2, label="GT midline")
+    if gt_overlay_segments_xy:
+        for idx, segment_xy in enumerate(gt_overlay_segments_xy):
+            ax.plot(
+                segment_xy[:, 0],
+                segment_xy[:, 1],
+                color="#111111",
+                linewidth=2.2,
+                label="GT reference" if idx == 0 else None,
+            )
+    else:
+        ax.plot(gt_midline_xy[:, 0], gt_midline_xy[:, 1], color="#111111", linewidth=2.2, label="GT midline")
     if planner_trace_xy.ndim == 2 and planner_trace_xy.shape[0] > 0:
         ax.plot(
             planner_trace_xy[:, 0],
@@ -264,9 +469,10 @@ def generate_path_tracking_overlay_plot(
     _legend_if_labeled(ax, loc="upper left", bbox_to_anchor=(1.02, 1.0), borderaxespad=0.0)
     avg_text = "\n".join(
         (
-            f"Planner avg dist to GT midline: {_format_distance_cm(avg_distances['planner_vs_gt_avg_dist_m'])}",
-            f"Controller avg dist to GT midline: {_format_distance_cm(avg_distances['controller_vs_gt_avg_dist_m'])}",
-            f"Controller avg dist to planner trace: {_format_distance_cm(avg_distances['controller_vs_planner_avg_dist_m'])}",
+            f"Avg track width: {_format_distance_cm(track_width_m)}",
+            f"Planner avg dist to GT midline: {_format_distance_with_half_width_percent(avg_distances['planner_vs_gt_avg_dist_m'], track_width_m)}",
+            f"Controller avg dist to GT midline: {_format_distance_with_half_width_percent(avg_distances['controller_vs_gt_avg_dist_m'], track_width_m)}",
+            f"Controller avg dist to planner trace: {_format_distance_with_half_width_percent(avg_distances['controller_vs_planner_avg_dist_m'], track_width_m)}",
         )
     )
     ax.text(

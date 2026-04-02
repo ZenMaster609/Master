@@ -105,6 +105,11 @@ def generate_launch_description():
         default_value="/planned_centerline",
         description="Planner path topic for path-tracking evaluation",
     )
+    path_tracking_eval_track_name_arg = DeclareLaunchArgument(
+        "path_tracking_eval_track_name",
+        default_value="",
+        description="Track name used for path-tracking overlay specialization",
+    )
     controller_diagnostics_rate_hz_arg = DeclareLaunchArgument(
         "controller_diagnostics_rate_hz",
         default_value="50.0",
@@ -388,6 +393,9 @@ def generate_launch_description():
             "path_tracking_eval_planner_path_topic": LaunchConfiguration(
                 "path_tracking_eval_planner_path_topic"
             ),
+            "path_tracking_eval_track_name": LaunchConfiguration(
+                "path_tracking_eval_track_name"
+            ),
             "controller_diagnostics_rate_hz": ParameterValue(
                 LaunchConfiguration("controller_diagnostics_rate_hz"),
                 value_type=float,
@@ -448,6 +456,7 @@ def generate_launch_description():
         path_tracking_eval_gt_track_topic_arg,
         path_tracking_eval_odom_topic_arg,
         path_tracking_eval_planner_path_topic_arg,
+        path_tracking_eval_track_name_arg,
         controller_diagnostics_rate_hz_arg,
         controller_diagnostics_cmd_topic_arg,
         controller_diagnostics_steering_topic_arg,

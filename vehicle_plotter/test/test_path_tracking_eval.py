@@ -19,6 +19,10 @@ from vehicle_plotter.logging.path_tracking_eval import (  # noqa: E402
     should_assume_identity_transform,
 )
 from vehicle_plotter.logging.path_tracking_eval_plots import (  # noqa: E402
+    _estimate_average_track_width_m,
+    _format_distance_with_half_width_percent,
+    build_skidpad_gt_color_borders,
+    build_skidpad_gt_overlay_segments,
     compute_path_tracking_overlay_average_distances,
     generate_path_tracking_cte_plot,
     generate_path_tracking_overlay_plot,
@@ -132,6 +136,18 @@ def test_identity_transform_fallback_only_applies_to_map_odom_pair():
     assert not should_assume_identity_transform('map', 'map')
 
 
+def test_track_width_and_half_width_percentage_formatting():
+    left = np.asarray([[0.0, 1.5], [5.0, 1.5], [10.0, 1.5]], dtype=np.float64)
+    right = np.asarray([[0.0, -1.5], [5.0, -1.5], [10.0, -1.5]], dtype=np.float64)
+
+    track_width_m = _estimate_average_track_width_m(left, right)
+
+    assert abs(track_width_m - 3.0) < 1e-9
+    assert _format_distance_with_half_width_percent(0.0, track_width_m) == '0.00 cm (0.00%)'
+    assert _format_distance_with_half_width_percent(0.75, track_width_m) == '75.00 cm (50.00%)'
+    assert _format_distance_with_half_width_percent(1.5, track_width_m) == '150.00 cm (100.00%)'
+
+
 def test_analyze_path_tracking_csv_and_plot_smoke(tmp_path):
     csv_path = tmp_path / 'path_tracking_eval.csv'
 
@@ -206,6 +222,139 @@ def test_analyze_path_tracking_csv_and_plot_smoke(tmp_path):
     assert generated_overlay == overlay_plot
     assert overlay_plot.exists()
     assert overlay_plot.stat().st_size > 0
+
+
+def test_generate_path_tracking_cte_plot_supports_planner_vs_gt_series_only(tmp_path):
+    csv_path = tmp_path / 'path_tracking_eval.csv'
+
+    with open(csv_path, 'w', newline='', encoding='utf-8') as handle:
+        writer = csv.DictWriter(handle, fieldnames=[
+            'timestamp_sec',
+            'sample_valid_flag',
+            'status',
+            'frame_id',
+            'gt_source_frame',
+            'vehicle_x_m',
+            'vehicle_y_m',
+            'planner_reference_x_m',
+            'planner_reference_y_m',
+            'gt_reference_x_m',
+            'gt_reference_y_m',
+            'controller_vs_planner_cte_m',
+            'controller_vs_gt_cte_m',
+            'planner_vs_gt_cte_rms_m',
+            'planner_vs_gt_cte_p95_m',
+            'planner_vs_gt_cte_max_m',
+        ])
+        writer.writeheader()
+        for idx, planner_vs_gt_m in enumerate((0.15, 0.20, 0.25)):
+            writer.writerow({
+                'timestamp_sec': float(idx),
+                'sample_valid_flag': 1.0,
+                'status': 'ok',
+                'frame_id': 'odom',
+                'gt_source_frame': 'map',
+                'vehicle_x_m': float(idx),
+                'vehicle_y_m': 0.0,
+                'planner_reference_x_m': float(idx),
+                'planner_reference_y_m': 0.0,
+                'gt_reference_x_m': float(idx),
+                'gt_reference_y_m': 0.0,
+                'controller_vs_planner_cte_m': float('nan'),
+                'controller_vs_gt_cte_m': float('nan'),
+                'planner_vs_gt_cte_rms_m': planner_vs_gt_m,
+                'planner_vs_gt_cte_p95_m': planner_vs_gt_m,
+                'planner_vs_gt_cte_max_m': planner_vs_gt_m,
+            })
+
+    output_path = tmp_path / 'path_tracking_eval_cte.png'
+    generated = generate_path_tracking_cte_plot(csv_path, output_path)
+
+    assert generated == output_path
+    assert output_path.exists()
+    assert output_path.stat().st_size > 0
+
+
+def test_build_skidpad_gt_overlay_segments_matches_router_geometry():
+    segments = build_skidpad_gt_overlay_segments()
+
+    assert len(segments) == 3
+    assert segments[0].shape == (33, 2)
+    assert segments[1].shape == (33, 2)
+    assert np.allclose(segments[2], np.asarray([[0.0, -11.0], [0.0, 21.0]], dtype=np.float64))
+    assert np.allclose(segments[0][0], np.asarray([-0.25, 0.0], dtype=np.float64), atol=1e-6)
+    assert np.allclose(segments[1][0], np.asarray([18.25, 0.0], dtype=np.float64), atol=1e-6)
+
+
+def test_build_skidpad_gt_color_borders_match_track_model_geometry():
+    blue_xy, yellow_xy = build_skidpad_gt_color_borders()
+
+    assert blue_xy.shape == (30, 2)
+    assert yellow_xy.shape == (30, 2)
+    assert np.allclose(blue_xy[0], np.asarray([-1.637, 0.0], dtype=np.float64))
+    assert np.allclose(blue_xy[-1], np.asarray([-1.637, 0.0], dtype=np.float64))
+    assert np.allclose(yellow_xy[0], np.asarray([16.862, 0.0], dtype=np.float64))
+    assert np.allclose(yellow_xy[-1], np.asarray([16.862, 0.0], dtype=np.float64))
+    assert np.allclose(blue_xy[18], np.asarray([9.25, 10.612], dtype=np.float64))
+    assert np.allclose(yellow_xy[18], np.asarray([-9.25, 10.612], dtype=np.float64))
+
+
+def test_compute_path_tracking_overlay_average_distances_supports_multi_segment_gt(tmp_path):
+    csv_path = tmp_path / 'path_tracking_eval.csv'
+
+    with open(csv_path, 'w', newline='', encoding='utf-8') as handle:
+        writer = csv.DictWriter(
+            handle,
+            fieldnames=[
+                'timestamp_sec',
+                'sample_valid_flag',
+                'status',
+                'frame_id',
+                'gt_source_frame',
+                'vehicle_x_m',
+                'vehicle_y_m',
+                'planner_reference_x_m',
+                'planner_reference_y_m',
+                'gt_reference_x_m',
+                'gt_reference_y_m',
+                'controller_vs_planner_cte_m',
+                'controller_vs_gt_cte_m',
+                'planner_vs_gt_cte_rms_m',
+                'planner_vs_gt_cte_p95_m',
+                'planner_vs_gt_cte_max_m',
+            ],
+        )
+        writer.writeheader()
+        for y_m in (-10.0, 0.0, 10.0):
+            writer.writerow({
+                'timestamp_sec': y_m,
+                'sample_valid_flag': 1.0,
+                'status': 'ok',
+                'frame_id': 'odom',
+                'gt_source_frame': 'map',
+                'vehicle_x_m': 0.0,
+                'vehicle_y_m': y_m,
+                'planner_reference_x_m': 0.0,
+                'planner_reference_y_m': y_m,
+                'gt_reference_x_m': 0.0,
+                'gt_reference_y_m': y_m,
+                'controller_vs_planner_cte_m': 0.0,
+                'controller_vs_gt_cte_m': 5.0,
+                'planner_vs_gt_cte_rms_m': 5.0,
+                'planner_vs_gt_cte_p95_m': 5.0,
+                'planner_vs_gt_cte_max_m': 5.0,
+            })
+
+    averages = compute_path_tracking_overlay_average_distances(
+        csv_path,
+        gt_midline_xy=np.empty((0, 2), dtype=np.float64),
+        planner_trace_xy=np.asarray([[0.0, -10.0], [0.0, 10.0]], dtype=np.float64),
+        gt_reference_segments_xy=build_skidpad_gt_overlay_segments(),
+    )
+
+    assert abs(averages['planner_vs_gt_avg_dist_m']) < 1e-9
+    assert abs(averages['controller_vs_gt_avg_dist_m']) < 1e-9
+    assert abs(averages['controller_vs_planner_avg_dist_m']) < 1e-9
 
 
 def test_compute_path_tracking_overlay_average_distances_uses_sample_means(tmp_path):
