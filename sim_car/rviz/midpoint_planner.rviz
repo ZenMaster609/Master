@@ -6,6 +6,7 @@ Panels:
         - /Global Options1
         - /Cone Memory1
         - /Planner Debug1
+        - /Skidpad Router1
         - /Planned Centerline1
       Splitter Ratio: 0.5
     Tree Height: 720
@@ -106,6 +107,17 @@ Visualization Manager:
         remembered_cones: false
         single_boundary_active: true
         status: true
+      Queue Size: 100
+      Value: true
+    - Class: rviz_default_plugins/MarkerArray
+      Name: Skidpad Router
+      Enabled: true
+      Topic:
+        Value: /skidpad_router/markers
+        Depth: 10
+        Durability Policy: Volatile
+        History Policy: Keep Last
+        Reliability Policy: Reliable
       Queue Size: 100
       Value: true
     - Class: rviz_default_plugins/Path

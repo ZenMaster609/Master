@@ -15,6 +15,7 @@ from sim_car.planning.skidpad_router_core import (
     SkidpadRouterConfig,
     SkidpadStateMachine,
     boundary_color_from_lateral_y,
+    detect_stop_line_pair,
     detect_stop_line_forward_distance_m,
 )
 
@@ -265,6 +266,37 @@ def test_detect_stop_line_forward_distance_rejects_front_cluster_without_both_si
         )
         is None
     )
+
+
+def test_detect_stop_line_pair_picks_furthest_ahead_close_orange_pair() -> None:
+    points = np.asarray(
+        [
+            [6.0, -0.2],
+            [6.7, 0.1],
+            [8.8, -0.4],
+            [9.4, 0.0],
+            [7.0, 1.5],
+        ],
+        dtype=np.float64,
+    )
+    detected = detect_stop_line_pair(points, max_pair_distance_m=1.0)
+    assert detected is not None
+    idx_a, idx_b, forward_distance_m = detected
+    assert {idx_a, idx_b} == {2, 3}
+    assert abs(forward_distance_m - 9.1) < 1e-9
+
+
+def test_detect_stop_line_pair_rejects_pairs_outside_distance_threshold() -> None:
+    points = np.asarray(
+        [
+            [8.8, -0.6],
+            [10.0, 0.6],
+            [7.0, -1.5],
+            [7.0, 1.5],
+        ],
+        dtype=np.float64,
+    )
+    assert detect_stop_line_pair(points, max_pair_distance_m=1.0) is None
 
 
 def test_boundary_color_from_lateral_y_matches_planner_convention() -> None:

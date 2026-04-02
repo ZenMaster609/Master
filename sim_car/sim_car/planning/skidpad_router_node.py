@@ -25,7 +25,7 @@ from sim_car.planning.skidpad_router_core import (
     SkidpadStateMachine,
     boundary_color_from_lateral_y,
     config_from_parameters,
-    detect_stop_line_forward_distance_m,
+    detect_stop_line_pair,
 )
 
 
@@ -121,10 +121,7 @@ class SkidpadRouterNode(Node):
             "parking.test_park_only": False,
             "parking.acceleration_activation_distance_m": 10.0,
             "parking.stop_margin_m": 1.0,
-            "parking.stop_line_cluster_depth_m": 2.5,
-            "parking.stop_line_min_lateral_span_m": 1.0,
-            "parking.stop_line_min_cluster_count": 4,
-            "parking.stop_line_min_points_per_side": 1,
+            "parking.stop_line_pair_max_distance_m": 1.0,
             "parking.stop_override_publish_rate_hz": 50.0,
             "synthetic.pair_half_width_m": 1.6375,
             "synthetic.pair_y_m": [3.5, 5.5, 7.5],
@@ -152,10 +149,7 @@ class SkidpadRouterNode(Node):
             self.get_parameter("parking.acceleration_activation_distance_m").value
         )
         self.stop_margin_m = float(self.get_parameter("parking.stop_margin_m").value)
-        self.stop_line_cluster_depth_m = float(self.get_parameter("parking.stop_line_cluster_depth_m").value)
-        self.stop_line_min_lateral_span_m = float(self.get_parameter("parking.stop_line_min_lateral_span_m").value)
-        self.stop_line_min_cluster_count = int(self.get_parameter("parking.stop_line_min_cluster_count").value)
-        self.stop_line_min_points_per_side = int(self.get_parameter("parking.stop_line_min_points_per_side").value)
+        self.stop_line_pair_max_distance_m = float(self.get_parameter("parking.stop_line_pair_max_distance_m").value)
         stop_override_rate_hz = float(self.get_parameter("parking.stop_override_publish_rate_hz").value)
         self.stop_override_publish_period_s = 0.0 if stop_override_rate_hz <= 0.0 else (1.0 / stop_override_rate_hz)
 
@@ -254,6 +248,9 @@ class SkidpadRouterNode(Node):
         if self._stop_override_active:
             self._publish_stop_cmd(msg.header.stamp)
         self._cones_pub.publish(routed_msg)
+        stamp = self._latest_odom_stamp if self._latest_odom_stamp is not None else msg.header.stamp
+        self._publish_diagnostics(stamp)
+        self._publish_markers(stamp)
 
     def _parking_mode_is_active(self) -> bool:
         if self.event_mode == "acceleration":
@@ -398,33 +395,6 @@ class SkidpadRouterNode(Node):
             self._stop_line_forward_distance_m = float("nan")
             return
 
-        orange_points = np.asarray(
-            [
-                [float(cone.position.x), float(cone.position.y)]
-                for cone in routed_cones
-                if normalize_color(getattr(cone, "color", "")) == "orange"
-            ],
-            dtype=np.float64,
-        ) if routed_cones else np.empty((0, 2), dtype=np.float64)
-        if orange_points.size == 0:
-            return
-
-        orange_vehicle_points = self._odom_points_to_vehicle_frame(orange_points)
-        stop_line_forward_m = detect_stop_line_forward_distance_m(
-            orange_vehicle_points,
-            cluster_depth_m=self.stop_line_cluster_depth_m,
-            min_lateral_span_m=self.stop_line_min_lateral_span_m,
-            min_cluster_count=self.stop_line_min_cluster_count,
-            min_points_per_side=self.stop_line_min_points_per_side,
-        )
-        if stop_line_forward_m is None:
-            self._stop_line_forward_distance_m = float("nan")
-            return
-
-        self._stop_line_forward_distance_m = float(stop_line_forward_m)
-        if float(stop_line_forward_m) <= max(0.0, float(self.stop_margin_m)):
-            self._stop_override_active = True
-
     def _clear_stop_line_state(self) -> None:
         self._stop_line_forward_distance_m = float("nan")
         self._stop_line_marker_points_odom = None
@@ -467,7 +437,7 @@ class SkidpadRouterNode(Node):
         along = rel @ tangent
         normal_dist = np.abs(rel @ normal)
         along_margin_m = 0.5
-        normal_margin_m = max(0.75, float(self.stop_line_cluster_depth_m))
+        normal_margin_m = max(0.75, float(self.stop_line_pair_max_distance_m))
         return (
             (along >= -along_margin_m)
             & (along <= (line_len + along_margin_m))
@@ -479,59 +449,47 @@ class SkidpadRouterNode(Node):
             return np.empty((0,), dtype=bool)
 
         orange_vehicle_points = self._odom_points_to_vehicle_frame(orange_points_odom)
-        valid_mask = np.isfinite(orange_vehicle_points).all(axis=1) & (orange_vehicle_points[:, 0] > 0.0)
-        min_cluster_count = int(max(2, self.stop_line_min_cluster_count))
-        if int(np.count_nonzero(valid_mask)) < min_cluster_count:
-            return np.zeros((orange_points_odom.shape[0],), dtype=bool)
-
-        max_forward_m = float(np.max(orange_vehicle_points[valid_mask, 0]))
-        cluster_mask = valid_mask & (
-            orange_vehicle_points[:, 0] >= (max_forward_m - max(0.0, float(self.stop_line_cluster_depth_m)))
+        detected_pair = detect_stop_line_pair(
+            orange_vehicle_points,
+            max_pair_distance_m=self.stop_line_pair_max_distance_m,
         )
-        cluster = orange_vehicle_points[cluster_mask]
-        if cluster.shape[0] < min_cluster_count:
+        if detected_pair is None:
             return np.zeros((orange_points_odom.shape[0],), dtype=bool)
 
-        lateral_min_m = float(np.min(cluster[:, 1]))
-        lateral_max_m = float(np.max(cluster[:, 1]))
-        lateral_span_m = lateral_max_m - lateral_min_m
-        if lateral_span_m < max(0.0, float(self.stop_line_min_lateral_span_m)):
-            return np.zeros((orange_points_odom.shape[0],), dtype=bool)
+        idx_a, idx_b, forward_distance_m = detected_pair
+        point_a = np.asarray(orange_points_odom[idx_a], dtype=np.float64)
+        point_b = np.asarray(orange_points_odom[idx_b], dtype=np.float64)
+        midpoint = 0.5 * (point_a + point_b)
+        half_width_m = max(
+            float(self._state_machine.config.parking_corridor_half_width_m),
+            0.5 * float(np.linalg.norm(point_b - point_a)),
+        )
 
-        left_count = int(np.count_nonzero(cluster[:, 1] >= 0.0))
-        right_count = int(np.count_nonzero(cluster[:, 1] < 0.0))
-        if left_count < int(max(0, self.stop_line_min_points_per_side)) or right_count < int(
-            max(0, self.stop_line_min_points_per_side)
-        ):
-            return np.zeros((orange_points_odom.shape[0],), dtype=bool)
-
-        forward_distance_m = float(np.median(cluster[:, 0]))
         self._stop_line_forward_distance_m = forward_distance_m
-        lateral_padding_m = 0.1
-        self._stop_line_marker_points_odom = self._vehicle_line_to_odom_endpoints(
-            forward_distance_m=forward_distance_m,
-            lateral_min_m=lateral_min_m - lateral_padding_m,
-            lateral_max_m=lateral_max_m + lateral_padding_m,
+        self._stop_line_marker_points_odom = self._perpendicular_line_through_midpoint(
+            midpoint_xy=midpoint,
+            half_width_m=half_width_m,
         )
-        return cluster_mask
+        return self._mask_points_on_latched_stop_line(orange_points_odom)
 
-    def _vehicle_line_to_odom_endpoints(
+    def _perpendicular_line_through_midpoint(
         self,
         *,
-        forward_distance_m: float,
-        lateral_min_m: float,
-        lateral_max_m: float,
+        midpoint_xy: np.ndarray,
+        half_width_m: float,
     ) -> tuple[tuple[float, float], tuple[float, float]]:
-        odom_x, odom_y = self._latest_pose_xy if self._latest_pose_xy is not None else (0.0, 0.0)
-        cos_yaw = math.cos(self._latest_yaw_rad)
-        sin_yaw = math.sin(self._latest_yaw_rad)
-
-        def _to_odom(lateral_y_m: float) -> tuple[float, float]:
-            x_val = float(odom_x) + (float(forward_distance_m) * cos_yaw) - (float(lateral_y_m) * sin_yaw)
-            y_val = float(odom_y) + (float(forward_distance_m) * sin_yaw) + (float(lateral_y_m) * cos_yaw)
-            return (x_val, y_val)
-
-        return (_to_odom(lateral_min_m), _to_odom(lateral_max_m))
+        lateral_axis = np.asarray(
+            [
+                -math.sin(self._latest_yaw_rad),
+                math.cos(self._latest_yaw_rad),
+            ],
+            dtype=np.float64,
+        )
+        midpoint = np.asarray(midpoint_xy, dtype=np.float64)
+        return (
+            tuple((midpoint - (float(half_width_m) * lateral_axis)).tolist()),
+            tuple((midpoint + (float(half_width_m) * lateral_axis)).tolist()),
+        )
 
     def _stop_override_timer_cb(self) -> None:
         if not self._stop_override_active:
@@ -620,6 +578,7 @@ class SkidpadRouterNode(Node):
         text_marker.id = 0
         text_marker.type = Marker.TEXT_VIEW_FACING
         text_marker.action = Marker.ADD
+        text_marker.pose.orientation.w = 1.0
         text_marker.pose.position.x = float(cfg.crossroads_center_xy[0])
         text_marker.pose.position.y = float(cfg.crossroads_center_xy[1])
         text_marker.pose.position.z = 1.5
@@ -628,9 +587,14 @@ class SkidpadRouterNode(Node):
         text_marker.color.r = 1.0
         text_marker.color.g = 1.0
         text_marker.color.b = 1.0
+        stop_line_latched = int(self._stop_line_marker_points_odom is not None)
+        stop_line_distance_text = (
+            f"{self._stop_line_forward_distance_m:.2f}" if np.isfinite(self._stop_line_forward_distance_m) else "nan"
+        )
         text_marker.text = (
             f"stage={snapshot.stage_name} branch={snapshot.active_branch} "
-            f"laps={snapshot.completed_laps} armed={int(snapshot.lap_armed)}"
+            f"laps={snapshot.completed_laps} armed={int(snapshot.lap_armed)}\n"
+            f"stop_latched={stop_line_latched} stop_forward_m={stop_line_distance_text}"
         )
         markers.markers.append(text_marker)
 
@@ -640,7 +604,7 @@ class SkidpadRouterNode(Node):
                 stamp=stamp,
                 center_xy=cfg.left_circle_center_xy,
                 radius_m=float(np.mean(cfg.circle_radius_window_m)),
-                color_rgb=(0.1, 0.5, 1.0),
+                color_rgb=(0.0, 0.0, 0.0),
                 ns="left_circle",
             )
         )
@@ -650,12 +614,13 @@ class SkidpadRouterNode(Node):
                 stamp=stamp,
                 center_xy=cfg.right_circle_center_xy,
                 radius_m=float(np.mean(cfg.circle_radius_window_m)),
-                color_rgb=(1.0, 0.85, 0.1),
+                color_rgb=(0.0, 0.0, 0.0),
                 ns="right_circle",
             )
         )
         markers.markers.append(self._make_crossroads_marker(marker_id=3, stamp=stamp))
         markers.markers.append(self._make_stop_line_marker(marker_id=4, stamp=stamp))
+        markers.markers.append(self._make_stop_target_marker(marker_id=5, stamp=stamp))
         self._viz_pub.publish(markers)
 
     def _make_crossroads_marker(self, *, marker_id: int, stamp) -> Marker:
@@ -701,7 +666,7 @@ class SkidpadRouterNode(Node):
         marker.id = marker_id
         marker.type = Marker.LINE_STRIP
         marker.action = Marker.ADD
-        marker.scale.x = 0.12
+        marker.scale.x = 0.06
         marker.color.a = 0.85
         marker.color.r = float(color_rgb[0])
         marker.color.g = float(color_rgb[1])
@@ -723,8 +688,9 @@ class SkidpadRouterNode(Node):
         marker.header.stamp = stamp
         marker.ns = "stop_line"
         marker.id = marker_id
-        marker.type = Marker.LINE_STRIP
-        marker.scale.x = 0.18
+        marker.type = Marker.LINE_LIST
+        marker.pose.orientation.w = 1.0
+        marker.scale.x = 0.35
         marker.color.a = 1.0
         marker.color.r = 1.0
         marker.color.g = 0.0
@@ -741,8 +707,49 @@ class SkidpadRouterNode(Node):
         marker.action = Marker.ADD
         left_point_xy, right_point_xy = self._stop_line_marker_points_odom
         marker.points = [
-            Point(x=float(left_point_xy[0]), y=float(left_point_xy[1]), z=0.08),
-            Point(x=float(right_point_xy[0]), y=float(right_point_xy[1]), z=0.08),
+            Point(x=float(left_point_xy[0]), y=float(left_point_xy[1]), z=0.25),
+            Point(x=float(right_point_xy[0]), y=float(right_point_xy[1]), z=0.25),
+        ]
+        return marker
+
+    def _make_stop_target_marker(self, *, marker_id: int, stamp) -> Marker:
+        marker = Marker()
+        marker.header.frame_id = self.odom_frame
+        marker.header.stamp = stamp
+        marker.ns = "stop_target"
+        marker.id = marker_id
+        marker.type = Marker.LINE_LIST
+        marker.pose.orientation.w = 1.0
+        marker.scale.x = 0.45
+        marker.color.a = 1.0
+        marker.color.r = 0.0
+        marker.color.g = 0.0
+        marker.color.b = 0.0
+
+        if (
+            self._latest_pose_xy is None
+            or not self._parking_mode_active
+            or self._stop_line_marker_points_odom is None
+        ):
+            marker.action = Marker.DELETE
+            return marker
+
+        marker.action = Marker.ADD
+        stop_offset_m = max(0.0, float(self.stop_margin_m))
+        backward_dx = stop_offset_m * math.cos(self._latest_yaw_rad)
+        backward_dy = stop_offset_m * math.sin(self._latest_yaw_rad)
+        left_point_xy, right_point_xy = self._stop_line_marker_points_odom
+        marker.points = [
+            Point(
+                x=float(left_point_xy[0] - backward_dx),
+                y=float(left_point_xy[1] - backward_dy),
+                z=0.22,
+            ),
+            Point(
+                x=float(right_point_xy[0] - backward_dx),
+                y=float(right_point_xy[1] - backward_dy),
+                z=0.22,
+            ),
         ]
         return marker
 

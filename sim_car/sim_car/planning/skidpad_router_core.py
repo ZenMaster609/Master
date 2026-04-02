@@ -357,3 +357,38 @@ def detect_stop_line_forward_distance_m(
             return None
 
     return float(np.median(cluster[:, 0]))
+
+
+def detect_stop_line_pair(
+    vehicle_frame_orange_points_xy: np.ndarray,
+    *,
+    max_pair_distance_m: float = 1.0,
+) -> Optional[tuple[int, int, float]]:
+    points = np.asarray(vehicle_frame_orange_points_xy, dtype=np.float64)
+    if points.size == 0 or points.ndim != 2 or points.shape[1] != 2:
+        return None
+
+    valid_indices = np.flatnonzero(np.isfinite(points).all(axis=1) & (points[:, 0] > 0.0))
+    if valid_indices.size < 2:
+        return None
+
+    best_pair: Optional[tuple[int, int, float]] = None
+    best_score: Optional[tuple[float, float]] = None
+    max_distance_m = max(0.0, float(max_pair_distance_m))
+    for lhs in range(valid_indices.size - 1):
+        idx_a = int(valid_indices[lhs])
+        point_a = points[idx_a]
+        for rhs in range(lhs + 1, valid_indices.size):
+            idx_b = int(valid_indices[rhs])
+            point_b = points[idx_b]
+            pair_distance_m = float(np.linalg.norm(point_b - point_a))
+            if pair_distance_m > max_distance_m:
+                continue
+
+            forward_distance_m = 0.5 * float(point_a[0] + point_b[0])
+            score = (forward_distance_m, -pair_distance_m)
+            if best_score is None or score > best_score:
+                best_score = score
+                best_pair = (idx_a, idx_b, forward_distance_m)
+
+    return best_pair

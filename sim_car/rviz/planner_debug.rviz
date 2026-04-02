@@ -6,6 +6,7 @@ Panels:
         - /Global Options1
         - /Cone Memory1
         - /Believed Track1
+        - /Skidpad Router1
       Splitter Ratio: 0.5
     Tree Height: 720
   - Class: rviz_common/Selection
@@ -86,6 +87,17 @@ Visualization Manager:
       Enabled: true
       Topic:
         Value: /planner_viz
+        Depth: 10
+        Durability Policy: Volatile
+        History Policy: Keep Last
+        Reliability Policy: Reliable
+      Queue Size: 100
+      Value: true
+    - Class: rviz_default_plugins/MarkerArray
+      Name: Skidpad Router
+      Enabled: true
+      Topic:
+        Value: /skidpad_router/markers
         Depth: 10
         Durability Policy: Volatile
         History Policy: Keep Last

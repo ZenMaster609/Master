@@ -30,17 +30,10 @@ skidpad_router_node:
       straight_min_y_m: -1.0
 
     parking:
-      corridor_half_width_m: 2.0
-      start_y_m: 8.5
-      parked_speed_threshold_mps: 0.5
-      parked_hold_time_s: 1.0
-      test_park_only: true
+      test_park_only: false
       acceleration_activation_distance_m: 10.0
-      stop_margin_m: 1.0
-      stop_line_cluster_depth_m: 2.5
-      stop_line_min_lateral_span_m: 1.0
-      stop_line_min_cluster_count: 4
-      stop_line_min_points_per_side: 1
+      stop_margin_m: 4.0
+      stop_line_pair_max_distance_m: 1.9
       stop_override_publish_rate_hz: 50.0
 
     synthetic:
