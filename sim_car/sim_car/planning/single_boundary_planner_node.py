@@ -1856,42 +1856,20 @@ class SingleBoundaryPlannerNode(TrackedConePlannerBase):
     ) -> str:
         del candidate_diagonal_count
         del selected_chain_length
+        del centerline_point_count
+        del cmd_speed
+        del cmd_steering
+        del lookahead
+        del seed_midpoint_distance_m
+        del near_field_lateral_max_m
+        del near_field_midpoint_kink_max_rad
+        del hold_remaining_s
         return "\n".join(
             [
                 f"STATE: {operator_state.upper()}",
                 f"MODE: {self._active_planner_mode.upper()}",
                 f"REASON: {self._operator_reason_label(operator_reason)}",
                 self._lap_status_text(),
-                (
-                    f"TRACKS: remembered={int(self._active_remembered_cone_count)} | "
-                    f"stale={int(self._active_stale_cone_count)}"
-                ),
-                (
-                    f"BOUNDARIES: L={int(self._active_left_chain_length)} | "
-                    f"R={int(self._active_right_chain_length)} | "
-                    f"pairs={int(self._active_pair_count)} | "
-                    f"unknown={int(self._active_unknown_pair_count)} | "
-                    f"path={int(centerline_point_count)} pts"
-                ),
-                (
-                    f"WIDTH: {self._fmt_metric(self._active_filtered_track_width_m, ' m')} | "
-                    f"HALF: {self._fmt_metric(0.5 * float(self._active_filtered_track_width_m), ' m')}"
-                ),
-                (
-                    f"CMD: v={self._fmt_metric(cmd_speed, ' m/s')} | "
-                    f"delta={self._fmt_metric(cmd_steering, ' rad')} | "
-                    f"Ld={self._fmt_metric(lookahead, ' m')}"
-                ),
-                (
-                    f"NF: lat={self._fmt_metric(near_field_lateral_max_m, ' m')} | "
-                    f"kink={self._fmt_metric(near_field_midpoint_kink_max_rad, ' rad')} | "
-                    f"seed={self._fmt_metric(seed_midpoint_distance_m, ' m')}"
-                ),
-                (
-                    f"HOLD: {self._fmt_metric(hold_remaining_s, ' s')} left | "
-                    f"held={int(self._active_held_path_flag)} | "
-                    f"clean {int(self._hold_clean_frame_count)}/{int(self.hold_exit_clean_frames)}"
-                ),
             ]
         )
 
@@ -2143,40 +2121,7 @@ class SingleBoundaryPlannerNode(TrackedConePlannerBase):
             status,
             operator_state=operator_state,
         )
-        marker_id += 1
-        self._append_lap_marker(
-            arr,
-            marker_id,
-            frame_id,
-            now,
-        )
         return arr
-
-    def _append_lap_marker(
-        self,
-        markers: MarkerArray,
-        marker_id: int,
-        frame_id: str,
-        stamp,
-    ) -> None:
-        marker = Marker()
-        marker.header.frame_id = frame_id
-        marker.header.stamp = stamp
-        marker.ns = "lap_status"
-        marker.id = marker_id
-        marker.type = Marker.TEXT_VIEW_FACING
-        marker.action = Marker.ADD
-        marker.scale.z = 0.36
-        marker.color.r = 1.0
-        marker.color.g = 1.0
-        marker.color.b = 1.0
-        marker.color.a = 1.0
-        marker.pose.position.x = 1.5
-        marker.pose.position.y = 0.0
-        marker.pose.position.z = 2.1
-        marker.pose.orientation.w = 1.0
-        marker.text = self._lap_status_text()
-        markers.markers.append(marker)
 
     def _make_pair_segment_marker(
         self,

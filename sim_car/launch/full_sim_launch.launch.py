@@ -1005,6 +1005,11 @@ def generate_launch_description():
         topic_prefix,
         "' + '/stereo/perception/cones_3d'",
     ])
+    router_viz_topic = PythonExpression([
+        "'/skidpad_router/markers' if '",
+        LaunchConfiguration('track'),
+        "'.lower() == 'skidpad' else '/skidpad_router/markers_hidden'",
+    ])
 
     skidpad_router_node = Node(
         package='sim_car',
@@ -1022,6 +1027,7 @@ def generate_launch_description():
                 'topics.output_topic': '/tracked_cones/skidpad_routed',
                 'topics.odom_topic': '/sim/odom',
                 'topics.cmd_topic': '/cmd',
+                'topics.viz_topic': router_viz_topic,
                 'routing.event_mode': LaunchConfiguration('track'),
             },
         ],

@@ -128,9 +128,17 @@ def test_full_launch_wires_skidpad_router_output_into_migrated_planners() -> Non
     assert "skidpad_router_node = Node(" in content
     assert "PathJoinSubstitution([sim_car_share, 'config', 'skidpad', 'skidpad_router.yaml'])" in content
     assert "'topics.output_topic': '/tracked_cones/skidpad_routed'" in content
+    assert "'topics.viz_topic': router_viz_topic" in content
     assert "'/tracked_cones/skidpad_routed' if '" in content
     assert "'.lower() in ('skidpad', 'acceleration') else ('/tracked_cones' if '" in content
     assert "'routing.event_mode': LaunchConfiguration('track')" in content
+
+
+def test_full_launch_only_shows_skidpad_router_markers_for_skidpad() -> None:
+    content = FULL_LAUNCH.read_text(encoding='utf-8')
+
+    assert "router_viz_topic = PythonExpression([" in content
+    assert "\"'.lower() == 'skidpad' else '/skidpad_router/markers_hidden'\"" in content
 
 
 def test_track_bundle_resolves_world_and_planner_config_paths():
