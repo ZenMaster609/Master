@@ -490,6 +490,8 @@ def generate_launch_description():
     resolved_spawn_yaw = LaunchConfiguration('resolved_spawn_yaw')
     resolved_planner_config = LaunchConfiguration('resolved_planner_config')
     resolved_controller_config = LaunchConfiguration('resolved_controller_config')
+    resolved_path_tracking_autostop_laps = LaunchConfiguration('resolved_path_tracking_autostop_laps')
+    resolved_shutdown_on_logger_exit = LaunchConfiguration('resolved_shutdown_on_logger_exit')
     launch_args_validation = OpaqueFunction(function=_validate_planner_and_controller_args)
     track_selection_setup = OpaqueFunction(function=_configure_track_selection)
     measurement_config_setup = OpaqueFunction(function=_configure_measurement_config)
@@ -693,6 +695,8 @@ def generate_launch_description():
             'path_tracking_eval_odom_topic': '/sim/odom',
             'path_tracking_eval_planner_path_topic': '/planned_centerline',
             'path_tracking_eval_track_name': LaunchConfiguration('track'),
+            'path_tracking_eval_autostop_laps': resolved_path_tracking_autostop_laps,
+            'shutdown_on_logger_exit': resolved_shutdown_on_logger_exit,
         }.items(),
     )
 
@@ -1049,6 +1053,8 @@ def generate_launch_description():
                     LaunchConfiguration('planner_rate_hz'),
                     value_type=float,
                 ),
+                'lap_tracking.gt_track_topic': '/ground_truth/track',
+                'lap_tracking.target_laps': resolved_path_tracking_autostop_laps,
                 'diagnostics.publish_thesis_context': ParameterValue(
                     LaunchConfiguration('thesis_controller_diagnostics'),
                     value_type=bool,
@@ -1081,6 +1087,8 @@ def generate_launch_description():
                     LaunchConfiguration('planner_rate_hz'),
                     value_type=float,
                 ),
+                'lap_tracking.gt_track_topic': '/ground_truth/track',
+                'lap_tracking.target_laps': resolved_path_tracking_autostop_laps,
                 'diagnostics.publish_thesis_context': ParameterValue(
                     LaunchConfiguration('thesis_controller_diagnostics'),
                     value_type=bool,
@@ -1316,12 +1324,7 @@ def _resolve_track_bundle(sim_car_share: Path, track: str, planner: str) -> dict
 
 
 def _load_spawn_defaults(spawn_config_path: str) -> dict[str, str]:
-    try:
-        with open(spawn_config_path, 'r', encoding='utf-8') as config_file:
-            config = yaml.safe_load(config_file) or {}
-    except (OSError, yaml.YAMLError) as exc:
-        raise RuntimeError(f'Failed reading spawn config {spawn_config_path}: {exc}') from exc
-
+    config = _load_yaml_file(spawn_config_path)
     values = config.get('spawn')
     if not isinstance(values, dict):
         raise RuntimeError(f"Spawn config missing 'spawn' mapping: {spawn_config_path}")
@@ -1332,6 +1335,30 @@ def _load_spawn_defaults(spawn_config_path: str) -> dict[str, str]:
             raise RuntimeError(f"Spawn config missing '{key}': {spawn_config_path}")
         resolved[key] = str(values[key])
     return resolved
+
+
+def _load_lap_tracking_defaults(spawn_config_path: str) -> dict[str, str]:
+    config = _load_yaml_file(spawn_config_path)
+    lap_tracking = config.get('lap_tracking')
+    if not isinstance(lap_tracking, dict):
+        return {
+            'autostop_laps': '0',
+        }
+    autostop_laps = max(0, int(lap_tracking.get('auto_suspend_after_laps', 0)))
+    return {
+        'autostop_laps': str(autostop_laps),
+    }
+
+
+def _load_yaml_file(config_path: str) -> dict:
+    try:
+        with open(config_path, 'r', encoding='utf-8') as config_file:
+            config = yaml.safe_load(config_file) or {}
+    except (OSError, yaml.YAMLError) as exc:
+        raise RuntimeError(f'Failed reading YAML config {config_path}: {exc}') from exc
+    if not isinstance(config, dict):
+        raise RuntimeError(f'YAML config must contain a mapping at the top level: {config_path}')
+    return config
 
 
 def _resolve_launch_selection(
@@ -1347,6 +1374,7 @@ def _resolve_launch_selection(
 ) -> dict[str, str]:
     bundle = _resolve_track_bundle(sim_car_share, track, planner)
     spawn_defaults = _load_spawn_defaults(bundle['spawn_config'])
+    lap_tracking_defaults = _load_lap_tracking_defaults(bundle['spawn_config'])
     normalized_controller = str(controller_override).strip().lower()
 
     if normalized_controller and normalized_controller not in SUPPORTED_CONTROLLERS:
@@ -1364,6 +1392,7 @@ def _resolve_launch_selection(
         'spawn_x': str(spawn_x_override).strip() or spawn_defaults['spawn_x'],
         'spawn_y': str(spawn_y_override).strip() or spawn_defaults['spawn_y'],
         'spawn_yaw': str(spawn_yaw_override).strip() or spawn_defaults['spawn_yaw'],
+        'path_tracking_autostop_laps': lap_tracking_defaults['autostop_laps'],
         'controller_override': normalized_controller,
         'delaunay_controller': normalized_controller or 'stanley',
     }
@@ -1416,6 +1445,19 @@ def _configure_track_selection(context, *_args, **_kwargs):
         SetLaunchConfiguration('resolved_spawn_yaw', selection['spawn_yaw']),
         SetLaunchConfiguration('resolved_planner_config', selection['planner_config']),
         SetLaunchConfiguration('resolved_controller_config', controller_config_path),
+        SetLaunchConfiguration(
+            'resolved_path_tracking_autostop_laps',
+            selection['path_tracking_autostop_laps'],
+        ),
+        SetLaunchConfiguration(
+            'resolved_shutdown_on_logger_exit',
+            'true'
+            if (
+                selection['track'] == 'smalltrack'
+                and int(selection['path_tracking_autostop_laps']) > 0
+            )
+            else 'false',
+        ),
     ]
 
 

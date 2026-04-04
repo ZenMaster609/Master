@@ -79,14 +79,14 @@ single_boundary_planner_node:
       log_throttle_s: 1.0
 
     control:
-      controller_type: "pure_pursuit"
+      controller_type: "stanley"
       stop_if_no_path: true
 
     stanley:
       k_gain: 1.2
       softening_speed_mps: 0.0
       heading_gain: 1.6
-      lookahead_idx_offset: 0
+      lookahead_idx_offset: 1
       steering_limit_rad: 0.52
       steering_lowpass_alpha: 1.0
       steering_rate_limit_rad_s: 10.0
@@ -107,7 +107,7 @@ single_boundary_planner_node:
 
     speed_control:
       speed_min_mps: 1.0
-      speed_max_mps: 4.0
+      speed_max_mps: 4.17
       curvature_speed_gain: 4.0
       lowpass_speed_alpha: 0.15
 

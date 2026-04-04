@@ -404,6 +404,8 @@ def generate_path_tracking_overlay_plot(
     gt_right_xy: np.ndarray,
     planner_trace_xy: np.ndarray,
     gt_overlay_segments_xy: Optional[list[np.ndarray]] = None,
+    lap_count: Optional[int] = None,
+    lap_target: Optional[int] = None,
     title: str = "GT Midline vs Planner vs Driven Trajectory",
     dpi: int = 150,
 ) -> Optional[Path]:
@@ -467,14 +469,17 @@ def generate_path_tracking_overlay_plot(
     ax.grid(True, alpha=0.3)
     ax.set_aspect("equal", adjustable="datalim")
     _legend_if_labeled(ax, loc="upper left", bbox_to_anchor=(1.02, 1.0), borderaxespad=0.0)
-    avg_text = "\n".join(
-        (
-            f"Avg track width: {_format_distance_cm(track_width_m)}",
-            f"Planner avg dist to GT midline: {_format_distance_with_half_width_percent(avg_distances['planner_vs_gt_avg_dist_m'], track_width_m)}",
-            f"Controller avg dist to GT midline: {_format_distance_with_half_width_percent(avg_distances['controller_vs_gt_avg_dist_m'], track_width_m)}",
-            f"Controller avg dist to planner trace: {_format_distance_with_half_width_percent(avg_distances['controller_vs_planner_avg_dist_m'], track_width_m)}",
-        )
-    )
+    text_lines = [
+        f"Avg track width: {_format_distance_cm(track_width_m)}",
+        f"Planner avg dist to GT midline: {_format_distance_with_half_width_percent(avg_distances['planner_vs_gt_avg_dist_m'], track_width_m)}",
+        f"Controller avg dist to GT midline: {_format_distance_with_half_width_percent(avg_distances['controller_vs_gt_avg_dist_m'], track_width_m)}",
+        f"Controller avg dist to planner trace: {_format_distance_with_half_width_percent(avg_distances['controller_vs_planner_avg_dist_m'], track_width_m)}",
+    ]
+    if lap_count is not None:
+        text_lines.append(f"Completed laps: {int(lap_count)}")
+    if lap_target is not None and int(lap_target) > 0:
+        text_lines.append(f"Auto-stop target: {int(lap_target)}")
+    avg_text = "\n".join(text_lines)
     ax.text(
         0.02,
         0.98,

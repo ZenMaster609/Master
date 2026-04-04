@@ -12,7 +12,9 @@ if str(PACKAGE_ROOT) not in sys.path:
     sys.path.insert(0, str(PACKAGE_ROOT))
 
 from vehicle_plotter.logging.path_tracking_eval import (  # noqa: E402
+    GateLapCounter,
     analyze_path_tracking_csv,
+    build_smalltrack_lap_gate,
     build_gt_midline_from_cones,
     build_stitched_reference_trace,
     compare_planner_path_to_gt,
@@ -136,6 +138,45 @@ def test_identity_transform_fallback_only_applies_to_map_odom_pair():
     assert not should_assume_identity_transform('map', 'map')
 
 
+def test_build_smalltrack_lap_gate_uses_big_orange_marker_pairs():
+    big_orange = np.asarray(
+        [
+            [-9.61314, 13.0],
+            [-9.99934, 12.989],
+            [-9.62148, 8.39323],
+            [-9.98667, 8.39348],
+        ],
+        dtype=np.float64,
+    )
+
+    gate = build_smalltrack_lap_gate(big_orange_xy=big_orange, frame_id='map')
+
+    assert gate is not None
+    assert gate.frame_id == 'map'
+    assert gate.segment_xy.shape == (2, 2)
+    assert np.allclose(gate.segment_xy[0], np.asarray([-9.804075, 8.393355], dtype=np.float64), atol=1e-5)
+    assert np.allclose(gate.segment_xy[1], np.asarray([-9.80624, 12.9945], dtype=np.float64), atol=1e-5)
+
+
+def test_gate_lap_counter_ignores_start_crossing_then_counts_next_full_crossing():
+    counter = GateLapCounter(
+        np.asarray([[0.0, -1.0], [0.0, 1.0]], dtype=np.float64),
+        min_lap_travel_m=10.0,
+        min_lap_time_sec=0.0,
+        near_gate_distance_m=4.0,
+    )
+
+    assert counter.update(np.asarray([-3.0, 0.0], dtype=np.float64), 0.0).completed_laps == 0
+    assert counter.update(np.asarray([3.0, 0.0], dtype=np.float64), 1.0).completed_laps == 0
+    counter.update(np.asarray([3.0, 12.0], dtype=np.float64), 2.0)
+    counter.update(np.asarray([-3.0, 12.0], dtype=np.float64), 3.0)
+    counter.update(np.asarray([-3.0, 0.0], dtype=np.float64), 4.0)
+    snapshot = counter.update(np.asarray([3.0, 0.0], dtype=np.float64), 5.0)
+
+    assert snapshot.completed_laps == 1
+    assert snapshot.just_completed_lap
+
+
 def test_track_width_and_half_width_percentage_formatting():
     left = np.asarray([[0.0, 1.5], [5.0, 1.5], [10.0, 1.5]], dtype=np.float64)
     right = np.asarray([[0.0, -1.5], [5.0, -1.5], [10.0, -1.5]], dtype=np.float64)
@@ -218,6 +259,8 @@ def test_analyze_path_tracking_csv_and_plot_smoke(tmp_path):
         gt_left_xy=gt_midline + np.asarray([0.0, 1.5]),
         gt_right_xy=gt_midline + np.asarray([0.0, -1.5]),
         planner_trace_xy=planner_trace,
+        lap_count=2,
+        lap_target=3,
     )
     assert generated_overlay == overlay_plot
     assert overlay_plot.exists()

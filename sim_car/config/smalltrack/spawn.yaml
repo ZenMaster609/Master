@@ -1,4 +1,7 @@
 spawn:
-  spawn_x: 9.58
-  spawn_y: -5.2
-  spawn_yaw: 3.75
+  spawn_x: -13.6758
+  spawn_y: 10.3753
+  spawn_yaw: 0
+
+lap_tracking:
+  auto_suspend_after_laps: 1

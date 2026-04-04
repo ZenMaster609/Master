@@ -2,8 +2,9 @@
 """Launch the vehicle_plotter live windows, logger, and rosbag controller."""
 
 from launch import LaunchDescription
-from launch.actions import DeclareLaunchArgument
+from launch.actions import DeclareLaunchArgument, EmitEvent
 from launch.conditions import IfCondition
+from launch.events import Shutdown
 from launch.substitutions import LaunchConfiguration, PythonExpression
 from launch_ros.actions import Node
 from launch_ros.parameter_descriptions import ParameterValue
@@ -109,6 +110,16 @@ def generate_launch_description():
         "path_tracking_eval_track_name",
         default_value="",
         description="Track name used for path-tracking overlay specialization",
+    )
+    path_tracking_eval_autostop_laps_arg = DeclareLaunchArgument(
+        "path_tracking_eval_autostop_laps",
+        default_value="0",
+        description="Automatically end the run after this many counted laps (0 disables)",
+    )
+    shutdown_on_logger_exit_arg = DeclareLaunchArgument(
+        "shutdown_on_logger_exit",
+        default_value="false",
+        description="Shut down the launch when the logger process exits",
     )
     controller_diagnostics_rate_hz_arg = DeclareLaunchArgument(
         "controller_diagnostics_rate_hz",
@@ -396,6 +407,10 @@ def generate_launch_description():
             "path_tracking_eval_track_name": LaunchConfiguration(
                 "path_tracking_eval_track_name"
             ),
+            "path_tracking_eval_autostop_laps": ParameterValue(
+                LaunchConfiguration("path_tracking_eval_autostop_laps"),
+                value_type=int,
+            ),
             "controller_diagnostics_rate_hz": ParameterValue(
                 LaunchConfiguration("controller_diagnostics_rate_hz"),
                 value_type=float,
@@ -420,6 +435,12 @@ def generate_launch_description():
             ),
             "use_sim_time": False,
         }],
+        on_exit=[
+            EmitEvent(
+                event=Shutdown(reason="logger exited"),
+                condition=IfCondition(LaunchConfiguration("shutdown_on_logger_exit")),
+            ),
+        ],
     )
 
     rosbag_controller_node = Node(
@@ -457,6 +478,8 @@ def generate_launch_description():
         path_tracking_eval_odom_topic_arg,
         path_tracking_eval_planner_path_topic_arg,
         path_tracking_eval_track_name_arg,
+        path_tracking_eval_autostop_laps_arg,
+        shutdown_on_logger_exit_arg,
         controller_diagnostics_rate_hz_arg,
         controller_diagnostics_cmd_topic_arg,
         controller_diagnostics_steering_topic_arg,

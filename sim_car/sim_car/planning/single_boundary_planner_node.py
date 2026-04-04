@@ -12,6 +12,7 @@ import numpy as np
 import rclpy
 from ackermann_msgs.msg import AckermannDriveStamped
 from diagnostic_msgs.msg import DiagnosticArray
+from eufs_msgs.msg import ConeArrayWithCovariance
 from geometry_msgs.msg import Point, PoseArray
 from nav_msgs.msg import Odometry, Path
 from rclpy.duration import Duration
@@ -46,6 +47,7 @@ from sim_car.planning.tracked_cone_planner_base import TrackedConePlannerBase
 MSG_TRACK_STATE_TENTATIVE = int(getattr(ConeDetection, "TRACK_STATE_TENTATIVE", 0))
 MSG_TRACK_STATE_CONFIRMED = int(getattr(ConeDetection, "TRACK_STATE_CONFIRMED", 1))
 MSG_TRACK_STATE_STALE = int(getattr(ConeDetection, "TRACK_STATE_STALE", 2))
+IDENTITY_WORLD_FRAMES = frozenset({"map", "odom"})
 
 
 @dataclass
@@ -53,6 +55,211 @@ class _PairMemoryEntry:
     left_track_id: int
     right_track_id: int
     last_valid_sec: float
+
+
+@dataclass(frozen=True)
+class _LapGateInfo:
+    frame_id: str
+    segment_xy: np.ndarray
+
+
+@dataclass(frozen=True)
+class _LapCounterSnapshot:
+    completed_laps: int
+    gate_crossings: int
+    just_completed_lap: bool
+
+
+class _LapGateCounter:
+    def __init__(
+        self,
+        gate_segment_xy: np.ndarray,
+        *,
+        min_lap_travel_m: float,
+        min_lap_time_sec: float = 5.0,
+        near_gate_distance_m: float = 6.0,
+    ) -> None:
+        gate = _as_xy(gate_segment_xy)
+        if gate.shape != (2, 2):
+            raise ValueError("gate_segment_xy must contain exactly two XY points")
+        if float(np.hypot(*(gate[1] - gate[0]))) <= 1e-6:
+            raise ValueError("gate_segment_xy must span a non-zero line segment")
+        self._gate_segment_xy = np.asarray(gate, dtype=np.float64)
+        self._min_lap_travel_m = max(1.0, float(min_lap_travel_m))
+        self._min_lap_time_sec = max(0.0, float(min_lap_time_sec))
+        self._near_gate_distance_m = max(0.5, float(near_gate_distance_m))
+        self._prev_point_xy: Optional[np.ndarray] = None
+        self._last_crossing_time_sec = float("nan")
+        self._distance_since_last_crossing_m = 0.0
+        self._completed_laps = 0
+        self._gate_crossings = 0
+        self._ignore_first_crossing = False
+
+    def update(self, point_xy: np.ndarray, timestamp_sec: float) -> _LapCounterSnapshot:
+        point = np.asarray(point_xy, dtype=np.float64).reshape(2,)
+        now_sec = float(timestamp_sec)
+        if not np.all(np.isfinite(point)):
+            return _LapCounterSnapshot(
+                completed_laps=int(self._completed_laps),
+                gate_crossings=int(self._gate_crossings),
+                just_completed_lap=False,
+            )
+
+        if self._prev_point_xy is None:
+            self._prev_point_xy = point
+            self._ignore_first_crossing = (
+                _point_to_segment_distance_m(point, self._gate_segment_xy) <= self._near_gate_distance_m
+            )
+            return _LapCounterSnapshot(
+                completed_laps=int(self._completed_laps),
+                gate_crossings=int(self._gate_crossings),
+                just_completed_lap=False,
+            )
+
+        step_m = float(np.hypot(*(point - self._prev_point_xy)))
+        if math.isfinite(step_m):
+            self._distance_since_last_crossing_m += step_m
+
+        just_completed_lap = False
+        if _segments_intersect_2d(
+            self._prev_point_xy,
+            point,
+            self._gate_segment_xy[0],
+            self._gate_segment_xy[1],
+        ):
+            should_ignore = self._gate_crossings == 0 and self._ignore_first_crossing
+            enough_distance = self._distance_since_last_crossing_m >= self._min_lap_travel_m
+            enough_time = (
+                not math.isfinite(self._last_crossing_time_sec)
+                or not math.isfinite(now_sec)
+                or (now_sec - self._last_crossing_time_sec) >= self._min_lap_time_sec
+            )
+            if not should_ignore and enough_distance and enough_time:
+                self._completed_laps += 1
+                just_completed_lap = True
+            self._gate_crossings += 1
+            self._distance_since_last_crossing_m = 0.0
+            self._last_crossing_time_sec = now_sec
+
+        self._prev_point_xy = point
+        return _LapCounterSnapshot(
+            completed_laps=int(self._completed_laps),
+            gate_crossings=int(self._gate_crossings),
+            just_completed_lap=bool(just_completed_lap),
+        )
+
+
+def _as_xy(points) -> np.ndarray:
+    arr = np.asarray(list(points), dtype=np.float64)
+    if arr.size == 0:
+        return np.empty((0, 2), dtype=np.float64)
+    arr = np.reshape(arr, (-1, 2))
+    return arr[np.all(np.isfinite(arr), axis=1)]
+
+
+def _point_to_segment_distance_m(point_xy: np.ndarray, segment_xy: np.ndarray) -> float:
+    segment_xy = _as_xy(segment_xy)
+    point_xy = np.asarray(point_xy, dtype=np.float64).reshape(2,)
+    if segment_xy.shape[0] == 0:
+        return float("nan")
+    if segment_xy.shape[0] == 1:
+        return float(np.hypot(*(point_xy - segment_xy[0])))
+    start = segment_xy[0]
+    end = segment_xy[1]
+    delta = end - start
+    denom = float(np.dot(delta, delta))
+    if denom <= 1e-12:
+        nearest = start
+    else:
+        t = float(np.clip(np.dot(point_xy - start, delta) / denom, 0.0, 1.0))
+        nearest = start + (t * delta)
+    return float(np.hypot(*(point_xy - nearest)))
+
+
+def _cross_2d(a: np.ndarray, b: np.ndarray) -> float:
+    return float((a[0] * b[1]) - (a[1] * b[0]))
+
+
+def _orientation_2d(a: np.ndarray, b: np.ndarray, c: np.ndarray) -> float:
+    return _cross_2d(np.asarray(b, dtype=np.float64) - np.asarray(a, dtype=np.float64), np.asarray(c, dtype=np.float64) - np.asarray(a, dtype=np.float64))
+
+
+def _point_on_segment_2d(point_xy: np.ndarray, seg_start_xy: np.ndarray, seg_end_xy: np.ndarray) -> bool:
+    point = np.asarray(point_xy, dtype=np.float64)
+    start = np.asarray(seg_start_xy, dtype=np.float64)
+    end = np.asarray(seg_end_xy, dtype=np.float64)
+    eps = 1e-9
+    return (
+        min(start[0], end[0]) - eps <= point[0] <= max(start[0], end[0]) + eps
+        and min(start[1], end[1]) - eps <= point[1] <= max(start[1], end[1]) + eps
+    )
+
+
+def _should_assume_identity_transform(source_frame: str, target_frame: str) -> bool:
+    source = str(source_frame).strip().lower()
+    target = str(target_frame).strip().lower()
+    if not source or not target or source == target:
+        return False
+    return source in IDENTITY_WORLD_FRAMES and target in IDENTITY_WORLD_FRAMES
+
+
+def _segments_intersect_2d(
+    a_start_xy: np.ndarray,
+    a_end_xy: np.ndarray,
+    b_start_xy: np.ndarray,
+    b_end_xy: np.ndarray,
+) -> bool:
+    a0 = np.asarray(a_start_xy, dtype=np.float64)
+    a1 = np.asarray(a_end_xy, dtype=np.float64)
+    b0 = np.asarray(b_start_xy, dtype=np.float64)
+    b1 = np.asarray(b_end_xy, dtype=np.float64)
+    eps = 1e-9
+    o1 = _orientation_2d(a0, a1, b0)
+    o2 = _orientation_2d(a0, a1, b1)
+    o3 = _orientation_2d(b0, b1, a0)
+    o4 = _orientation_2d(b0, b1, a1)
+    if (o1 * o2) < -eps and (o3 * o4) < -eps:
+        return True
+    if abs(o1) <= eps and _point_on_segment_2d(b0, a0, a1):
+        return True
+    if abs(o2) <= eps and _point_on_segment_2d(b1, a0, a1):
+        return True
+    if abs(o3) <= eps and _point_on_segment_2d(a0, b0, b1):
+        return True
+    if abs(o4) <= eps and _point_on_segment_2d(a1, b0, b1):
+        return True
+    return False
+
+
+def _build_smalltrack_lap_gate(big_orange_xy: np.ndarray, frame_id: str) -> Optional[_LapGateInfo]:
+    points_xy = _as_xy(big_orange_xy)
+    if points_xy.shape[0] < 4:
+        return None
+    candidates: list[tuple[float, int, int]] = []
+    for idx_a in range(points_xy.shape[0]):
+        for idx_b in range(idx_a + 1, points_xy.shape[0]):
+            candidates.append((float(np.hypot(*(points_xy[idx_b] - points_xy[idx_a]))), idx_a, idx_b))
+    candidates.sort(key=lambda item: item[0])
+    used: set[int] = set()
+    pair_midpoints: list[np.ndarray] = []
+    for _, idx_a, idx_b in candidates:
+        if idx_a in used or idx_b in used:
+            continue
+        used.add(idx_a)
+        used.add(idx_b)
+        pair_midpoints.append(0.5 * (points_xy[idx_a] + points_xy[idx_b]))
+        if len(pair_midpoints) == 2:
+            break
+    gate_segment_xy = _as_xy(pair_midpoints)
+    if gate_segment_xy.shape != (2, 2):
+        return None
+    if float(np.hypot(*(gate_segment_xy[1] - gate_segment_xy[0]))) <= 0.25:
+        return None
+    order = np.lexsort((gate_segment_xy[:, 0], gate_segment_xy[:, 1]))
+    return _LapGateInfo(
+        frame_id=str(frame_id).strip() or "map",
+        segment_xy=np.asarray(gate_segment_xy[order], dtype=np.float64),
+    )
 
 
 class SingleBoundaryPlannerNode(TrackedConePlannerBase):
@@ -113,6 +320,9 @@ class SingleBoundaryPlannerNode(TrackedConePlannerBase):
         self._active_unknown_pair_count = 0
         self._active_filtered_track_width_m = self._filtered_track_width_m
         self._active_held_path_flag = 0
+        self._lap_tracking_gate: Optional[_LapGateInfo] = None
+        self._lap_tracking_counter: Optional[_LapGateCounter] = None
+        self._lap_tracking_completed_laps = 0
 
         self._cmd_pub = self.create_publisher(AckermannDriveStamped, self.cmd_topic, 10)
         self._path_pub = self.create_publisher(Path, self.centerline_topic, 10)
@@ -132,6 +342,13 @@ class SingleBoundaryPlannerNode(TrackedConePlannerBase):
             self._odom_cb,
             qos_profile_sensor_data,
         )
+        if self.lap_tracking_gt_track_topic:
+            self.create_subscription(
+                ConeArrayWithCovariance,
+                self.lap_tracking_gt_track_topic,
+                self._lap_tracking_gt_cb,
+                10,
+            )
 
         loop_hz = max(1.0, float(self.publish_rate_hz))
         self.create_timer(1.0 / loop_hz, self._on_timer)
@@ -269,6 +486,8 @@ class SingleBoundaryPlannerNode(TrackedConePlannerBase):
             "midline_memory.min_buffer_confidence": 0.20,
             "runtime.publish_rate_hz": 180.0,
             "runtime.log_throttle_s": 1.0,
+            "lap_tracking.gt_track_topic": "/ground_truth/track",
+            "lap_tracking.target_laps": 0,
             "control.controller_type": "stanley",
             "control.stop_if_no_path": True,
             "stanley.k_gain": 1.2,
@@ -416,6 +635,13 @@ class SingleBoundaryPlannerNode(TrackedConePlannerBase):
 
         self.publish_rate_hz = max(1.0, float(self.get_parameter("runtime.publish_rate_hz").value))
         self.log_throttle_s = max(0.1, float(self.get_parameter("runtime.log_throttle_s").value))
+        self.lap_tracking_gt_track_topic = str(
+            self.get_parameter("lap_tracking.gt_track_topic").value
+        ).strip() or "/ground_truth/track"
+        self.lap_tracking_target_laps = max(
+            0,
+            int(self.get_parameter("lap_tracking.target_laps").value),
+        )
 
         self.controller_type = (
             str(self.get_parameter("control.controller_type").value).strip().lower() or "stanley"
@@ -573,6 +799,83 @@ class SingleBoundaryPlannerNode(TrackedConePlannerBase):
             ),
         )
         self._filtered_track_width_m = float(self._core_config.initial_width_m)
+
+    def _lap_tracking_gt_cb(self, msg: ConeArrayWithCovariance) -> None:
+        big_orange_xy = [
+            (float(cone.point.x), float(cone.point.y))
+            for cone in msg.big_orange_cones
+        ]
+        gate = _build_smalltrack_lap_gate(
+            np.asarray(big_orange_xy, dtype=np.float64),
+            str(msg.header.frame_id).strip() or "map",
+        )
+        if gate is None:
+            return
+        self._lap_tracking_gate = gate
+        if self._lap_tracking_counter is None:
+            gate_length_m = float(np.hypot(*(gate.segment_xy[1] - gate.segment_xy[0])))
+            self._lap_tracking_counter = _LapGateCounter(
+                gate.segment_xy,
+                min_lap_travel_m=20.0,
+                min_lap_time_sec=5.0,
+                near_gate_distance_m=max(4.0, 2.0 * gate_length_m),
+            )
+
+    def _odom_cb(self, msg: Odometry) -> None:
+        super()._odom_cb(msg)
+        self._update_lap_tracking(msg)
+
+    def _update_lap_tracking(self, msg: Odometry) -> None:
+        if self._lap_tracking_gate is None or self._lap_tracking_counter is None:
+            return
+        point_gate = self._transform_xy_to_frame(
+            x=float(msg.pose.pose.position.x),
+            y=float(msg.pose.pose.position.y),
+            source_frame=str(msg.header.frame_id).strip() or self.odom_frame,
+            target_frame=self._lap_tracking_gate.frame_id,
+            stamp=msg.header.stamp,
+        )
+        if point_gate is None:
+            return
+        timestamp_sec = float(msg.header.stamp.sec) + (float(msg.header.stamp.nanosec) * 1e-9)
+        if timestamp_sec <= 0.0:
+            timestamp_sec = float(self.get_clock().now().nanoseconds) * 1e-9
+        snapshot = self._lap_tracking_counter.update(point_gate, timestamp_sec)
+        self._lap_tracking_completed_laps = int(snapshot.completed_laps)
+        if snapshot.just_completed_lap:
+            self.get_logger().info(
+                f"smalltrack laps={snapshot.completed_laps}/{self.lap_tracking_target_laps or 0}"
+            )
+
+    def _transform_xy_to_frame(
+        self,
+        *,
+        x: float,
+        y: float,
+        source_frame: str,
+        target_frame: str,
+        stamp,
+    ) -> Optional[np.ndarray]:
+        if not source_frame or not target_frame:
+            return None
+        if (
+            source_frame == target_frame
+            or self._is_alias(source_frame, target_frame)
+            or _should_assume_identity_transform(source_frame, target_frame)
+        ):
+            return np.asarray([float(x), float(y)], dtype=np.float64)
+        tf_msg, _, _ = self._lookup_transform_with_alias(target_frame, source_frame, stamp)
+        if tf_msg is None:
+            return None
+        px, py, _ = self._transform_point(tf_msg, float(x), float(y), 0.0)
+        return np.asarray([px, py], dtype=np.float64)
+
+    def _lap_status_text(self) -> str:
+        if self._lap_tracking_gate is None:
+            return "LAPS: n/a"
+        if self.lap_tracking_target_laps > 0:
+            return f"LAPS: {int(self._lap_tracking_completed_laps)}/{int(self.lap_tracking_target_laps)}"
+        return f"LAPS: {int(self._lap_tracking_completed_laps)}/off"
 
     def _on_timer(self) -> None:
         control_target_frame: Optional[np.ndarray] = None
@@ -1558,6 +1861,7 @@ class SingleBoundaryPlannerNode(TrackedConePlannerBase):
                 f"STATE: {operator_state.upper()}",
                 f"MODE: {self._active_planner_mode.upper()}",
                 f"REASON: {self._operator_reason_label(operator_reason)}",
+                self._lap_status_text(),
                 (
                     f"TRACKS: remembered={int(self._active_remembered_cone_count)} | "
                     f"stale={int(self._active_stale_cone_count)}"
@@ -1839,7 +2143,40 @@ class SingleBoundaryPlannerNode(TrackedConePlannerBase):
             status,
             operator_state=operator_state,
         )
+        marker_id += 1
+        self._append_lap_marker(
+            arr,
+            marker_id,
+            frame_id,
+            now,
+        )
         return arr
+
+    def _append_lap_marker(
+        self,
+        markers: MarkerArray,
+        marker_id: int,
+        frame_id: str,
+        stamp,
+    ) -> None:
+        marker = Marker()
+        marker.header.frame_id = frame_id
+        marker.header.stamp = stamp
+        marker.ns = "lap_status"
+        marker.id = marker_id
+        marker.type = Marker.TEXT_VIEW_FACING
+        marker.action = Marker.ADD
+        marker.scale.z = 0.36
+        marker.color.r = 1.0
+        marker.color.g = 1.0
+        marker.color.b = 1.0
+        marker.color.a = 1.0
+        marker.pose.position.x = 1.5
+        marker.pose.position.y = 0.0
+        marker.pose.position.z = 2.1
+        marker.pose.orientation.w = 1.0
+        marker.text = self._lap_status_text()
+        markers.markers.append(marker)
 
     def _make_pair_segment_marker(
         self,

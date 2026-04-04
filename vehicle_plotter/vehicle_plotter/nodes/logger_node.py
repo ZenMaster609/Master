@@ -22,6 +22,8 @@ from pathlib import Path
 from typing import Dict, List, Optional
 import csv
 import math
+import os
+import signal
 import time
 import numpy as np
 
@@ -42,12 +44,15 @@ from ..logging.log_writer import LogWriter
 from ..logging.log_config import LogConfig
 from ..logging.path_tracking_eval import (
     PATH_TRACKING_EVAL_FIELDNAMES,
+    GateLapCounter,
     GTMidline,
     analyze_path_tracking_csv,
+    build_smalltrack_lap_gate,
     build_gt_midline_from_cones,
     build_stitched_reference_trace,
     compare_planner_path_to_gt,
     nearest_point_on_polyline as eval_nearest_point_on_polyline,
+    path_cumulative_lengths,
     signed_cross_track_error as eval_signed_cross_track_error,
     should_assume_identity_transform,
     transform_xy_point,
@@ -146,6 +151,7 @@ class LoggerNode(Node):
         self.declare_parameter('path_tracking_eval_filename', 'path_tracking_eval.csv')
         self.declare_parameter('path_tracking_eval_summary_json', 'path_tracking_eval_summary.json')
         self.declare_parameter('path_tracking_eval_summary_txt', 'path_tracking_eval_summary.txt')
+        self.declare_parameter('path_tracking_eval_autostop_laps', 0)
 
         # Get parameters
         self._log_format = self.get_parameter('format').value
@@ -246,6 +252,10 @@ class LoggerNode(Node):
         self._path_tracking_eval_summary_txt = str(
             self.get_parameter('path_tracking_eval_summary_txt').value
         ).strip() or 'path_tracking_eval_summary.txt'
+        self._path_tracking_eval_autostop_laps = max(
+            0,
+            int(self.get_parameter('path_tracking_eval_autostop_laps').value),
+        )
 
         # Parse base path
         if base_path_str:
@@ -311,6 +321,10 @@ class LoggerNode(Node):
         self._path_eval_flush_stride = max(1, int(self._path_tracking_eval_rate_hz * 2.0))
         self._path_eval_timer = None
         self._path_eval_identity_warned_pairs: set[tuple[str, str]] = set()
+        self._path_eval_smalltrack_gate_source = None
+        self._path_eval_smalltrack_lap_counter: Optional[GateLapCounter] = None
+        self._path_eval_smalltrack_completed_laps = 0
+        self._path_eval_smalltrack_autostop_triggered = False
 
         if self._path_tracking_eval_enabled:
             self._path_eval_tf_buffer = Buffer(cache_time=Duration(seconds=10.0))
@@ -568,6 +582,7 @@ class LoggerNode(Node):
             self._path_eval_start_xy = np.asarray([x, y], dtype=np.float64)
             self._path_eval_start_heading_xy = heading_xy
             self._path_tracking_eval_rebuild_gt_midline()
+        self._path_tracking_eval_update_smalltrack_laps(msg.header.stamp)
 
     def _path_tracking_eval_path_callback(self, msg: NavPath) -> None:
         if not msg.poses:
@@ -605,6 +620,99 @@ class LoggerNode(Node):
             frame_id=frame_id,
             resolution_m=0.5,
         )
+        big_orange_xy = [
+            (float(cone.point.x), float(cone.point.y))
+            for cone in self._path_eval_latest_gt_msg.big_orange_cones
+        ]
+        self._path_eval_smalltrack_gate_source = build_smalltrack_lap_gate(
+            big_orange_xy=np.asarray(big_orange_xy, dtype=np.float64),
+            frame_id=frame_id,
+        )
+        self._path_tracking_eval_maybe_init_smalltrack_lap_counter()
+
+    def _path_tracking_eval_maybe_init_smalltrack_lap_counter(self) -> None:
+        if self._path_tracking_eval_track_name != 'smalltrack':
+            return
+        if self._path_eval_smalltrack_lap_counter is not None:
+            return
+        if self._path_eval_smalltrack_gate_source is None:
+            return
+        if self._path_eval_gt_midline_source is None or self._path_eval_gt_midline_source.midline_xy.shape[0] < 2:
+            return
+
+        track_length_m = float(
+            path_cumulative_lengths(self._path_eval_gt_midline_source.midline_xy)[-1]
+        )
+        min_lap_travel_m = max(15.0, 0.6 * track_length_m) if math.isfinite(track_length_m) else 25.0
+        gate_length_m = float(
+            np.hypot(
+                *(
+                    self._path_eval_smalltrack_gate_source.segment_xy[1]
+                    - self._path_eval_smalltrack_gate_source.segment_xy[0]
+                )
+            )
+        )
+        self._path_eval_smalltrack_lap_counter = GateLapCounter(
+            self._path_eval_smalltrack_gate_source.segment_xy,
+            min_lap_travel_m=min_lap_travel_m,
+            min_lap_time_sec=5.0,
+            near_gate_distance_m=max(4.0, 2.0 * gate_length_m),
+        )
+        self.get_logger().info(
+            'Smalltrack lap counting enabled: '
+            f'min_lap_travel_m={min_lap_travel_m:.1f} '
+            f'autostop_laps={self._path_tracking_eval_autostop_laps}'
+        )
+
+    def _path_tracking_eval_update_smalltrack_laps(self, stamp) -> None:
+        if self._path_tracking_eval_track_name != 'smalltrack':
+            return
+        self._path_tracking_eval_maybe_init_smalltrack_lap_counter()
+        if self._path_eval_smalltrack_lap_counter is None or self._path_eval_smalltrack_gate_source is None:
+            return
+        if not np.all(np.isfinite(self._path_eval_vehicle_xy)) or not self._path_eval_vehicle_frame:
+            return
+
+        vehicle_xy_gate = self._path_eval_transform_point_to_frame(
+            self._path_eval_vehicle_xy,
+            source_frame=self._path_eval_vehicle_frame,
+            target_frame=self._path_eval_smalltrack_gate_source.frame_id,
+            stamp=stamp,
+        )
+        if vehicle_xy_gate is None:
+            return
+
+        timestamp_sec = float(getattr(stamp, 'sec', 0)) + (float(getattr(stamp, 'nanosec', 0)) * 1e-9)
+        if timestamp_sec <= 0.0:
+            timestamp_sec = float(self.get_clock().now().nanoseconds) * 1e-9
+        snapshot = self._path_eval_smalltrack_lap_counter.update(vehicle_xy_gate, timestamp_sec)
+        self._path_eval_smalltrack_completed_laps = int(snapshot.completed_laps)
+        if snapshot.just_completed_lap:
+            self.get_logger().info(
+                f'Smalltrack lap completed: laps={snapshot.completed_laps} crossings={snapshot.gate_crossings}'
+            )
+
+        if (
+            not self._path_eval_smalltrack_autostop_triggered
+            and self._path_tracking_eval_autostop_laps > 0
+            and snapshot.completed_laps >= self._path_tracking_eval_autostop_laps
+        ):
+            self._path_eval_smalltrack_autostop_triggered = True
+            self.get_logger().info(
+                'Smalltrack lap target reached: '
+                f'{snapshot.completed_laps}/{self._path_tracking_eval_autostop_laps}. '
+                'Shutting down logger to finalize outputs.'
+            )
+            self.shutdown()
+            if rclpy.ok():
+                rclpy.shutdown()
+            self._request_process_exit()
+
+    def _request_process_exit(self) -> None:
+        try:
+            os.kill(os.getpid(), signal.SIGINT)
+        except Exception as exc:
+            self.get_logger().warn(f'Failed to interrupt logger process for autostop exit: {exc}')
 
     @staticmethod
     def _derive_cone_metrics_prefix(cone_eval_topic: str) -> str:
@@ -1360,6 +1468,13 @@ class LoggerNode(Node):
                 gt_right_xy=overlay_yellow_xy,
                 planner_trace_xy=planner_trace_xy,
                 gt_overlay_segments_xy=overlay_segments_xy,
+                lap_count=self._path_eval_smalltrack_completed_laps
+                if self._path_tracking_eval_track_name == 'smalltrack'
+                else None,
+                lap_target=self._path_tracking_eval_autostop_laps
+                if self._path_tracking_eval_track_name == 'smalltrack'
+                and self._path_tracking_eval_autostop_laps > 0
+                else None,
             )
             if generated_overlay is not None:
                 self._safe_log_info(f'Generated path tracking overlay plot: {generated_overlay}')

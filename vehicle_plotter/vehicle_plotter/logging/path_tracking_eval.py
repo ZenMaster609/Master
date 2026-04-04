@@ -42,12 +42,210 @@ class GTMidline:
     right_xy: np.ndarray
 
 
+@dataclass(frozen=True)
+class SmallTrackLapGate:
+    frame_id: str
+    segment_xy: np.ndarray
+
+
+@dataclass(frozen=True)
+class GateLapCounterSnapshot:
+    completed_laps: int
+    gate_crossings: int
+    distance_since_last_crossing_m: float
+    ignore_first_crossing: bool
+    just_completed_lap: bool
+
+
+class GateLapCounter:
+    """Counts laps from repeated crossings of a fixed start/finish gate."""
+
+    def __init__(
+        self,
+        gate_segment_xy: np.ndarray,
+        *,
+        min_lap_travel_m: float,
+        min_lap_time_sec: float = 5.0,
+        near_gate_distance_m: float = 6.0,
+    ) -> None:
+        gate = _as_xy(gate_segment_xy)
+        if gate.shape != (2, 2):
+            raise ValueError("gate_segment_xy must contain exactly two XY points")
+        if float(np.hypot(*(gate[1] - gate[0]))) <= 1e-6:
+            raise ValueError("gate_segment_xy must span a non-zero line segment")
+
+        self._gate_segment_xy = np.asarray(gate, dtype=np.float64)
+        self._min_lap_travel_m = max(1.0, float(min_lap_travel_m))
+        self._min_lap_time_sec = max(0.0, float(min_lap_time_sec))
+        self._near_gate_distance_m = max(0.5, float(near_gate_distance_m))
+        self._prev_point_xy: np.ndarray | None = None
+        self._last_crossing_time_sec = float("nan")
+        self._distance_since_last_crossing_m = 0.0
+        self._completed_laps = 0
+        self._gate_crossings = 0
+        self._ignore_first_crossing = False
+
+    def snapshot(self, *, just_completed_lap: bool = False) -> GateLapCounterSnapshot:
+        return GateLapCounterSnapshot(
+            completed_laps=int(self._completed_laps),
+            gate_crossings=int(self._gate_crossings),
+            distance_since_last_crossing_m=float(self._distance_since_last_crossing_m),
+            ignore_first_crossing=bool(self._ignore_first_crossing),
+            just_completed_lap=bool(just_completed_lap),
+        )
+
+    def update(self, point_xy: np.ndarray, timestamp_sec: float) -> GateLapCounterSnapshot:
+        point = np.asarray(point_xy, dtype=np.float64).reshape(2,)
+        now_sec = float(timestamp_sec)
+        if not np.all(np.isfinite(point)):
+            return self.snapshot()
+
+        if self._prev_point_xy is None:
+            self._prev_point_xy = point
+            self._ignore_first_crossing = (
+                _point_to_segment_distance_m(point, self._gate_segment_xy) <= self._near_gate_distance_m
+            )
+            return self.snapshot()
+
+        step_m = float(np.hypot(*(point - self._prev_point_xy)))
+        if math.isfinite(step_m):
+            self._distance_since_last_crossing_m += step_m
+
+        just_completed_lap = False
+        if _segments_intersect_2d(
+            self._prev_point_xy,
+            point,
+            self._gate_segment_xy[0],
+            self._gate_segment_xy[1],
+        ):
+            should_ignore = self._gate_crossings == 0 and self._ignore_first_crossing
+            enough_distance = self._distance_since_last_crossing_m >= self._min_lap_travel_m
+            enough_time = (
+                not math.isfinite(self._last_crossing_time_sec)
+                or not math.isfinite(now_sec)
+                or (now_sec - self._last_crossing_time_sec) >= self._min_lap_time_sec
+            )
+            if not should_ignore and enough_distance and enough_time:
+                self._completed_laps += 1
+                just_completed_lap = True
+            self._gate_crossings += 1
+            self._distance_since_last_crossing_m = 0.0
+            self._last_crossing_time_sec = now_sec
+
+        self._prev_point_xy = point
+        return self.snapshot(just_completed_lap=just_completed_lap)
+
+
 def _as_xy(points: Iterable[Iterable[float]]) -> np.ndarray:
     arr = np.asarray(list(points), dtype=np.float64)
     if arr.size == 0:
         return np.empty((0, 2), dtype=np.float64)
     arr = np.reshape(arr, (-1, 2))
     return arr[np.all(np.isfinite(arr), axis=1)]
+
+
+def _point_to_segment_distance_m(point_xy: np.ndarray, segment_xy: np.ndarray) -> float:
+    segment_xy = _as_xy(segment_xy)
+    point_xy = np.asarray(point_xy, dtype=np.float64).reshape(2,)
+    if segment_xy.shape[0] == 0:
+        return float("nan")
+    if segment_xy.shape[0] == 1:
+        return float(np.hypot(*(point_xy - segment_xy[0])))
+    start = segment_xy[0]
+    end = segment_xy[1]
+    delta = end - start
+    denom = float(np.dot(delta, delta))
+    if denom <= 1e-12:
+        nearest = start
+    else:
+        t = float(np.clip(np.dot(point_xy - start, delta) / denom, 0.0, 1.0))
+        nearest = start + (t * delta)
+    return float(np.hypot(*(point_xy - nearest)))
+
+
+def _orientation_2d(a: np.ndarray, b: np.ndarray, c: np.ndarray) -> float:
+    return _cross_2d(np.asarray(b, dtype=np.float64) - np.asarray(a, dtype=np.float64), np.asarray(c, dtype=np.float64) - np.asarray(a, dtype=np.float64))
+
+
+def _point_on_segment_2d(point_xy: np.ndarray, seg_start_xy: np.ndarray, seg_end_xy: np.ndarray) -> bool:
+    point = np.asarray(point_xy, dtype=np.float64)
+    start = np.asarray(seg_start_xy, dtype=np.float64)
+    end = np.asarray(seg_end_xy, dtype=np.float64)
+    eps = 1e-9
+    return (
+        min(start[0], end[0]) - eps <= point[0] <= max(start[0], end[0]) + eps
+        and min(start[1], end[1]) - eps <= point[1] <= max(start[1], end[1]) + eps
+    )
+
+
+def _segments_intersect_2d(
+    a_start_xy: np.ndarray,
+    a_end_xy: np.ndarray,
+    b_start_xy: np.ndarray,
+    b_end_xy: np.ndarray,
+) -> bool:
+    a0 = np.asarray(a_start_xy, dtype=np.float64)
+    a1 = np.asarray(a_end_xy, dtype=np.float64)
+    b0 = np.asarray(b_start_xy, dtype=np.float64)
+    b1 = np.asarray(b_end_xy, dtype=np.float64)
+    eps = 1e-9
+
+    o1 = _orientation_2d(a0, a1, b0)
+    o2 = _orientation_2d(a0, a1, b1)
+    o3 = _orientation_2d(b0, b1, a0)
+    o4 = _orientation_2d(b0, b1, a1)
+
+    if (o1 * o2) < -eps and (o3 * o4) < -eps:
+        return True
+    if abs(o1) <= eps and _point_on_segment_2d(b0, a0, a1):
+        return True
+    if abs(o2) <= eps and _point_on_segment_2d(b1, a0, a1):
+        return True
+    if abs(o3) <= eps and _point_on_segment_2d(a0, b0, b1):
+        return True
+    if abs(o4) <= eps and _point_on_segment_2d(a1, b0, b1):
+        return True
+    return False
+
+
+def build_smalltrack_lap_gate(
+    *,
+    big_orange_xy: np.ndarray,
+    frame_id: str,
+) -> SmallTrackLapGate | None:
+    points_xy = _as_xy(big_orange_xy)
+    if points_xy.shape[0] < 4:
+        return None
+
+    candidates: list[tuple[float, int, int]] = []
+    for idx_a in range(points_xy.shape[0]):
+        for idx_b in range(idx_a + 1, points_xy.shape[0]):
+            dist_m = float(np.hypot(*(points_xy[idx_b] - points_xy[idx_a])))
+            candidates.append((dist_m, idx_a, idx_b))
+    candidates.sort(key=lambda item: item[0])
+
+    used: set[int] = set()
+    pair_midpoints: list[np.ndarray] = []
+    for _, idx_a, idx_b in candidates:
+        if idx_a in used or idx_b in used:
+            continue
+        used.add(idx_a)
+        used.add(idx_b)
+        pair_midpoints.append(0.5 * (points_xy[idx_a] + points_xy[idx_b]))
+        if len(pair_midpoints) == 2:
+            break
+
+    gate_segment_xy = _as_xy(pair_midpoints)
+    if gate_segment_xy.shape != (2, 2):
+        return None
+    if float(np.hypot(*(gate_segment_xy[1] - gate_segment_xy[0]))) <= 0.25:
+        return None
+
+    order = np.lexsort((gate_segment_xy[:, 0], gate_segment_xy[:, 1]))
+    return SmallTrackLapGate(
+        frame_id=str(frame_id).strip(),
+        segment_xy=np.asarray(gate_segment_xy[order], dtype=np.float64),
+    )
 
 
 def _cross_2d(a: np.ndarray, b: np.ndarray) -> float:

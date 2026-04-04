@@ -15,7 +15,7 @@ midpoint_planner_node:
       odom_topic: "/sim/odom"
 
     filtering:
-      max_cone_range_m: 25.0
+      max_cone_range_m: 20.0
       behind_drop_m: 5.0
       min_confidence: 0.3
       min_required_cones: 4
@@ -95,7 +95,7 @@ midpoint_planner_node:
       k_gain: 1.2
       softening_speed_mps: 0.0
       heading_gain: 1.6
-      lookahead_idx_offset: 0
+      lookahead_idx_offset: 4
       steering_limit_rad: 0.52
       steering_lowpass_alpha: 1.0
       steering_rate_limit_rad_s: 10.0
