@@ -1,4 +1,4 @@
-"""Stanley steering controller used by the Delaunay planner."""
+"""Stanley steering controller used by the tracked-cone planners."""
 
 from __future__ import annotations
 

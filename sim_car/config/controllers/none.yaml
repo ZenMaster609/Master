@@ -1,5 +1,0 @@
-/**:
-  ros__parameters:
-    control:
-      controller_type: "none"
-      stop_if_no_path: true

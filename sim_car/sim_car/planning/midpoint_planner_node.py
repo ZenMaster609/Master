@@ -26,7 +26,7 @@ from sim_car.cones.tracking.fusion import normalize_color
 from sim_car.controllers.factory import create_steering_controller
 from sim_car.controllers.pure_pursuit_controller import PurePursuitConfig
 from sim_car.controllers.stanley_controller import StanleyConfig
-from sim_car.planning.delaunay_planner_core import (
+from sim_car.planning.triangulation_planner_core import (
     compute_centerline_jump_max,
     edge_churn_count,
     edge_churn_ratio,
@@ -253,32 +253,32 @@ class MidpointPlannerNode(TrackedConePlannerBase):
             "filtering.unknown_pair_max_width_error_m": 0.9,
             "filtering.max_consecutive_unknown_pairs": 2,
             "boundary_chain.min_step_m": 0.8,
-            "boundary_chain.max_step_m": 6.0,
-            "boundary_chain.max_heading_change_rad": 1.0,
+            "boundary_chain.max_step_m": 5.5,
+            "boundary_chain.max_heading_change_rad": 0.95,
             "boundary_chain.min_forward_progress_m": 0.2,
-            "boundary_chain.min_chain_length": 3,
+            "boundary_chain.min_chain_length": 2,
             "pairing.min_pair_width_m": 2.2,
-            "pairing.max_pair_width_m": 5.5,
-            "pairing.max_width_jump_m": 0.8,
-            "pairing.min_pair_count": 3,
+            "pairing.max_pair_width_m": 8.0,
+            "pairing.max_width_jump_m": 2.0,
+            "pairing.min_pair_count": 2,
             "pairing.pair_hold_time_s": 1.25,
             "pairing.pair_reassignment_margin": 0.25,
             "pairing.pair_inward_projection_tolerance_m": 0.15,
             "pairing.tangent_neighbor_count": 4,
             "pairing.enforce_opposite_color_pairing": True,
-            "pairing.enforce_geometry_pairing_gate": True,
+            "pairing.enforce_geometry_pairing_gate": False,
             "width_estimation.initial_width_m": 3.6,
             "width_estimation.min_width_m": 2.4,
             "width_estimation.max_width_m": 4.8,
-            "width_estimation.alpha": 0.15,
+            "width_estimation.alpha": 0.18,
             "width_estimation.max_delta_per_update_m": 0.2,
-            "width_estimation.min_trustworthy_pairs": 3,
+            "width_estimation.min_trustworthy_pairs": 2,
             "centerline.path_resolution_m": 0.5,
             "centerline.max_path_length_m": 30.0,
             "centerline.smoothing_window": 3,
             "centerline.temporal_alpha": 0.25,
             "centerline.max_heading_delta_rad": 0.75,
-            "centerline.max_midpoint_segment_length_m": 7.5,
+            "centerline.max_midpoint_segment_length_m": 4.5,
             "centerline.midpoint_order_reference_handoff_m": 6.0,
             "centerline.midpoint_order_history_size": 3,
             "centerline.midpoint_order_backtrack_tolerance_m": 0.35,
@@ -301,7 +301,7 @@ class MidpointPlannerNode(TrackedConePlannerBase):
             "control.stop_if_no_path": True,
             "stanley.k_gain": 1.2,
             "stanley.softening_speed_mps": 0.0,
-            "stanley.heading_gain": 1.0,
+            "stanley.heading_gain": 1.6,
             "stanley.lookahead_idx_offset": 0,
             "stanley.steering_limit_rad": 0.52,
             "stanley.steering_lowpass_alpha": 1.0,
@@ -319,7 +319,7 @@ class MidpointPlannerNode(TrackedConePlannerBase):
             "pure_pursuit.steering_rate_limit_rad_s": 10.0,
             "pure_pursuit.wheelbase_m": 1.65,
             "speed_control.speed_min_mps": 1.0,
-            "speed_control.speed_max_mps": 1.8,
+            "speed_control.speed_max_mps": 4.0,
             "speed_control.curvature_speed_gain": 4.0,
             "speed_control.lowpass_speed_alpha": 0.15,
             "validation.min_path_points": 4,
@@ -338,11 +338,11 @@ class MidpointPlannerNode(TrackedConePlannerBase):
             "diagnostics.centerline_jump_horizon_m": 8.0,
             "diagnostics.edge_quantization_m": 0.05,
             "diagnostics.jump_warn_threshold_m": 0.8,
-            "diagnostics.edge_churn_warn_threshold": 0.55,
+            "diagnostics.edge_churn_warn_threshold": 0.4,
             "diagnostics.publish_control_debug": True,
             "diagnostics.publish_thesis_context": False,
             "debug.enable_markers": True,
-            "debug.show_raw_cones": False,
+            "debug.show_raw_cones": True,
             "debug.show_boundary_chains": True,
             "debug.show_pair_lines": True,
             "debug.show_raw_midpoint_chain": True,
@@ -530,7 +530,7 @@ class MidpointPlannerNode(TrackedConePlannerBase):
         )
         self.publish_points_topic = bool(self.get_parameter("debug.publish_points_topic").value)
         self.show_lookahead_point = bool(self.get_parameter("debug.show_lookahead_point").value)
-        self.show_delaunay_edges = False
+        self.show_triangulation_edges = False
         self.show_candidate_edges = False
         self.show_selected_edges = False
 
@@ -1810,6 +1810,8 @@ class MidpointPlannerNode(TrackedConePlannerBase):
             return np.array(result.centerline, copy=True), "validated"
         recoverable_live_path = self._recoverable_live_path(result)
         if recoverable_live_path.shape[0] > 0:
+            if (result.reject_reason or result.status) == "near-field continuity rejected fresh path":
+                return recoverable_live_path, "recoverable_live_path"
             required_extent_m = max(
                 float(self.candidate_min_extent_m),
                 float(_TARGET_COMPLETED_PATH_EXTENT_M),
@@ -1964,6 +1966,61 @@ class MidpointPlannerNode(TrackedConePlannerBase):
             vehicle_y=vehicle_y,
             vehicle_yaw=vehicle_yaw,
         )
+
+    def _project_midpoint_chain_candidate(
+        self,
+        *,
+        midpoint_chain: np.ndarray,
+        frame_id: str,
+        vehicle_x: float,
+        vehicle_y: float,
+        vehicle_yaw: float,
+    ) -> np.ndarray:
+        pair_local = self._centerline_to_vehicle_frame(
+            centerline=np.asarray(midpoint_chain, dtype=np.float64),
+            frame_id=frame_id,
+            vehicle_x=vehicle_x,
+            vehicle_y=vehicle_y,
+            vehicle_yaw=vehicle_yaw,
+        )
+        if pair_local.shape[0] < 2 or not np.all(np.isfinite(pair_local)):
+            return np.empty((0, 2), dtype=np.float64)
+
+        start_idx = 0
+        forward_indices = np.flatnonzero(pair_local[:, 0] >= -0.1)
+        if forward_indices.size > 0:
+            start_idx = max(0, int(forward_indices[0]) - 1)
+        candidate_local = np.array(pair_local[start_idx:], copy=True)
+        if candidate_local.shape[0] < 2:
+            return np.empty((0, 2), dtype=np.float64)
+
+        if float(np.hypot(candidate_local[0, 0], candidate_local[0, 1])) > 1e-6:
+            candidate_local = np.vstack((np.array([[0.0, 0.0]], dtype=np.float64), candidate_local))
+
+        step_m = max(0.05, float(self.centerline_path_resolution_m))
+        while self._path_forward_extent_local(candidate_local) + 1e-9 < self._minimum_projected_forward_extent_m():
+            seg = candidate_local[-1] - candidate_local[-2]
+            seg_norm = float(np.hypot(seg[0], seg[1]))
+            direction = np.array([1.0, 0.0], dtype=np.float64)
+            if seg_norm > 1e-6:
+                direction = seg / seg_norm
+            if float(direction[0]) <= 1e-6:
+                direction[0] = 1.0
+                direction[1] = 0.0
+            next_point = candidate_local[-1] + (direction * step_m)
+            next_point[0] = max(float(next_point[0]), float(candidate_local[-1, 0]) + step_m)
+            candidate_local = np.vstack((candidate_local, next_point))
+
+        return self._local_path_to_frame(
+            local_path=candidate_local,
+            frame_id=frame_id,
+            vehicle_x=vehicle_x,
+            vehicle_y=vehicle_y,
+            vehicle_yaw=vehicle_yaw,
+        )
+
+    def _minimum_projected_forward_extent_m(self) -> float:
+        return max(float(self.candidate_min_extent_m), float(_TARGET_COMPLETED_PATH_EXTENT_M))
 
     def _complete_live_prefix_candidate(
         self,
@@ -2218,7 +2275,7 @@ class MidpointPlannerNode(TrackedConePlannerBase):
         updated_local = np.array(stored_local, copy=True)
         step = max(0.05, float(self.midline_station_spacing_m))
         direct_prefix_distance = (
-            float(self.midline_control_handoff_distance_m)
+            0.0
             if direct_prefix_distance_m is None
             else float(direct_prefix_distance_m)
         )
@@ -2447,46 +2504,20 @@ class MidpointPlannerNode(TrackedConePlannerBase):
     ) -> str:
         del candidate_diagonal_count
         del selected_chain_length
-        min_chain_length = int(getattr(self._core_config, "min_chain_length", 0))
-        min_pair_count = int(getattr(self._core_config, "min_pair_count", 0))
+        del centerline_point_count
+        del cmd_speed
+        del cmd_steering
+        del lookahead
+        del seed_midpoint_distance_m
+        del near_field_lateral_max_m
+        del near_field_midpoint_kink_max_rad
+        del hold_remaining_s
         return "\n".join(
             [
                 f"STATE: {operator_state.upper()}",
                 f"MODE: {self._active_planner_mode.upper()}",
                 f"REASON: {self._operator_reason_label(operator_reason)}",
-                (
-                    f"TRACKS: remembered={int(getattr(self, '_active_remembered_cone_count', 0))} | "
-                    f"stale={int(getattr(self, '_active_stale_cone_count', 0))}"
-                ),
-                (
-                    f"BOUNDARIES: L={int(getattr(self, '_active_left_chain_length', 0))}/{min_chain_length} | "
-                    f"R={int(getattr(self, '_active_right_chain_length', 0))}/{min_chain_length} | "
-                    f"pairs={int(getattr(self, '_active_pair_count', 0))}/{min_pair_count} | "
-                    f"unknown={int(getattr(self, '_active_unknown_pair_count', 0))} | "
-                    f"path={int(centerline_point_count)} pts"
-                ),
-                (
-                    f"FLOW: stage={str(getattr(self, '_active_chain_stage', 'waiting')).upper()} | "
-                    f"wrong={int(getattr(self, '_active_reject_wrong_side_count', 0))} | "
-                    f"width={int(getattr(self, '_active_reject_width_count', 0))} | "
-                    f"range={int(getattr(self, '_active_reject_width_range_count', 0))} | "
-                    f"prog={int(getattr(self, '_active_reject_progress_count', 0))} | "
-                    f"orient={int(getattr(self, '_active_reject_orientation_count', 0))}"
-                ),
-                (
-                    f"WIDTH: {self._fmt_metric(getattr(self, '_active_filtered_track_width_m', float('nan')), ' m')} | "
-                    f"HALF: {self._fmt_metric(0.5 * float(getattr(self, '_active_filtered_track_width_m', float('nan'))), ' m')}"
-                ),
-                (
-                    f"CMD: v={self._fmt_metric(cmd_speed, ' m/s')} | "
-                    f"delta={self._fmt_metric(cmd_steering, ' rad')} | "
-                    f"Ld={self._fmt_metric(lookahead, ' m')}"
-                ),
-                (
-                    f"HOLD: {self._fmt_metric(hold_remaining_s, ' s')} left | "
-                    f"held={int(getattr(self, '_active_held_path_flag', 0))} | "
-                    f"clean {int(getattr(self, '_hold_clean_frame_count', 0))}/{int(getattr(self, 'hold_exit_clean_frames', 0))}"
-                ),
+                "LAPS: 0/off",
             ]
         )
 

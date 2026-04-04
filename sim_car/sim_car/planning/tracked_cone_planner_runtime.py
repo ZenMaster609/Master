@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Delaunay-based centerline planner over tracked cone detections."""
+"""Shared tracked-cone planner runtime used by migrated planners."""
 
 from __future__ import annotations
 
@@ -26,7 +26,7 @@ from visualization_msgs.msg import Marker, MarkerArray
 from sim_car.cones.tracking.fusion import normalize_color, resolve_boundary_colors_for_planning
 from sim_car.controllers.factory import create_steering_controller
 from sim_car.controllers.stanley_controller import StanleyConfig
-from sim_car.planning.delaunay_planner_core import (
+from sim_car.planning.triangulation_planner_core import (
     CoreConfig,
     CorePrior,
     CoreResult,
@@ -97,7 +97,7 @@ _OPERATOR_STATE_COLORS = {
 }
 
 
-class DelaunayPlannerNode(Node):
+class TrackedConePlannerRuntime(Node):
     """Consumes tracked cones and publishes a centerline path + debug markers."""
 
     def __init__(self) -> None:
@@ -165,10 +165,10 @@ class DelaunayPlannerNode(Node):
 
     def _planner_identity_config(self) -> PlannerIdentity:
         return PlannerIdentity(
-            node_name='delaunay_planner_node',
-            planner_mode='delaunay',
-            diagnostics_prefix='delaunay_planner',
-            diagnostics_topic='/delaunay_planner/diagnostics',
+            node_name='tracked_cone_planner_runtime',
+            planner_mode='tracked_cone',
+            diagnostics_prefix='tracked_cone_planner',
+            diagnostics_topic='/tracked_cone_planner/diagnostics',
         )
 
     def _declare_parameters(self) -> None:
@@ -253,7 +253,7 @@ class DelaunayPlannerNode(Node):
             'diagnostics.publish_thesis_context': False,
             'debug.enable_markers': True,
             'debug.show_raw_cones': False,
-            'debug.show_delaunay_edges': True,
+            'debug.show_triangulation_edges': True,
             'debug.show_candidate_edges': True,
             'debug.show_selected_edges': True,
             'debug.show_raw_midpoint_chain': True,
@@ -411,7 +411,7 @@ class DelaunayPlannerNode(Node):
 
         self.enable_debug_markers = bool(self.get_parameter('debug.enable_markers').value)
         self.show_raw_cones = bool(self.get_parameter('debug.show_raw_cones').value)
-        self.show_delaunay_edges = bool(self.get_parameter('debug.show_delaunay_edges').value)
+        self.show_triangulation_edges = bool(self.get_parameter('debug.show_triangulation_edges').value)
         self.show_candidate_edges = bool(self.get_parameter('debug.show_candidate_edges').value)
         self.show_selected_edges = bool(self.get_parameter('debug.show_selected_edges').value)
         self.show_raw_midpoint_chain = bool(
@@ -1973,13 +1973,13 @@ class DelaunayPlannerNode(Node):
                 now,
             )
 
-        if self.show_delaunay_edges:
+        if self.show_triangulation_edges:
             arr.markers.append(
                 self._make_edge_list_marker(
                     frame_id=frame_id,
                     stamp=now,
                     marker_id=marker_id,
-                    ns='delaunay_edges',
+                    ns='triangulation_edges',
                     points=result.filtered_points,
                     edges=result.triangulation_edges,
                     color=(0.3, 0.7, 1.0, 0.35),
@@ -2501,7 +2501,7 @@ class DelaunayPlannerNode(Node):
 
 def main(args=None) -> None:
     rclpy.init(args=args)
-    node = DelaunayPlannerNode()
+    node = TrackedConePlannerRuntime()
     try:
         rclpy.spin(node)
     except (KeyboardInterrupt, ExternalShutdownException):

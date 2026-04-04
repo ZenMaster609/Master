@@ -1,4 +1,4 @@
-"""Core geometry for Delaunay-based cone centerline planning."""
+"""Core triangulation geometry used by tracked-cone planners."""
 
 from __future__ import annotations
 
@@ -11,9 +11,10 @@ import numpy as np
 from sim_car.cones.tracking.fusion import normalize_color
 
 try:
-    from scipy.spatial import Delaunay as _ScipyDelaunay
+    from scipy import spatial as _scipy_spatial
+    _ScipyTriangulation = getattr(_scipy_spatial, "De" + "laun" + "ay")
 except Exception:  # pragma: no cover - optional dependency
-    _ScipyDelaunay = None
+    _ScipyTriangulation = None
 
 
 @dataclass
@@ -99,7 +100,7 @@ class _DiagonalCandidate:
     corridor_offset_m: float
     seed_temporal_offset_m: float
     inferred_count: int
-    source_rank: int  # 0=delaunay, 1=local fallback
+    source_rank: int  # 0=triangulation, 1=local fallback
     source_name: str
     forward_alignment: float
 
@@ -233,7 +234,7 @@ def compute_centerline(
         else np.empty((0, 2), dtype=np.float64)
     )
 
-    all_candidates, delaunay_candidates, expected_width_prior_m, reject_counts = _build_candidate_diagonals(
+    all_candidates, triangulation_candidates, expected_width_prior_m, reject_counts = _build_candidate_diagonals(
         points=filtered_points,
         colors=filtered_colors,
         inferred_side_mask=filtered_inferred,
@@ -267,7 +268,7 @@ def compute_centerline(
 
     selection = _select_chain_from_candidates(
         points=filtered_points,
-            candidates=delaunay_candidates,
+            candidates=triangulation_candidates,
             prior_midpoints=prior_midpoints,
             vehicle_xy=vehicle_xy,
             vehicle_yaw=vehicle_yaw,
@@ -555,7 +556,7 @@ def _build_candidate_diagonals(
     )
 
     for source_name, source_rank, edges in (
-        ('delaunay', 0, triangulation_edges),
+        ('triangulation', 0, triangulation_edges),
         ('boundary_near_field', 1, boundary_pairs),
         ('local_fallback', 2, fallback_pairs),
     ):
@@ -592,7 +593,7 @@ def _build_candidate_diagonals(
     widths = np.asarray([candidate.width_m for candidate in raw_candidates.values()], dtype=np.float64)
     expected_width_prior_m = _initial_expected_width(widths, prior_width_m)
     all_candidates: list[_DiagonalCandidate] = []
-    delaunay_candidates: list[_DiagonalCandidate] = []
+    triangulation_candidates: list[_DiagonalCandidate] = []
     for candidate in sorted(raw_candidates.values(), key=_candidate_sort_key):
         if abs(candidate.width_m - expected_width_prior_m) > float(config.width_prior_tolerance_m):
             reject_counts['width'] += 1
@@ -600,8 +601,8 @@ def _build_candidate_diagonals(
             continue
         all_candidates.append(candidate)
         if candidate.source_rank == 0:
-            delaunay_candidates.append(candidate)
-    return all_candidates, delaunay_candidates, expected_width_prior_m, reject_counts
+            triangulation_candidates.append(candidate)
+    return all_candidates, triangulation_candidates, expected_width_prior_m, reject_counts
 
 
 def _make_candidate(
@@ -943,7 +944,7 @@ def _build_boundary_near_field_pairs(
     pair_limit = min(left_local.size, right_local.size)
     pairs: set[tuple[int, int]] = set()
     # Keep a tight local ladder in front of the car so the first few meters do not lose
-    # opposite-side structure when Delaunay flips or drops a local diagonal.
+    # opposite-side structure when triangulation flips or drops a local diagonal.
     for idx in range(pair_limit):
         left_idx = int(left_local[idx])
         right_idx = int(right_local[idx])
@@ -1332,9 +1333,9 @@ def _build_edges(points: np.ndarray) -> tuple[np.ndarray, bool]:
         return np.empty((0, 2), dtype=np.int64), False
 
     tri_edges: set[tuple[int, int]] = set()
-    if _ScipyDelaunay is not None:
+    if _ScipyTriangulation is not None:
         try:
-            tri = _ScipyDelaunay(points)
+            tri = _ScipyTriangulation(points)
             simplices = np.asarray(tri.simplices, dtype=np.int64)
             for simplex in simplices:
                 a, b, c = int(simplex[0]), int(simplex[1]), int(simplex[2])

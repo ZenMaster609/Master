@@ -33,7 +33,7 @@ class ThesisControllerDiagnosticsPlotNode(Node):
         self.declare_parameter('controller_diagnostics_joint_states_topic', '/sim/raw/joint_states')
         self.declare_parameter('controller_diagnostics_odom_topic', '/sim/odom')
         self.declare_parameter('controller_diagnostics_path_topic', '/planned_centerline')
-        self.declare_parameter('controller_diagnostics_planner_diag_topic', '/delaunay_planner/diagnostics')
+        self.declare_parameter('controller_diagnostics_planner_diag_topic', '/midpoint_planner/diagnostics')
         self.declare_parameter('controller_diagnostics_live_plot_rate_hz', 10.0)
         self.declare_parameter('controller_diagnostics_live_buffer_sec', 30.0)
 
@@ -61,7 +61,7 @@ class ThesisControllerDiagnosticsPlotNode(Node):
         )
         self._planner_diag_topic = (
             str(self.get_parameter('controller_diagnostics_planner_diag_topic').value).strip()
-            or '/delaunay_planner/diagnostics'
+            or '/midpoint_planner/diagnostics'
         )
         self._plot_rate_hz = max(
             0.1,

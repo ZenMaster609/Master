@@ -1,8 +1,7 @@
 from __future__ import annotations
 
-from sim_car.planning.delaunay_planner_node import DelaunayPlannerNode
+from sim_car.planning.tracked_cone_planner_runtime import TrackedConePlannerRuntime
 
 
-class TrackedConePlannerBase(DelaunayPlannerNode):
+class TrackedConePlannerBase(TrackedConePlannerRuntime):
     """Shared tracked-cone planner runtime used by midpoint/single-boundary planners."""
-

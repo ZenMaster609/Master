@@ -134,7 +134,7 @@ class LoggerNode(Node):
         self.declare_parameter('controller_diagnostics_joint_states_topic', '/sim/raw/joint_states')
         self.declare_parameter('controller_diagnostics_odom_topic', '/sim/odom')
         self.declare_parameter('controller_diagnostics_path_topic', '/planned_centerline')
-        self.declare_parameter('controller_diagnostics_planner_diag_topic', '/delaunay_planner/diagnostics')
+        self.declare_parameter('controller_diagnostics_planner_diag_topic', '/midpoint_planner/diagnostics')
         self.declare_parameter('controller_diagnostics_filename', 'steering_tracking_diagnostics.csv')
         self.declare_parameter('controller_diagnostics_summary_json', 'steering_tracking_summary.json')
         self.declare_parameter('controller_diagnostics_summary_txt', 'steering_tracking_summary.txt')
@@ -201,7 +201,7 @@ class LoggerNode(Node):
         ).strip() or '/planned_centerline'
         self._steering_diag_planner_diag_topic = str(
             self.get_parameter('controller_diagnostics_planner_diag_topic').value
-        ).strip() or '/delaunay_planner/diagnostics'
+        ).strip() or '/midpoint_planner/diagnostics'
         self._steering_diag_filename = str(
             self.get_parameter('controller_diagnostics_filename').value
         ).strip() or 'steering_tracking_diagnostics.csv'

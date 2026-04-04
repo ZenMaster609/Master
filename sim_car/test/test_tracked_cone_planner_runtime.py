@@ -12,8 +12,8 @@ PACKAGE_ROOT = TEST_DIR.parent
 if str(PACKAGE_ROOT) not in sys.path:
     sys.path.insert(0, str(PACKAGE_ROOT))
 
-from sim_car.planning.delaunay_planner_core import CoreResult
-from sim_car.planning.delaunay_planner_node import DelaunayPlannerNode
+from sim_car.planning.tracked_cone_planner_runtime import TrackedConePlannerRuntime
+from sim_car.planning.triangulation_planner_core import CoreResult
 from sim_car.planning.planner_runtime_types import PlannerIdentity
 
 
@@ -54,16 +54,16 @@ class _FakeLogger:
         self.warn_messages.append(msg)
 
 
-def _make_node() -> DelaunayPlannerNode:
-    node = object.__new__(DelaunayPlannerNode)
+def _make_node() -> TrackedConePlannerRuntime:
+    node = object.__new__(TrackedConePlannerRuntime)
     node._planner_identity = PlannerIdentity(
-        node_name='delaunay_planner_node',
-        planner_mode='delaunay',
-        diagnostics_prefix='delaunay_planner',
-        diagnostics_topic='/delaunay_planner/diagnostics',
+        node_name='tracked_cone_planner_runtime',
+        planner_mode='tracked_cone',
+        diagnostics_prefix='tracked_cone_planner',
+        diagnostics_topic='/tracked_cone_planner/diagnostics',
     )
     node.show_raw_cones = False
-    node.show_delaunay_edges = False
+    node.show_triangulation_edges = False
     node.show_candidate_edges = False
     node.show_selected_edges = False
     node.show_raw_midpoint_chain = True

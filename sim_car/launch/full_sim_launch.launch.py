@@ -33,7 +33,7 @@ SUPPORTED_TRACKS = {
     'smalltrack': 'small_track.world',
 }
 MIGRATED_PLANNERS = {'midpoint', 'single_boundary', 'corridor'}
-SUPPORTED_PLANNERS = {'delaunay', 'midpoint', 'single_boundary', 'corridor', 'none'}
+SUPPORTED_PLANNERS = {'midpoint', 'single_boundary', 'corridor', 'none'}
 SUPPORTED_CONTROLLERS = {'stanley', 'pure_pursuit', 'none'}
 
 
@@ -230,7 +230,7 @@ def generate_launch_description():
     planner_arg = DeclareLaunchArgument(
         'planner',
         default_value='midpoint',
-        description="Planner to launch: 'delaunay', 'midpoint', 'single_boundary', 'corridor', or 'none'"
+        description="Planner to launch: 'midpoint', 'single_boundary', 'corridor', or 'none'"
     )
 
     controller_arg = DeclareLaunchArgument(
@@ -548,12 +548,6 @@ def generate_launch_description():
         LaunchConfiguration('camera_rate_hz'),
         "))"
     ])
-    delaunay_history_frames = PythonExpression([
-        "max(8, int((float(",
-        LaunchConfiguration('planner_rate_hz'),
-        ") * 0.2) + 0.999))"
-    ])
-
     gazebo_launch = IncludeLaunchDescription(
         PythonLaunchDescriptionSource(
             PathJoinSubstitution([sim_car_share, 'launch', 'gazebo_sim.launch.py'])
@@ -684,7 +678,7 @@ def generate_launch_description():
                 "'.lower() == 'single_boundary' else "
                 "'/corridor_planner/diagnostics' if '",
                 LaunchConfiguration('planner'),
-                "'.lower() == 'corridor' else '/delaunay_planner/diagnostics'",
+                "'.lower() == 'corridor' else '/midpoint_planner/diagnostics'",
             ]),
             'controller_diagnostics_live_plot_enabled': LaunchConfiguration('controller_diagnostics_live_plot_enabled'),
             'controller_diagnostics_live_plot_rate_hz': LaunchConfiguration('controller_diagnostics_live_plot_rate_hz'),
@@ -945,48 +939,6 @@ def generate_launch_description():
                 ),
             },
         ],
-    )
-
-    delaunay_planner_node = Node(
-        package='sim_car',
-        executable='delaunay_planner_node',
-        name='delaunay_planner_node',
-        output='screen',
-        parameters=[
-            PathJoinSubstitution([sim_car_share, 'config', 'delaunay_planner.yaml']),
-            resolved_controller_config,
-            {
-                'use_sim_time': ParameterValue(
-                    LaunchConfiguration('use_sim_time'),
-                    value_type=bool,
-                ),
-                'topics.tracked_cones_topic': PythonExpression([
-                    "'/tracked_cones' if '",
-                    LaunchConfiguration('cone_memory_enabled'),
-                    "'.lower() == 'true' else '",
-                    topic_prefix,
-                    "' + '/stereo/perception/cones_3d'",
-                ]),
-                'topics.odom_topic': '/sim/odom',
-                'runtime.publish_rate_hz': ParameterValue(
-                    LaunchConfiguration('planner_rate_hz'),
-                    value_type=float,
-                ),
-                'validation.max_history_frames': ParameterValue(
-                    delaunay_history_frames,
-                    value_type=int,
-                ),
-                'diagnostics.publish_thesis_context': ParameterValue(
-                    LaunchConfiguration('thesis_controller_diagnostics'),
-                    value_type=bool,
-                ),
-            },
-        ],
-        condition=IfCondition(PythonExpression([
-            "'",
-            LaunchConfiguration('planner'),
-            "'.lower() == 'delaunay'"
-        ])),
     )
 
     planner_input_topic = PythonExpression([
@@ -1259,7 +1211,6 @@ def generate_launch_description():
         lidar_node,
         lidar_cone_evaluator_node,
         cone_memory_node,
-        delaunay_planner_node,
         skidpad_router_node,
         midpoint_planner_node,
         single_boundary_planner_node,
@@ -1310,7 +1261,7 @@ def _resolve_track_bundle(sim_car_share: Path, track: str, planner: str) -> dict
         )
     if normalized_planner not in SUPPORTED_PLANNERS:
         raise RuntimeError(
-            "Unsupported launch argument planner='%s'. Supported values: delaunay, midpoint, single_boundary, corridor, none"
+            "Unsupported launch argument planner='%s'. Supported values: midpoint, single_boundary, corridor, none"
             % planner
         )
 
@@ -1324,8 +1275,6 @@ def _resolve_track_bundle(sim_car_share: Path, track: str, planner: str) -> dict
     }
     if normalized_planner in MIGRATED_PLANNERS:
         bundle['planner_config'] = str(config_dir / f'{normalized_planner}_planner.yaml')
-    elif normalized_planner == 'delaunay':
-        bundle['planner_config'] = str(sim_car_share / 'config' / 'delaunay_planner.yaml')
     return bundle
 
 
@@ -1400,7 +1349,6 @@ def _resolve_launch_selection(
         'spawn_yaw': str(spawn_yaw_override).strip() or spawn_defaults['spawn_yaw'],
         'path_tracking_autostop_laps': lap_tracking_defaults['autostop_laps'],
         'controller_override': normalized_controller,
-        'delaunay_controller': normalized_controller or 'stanley',
     }
 
     if selection['planner'] in MIGRATED_PLANNERS and not Path(selection['planner_config']).exists():
@@ -1437,10 +1385,6 @@ def _configure_track_selection(context, *_args, **_kwargs):
                 },
             }
         controller_config_path = _write_parameter_overlay(override_payload)
-    elif selection['planner'] == 'delaunay':
-        controller_config_path = str(
-            sim_car_share / 'config' / 'controllers' / f"{selection['delaunay_controller']}.yaml"
-        )
     else:
         controller_config_path = _write_parameter_overlay({})
 
@@ -1489,7 +1433,6 @@ def _configure_rviz_config(context, *_args, **_kwargs):
             'midpoint': 'midpoint_planner.rviz',
             'single_boundary': 'single_boundary_planner.rviz',
             'corridor': 'corridor_planner.rviz',
-            'delaunay': 'driving_clean.rviz',
             'none': 'driving_clean.rviz',
         }
         if rviz_profile in {'planner', 'auto'}:
@@ -1521,7 +1464,7 @@ def _validate_planner_and_controller_args(context, *_args, **_kwargs):
         )
     if planner not in SUPPORTED_PLANNERS:
         raise RuntimeError(
-            "Unsupported launch argument planner='%s'. Supported values: delaunay, midpoint, single_boundary, corridor, none"
+            "Unsupported launch argument planner='%s'. Supported values: midpoint, single_boundary, corridor, none"
             % planner
         )
     if controller and controller not in SUPPORTED_CONTROLLERS:

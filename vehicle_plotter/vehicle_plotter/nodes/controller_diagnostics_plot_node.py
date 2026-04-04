@@ -42,7 +42,7 @@ class ControllerDiagnosticsPlotNode(Node):
         self.declare_parameter("controller_diagnostics_path_topic", "/planned_centerline")
         self.declare_parameter(
             "controller_diagnostics_planner_diag_topic",
-            "/delaunay_planner/diagnostics",
+            "/midpoint_planner/diagnostics",
         )
         self.declare_parameter("controller_diagnostics_live_plot_rate_hz", 10.0)
         self.declare_parameter("controller_diagnostics_live_buffer_sec", 30.0)
@@ -77,7 +77,7 @@ class ControllerDiagnosticsPlotNode(Node):
             str(
                 self.get_parameter("controller_diagnostics_planner_diag_topic").value
             ).strip()
-            or "/delaunay_planner/diagnostics"
+            or "/midpoint_planner/diagnostics"
         )
         self._plot_rate_hz = max(
             0.1,

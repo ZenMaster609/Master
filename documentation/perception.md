@@ -76,7 +76,7 @@ That output is consumed by:
 
 - `cone_evaluator_node` for RMSE/classification logging
 - `cone_memory_node` for camera/lidar fusion into `/tracked_cones`
-- `delaunay_planner_node` either through `/tracked_cones` or directly from the camera cone topic when cone memory is disabled
+- the active tracked-cone planner (`midpoint`, `single_boundary`, or `corridor`) either through `/tracked_cones` or directly from the camera cone topic when cone memory is disabled
 
 This common interface is intentional: only the distance-estimation method changes between stereo and monocular modes.
 

@@ -153,7 +153,7 @@ def generate_launch_description():
     )
     controller_diagnostics_planner_diag_topic_arg = DeclareLaunchArgument(
         "controller_diagnostics_planner_diag_topic",
-        default_value="/delaunay_planner/diagnostics",
+        default_value="/midpoint_planner/diagnostics",
         description="Planner diagnostics topic for controller diagnostics",
     )
     controller_diagnostics_live_plot_enabled_arg = DeclareLaunchArgument(

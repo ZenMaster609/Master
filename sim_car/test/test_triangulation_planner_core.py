@@ -11,7 +11,7 @@ if str(PACKAGE_ROOT) not in sys.path:
     sys.path.insert(0, str(PACKAGE_ROOT))
 
 from sim_car.cones.tracking.fusion import resolve_boundary_colors_for_planning
-import sim_car.planning.delaunay_planner_core as core
+import sim_car.planning.triangulation_planner_core as core
 
 
 def _cfg(**overrides) -> core.CoreConfig:
@@ -51,7 +51,7 @@ def test_pre_turn_ambiguity_prefers_local_zig_zag():
     assert np.all(np.abs(result.midpoints_raw[:, 1]) < 1.0)
 
 
-def test_delaunay_miss_recovered_by_local_fallback(monkeypatch):
+def test_triangulation_miss_recovered_by_local_fallback(monkeypatch):
     points = np.array([
         [2.0, 1.8],
         [2.0, -1.8],
@@ -227,7 +227,7 @@ def test_candidate_progress_is_measured_from_vehicle_not_previous_seed():
     assert np.allclose(result.midpoints_raw[0], np.array([2.0, 0.0]))
 
 
-def test_all_orange_track_is_resolved_to_delaunay_path():
+def test_all_orange_track_is_resolved_to_triangulation_path():
     points = np.array(
         [[2.0, 1.8], [2.0, -1.8], [4.0, 1.8], [4.0, -1.8], [6.0, 1.8], [6.0, -1.8]],
         dtype=np.float64,

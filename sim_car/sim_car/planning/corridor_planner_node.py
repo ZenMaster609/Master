@@ -26,7 +26,7 @@ from sim_car.cones.tracking.fusion import normalize_color
 from sim_car.controllers.factory import create_steering_controller
 from sim_car.controllers.pure_pursuit_controller import PurePursuitConfig
 from sim_car.controllers.stanley_controller import StanleyConfig
-from sim_car.planning.delaunay_planner_core import (
+from sim_car.planning.triangulation_planner_core import (
     compute_centerline_jump_max,
     edge_churn_count,
     edge_churn_ratio,
@@ -242,18 +242,18 @@ class CorridorPlannerNode(TrackedConePlannerBase):
             "filtering.orange_neighbor_radius_m": 3.5,
             "filtering.orange_neighbor_margin_m": 0.75,
             "boundary_chain.min_step_m": 0.8,
-            "boundary_chain.max_step_m": 6.0,
-            "boundary_chain.max_heading_change_rad": 1.0,
+            "boundary_chain.max_step_m": 5.5,
+            "boundary_chain.max_heading_change_rad": 0.95,
             "boundary_chain.min_forward_progress_m": 0.2,
             "boundary_chain.min_chain_length": 3,
             "width_estimation.initial_width_m": 3.6,
             "width_estimation.min_width_m": 2.4,
             "width_estimation.max_width_m": 4.8,
-            "width_estimation.alpha": 0.15,
+            "width_estimation.alpha": 0.18,
             "width_estimation.max_delta_per_update_m": 0.2,
             "width_estimation.min_trustworthy_pairs": 3,
             "corridor.min_corridor_width_m": 2.2,
-            "corridor.max_corridor_width_m": 5.5,
+            "corridor.max_corridor_width_m": 5.4,
             "corridor.boundary_resample_dx": 0.5,
             "corridor.min_required_corridor_samples": 5,
             "corridor.path_fit_smoothing_window": 5,
@@ -281,7 +281,7 @@ class CorridorPlannerNode(TrackedConePlannerBase):
             "control.stop_if_no_path": True,
             "stanley.k_gain": 1.2,
             "stanley.softening_speed_mps": 0.0,
-            "stanley.heading_gain": 1.0,
+            "stanley.heading_gain": 1.6,
             "stanley.lookahead_idx_offset": 0,
             "stanley.steering_limit_rad": 0.52,
             "stanley.steering_lowpass_alpha": 1.0,
@@ -299,7 +299,7 @@ class CorridorPlannerNode(TrackedConePlannerBase):
             "pure_pursuit.steering_rate_limit_rad_s": 10.0,
             "pure_pursuit.wheelbase_m": 1.65,
             "speed_control.speed_min_mps": 1.0,
-            "speed_control.speed_max_mps": 1.8,
+            "speed_control.speed_max_mps": 4.0,
             "speed_control.curvature_speed_gain": 4.0,
             "speed_control.lowpass_speed_alpha": 0.15,
             "validation.min_path_points": 4,
@@ -319,11 +319,11 @@ class CorridorPlannerNode(TrackedConePlannerBase):
             "diagnostics.centerline_jump_horizon_m": 8.0,
             "diagnostics.edge_quantization_m": 0.05,
             "diagnostics.jump_warn_threshold_m": 0.8,
-            "diagnostics.edge_churn_warn_threshold": 0.55,
+            "diagnostics.edge_churn_warn_threshold": 0.4,
             "diagnostics.publish_control_debug": True,
             "diagnostics.publish_thesis_context": False,
             "debug.enable_markers": True,
-            "debug.show_raw_cones": False,
+            "debug.show_raw_cones": True,
             "debug.show_boundary_chains": True,
             "debug.show_pair_lines": True,
             "debug.show_raw_midpoint_chain": True,
@@ -510,7 +510,7 @@ class CorridorPlannerNode(TrackedConePlannerBase):
         )
         self.publish_points_topic = bool(self.get_parameter("debug.publish_points_topic").value)
         self.show_lookahead_point = bool(self.get_parameter("debug.show_lookahead_point").value)
-        self.show_delaunay_edges = False
+        self.show_triangulation_edges = False
         self.show_candidate_edges = False
         self.show_selected_edges = False
 
@@ -1657,6 +1657,8 @@ class CorridorPlannerNode(TrackedConePlannerBase):
             return np.array(result.centerline, copy=True), "validated"
         recoverable_live_path = self._recoverable_live_path(result)
         if recoverable_live_path.shape[0] > 0:
+            if (result.reject_reason or result.status) == "near-field continuity rejected fresh path":
+                return recoverable_live_path, "recoverable_live_path"
             required_extent_m = max(
                 float(self.candidate_min_extent_m),
                 float(_TARGET_COMPLETED_PATH_EXTENT_M),
@@ -1797,6 +1799,24 @@ class CorridorPlannerNode(TrackedConePlannerBase):
 
         return self._local_path_to_frame(
             local_path=completed_local,
+            frame_id=frame_id,
+            vehicle_x=vehicle_x,
+            vehicle_y=vehicle_y,
+            vehicle_yaw=vehicle_yaw,
+        )
+
+    def _project_corridor_memory_candidate(
+        self,
+        *,
+        midpoint_chain: np.ndarray,
+        frame_id: str,
+        vehicle_x: float,
+        vehicle_y: float,
+        vehicle_yaw: float,
+    ) -> np.ndarray:
+        return self._complete_live_prefix_candidate(
+            live_prefix=midpoint_chain,
+            support_chain=midpoint_chain,
             frame_id=frame_id,
             vehicle_x=vehicle_x,
             vehicle_y=vehicle_y,
@@ -1988,7 +2008,7 @@ class CorridorPlannerNode(TrackedConePlannerBase):
         updated_local = np.array(stored_local, copy=True)
         step = max(0.05, float(self.midline_station_spacing_m))
         direct_prefix_distance = (
-            float(self.midline_control_handoff_distance_m)
+            0.0
             if direct_prefix_distance_m is None
             else float(direct_prefix_distance_m)
         )
@@ -2208,41 +2228,20 @@ class CorridorPlannerNode(TrackedConePlannerBase):
     ) -> str:
         del candidate_diagonal_count
         del selected_chain_length
+        del centerline_point_count
+        del cmd_speed
+        del cmd_steering
+        del lookahead
+        del seed_midpoint_distance_m
+        del near_field_lateral_max_m
+        del near_field_midpoint_kink_max_rad
+        del hold_remaining_s
         return "\n".join(
             [
                 f"STATE: {operator_state.upper()}",
                 f"MODE: {self._active_planner_mode.upper()}",
                 f"REASON: {self._operator_reason_label(operator_reason)}",
-                (
-                    f"TRACKS: remembered={int(self._active_remembered_cone_count)} | "
-                    f"stale={int(self._active_stale_cone_count)}"
-                ),
-                (
-                    f"BOUNDARIES: L={int(self._active_left_chain_length)} | "
-                    f"R={int(self._active_right_chain_length)} | "
-                    f"corridor={int(self._active_pair_count)} | "
-                    f"unknown={int(self._active_unknown_pair_count)} | "
-                    f"path={int(centerline_point_count)} pts"
-                ),
-                (
-                    f"WIDTH: {self._fmt_metric(self._active_filtered_track_width_m, ' m')} | "
-                    f"HALF: {self._fmt_metric(0.5 * float(self._active_filtered_track_width_m), ' m')}"
-                ),
-                (
-                    f"CMD: v={self._fmt_metric(cmd_speed, ' m/s')} | "
-                    f"delta={self._fmt_metric(cmd_steering, ' rad')} | "
-                    f"Ld={self._fmt_metric(lookahead, ' m')}"
-                ),
-                (
-                    f"NF: lat={self._fmt_metric(near_field_lateral_max_m, ' m')} | "
-                    f"kink={self._fmt_metric(near_field_midpoint_kink_max_rad, ' rad')} | "
-                    f"seed={self._fmt_metric(seed_midpoint_distance_m, ' m')}"
-                ),
-                (
-                    f"HOLD: {self._fmt_metric(hold_remaining_s, ' s')} left | "
-                    f"held={int(self._active_held_path_flag)} | "
-                    f"clean {int(self._hold_clean_frame_count)}/{int(self.hold_exit_clean_frames)}"
-                ),
+                "LAPS: 0/off",
             ]
         )
 

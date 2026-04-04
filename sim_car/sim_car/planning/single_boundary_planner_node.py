@@ -26,7 +26,7 @@ from visualization_msgs.msg import Marker, MarkerArray
 from sim_car.controllers.factory import create_steering_controller
 from sim_car.controllers.pure_pursuit_controller import PurePursuitConfig
 from sim_car.controllers.stanley_controller import StanleyConfig
-from sim_car.planning.delaunay_planner_core import (
+from sim_car.planning.triangulation_planner_core import (
     compute_centerline_jump_max,
     edge_churn_count,
     edge_churn_ratio,
@@ -451,19 +451,19 @@ class SingleBoundaryPlannerNode(TrackedConePlannerBase):
             "filtering.unknown_pair_max_width_error_m": 0.9,
             "filtering.max_consecutive_unknown_pairs": 2,
             "boundary_chain.min_step_m": 0.8,
-            "boundary_chain.max_step_m": 6.0,
-            "boundary_chain.max_heading_change_rad": 1.0,
+            "boundary_chain.max_step_m": 5.5,
+            "boundary_chain.max_heading_change_rad": 0.95,
             "boundary_chain.min_forward_progress_m": 0.2,
-            "boundary_chain.min_chain_length": 3,
+            "boundary_chain.min_chain_length": 2,
             "pairing.min_pair_width_m": 2.2,
-            "pairing.max_pair_width_m": 5.5,
-            "pairing.max_width_jump_m": 0.8,
+            "pairing.max_pair_width_m": 5.4,
+            "pairing.max_width_jump_m": 0.75,
             "pairing.min_pair_count": 3,
             "pairing.pair_reassignment_margin": 0.25,
             "width_estimation.initial_width_m": 3.6,
             "width_estimation.min_width_m": 2.4,
             "width_estimation.max_width_m": 4.8,
-            "width_estimation.alpha": 0.15,
+            "width_estimation.alpha": 0.18,
             "width_estimation.max_delta_per_update_m": 0.2,
             "width_estimation.min_trustworthy_pairs": 3,
             "centerline.path_resolution_m": 0.5,
@@ -492,7 +492,7 @@ class SingleBoundaryPlannerNode(TrackedConePlannerBase):
             "control.stop_if_no_path": True,
             "stanley.k_gain": 1.2,
             "stanley.softening_speed_mps": 0.0,
-            "stanley.heading_gain": 1.0,
+            "stanley.heading_gain": 1.6,
             "stanley.lookahead_idx_offset": 0,
             "stanley.steering_limit_rad": 0.52,
             "stanley.steering_lowpass_alpha": 1.0,
@@ -510,15 +510,15 @@ class SingleBoundaryPlannerNode(TrackedConePlannerBase):
             "pure_pursuit.steering_rate_limit_rad_s": 10.0,
             "pure_pursuit.wheelbase_m": 1.65,
             "speed_control.speed_min_mps": 1.0,
-            "speed_control.speed_max_mps": 1.8,
+            "speed_control.speed_max_mps": 4.0,
             "speed_control.curvature_speed_gain": 4.0,
             "speed_control.lowpass_speed_alpha": 0.15,
-            "validation.min_path_points": 4,
-            "validation.min_forward_extent_m": 2.0,
+            "validation.min_path_points": 2,
+            "validation.min_forward_extent_m": 1.0,
             "validation.jump_check_horizon_m": 8.0,
             "validation.max_near_field_lateral_jump_m": 0.6,
             "validation.max_near_field_lateral_jump_m_sparse_pairs": 0.9,
-            "validation.max_near_field_lateral_jump_m_single_boundary": 1.2,
+            "validation.max_near_field_lateral_jump_m_single_boundary": 5.0,
             "validation.max_start_heading_error_rad": 1.0,
             "validation.hold_last_valid_s": 2.5,
             "validation.hold_exit_clean_frames": 2,
@@ -530,11 +530,11 @@ class SingleBoundaryPlannerNode(TrackedConePlannerBase):
             "diagnostics.centerline_jump_horizon_m": 8.0,
             "diagnostics.edge_quantization_m": 0.05,
             "diagnostics.jump_warn_threshold_m": 0.8,
-            "diagnostics.edge_churn_warn_threshold": 0.55,
+            "diagnostics.edge_churn_warn_threshold": 0.4,
             "diagnostics.publish_control_debug": True,
             "diagnostics.publish_thesis_context": False,
             "debug.enable_markers": True,
-            "debug.show_raw_cones": False,
+            "debug.show_raw_cones": True,
             "debug.show_boundary_chains": True,
             "debug.show_pair_lines": True,
             "debug.show_raw_midpoint_chain": True,
@@ -728,7 +728,7 @@ class SingleBoundaryPlannerNode(TrackedConePlannerBase):
         )
         self.publish_points_topic = bool(self.get_parameter("debug.publish_points_topic").value)
         self.show_lookahead_point = bool(self.get_parameter("debug.show_lookahead_point").value)
-        self.show_delaunay_edges = False
+        self.show_triangulation_edges = False
         self.show_candidate_edges = False
         self.show_selected_edges = False
 
@@ -872,7 +872,7 @@ class SingleBoundaryPlannerNode(TrackedConePlannerBase):
 
     def _lap_status_text(self) -> str:
         if self._lap_tracking_gate is None:
-            return "LAPS: n/a"
+            return f"LAPS: {int(self._lap_tracking_completed_laps)}/off"
         if self.lap_tracking_target_laps > 0:
             return f"LAPS: {int(self._lap_tracking_completed_laps)}/{int(self.lap_tracking_target_laps)}"
         return f"LAPS: {int(self._lap_tracking_completed_laps)}/off"

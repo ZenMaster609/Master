@@ -61,7 +61,7 @@ class _Diag:
 def test_parse_planner_diag_with_keys():
     msg = _Diag([
         _Status(
-            'delaunay_planner/stability',
+            'midpoint_planner/stability',
             [
                 _KV('centerline_jump_max_m', '0.7'),
                 _KV('selected_edge_churn_ratio', '0.4'),
@@ -103,7 +103,7 @@ def test_parse_planner_diag_accepts_midpoint_prefix():
 def test_parse_planner_diag_with_control_debug_keys():
     msg = _Diag([
         _Status(
-            'delaunay_planner/control_debug',
+            'midpoint_planner/control_debug',
             [
                 _KV('raw_steering_cmd_rad', '0.12'),
                 _KV('final_steering_cmd_rad', '0.10'),
@@ -124,7 +124,7 @@ def test_parse_planner_diag_with_control_debug_keys():
 def test_parse_planner_diag_with_thesis_context_keys():
     msg = _Diag([
         _Status(
-            'delaunay_planner/thesis_context',
+            'midpoint_planner/thesis_context',
             [
                 _KV('plan_valid_flag', '1'),
                 _KV('plan_hold_active_flag', '0'),
