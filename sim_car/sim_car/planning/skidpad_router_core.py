@@ -50,6 +50,14 @@ class SkidpadRouterSnapshot:
     just_entered_crossroads: bool
 
 
+@dataclass(frozen=True)
+class AccelerationStopRowDetection:
+    point_indices: tuple[int, ...]
+    forward_distance_m: float
+    min_lateral_y_m: float
+    max_lateral_y_m: float
+
+
 class SkidpadStateMachine:
     """Mission state machine for the fixed skidpad route."""
 
@@ -454,3 +462,47 @@ def detect_stop_line_pair(
                 best_pair = (idx_a, idx_b, forward_distance_m)
 
     return best_pair
+
+
+def detect_acceleration_stop_row(
+    vehicle_frame_orange_points_xy: np.ndarray,
+    *,
+    cluster_depth_m: float = 0.75,
+    min_cluster_count: int = 4,
+    min_lateral_span_m: float = 2.0,
+    min_points_per_side: int = 1,
+) -> Optional[AccelerationStopRowDetection]:
+    points = np.asarray(vehicle_frame_orange_points_xy, dtype=np.float64)
+    if points.size == 0 or points.ndim != 2 or points.shape[1] != 2:
+        return None
+
+    valid_indices = np.flatnonzero(np.isfinite(points).all(axis=1) & (points[:, 0] > 0.0))
+    if valid_indices.size < int(max(2, min_cluster_count)):
+        return None
+
+    valid_points = points[valid_indices]
+    max_forward_m = float(np.max(valid_points[:, 0]))
+    depth_m = max(0.0, float(cluster_depth_m))
+    cluster_indices = valid_indices[valid_points[:, 0] >= (max_forward_m - depth_m)]
+    if cluster_indices.size < int(max(2, min_cluster_count)):
+        return None
+
+    cluster = points[cluster_indices]
+    min_side_count = int(max(0, min_points_per_side))
+    if min_side_count > 0:
+        left_count = int(np.count_nonzero(cluster[:, 1] >= 0.0))
+        right_count = int(np.count_nonzero(cluster[:, 1] < 0.0))
+        if left_count < min_side_count or right_count < min_side_count:
+            return None
+
+    min_lateral_y_m = float(np.min(cluster[:, 1]))
+    max_lateral_y_m = float(np.max(cluster[:, 1]))
+    if (max_lateral_y_m - min_lateral_y_m) < float(max(0.0, min_lateral_span_m)):
+        return None
+
+    return AccelerationStopRowDetection(
+        point_indices=tuple(int(idx) for idx in cluster_indices.tolist()),
+        forward_distance_m=float(np.median(cluster[:, 0])),
+        min_lateral_y_m=min_lateral_y_m,
+        max_lateral_y_m=max_lateral_y_m,
+    )

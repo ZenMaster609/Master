@@ -162,9 +162,11 @@ def test_full_launch_wires_skidpad_router_output_into_migrated_planners() -> Non
     assert "PathJoinSubstitution([sim_car_share, 'config', 'skidpad', 'skidpad_router.yaml'])" in content
     assert "'topics.output_topic': '/tracked_cones/skidpad_routed'" in content
     assert "'topics.viz_topic': router_viz_topic" in content
+    assert "router passes normal cones through unchanged until that" in content
     assert "'/tracked_cones/skidpad_routed' if '" in content
     assert "'.lower() in ('skidpad', 'acceleration') else ('/tracked_cones' if '" in content
     assert "'routing.event_mode': LaunchConfiguration('track')" in content
+    assert "'.lower() in ('skidpad', 'acceleration') else '/skidpad_router/markers_hidden'" in content
 
 
 def test_track_bundle_resolves_world_and_planner_config_paths():
@@ -182,7 +184,7 @@ def test_track_bundle_resolves_world_and_planner_config_paths():
 
 def test_track_bundle_loads_track_spawn_defaults():
     expected = {
-        'acceleration': ('-42.5', '0.0', '0.0'),
+        'acceleration': ('-38.5', '0.0', '0.0'),
         'skidpad': ('0.0', '-10.0', '1.5708'),
         'smalltrack': ('-13.6758', '10.3753', '0'),
     }

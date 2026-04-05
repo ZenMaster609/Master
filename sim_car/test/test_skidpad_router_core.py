@@ -12,9 +12,11 @@ if str(PACKAGE_ROOT) not in sys.path:
     sys.path.insert(0, str(PACKAGE_ROOT))
 
 from sim_car.planning.skidpad_router_core import (
+    AccelerationStopRowDetection,
     SkidpadRouterConfig,
     SkidpadStateMachine,
     boundary_color_from_lateral_y,
+    detect_acceleration_stop_row,
     detect_stop_line_pair,
     detect_stop_line_forward_distance_m,
 )
@@ -363,6 +365,111 @@ def test_detect_stop_line_pair_rejects_pairs_outside_distance_threshold() -> Non
         dtype=np.float64,
     )
     assert detect_stop_line_pair(points, max_pair_distance_m=1.0) is None
+
+
+def test_detect_acceleration_stop_row_finds_front_four_cone_row_and_full_span() -> None:
+    points = np.asarray(
+        [
+            [30.0, 1.5],
+            [30.0, -1.5],
+            [45.0, 1.5],
+            [45.0, -1.5],
+            [50.0, 1.5],
+            [50.0, -1.5],
+            [50.0, 0.75],
+            [50.0, -0.75],
+        ],
+        dtype=np.float64,
+    )
+
+    detected = detect_acceleration_stop_row(
+        points,
+        cluster_depth_m=0.4,
+        min_cluster_count=4,
+        min_lateral_span_m=2.0,
+        min_points_per_side=1,
+    )
+
+    assert isinstance(detected, AccelerationStopRowDetection)
+    assert detected is not None
+    assert set(detected.point_indices) == {4, 5, 6, 7}
+    assert abs(detected.forward_distance_m - 50.0) < 1e-9
+    assert abs(detected.min_lateral_y_m - (-1.5)) < 1e-9
+    assert abs(detected.max_lateral_y_m - 1.5) < 1e-9
+
+
+def test_detect_acceleration_stop_row_rejects_front_cluster_with_too_few_cones() -> None:
+    points = np.asarray(
+        [
+            [45.0, 1.5],
+            [45.0, -1.5],
+            [50.0, 1.5],
+            [50.0, -1.5],
+            [50.0, 0.75],
+        ],
+        dtype=np.float64,
+    )
+
+    assert (
+        detect_acceleration_stop_row(
+            points,
+            cluster_depth_m=0.4,
+            min_cluster_count=4,
+            min_lateral_span_m=2.0,
+            min_points_per_side=1,
+        )
+        is None
+    )
+
+
+def test_detect_acceleration_stop_row_rejects_front_cluster_without_both_sides() -> None:
+    points = np.asarray(
+        [
+            [50.0, 0.4],
+            [50.0, 0.8],
+            [50.0, 1.1],
+            [50.0, 1.5],
+            [45.0, -1.5],
+            [45.0, 1.5],
+        ],
+        dtype=np.float64,
+    )
+
+    assert (
+        detect_acceleration_stop_row(
+            points,
+            cluster_depth_m=0.4,
+            min_cluster_count=4,
+            min_lateral_span_m=2.0,
+            min_points_per_side=1,
+        )
+        is None
+    )
+
+
+def test_detect_acceleration_stop_row_rejects_front_cluster_without_enough_span() -> None:
+    points = np.asarray(
+        [
+            [50.0, -0.4],
+            [50.0, -0.2],
+            [50.0, 0.2],
+            [50.0, 0.4],
+            [45.0, -1.5],
+            [45.0, 1.5],
+        ],
+        dtype=np.float64,
+    )
+
+    assert (
+        detect_acceleration_stop_row(
+            points,
+            cluster_depth_m=0.4,
+            min_cluster_count=4,
+            min_lateral_span_m=2.0,
+            min_points_per_side=1,
+        )
+        is None
+    )
 
 
 def test_boundary_color_from_lateral_y_matches_planner_convention() -> None:

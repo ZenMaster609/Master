@@ -47,8 +47,14 @@ def _make_node(*, test_park_only: bool = False, route_laps: int = 1) -> SkidpadR
     node._orange_only_cone_count = 0
     node._parking_boundary_override_count = 0
     node._parking_mode_active = False
+    node._acceleration_parking_latched = False
     node.event_mode = "skidpad"
     node.odom_frame = "odom"
+    node.acceleration_activation_distance_m = 10.0
+    node.acceleration_stop_row_cluster_depth_m = 0.75
+    node.acceleration_stop_row_min_cluster_count = 4
+    node.acceleration_stop_row_min_lateral_span_m = 2.0
+    node.acceleration_stop_row_min_points_per_side = 1
     node.stop_line_pair_max_distance_m = 1.0
     node.stop_margin_m = 1.0
     node._stop_override_active = False
@@ -115,6 +121,54 @@ def test_route_parking_cones_drops_non_orange_and_overwrites_bad_boundary_hints(
     assert [cone.boundary_color for cone in routed] == ["blue", "blue"]
     assert node._orange_only_cone_count == 2
     assert node._parking_boundary_override_count == 1
+
+
+def test_route_non_parking_cones_passes_all_acceleration_cones_through() -> None:
+    node = _make_node()
+    node.event_mode = "acceleration"
+
+    cones = [
+        _cone(x_m=-30.0, y_m=1.5, color="blue", boundary_color="blue"),
+        _cone(x_m=-30.0, y_m=-1.5, color="yellow", boundary_color="yellow"),
+        _cone(x_m=50.0, y_m=0.75, color="orange", boundary_color=""),
+    ]
+    points = np.asarray(
+        [
+            [-30.0, 1.5],
+            [-30.0, -1.5],
+            [50.0, 0.75],
+        ],
+        dtype=np.float64,
+    )
+
+    routed = node._route_non_parking_cones(converted_cones=cones, cone_points_odom=points)
+
+    assert routed == cones
+
+
+def test_route_non_parking_cones_keeps_skidpad_branch_masking() -> None:
+    node = _make_node()
+    _ = _enter_skidpad_approach(node)
+
+    cones = [
+        _cone(x_m=0.0, y_m=0.0, color="blue", boundary_color="blue"),
+        _cone(x_m=10.0, y_m=0.0, color="blue", boundary_color="blue"),
+        _cone(x_m=-10.0, y_m=0.0, color="yellow", boundary_color="yellow"),
+        _cone(x_m=0.0, y_m=12.0, color="orange", boundary_color=""),
+    ]
+    points = np.asarray(
+        [
+            [0.0, 0.0],
+            [10.0, 0.0],
+            [-10.0, 0.0],
+            [0.0, 12.0],
+        ],
+        dtype=np.float64,
+    )
+
+    routed = node._route_non_parking_cones(converted_cones=cones, cone_points_odom=points)
+
+    assert [(cone.position.x, cone.position.y) for cone in routed] == [(0.0, 0.0), (10.0, 0.0)]
 
 
 def test_route_parking_cones_uses_vehicle_frame_lateral_sign() -> None:
@@ -189,6 +243,147 @@ def test_route_parking_cones_removes_detected_front_stop_line_row() -> None:
     assert node._stop_line_marker_points_odom is not None
 
 
+def test_acceleration_parking_cones_still_drop_non_orange_and_override_boundary_hints() -> None:
+    node = _make_node()
+    node.event_mode = "acceleration"
+    node._acceleration_parking_latched = True
+
+    cones = [
+        _cone(x_m=0.0, y_m=10.0, color="orange", boundary_color="yellow"),
+        _cone(x_m=1.0, y_m=11.0, color="orange", boundary_color=""),
+        _cone(x_m=0.0, y_m=9.0, color="blue", boundary_color="blue"),
+    ]
+    points = np.asarray(
+        [
+            [0.0, 10.0],
+            [1.0, 11.0],
+            [0.0, 9.0],
+        ],
+        dtype=np.float64,
+    )
+
+    routed = node._route_parking_cones(converted_cones=cones, cone_points_odom=points)
+
+    assert len(routed) == 2
+    assert [cone.color for cone in routed] == ["orange", "orange"]
+    assert [cone.boundary_color for cone in routed] == ["blue", "blue"]
+    assert node._orange_only_cone_count == 2
+    assert node._parking_boundary_override_count == 1
+
+
+def test_acceleration_parking_cones_remove_detected_finish_stop_row() -> None:
+    node = _make_node()
+    node.event_mode = "acceleration"
+    node._acceleration_parking_latched = True
+    node._latest_yaw_rad = 0.0
+
+    cones = [
+        _cone(x_m=30.0, y_m=1.5, color="orange"),
+        _cone(x_m=30.0, y_m=-1.5, color="orange"),
+        _cone(x_m=35.0, y_m=1.5, color="orange"),
+        _cone(x_m=35.0, y_m=-1.5, color="orange"),
+        _cone(x_m=40.0, y_m=1.5, color="orange"),
+        _cone(x_m=40.0, y_m=-1.5, color="orange"),
+        _cone(x_m=45.0, y_m=1.5, color="orange"),
+        _cone(x_m=45.0, y_m=-1.5, color="orange"),
+        _cone(x_m=50.0, y_m=1.5, color="orange"),
+        _cone(x_m=50.0, y_m=-1.5, color="orange"),
+        _cone(x_m=50.0, y_m=0.75, color="orange"),
+        _cone(x_m=50.0, y_m=-0.75, color="orange"),
+    ]
+    points = np.asarray(
+        [
+            [30.0, 1.5],
+            [30.0, -1.5],
+            [35.0, 1.5],
+            [35.0, -1.5],
+            [40.0, 1.5],
+            [40.0, -1.5],
+            [45.0, 1.5],
+            [45.0, -1.5],
+            [50.0, 1.5],
+            [50.0, -1.5],
+            [50.0, 0.75],
+            [50.0, -0.75],
+        ],
+        dtype=np.float64,
+    )
+
+    routed = node._route_parking_cones(converted_cones=cones, cone_points_odom=points)
+
+    assert len(routed) == 8
+    assert {(round(cone.position.x, 2), round(cone.position.y, 2)) for cone in routed} == {
+        (30.0, 1.5),
+        (30.0, -1.5),
+        (35.0, 1.5),
+        (35.0, -1.5),
+        (40.0, 1.5),
+        (40.0, -1.5),
+        (45.0, 1.5),
+        (45.0, -1.5),
+    }
+    assert np.isfinite(node._stop_line_forward_distance_m)
+    assert node._stop_line_marker_points_odom is not None
+    assert {
+        (round(point[0], 2), round(point[1], 2))
+        for point in node._stop_line_marker_points_odom
+    } == {(50.0, 1.5), (50.0, -1.5)}
+
+
+def test_acceleration_parking_cones_fallback_infer_stop_row_from_frontier_cone() -> None:
+    node = _make_node()
+    node.event_mode = "acceleration"
+    node._acceleration_parking_latched = True
+    node._latest_yaw_rad = 0.0
+
+    cones = [
+        _cone(x_m=30.0, y_m=1.5, color="orange"),
+        _cone(x_m=30.0, y_m=-1.5, color="orange"),
+        _cone(x_m=35.0, y_m=1.5, color="orange"),
+        _cone(x_m=35.0, y_m=-1.5, color="orange"),
+        _cone(x_m=40.0, y_m=1.5, color="orange"),
+        _cone(x_m=40.0, y_m=-1.5, color="orange"),
+        _cone(x_m=45.0, y_m=1.5, color="orange"),
+        _cone(x_m=45.0, y_m=-1.5, color="orange"),
+        _cone(x_m=49.8, y_m=-1.15, color="orange"),
+    ]
+    points = np.asarray(
+        [
+            [30.0, 1.5],
+            [30.0, -1.5],
+            [35.0, 1.5],
+            [35.0, -1.5],
+            [40.0, 1.5],
+            [40.0, -1.5],
+            [45.0, 1.5],
+            [45.0, -1.5],
+            [49.8, -1.15],
+        ],
+        dtype=np.float64,
+    )
+
+    routed = node._route_parking_cones(converted_cones=cones, cone_points_odom=points)
+
+    assert len(routed) == 8
+    assert {(round(cone.position.x, 2), round(cone.position.y, 2)) for cone in routed} == {
+        (30.0, 1.5),
+        (30.0, -1.5),
+        (35.0, 1.5),
+        (35.0, -1.5),
+        (40.0, 1.5),
+        (40.0, -1.5),
+        (45.0, 1.5),
+        (45.0, -1.5),
+    }
+    assert np.isfinite(node._stop_line_forward_distance_m)
+    assert round(node._stop_line_forward_distance_m, 2) == 49.8
+    assert node._stop_line_marker_points_odom is not None
+    assert {
+        (round(point[0], 2), round(point[1], 2))
+        for point in node._stop_line_marker_points_odom
+    } == {(49.8, 1.5), (49.8, -1.5)}
+
+
 def test_route_parking_cones_keeps_filtering_latched_stop_row_when_next_frame_is_noisy() -> None:
     node = _make_node(test_park_only=True)
     node._latest_yaw_rad = np.pi / 2.0
@@ -225,6 +420,48 @@ def test_route_parking_cones_keeps_filtering_latched_stop_row_when_next_frame_is
 
     assert len(routed) == 2
     assert {(round(cone.position.x, 1), round(cone.position.y, 1)) for cone in routed} == {(-1.6, 10.0), (1.6, 10.0)}
+
+
+def test_acceleration_stop_target_marker_appears_before_detected_stop_line() -> None:
+    node = _make_node()
+    node.event_mode = "acceleration"
+    node._parking_mode_active = True
+    node.stop_margin_m = 4.0
+    node._stop_line_forward_distance_m = 50.0
+    node._stop_line_marker_points_odom = ((50.0, 1.5), (50.0, -1.5))
+
+    target_marker = node._make_stop_target_marker(marker_id=5, stamp=TimeMsg(sec=1, nanosec=0))
+    center_marker = node._make_stop_target_center_marker(marker_id=6, stamp=TimeMsg(sec=1, nanosec=0))
+
+    assert target_marker.action == target_marker.ADD
+    assert [(round(point.x, 2), round(point.y, 2)) for point in target_marker.points] == [
+        (46.0, 1.5),
+        (46.0, -1.5),
+    ]
+    assert center_marker.action == center_marker.ADD
+    assert round(center_marker.pose.position.x, 2) == 46.0
+    assert round(center_marker.pose.position.y, 2) == 0.0
+
+
+def test_acceleration_parking_status_marker_switches_from_searching_to_found() -> None:
+    node = _make_node()
+    node.event_mode = "acceleration"
+    node._parking_mode_active = True
+
+    searching_marker = node._make_acceleration_parking_status_marker(marker_id=7, stamp=TimeMsg(sec=1, nanosec=0))
+
+    assert searching_marker.action == searching_marker.ADD
+    assert "parking_found=0" in searching_marker.text
+    assert "stop_latched=0" in searching_marker.text
+
+    node._stop_line_forward_distance_m = 50.0
+    node._stop_line_marker_points_odom = ((50.0, 1.5), (50.0, -1.5))
+    found_marker = node._make_acceleration_parking_status_marker(marker_id=7, stamp=TimeMsg(sec=2, nanosec=0))
+
+    assert found_marker.action == found_marker.ADD
+    assert "parking_found=1" in found_marker.text
+    assert "stop_latched=1" in found_marker.text
+    assert "row_forward_m=50.00" in found_marker.text
 
 
 def test_build_status_text_includes_route_counter_and_circle_laps() -> None:
@@ -279,3 +516,16 @@ def test_publish_diagnostics_includes_route_progress_values() -> None:
     assert values["total_route_passes"] == "2"
     assert values["completed_route_passes"] == "0"
     assert values["completed_laps"] == "1"
+
+
+def _enter_skidpad_approach(node: SkidpadRouterNode) -> float:
+    now_sec = 0.0
+    for x_m, y_m in [(0.0, -4.0), (0.0, -1.5), (0.0, 0.0)]:
+        node._latest_snapshot = node._state_machine.update(
+            x_m=x_m,
+            y_m=y_m,
+            speed_mps=3.0,
+            now_sec=now_sec,
+        )
+        now_sec += 0.1
+    return now_sec

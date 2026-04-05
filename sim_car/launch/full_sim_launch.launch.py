@@ -786,6 +786,9 @@ def generate_launch_description():
         ],
     )
 
+    # Acceleration shares the routed topic so finish-line orange/stop handling stays
+    # centralized, but the router passes normal cones through unchanged until that
+    # finish latch is triggered.
     planner_input_topic = PythonExpression([
         "'/tracked_cones/skidpad_routed' if '",
         LaunchConfiguration('track'),
@@ -805,7 +808,7 @@ def generate_launch_description():
     router_viz_topic = PythonExpression([
         "'/skidpad_router/markers' if '",
         LaunchConfiguration('track'),
-        "'.lower() == 'skidpad' else '/skidpad_router/markers_hidden'",
+        "'.lower() in ('skidpad', 'acceleration') else '/skidpad_router/markers_hidden'",
     ])
 
     skidpad_router_node = Node(

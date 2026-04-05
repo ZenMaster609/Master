@@ -33,6 +33,10 @@ skidpad_router_node:
     parking:
       test_park_only: false
       acceleration_activation_distance_m: 10.0
+      acceleration_stop_row_cluster_depth_m: 0.75
+      acceleration_stop_row_min_cluster_count: 4
+      acceleration_stop_row_min_lateral_span_m: 2.0
+      acceleration_stop_row_min_points_per_side: 1
       stop_margin_m: 4.0
       stop_line_pair_max_distance_m: 1.9
       stop_override_publish_rate_hz: 50.0
