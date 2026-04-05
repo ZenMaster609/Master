@@ -15,25 +15,63 @@ if str(PACKAGE_ROOT) not in sys.path:
 
 try:
     from vehicle_plotter_msgs.msg import ConeDetection  # noqa: E402
-    from sim_car.planning.skidpad_router_core import SkidpadRouterConfig, SkidpadStateMachine  # noqa: E402
+    from sim_car.planning.skidpad_router_core import (  # noqa: E402
+        SkidpadRouterConfig,
+        SkidpadRouterSnapshot,
+        SkidpadStateMachine,
+    )
     from sim_car.planning.skidpad_router_node import SkidpadRouterNode  # noqa: E402
 except ImportError as exc:  # pragma: no cover - depends on generated ROS interfaces
     pytest.skip(f"ROS router node imports unavailable: {exc}", allow_module_level=True)
 
 
-def _make_node(*, test_park_only: bool = False) -> SkidpadRouterNode:
+class _PublisherRecorder:
+    def __init__(self) -> None:
+        self.messages: list[object] = []
+
+    def publish(self, msg) -> None:
+        self.messages.append(msg)
+
+
+def _make_node(*, test_park_only: bool = False, route_laps: int = 1) -> SkidpadRouterNode:
     node = object.__new__(SkidpadRouterNode)
-    node._state_machine = SkidpadStateMachine(SkidpadRouterConfig(test_park_only=test_park_only))
+    node._state_machine = SkidpadStateMachine(
+        SkidpadRouterConfig(
+            test_park_only=test_park_only,
+            route_laps=route_laps,
+        )
+    )
     node._latest_pose_xy = (0.0, 0.0)
     node._latest_yaw_rad = 0.0
+    node._latest_speed_mps = 0.0
     node._orange_only_cone_count = 0
     node._parking_boundary_override_count = 0
     node._parking_mode_active = False
     node.event_mode = "skidpad"
+    node.odom_frame = "odom"
     node.stop_line_pair_max_distance_m = 1.0
     node.stop_margin_m = 1.0
+    node._stop_override_active = False
     node._stop_line_forward_distance_m = float("nan")
     node._stop_line_marker_points_odom = None
+    node._diag_pub = _PublisherRecorder()
+    node._viz_pub = _PublisherRecorder()
+    node.get_name = lambda: "skidpad_router_node"
+    node._latest_snapshot = SkidpadRouterSnapshot(
+        stage_name=node._state_machine.stage_name(),
+        active_branch=node._state_machine.active_branch(),
+        completed_laps=node._state_machine.completed_laps,
+        route_index=node._state_machine.route_index,
+        current_route_pass=node._state_machine.current_route_pass(),
+        total_route_passes=node._state_machine.total_route_passes(),
+        completed_route_passes=node._state_machine.completed_route_passes(),
+        in_crossroads=False,
+        lap_angle_accum_rad=0.0,
+        lap_armed=False,
+        parked=False,
+        just_completed_lap=False,
+        just_entered_crossroads=False,
+    )
     return node
 
 
@@ -51,7 +89,7 @@ def _cone(*, x_m: float, y_m: float, color: str, boundary_color: str = "") -> Co
 
 
 def test_route_parking_cones_drops_non_orange_and_overwrites_bad_boundary_hints() -> None:
-    node = _make_node()
+    node = _make_node(test_park_only=True)
     node._state_machine.approach_complete = True
 
     cones = [
@@ -115,11 +153,12 @@ def test_build_synthetic_cones_assigns_side_from_vehicle_frame_lateral_sign() ->
 
     assert len(cones) == 6
     assert [cone.color for cone in cones] == ["orange"] * 6
-    assert [cone.boundary_color for cone in cones] == ["yellow", "blue", "yellow", "blue", "yellow", "blue"]
+    assert [cone.boundary_color for cone in cones] == ["blue", "yellow", "blue", "yellow", "blue", "yellow"]
 
 
 def test_route_parking_cones_removes_detected_front_stop_line_row() -> None:
     node = _make_node(test_park_only=True)
+    node._latest_yaw_rad = np.pi / 2.0
     node._state_machine.approach_complete = True
 
     cones = [
@@ -152,6 +191,7 @@ def test_route_parking_cones_removes_detected_front_stop_line_row() -> None:
 
 def test_route_parking_cones_keeps_filtering_latched_stop_row_when_next_frame_is_noisy() -> None:
     node = _make_node(test_park_only=True)
+    node._latest_yaw_rad = np.pi / 2.0
     node._state_machine.approach_complete = True
 
     first_points = np.asarray(
@@ -185,3 +225,57 @@ def test_route_parking_cones_keeps_filtering_latched_stop_row_when_next_frame_is
 
     assert len(routed) == 2
     assert {(round(cone.position.x, 1), round(cone.position.y, 1)) for cone in routed} == {(-1.6, 10.0), (1.6, 10.0)}
+
+
+def test_build_status_text_includes_route_counter_and_circle_laps() -> None:
+    node = _make_node(route_laps=3)
+    node._latest_snapshot = SkidpadRouterSnapshot(
+        stage_name="left_1",
+        active_branch="left",
+        completed_laps=4,
+        route_index=4,
+        current_route_pass=2,
+        total_route_passes=3,
+        completed_route_passes=1,
+        in_crossroads=False,
+        lap_angle_accum_rad=0.0,
+        lap_armed=True,
+        parked=False,
+        just_completed_lap=False,
+        just_entered_crossroads=False,
+    )
+
+    text = node._build_status_text(node._latest_snapshot)
+
+    assert "route=2/3" in text
+    assert "circle_laps=4" in text
+    assert "stage=left_1" in text
+
+
+def test_publish_diagnostics_includes_route_progress_values() -> None:
+    node = _make_node(route_laps=2)
+    node._latest_snapshot = SkidpadRouterSnapshot(
+        stage_name="right_2",
+        active_branch="right",
+        completed_laps=1,
+        route_index=1,
+        current_route_pass=1,
+        total_route_passes=2,
+        completed_route_passes=0,
+        in_crossroads=True,
+        lap_angle_accum_rad=5.7,
+        lap_armed=True,
+        parked=False,
+        just_completed_lap=False,
+        just_entered_crossroads=False,
+    )
+
+    node._publish_diagnostics(TimeMsg(sec=5, nanosec=0))
+
+    assert len(node._diag_pub.messages) == 1
+    status = node._diag_pub.messages[0].status[0]
+    values = {item.key: item.value for item in status.values}
+    assert values["current_route_pass"] == "1"
+    assert values["total_route_passes"] == "2"
+    assert values["completed_route_passes"] == "0"
+    assert values["completed_laps"] == "1"

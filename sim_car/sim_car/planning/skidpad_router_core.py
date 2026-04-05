@@ -18,6 +18,7 @@ class SkidpadRouterConfig:
     circle_radius_window_m: tuple[float, float] = (6.5, 11.5)
     lap_complete_angle_rad: float = 5.5
     route_sequence: tuple[str, ...] = ("right", "right", "left", "left", "straight")
+    route_laps: int = 1
     lobe_radius_m: float = 12.5
     right_lobe_min_x_m: float = -1.0
     left_lobe_max_x_m: float = 1.0
@@ -38,6 +39,9 @@ class SkidpadRouterSnapshot:
     active_branch: str
     completed_laps: int
     route_index: int
+    current_route_pass: int
+    total_route_passes: int
+    completed_route_passes: int
     in_crossroads: bool
     lap_angle_accum_rad: float
     lap_armed: bool
@@ -51,6 +55,12 @@ class SkidpadStateMachine:
 
     def __init__(self, config: SkidpadRouterConfig) -> None:
         self._config = config
+        self._repeatable_route_sequence = _normalize_repeatable_route_sequence(config.route_sequence)
+        self._repeatable_route_length = len(self._repeatable_route_sequence)
+        self._route_passes_total = 0 if config.test_park_only or self._repeatable_route_length == 0 else max(
+            1, int(config.route_laps)
+        )
+        self._expanded_route_sequence = self._build_expanded_route_sequence()
         self.reset()
 
     def reset(self) -> None:
@@ -71,8 +81,8 @@ class SkidpadStateMachine:
     def active_branch(self) -> str:
         if self._config.test_park_only:
             return "straight"
-        idx = min(max(self.route_index, 0), len(self._config.route_sequence) - 1)
-        return str(self._config.route_sequence[idx]).strip().lower() or "straight"
+        idx = min(max(self.route_index, 0), len(self._expanded_route_sequence) - 1)
+        return str(self._expanded_route_sequence[idx]).strip().lower() or "straight"
 
     def stage_name(self) -> str:
         branch = self.active_branch()
@@ -82,12 +92,32 @@ class SkidpadStateMachine:
             return "approach"
         if branch == "straight":
             return "straight"
+        if self._repeatable_route_length <= 0:
+            return branch
+        route_index_in_pass = self.route_index % self._repeatable_route_length
         lap_number = 1 + sum(
             1
-            for prev_branch in self._config.route_sequence[: self.route_index]
+            for prev_branch in self._repeatable_route_sequence[:route_index_in_pass]
             if str(prev_branch).strip().lower() == branch
         )
         return f"{branch}_{lap_number}"
+
+    def current_route_pass(self) -> int:
+        if self._route_passes_total <= 0:
+            return 0
+        if not self.approach_complete:
+            return 1
+        if self.active_branch() == "straight":
+            return self._route_passes_total
+        return min(self.completed_route_passes() + 1, self._route_passes_total)
+
+    def total_route_passes(self) -> int:
+        return self._route_passes_total
+
+    def completed_route_passes(self) -> int:
+        if self._route_passes_total <= 0 or self._repeatable_route_length <= 0:
+            return 0
+        return min(self.route_index // self._repeatable_route_length, self._route_passes_total)
 
     def update(self, x_m: float, y_m: float, speed_mps: float, now_sec: float) -> SkidpadRouterSnapshot:
         in_crossroads = self.is_in_crossroads(x_m, y_m)
@@ -106,7 +136,7 @@ class SkidpadStateMachine:
             elif branch in {"right", "left"} and self._lap_armed:
                 self.completed_laps += 1
                 just_completed_lap = True
-                if self.route_index < len(self._config.route_sequence) - 1:
+                if self.route_index < len(self._expanded_route_sequence) - 1:
                     self.route_index += 1
                 self._reset_lap_accumulator()
                 branch = self.active_branch()
@@ -117,15 +147,8 @@ class SkidpadStateMachine:
             self._parked_since_sec = None
 
         self._prev_in_crossroads = in_crossroads
-        return SkidpadRouterSnapshot(
-            stage_name=self.stage_name(),
-            active_branch=self.active_branch(),
-            completed_laps=self.completed_laps,
-            route_index=self.route_index,
+        return self._snapshot(
             in_crossroads=in_crossroads,
-            lap_angle_accum_rad=self._lap_angle_accum_rad,
-            lap_armed=self._lap_armed,
-            parked=self.parked,
             just_completed_lap=just_completed_lap,
             just_entered_crossroads=just_entered_crossroads,
         )
@@ -259,6 +282,36 @@ class SkidpadStateMachine:
         if (float(now_sec) - self._parked_since_sec) >= float(self._config.parked_hold_time_s):
             self.parked = True
 
+    def _build_expanded_route_sequence(self) -> tuple[str, ...]:
+        if self._config.test_park_only:
+            return ("straight",)
+        if self._repeatable_route_length <= 0 or self._route_passes_total <= 0:
+            return ("straight",)
+        return (self._repeatable_route_sequence * self._route_passes_total) + ("straight",)
+
+    def _snapshot(
+        self,
+        *,
+        in_crossroads: bool,
+        just_completed_lap: bool,
+        just_entered_crossroads: bool,
+    ) -> SkidpadRouterSnapshot:
+        return SkidpadRouterSnapshot(
+            stage_name=self.stage_name(),
+            active_branch=self.active_branch(),
+            completed_laps=self.completed_laps,
+            route_index=self.route_index,
+            current_route_pass=self.current_route_pass(),
+            total_route_passes=self.total_route_passes(),
+            completed_route_passes=self.completed_route_passes(),
+            in_crossroads=in_crossroads,
+            lap_angle_accum_rad=self._lap_angle_accum_rad,
+            lap_armed=self._lap_armed,
+            parked=self.parked,
+            just_completed_lap=just_completed_lap,
+            just_entered_crossroads=just_entered_crossroads,
+        )
+
 
 def config_from_parameters(
     *,
@@ -268,6 +321,7 @@ def config_from_parameters(
     right_circle_center_xy: Sequence[float],
     circle_radius_window_m: Sequence[float],
     route_sequence: Sequence[str],
+    route_laps: int,
     synthetic_pair_y_m: Sequence[float],
     lap_complete_angle_rad: float,
     parking_corridor_half_width_m: float,
@@ -294,6 +348,7 @@ def config_from_parameters(
             if bool(test_park_only)
             else tuple(str(item).strip().lower() for item in route_sequence)
         ),
+        route_laps=max(1, int(route_laps)),
         lobe_radius_m=float(lobe_radius_m),
         right_lobe_min_x_m=float(right_lobe_min_x_m),
         left_lobe_max_x_m=float(left_lobe_max_x_m),
@@ -313,6 +368,13 @@ def _pair_of_floats(values: Sequence[float]) -> tuple[float, float]:
     if len(values) != 2:
         raise ValueError(f"expected 2 values, got {len(values)}")
     return (float(values[0]), float(values[1]))
+
+
+def _normalize_repeatable_route_sequence(route_sequence: Sequence[str]) -> tuple[str, ...]:
+    normalized = tuple(str(item).strip().lower() for item in route_sequence if str(item).strip())
+    if normalized and normalized[-1] == "straight":
+        return normalized[:-1]
+    return normalized
 
 
 def _wrap_to_pi(angle_rad: float) -> float:

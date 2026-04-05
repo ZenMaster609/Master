@@ -24,13 +24,12 @@ def format_sample_rows(samples: list[tuple[str, float, float, Optional[int], Opt
 class ConePlotting2Runtime:
     """Publishes evaluator sample rows for downstream cone RMSE logging/plotting."""
 
-    def __init__(self, node, *, eval_topic_prefix: str, enabled: bool):
+    def __init__(self, node, *, eval_topic_prefix: str):
         self._node = node
-        self.enabled = bool(enabled)
         self._sample_pub = node.create_publisher(String, f"{eval_topic_prefix.rstrip('/')}/cone_depth_samples", 10)
 
     def publish_sample_rows(self, samples: list[tuple[str, float, float, Optional[int], Optional[int]]]) -> None:
-        if not self.enabled or not samples:
+        if not samples:
             return
         payload = format_sample_rows(samples)
         if payload.count('\n') > 0:

@@ -41,18 +41,7 @@ class SkidpadRouterNode(Node):
         self._latest_yaw_rad: float = 0.0
         self._latest_speed_mps: float = 0.0
         self._latest_odom_stamp = None
-        self._latest_snapshot = SkidpadRouterSnapshot(
-            stage_name="approach",
-            active_branch="right",
-            completed_laps=0,
-            route_index=0,
-            in_crossroads=False,
-            lap_angle_accum_rad=0.0,
-            lap_armed=False,
-            parked=False,
-            just_completed_lap=False,
-            just_entered_crossroads=False,
-        )
+        self._latest_snapshot = self._make_initial_snapshot()
         self._last_warn_sec = -1.0
         self._parking_mode_active = False
         self._orange_only_cone_count = 0
@@ -108,6 +97,7 @@ class SkidpadRouterNode(Node):
             "geometry.right_circle_center_xy": [9.25, 0.0],
             "geometry.circle_radius_window_m": [6.5, 11.5],
             "routing.route_sequence": ["right", "right", "left", "left", "straight"],
+            "routing.route_laps": 1,
             "routing.lap_complete_angle_rad": 5.5,
             "routing.lobe_radius_m": 12.5,
             "routing.right_lobe_min_x_m": -1.0,
@@ -161,6 +151,7 @@ class SkidpadRouterNode(Node):
                 right_circle_center_xy=self.get_parameter("geometry.right_circle_center_xy").value,
                 circle_radius_window_m=self.get_parameter("geometry.circle_radius_window_m").value,
                 route_sequence=self.get_parameter("routing.route_sequence").value,
+                route_laps=int(self.get_parameter("routing.route_laps").value),
                 synthetic_pair_y_m=self.get_parameter("synthetic.pair_y_m").value,
                 lap_complete_angle_rad=float(self.get_parameter("routing.lap_complete_angle_rad").value),
                 parking_corridor_half_width_m=float(self.get_parameter("parking.corridor_half_width_m").value),
@@ -177,6 +168,23 @@ class SkidpadRouterNode(Node):
                 right_lobe_min_x_m=float(self.get_parameter("routing.right_lobe_min_x_m").value),
                 left_lobe_max_x_m=float(self.get_parameter("routing.left_lobe_max_x_m").value),
             )
+        )
+
+    def _make_initial_snapshot(self) -> SkidpadRouterSnapshot:
+        return SkidpadRouterSnapshot(
+            stage_name=self._state_machine.stage_name(),
+            active_branch=self._state_machine.active_branch(),
+            completed_laps=self._state_machine.completed_laps,
+            route_index=self._state_machine.route_index,
+            current_route_pass=self._state_machine.current_route_pass(),
+            total_route_passes=self._state_machine.total_route_passes(),
+            completed_route_passes=self._state_machine.completed_route_passes(),
+            in_crossroads=False,
+            lap_angle_accum_rad=0.0,
+            lap_armed=False,
+            parked=self._state_machine.parked,
+            just_completed_lap=False,
+            just_entered_crossroads=False,
         )
 
     def _odom_cb(self, msg: Odometry) -> None:
@@ -540,26 +548,7 @@ class SkidpadRouterNode(Node):
         status.level = DiagnosticStatus.OK
         status.message = snapshot.stage_name
         status.hardware_id = self.get_name()
-        status.values = [
-            KeyValue(key="stage_name", value=snapshot.stage_name),
-            KeyValue(key="active_branch", value=snapshot.active_branch),
-            KeyValue(key="completed_laps", value=str(snapshot.completed_laps)),
-            KeyValue(key="route_index", value=str(snapshot.route_index)),
-            KeyValue(key="in_crossroads", value=str(int(snapshot.in_crossroads))),
-            KeyValue(key="lap_angle_accum_rad", value=f"{snapshot.lap_angle_accum_rad:.6f}"),
-            KeyValue(key="lap_armed", value=str(int(snapshot.lap_armed))),
-            KeyValue(key="parked", value=str(int(snapshot.parked))),
-            KeyValue(key="parking_mode_active", value=str(int(self._parking_mode_active))),
-            KeyValue(key="orange_only_cone_count", value=str(int(self._orange_only_cone_count))),
-            KeyValue(
-                key="parking_boundary_override_count",
-                value=str(int(self._parking_boundary_override_count)),
-            ),
-            KeyValue(key="stop_override_active", value=str(int(self._stop_override_active))),
-            KeyValue(key="stop_line_latched", value=str(int(self._stop_line_marker_points_odom is not None))),
-            KeyValue(key="stop_line_forward_distance_m", value=f"{self._stop_line_forward_distance_m:.6f}"),
-            KeyValue(key="vehicle_speed_mps", value=f"{self._latest_speed_mps:.6f}"),
-        ]
+        status.values = self._build_diagnostic_values(snapshot)
         msg = DiagnosticArray()
         msg.header.stamp = stamp
         msg.header.frame_id = self.odom_frame
@@ -587,15 +576,7 @@ class SkidpadRouterNode(Node):
         text_marker.color.r = 1.0
         text_marker.color.g = 1.0
         text_marker.color.b = 1.0
-        stop_line_latched = int(self._stop_line_marker_points_odom is not None)
-        stop_line_distance_text = (
-            f"{self._stop_line_forward_distance_m:.2f}" if np.isfinite(self._stop_line_forward_distance_m) else "nan"
-        )
-        text_marker.text = (
-            f"stage={snapshot.stage_name} branch={snapshot.active_branch} "
-            f"laps={snapshot.completed_laps} armed={int(snapshot.lap_armed)}\n"
-            f"stop_latched={stop_line_latched} stop_forward_m={stop_line_distance_text}"
-        )
+        text_marker.text = self._build_status_text(snapshot)
         markers.markers.append(text_marker)
 
         markers.markers.append(
@@ -752,6 +733,45 @@ class SkidpadRouterNode(Node):
             ),
         ]
         return marker
+
+    def _build_diagnostic_values(self, snapshot: SkidpadRouterSnapshot) -> list[KeyValue]:
+        return [
+            KeyValue(key="stage_name", value=snapshot.stage_name),
+            KeyValue(key="active_branch", value=snapshot.active_branch),
+            KeyValue(key="completed_laps", value=str(snapshot.completed_laps)),
+            KeyValue(key="route_index", value=str(snapshot.route_index)),
+            KeyValue(key="current_route_pass", value=str(snapshot.current_route_pass)),
+            KeyValue(key="total_route_passes", value=str(snapshot.total_route_passes)),
+            KeyValue(key="completed_route_passes", value=str(snapshot.completed_route_passes)),
+            KeyValue(key="in_crossroads", value=str(int(snapshot.in_crossroads))),
+            KeyValue(key="lap_angle_accum_rad", value=f"{snapshot.lap_angle_accum_rad:.6f}"),
+            KeyValue(key="lap_armed", value=str(int(snapshot.lap_armed))),
+            KeyValue(key="parked", value=str(int(snapshot.parked))),
+            KeyValue(key="parking_mode_active", value=str(int(self._parking_mode_active))),
+            KeyValue(key="orange_only_cone_count", value=str(int(self._orange_only_cone_count))),
+            KeyValue(
+                key="parking_boundary_override_count",
+                value=str(int(self._parking_boundary_override_count)),
+            ),
+            KeyValue(key="stop_override_active", value=str(int(self._stop_override_active))),
+            KeyValue(key="stop_line_latched", value=str(int(self._stop_line_marker_points_odom is not None))),
+            KeyValue(key="stop_line_forward_distance_m", value=f"{self._stop_line_forward_distance_m:.6f}"),
+            KeyValue(key="vehicle_speed_mps", value=f"{self._latest_speed_mps:.6f}"),
+        ]
+
+    def _build_status_text(self, snapshot: SkidpadRouterSnapshot) -> str:
+        stop_line_latched = int(self._stop_line_marker_points_odom is not None)
+        stop_line_distance_text = (
+            f"{self._stop_line_forward_distance_m:.2f}" if np.isfinite(self._stop_line_forward_distance_m) else "nan"
+        )
+        route_progress = "off"
+        if snapshot.total_route_passes > 0:
+            route_progress = f"{snapshot.current_route_pass}/{snapshot.total_route_passes}"
+        return (
+            f"stage={snapshot.stage_name} branch={snapshot.active_branch} "
+            f"route={route_progress} circle_laps={snapshot.completed_laps} armed={int(snapshot.lap_armed)}\n"
+            f"stop_latched={stop_line_latched} stop_forward_m={stop_line_distance_text}"
+        )
 
     def _throttled_warn(self, message: str, throttle_s: float = 1.0) -> None:
         now_sec = self.get_clock().now().nanoseconds * 1e-9

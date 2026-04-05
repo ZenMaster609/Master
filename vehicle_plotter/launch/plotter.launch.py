@@ -1,81 +1,16 @@
 #!/usr/bin/env python3
-"""Launch the vehicle_plotter live windows, logger, and rosbag controller."""
+"""Launch the vehicle_plotter logger, session manager, and rosbag controller."""
 
 from launch import LaunchDescription
 from launch.actions import DeclareLaunchArgument, EmitEvent
 from launch.conditions import IfCondition
 from launch.events import Shutdown
-from launch.substitutions import LaunchConfiguration, PythonExpression
+from launch.substitutions import LaunchConfiguration
 from launch_ros.actions import Node
 from launch_ros.parameter_descriptions import ParameterValue
 
 
 def generate_launch_description():
-    output_rate_arg = DeclareLaunchArgument(
-        "output_rate_hz",
-        default_value="50.0",
-        description="Vehicle state output rate in Hz",
-    )
-    enable_sensor_plot_arg = DeclareLaunchArgument(
-        "enable_sensor_plot",
-        default_value="true",
-        description="Enable the main sensor dashboard",
-    )
-    enable_cone_rmse_plot_arg = DeclareLaunchArgument(
-        "enable_cone_rmse_plot",
-        default_value="false",
-        description="Enable the live cone RMSE window",
-    )
-    enable_controller_diagnostics_plot_arg = DeclareLaunchArgument(
-        "enable_controller_diagnostics_plot",
-        default_value="false",
-        description="Enable the live controller diagnostics window",
-    )
-    enable_thesis_controller_diagnostics_plot_arg = DeclareLaunchArgument(
-        "enable_thesis_controller_diagnostics_plot",
-        default_value="false",
-        description="Enable the live thesis controller diagnostics window",
-    )
-    plot_rate_arg = DeclareLaunchArgument(
-        "plot_rate_hz",
-        default_value="30.0",
-        description="Sensor dashboard refresh rate in Hz",
-    )
-    dark_mode_arg = DeclareLaunchArgument(
-        "dark_mode",
-        default_value="true",
-        description="Use dark theme for plots",
-    )
-    save_plots_on_exit_arg = DeclareLaunchArgument(
-        "save_plots_on_exit",
-        default_value="false",
-        description="Save plot window images on shutdown",
-    )
-    save_plot_data_on_exit_arg = DeclareLaunchArgument(
-        "save_plot_data_on_exit",
-        default_value="true",
-        description="Save plotted data CSVs on shutdown",
-    )
-    close_plots_on_shutdown_arg = DeclareLaunchArgument(
-        "close_plots",
-        default_value="true",
-        description="Close plot windows when plotter nodes shut down",
-    )
-    camera_cone_eval_topic_arg = DeclareLaunchArgument(
-        "camera_cone_eval_topic",
-        default_value="/sim/stereo/eval",
-        description="Camera cone evaluator topic prefix",
-    )
-    lidar_cone_eval_topic_arg = DeclareLaunchArgument(
-        "lidar_cone_eval_topic",
-        default_value="/sim/lidar/eval",
-        description="LiDAR cone evaluator topic prefix",
-    )
-    camera_source_arg = DeclareLaunchArgument(
-        "camera_source",
-        default_value="monocular",
-        description="Camera source label for cone RMSE window",
-    )
     controller_diagnostics_enabled_arg = DeclareLaunchArgument(
         "controller_diagnostics_enabled",
         default_value="false",
@@ -156,21 +91,6 @@ def generate_launch_description():
         default_value="/midpoint_planner/diagnostics",
         description="Planner diagnostics topic for controller diagnostics",
     )
-    controller_diagnostics_live_plot_enabled_arg = DeclareLaunchArgument(
-        "controller_diagnostics_live_plot_enabled",
-        default_value="false",
-        description="Enable the live controller diagnostics window",
-    )
-    controller_diagnostics_live_plot_rate_hz_arg = DeclareLaunchArgument(
-        "controller_diagnostics_live_plot_rate_hz",
-        default_value="10.0",
-        description="Refresh rate for the live controller diagnostics window",
-    )
-    controller_diagnostics_live_buffer_sec_arg = DeclareLaunchArgument(
-        "controller_diagnostics_live_buffer_sec",
-        default_value="30.0",
-        description="History window in seconds for the live controller diagnostics window",
-    )
     enable_log_arg = DeclareLaunchArgument(
         "enable_log",
         default_value="true",
@@ -180,6 +100,11 @@ def generate_launch_description():
         "enable_state_logging",
         default_value="true",
         description="Subscribe to vehicle_plotter/state for vehicle-state logging",
+    )
+    state_topic_arg = DeclareLaunchArgument(
+        "state_topic",
+        default_value="/vehicle_plotter/state",
+        description="VehicleState topic published by plotter_node and consumed by logger",
     )
     log_format_arg = DeclareLaunchArgument(
         "log_format",
@@ -196,15 +121,20 @@ def generate_launch_description():
         default_value="true",
         description="Use simulation time from /clock topic",
     )
-    sensor_config_arg = DeclareLaunchArgument(
-        "sensor_config",
-        default_value="",
-        description="Path to sim_car sensor_config.yaml (empty = auto-detect)",
-    )
     enable_rosbag_arg = DeclareLaunchArgument(
         "enable_rosbag",
         default_value="true",
         description="Enable rosbag recording",
+    )
+    camera_cone_eval_topic_arg = DeclareLaunchArgument(
+        "camera_cone_eval_topic",
+        default_value="/sim/stereo/eval",
+        description="Camera cone evaluator topic prefix",
+    )
+    lidar_cone_eval_topic_arg = DeclareLaunchArgument(
+        "lidar_cone_eval_topic",
+        default_value="/sim/lidar/eval",
+        description="LiDAR cone evaluator topic prefix",
     )
 
     session_manager_node = Node(
@@ -218,149 +148,19 @@ def generate_launch_description():
     plotter_node = Node(
         package="vehicle_plotter",
         executable="plotter_node",
-        name="plotter",
+        name="plotter_node",
         output="screen",
-        condition=IfCondition(LaunchConfiguration("enable_sensor_plot")),
+        condition=IfCondition(LaunchConfiguration("enable_state_logging")),
         parameters=[{
-            "backend": "pyqtgraph",
-            "update_rate_hz": ParameterValue(
-                LaunchConfiguration("plot_rate_hz"),
-                value_type=float,
-            ),
-            "state_output_rate_hz": ParameterValue(
-                LaunchConfiguration("output_rate_hz"),
-                value_type=float,
-            ),
-            "dark_mode": LaunchConfiguration("dark_mode"),
-            "enable_gui": True,
-            "direct_from_sensors": True,
-            "plot_layout": "all",
-            "window_title": "Vehicle Plotter",
-            "save_plots_on_exit": ParameterValue(
-                LaunchConfiguration("save_plots_on_exit"),
+            "adapter": "gazebo",
+            "state_topic": LaunchConfiguration("state_topic"),
+            "output_rate_hz": 50.0,
+            "use_sim_time": ParameterValue(
+                LaunchConfiguration("use_sim_time"),
                 value_type=bool,
             ),
-            "save_plot_data_on_exit": ParameterValue(
-                LaunchConfiguration("save_plot_data_on_exit"),
-                value_type=bool,
-            ),
-            "close_plots_on_shutdown": ParameterValue(
-                LaunchConfiguration("close_plots"),
-                value_type=bool,
-            ),
-            "sensor_config_path": LaunchConfiguration("sensor_config"),
-            "use_sim_time": False,
-        }],
-    )
-
-    cone_rmse_plot_node = Node(
-        package="vehicle_plotter",
-        executable="cone_rmse_plot_node",
-        name="cone_rmse_plot",
-        output="screen",
-        condition=IfCondition(LaunchConfiguration("enable_cone_rmse_plot")),
-        parameters=[{
-            "camera_eval_topic": LaunchConfiguration("camera_cone_eval_topic"),
-            "lidar_eval_topic": LaunchConfiguration("lidar_cone_eval_topic"),
-            "camera_source": LaunchConfiguration("camera_source"),
-            "update_period_sec": 0.2,
-            "use_sim_time": False,
-        }],
-    )
-
-    controller_diagnostics_plot_node = Node(
-        package="vehicle_plotter",
-        executable="controller_diagnostics_plot_node",
-        name="controller_diagnostics_plot",
-        output="screen",
-        condition=IfCondition(
-            PythonExpression([
-                "('", LaunchConfiguration("controller_diagnostics_enabled"),
-                "'.lower() == 'true') and ('",
-                LaunchConfiguration("enable_controller_diagnostics_plot"),
-                "'.lower() == 'true')",
-            ])
-        ),
-        parameters=[{
-            "controller_diagnostics_rate_hz": ParameterValue(
-                LaunchConfiguration("controller_diagnostics_rate_hz"),
-                value_type=float,
-            ),
-            "controller_diagnostics_cmd_topic": LaunchConfiguration(
-                "controller_diagnostics_cmd_topic"
-            ),
-            "controller_diagnostics_steering_topic": LaunchConfiguration(
-                "controller_diagnostics_steering_topic"
-            ),
-            "controller_diagnostics_joint_states_topic": LaunchConfiguration(
-                "controller_diagnostics_joint_states_topic"
-            ),
-            "controller_diagnostics_odom_topic": LaunchConfiguration(
-                "controller_diagnostics_odom_topic"
-            ),
-            "controller_diagnostics_path_topic": LaunchConfiguration(
-                "controller_diagnostics_path_topic"
-            ),
-            "controller_diagnostics_planner_diag_topic": LaunchConfiguration(
-                "controller_diagnostics_planner_diag_topic"
-            ),
-            "controller_diagnostics_live_plot_rate_hz": ParameterValue(
-                LaunchConfiguration("controller_diagnostics_live_plot_rate_hz"),
-                value_type=float,
-            ),
-            "controller_diagnostics_live_buffer_sec": ParameterValue(
-                LaunchConfiguration("controller_diagnostics_live_buffer_sec"),
-                value_type=float,
-            ),
-            "use_sim_time": False,
-        }],
-    )
-
-    thesis_controller_diagnostics_plot_node = Node(
-        package="vehicle_plotter",
-        executable="thesis_controller_diagnostics_plot_node",
-        name="thesis_controller_diagnostics_plot",
-        output="screen",
-        condition=IfCondition(
-            PythonExpression([
-                "('", LaunchConfiguration("thesis_controller_diagnostics_enabled"),
-                "'.lower() == 'true') and ('",
-                LaunchConfiguration("enable_thesis_controller_diagnostics_plot"),
-                "'.lower() == 'true')",
-            ])
-        ),
-        parameters=[{
-            "controller_diagnostics_rate_hz": ParameterValue(
-                LaunchConfiguration("controller_diagnostics_rate_hz"),
-                value_type=float,
-            ),
-            "controller_diagnostics_cmd_topic": LaunchConfiguration(
-                "controller_diagnostics_cmd_topic"
-            ),
-            "controller_diagnostics_steering_topic": LaunchConfiguration(
-                "controller_diagnostics_steering_topic"
-            ),
-            "controller_diagnostics_joint_states_topic": LaunchConfiguration(
-                "controller_diagnostics_joint_states_topic"
-            ),
-            "controller_diagnostics_odom_topic": LaunchConfiguration(
-                "controller_diagnostics_odom_topic"
-            ),
-            "controller_diagnostics_path_topic": LaunchConfiguration(
-                "controller_diagnostics_path_topic"
-            ),
-            "controller_diagnostics_planner_diag_topic": LaunchConfiguration(
-                "controller_diagnostics_planner_diag_topic"
-            ),
-            "controller_diagnostics_live_plot_rate_hz": ParameterValue(
-                LaunchConfiguration("controller_diagnostics_live_plot_rate_hz"),
-                value_type=float,
-            ),
-            "controller_diagnostics_live_buffer_sec": ParameterValue(
-                LaunchConfiguration("controller_diagnostics_live_buffer_sec"),
-                value_type=float,
-            ),
-            "use_sim_time": False,
+            "auto_export_dashboard": True,
+            "dashboard_filename": "virtual_sensors.png",
         }],
     )
 
@@ -376,6 +176,7 @@ def generate_launch_description():
             "flush_interval_sec": 5.0,
             "buffer_size": 1000,
             "adapter": "gazebo",
+            "state_topic": LaunchConfiguration("state_topic"),
             "enable_state_logging": ParameterValue(
                 LaunchConfiguration("enable_state_logging"),
                 value_type=bool,
@@ -458,19 +259,6 @@ def generate_launch_description():
     )
 
     return LaunchDescription([
-        output_rate_arg,
-        enable_sensor_plot_arg,
-        enable_cone_rmse_plot_arg,
-        enable_controller_diagnostics_plot_arg,
-        enable_thesis_controller_diagnostics_plot_arg,
-        plot_rate_arg,
-        dark_mode_arg,
-        save_plots_on_exit_arg,
-        save_plot_data_on_exit_arg,
-        close_plots_on_shutdown_arg,
-        camera_cone_eval_topic_arg,
-        lidar_cone_eval_topic_arg,
-        camera_source_arg,
         controller_diagnostics_enabled_arg,
         thesis_controller_diagnostics_enabled_arg,
         path_tracking_eval_enabled_arg,
@@ -487,21 +275,17 @@ def generate_launch_description():
         controller_diagnostics_odom_topic_arg,
         controller_diagnostics_path_topic_arg,
         controller_diagnostics_planner_diag_topic_arg,
-        controller_diagnostics_live_plot_enabled_arg,
-        controller_diagnostics_live_plot_rate_hz_arg,
-        controller_diagnostics_live_buffer_sec_arg,
         enable_log_arg,
         enable_state_logging_arg,
+        state_topic_arg,
         log_format_arg,
         log_path_arg,
         use_sim_time_arg,
-        sensor_config_arg,
         enable_rosbag_arg,
+        camera_cone_eval_topic_arg,
+        lidar_cone_eval_topic_arg,
         session_manager_node,
         plotter_node,
-        cone_rmse_plot_node,
-        controller_diagnostics_plot_node,
-        thesis_controller_diagnostics_plot_node,
         logger_node,
         rosbag_controller_node,
     ])

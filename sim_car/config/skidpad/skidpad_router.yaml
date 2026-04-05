@@ -22,6 +22,7 @@ skidpad_router_node:
     routing:
       event_mode: "skidpad"
       route_sequence: ["right", "right", "left", "left", "straight"]
+      route_laps: 1
       lap_complete_angle_rad: 5.5
       lobe_radius_m: 12.5
       right_lobe_min_x_m: -1.0

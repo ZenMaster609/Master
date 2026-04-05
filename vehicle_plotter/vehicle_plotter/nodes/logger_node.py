@@ -275,8 +275,9 @@ class LoggerNode(Node):
         self._session_initialized = False
         self._buffered_states = []  # Buffer states until session is ready
         self._shutdown_called = False
-        self._cone_range_rmse_samples_by_suffix: Dict[str, List[Dict[str, object]]] = {
-            '': [],
+        self._cone_range_rmse_samples_by_source: Dict[str, List[Dict[str, object]]] = {
+            'monocular': [],
+            'stereo': [],
             'lidar': [],
         }
         self._diag_cmd_stamp_sec = float('nan')
@@ -384,15 +385,9 @@ class LoggerNode(Node):
     def _setup_cone_subscriptions(self) -> None:
         self._cone_subscriptions = []
         if self._camera_cone_eval_topic:
-            self._register_cone_stream(
-                self._camera_cone_eval_topic,
-                suffix='',
-            )
+            self._register_cone_stream(self._camera_cone_eval_topic)
         if self._lidar_cone_eval_topic:
-            self._register_cone_stream(
-                self._lidar_cone_eval_topic,
-                suffix='lidar',
-            )
+            self._register_cone_stream(self._lidar_cone_eval_topic)
         if self._cone_subscriptions:
             self.get_logger().info(
                 "Cone logging enabled: "
@@ -403,15 +398,13 @@ class LoggerNode(Node):
     def _register_cone_stream(
         self,
         topic_prefix: str,
-        *,
-        suffix: str,
     ) -> None:
         prefix = self._derive_cone_metrics_prefix(topic_prefix)
         self._cone_subscriptions.append(
             self.create_subscription(
                 String,
                 f'{prefix}/cone_depth_samples',
-                lambda msg, log_suffix=suffix: self._cone_depth_samples_callback(msg, log_suffix),
+                self._cone_depth_samples_callback,
                 10,
             )
         )
@@ -731,7 +724,18 @@ class LoggerNode(Node):
             return number
         return float('nan')
 
-    def _cone_depth_samples_callback(self, msg: String, log_suffix: str = '') -> None:
+    @staticmethod
+    def _normalize_cone_source_name(value: str) -> str:
+        source = str(value).strip().lower()
+        if source in {'mono', 'monocular'}:
+            return 'monocular'
+        if source in {'stereo', 'camera'}:
+            return 'stereo'
+        if source == 'lidar':
+            return 'lidar'
+        return ''
+
+    def _cone_depth_samples_callback(self, msg: String) -> None:
         payload = str(msg.data)
         lines = [line.strip() for line in payload.splitlines() if line.strip()]
         if not lines:
@@ -750,13 +754,13 @@ class LoggerNode(Node):
 
         for line in lines[start_idx:]:
             parts = [part.strip() for part in line.split(',')]
-            source = 'unknown'
+            source = ''
             gt_range_m = float('nan')
             error_m = float('nan')
             predicted_class_id = float('nan')
             ground_truth_class_id = float('nan')
             if len(parts) >= 3 and use_new_schema:
-                source = parts[0].strip().lower() or 'unknown'
+                source = self._normalize_cone_source_name(parts[0])
                 gt_range_m = self._parse_float(parts[1])
                 error_m = self._parse_float(parts[2])
                 if len(parts) >= 5:
@@ -768,11 +772,9 @@ class LoggerNode(Node):
                 ey_m = self._parse_float(parts[2])
                 error_m = math.hypot(ex_m, ey_m) if math.isfinite(ex_m) and math.isfinite(ey_m) else float('nan')
                 source = 'stereo'
-            if not (math.isfinite(gt_range_m) and math.isfinite(error_m)):
+            if not source or not (math.isfinite(gt_range_m) and math.isfinite(error_m)):
                 continue
-            if log_suffix not in self._cone_range_rmse_samples_by_suffix:
-                self._cone_range_rmse_samples_by_suffix[log_suffix] = []
-            self._cone_range_rmse_samples_by_suffix[log_suffix].append(
+            self._cone_range_rmse_samples_by_source[source].append(
                 {
                     'timestamp': timestamp_sec,
                     'source': source,
@@ -1494,14 +1496,14 @@ class LoggerNode(Node):
             'predicted_class_id',
             'ground_truth_class_id',
         ]
-        for suffix, rows in self._cone_range_rmse_samples_by_suffix.items():
-            if not rows:
-                continue
-            out_path = self._run_session.logs_path / self._cone_output_filename(
-                'cone_range_rmse_samples',
-                'csv',
-                suffix=suffix,
-            )
+        filenames = {
+            'monocular': 'cone_range_rmse_samples_mono.csv',
+            'stereo': 'cone_range_rmse_samples_stereo.csv',
+            'lidar': 'cone_range_rmse_samples_lidar.csv',
+        }
+        for source, filename in filenames.items():
+            rows = self._cone_range_rmse_samples_by_source.get(source, [])
+            out_path = self._run_session.logs_path / filename
             with open(out_path, 'w', newline='') as handle:
                 writer = csv.DictWriter(handle, fieldnames=fieldnames)
                 writer.writeheader()
@@ -1525,24 +1527,11 @@ class LoggerNode(Node):
 
         try:
             from ..plotting.offline_cone_plotter import OfflineConePlotter
-            cone_plotter = OfflineConePlotter(
-                self._run_session.session_path,
-                range_rmse_filename=self._cone_output_filename('cone_range_rmse_samples', 'csv'),
-                output_suffix='',
-            )
-            cone_range_generated = cone_plotter.generate_range_rmse_plot()
-            if cone_range_generated is not None:
-                total += 1
-                self._safe_log_info(f"Generated cone range RMSE offline plot: {cone_range_generated}")
-            else:
-                self._safe_log_warn("Cone range RMSE offline plot skipped: no cone range samples found")
-
-            combined_generated = cone_plotter.generate_combined_range_rmse_plot(
-                right_range_rmse_filename='cone_range_rmse_samples_lidar.csv',
-            )
-            if combined_generated is not None:
-                total += 1
-                self._safe_log_info(f"Generated combined camera/lidar RMSE offline plot: {combined_generated}")
+            cone_plotter = OfflineConePlotter(self._run_session.session_path)
+            generated_paths = cone_plotter.generate_all_range_rmse_plots()
+            total += len(generated_paths)
+            for output_path in generated_paths:
+                self._safe_log_info(f"Generated cone range RMSE offline plot: {output_path}")
         except ImportError as e:
             self._safe_log_warn(f"Could not import cone offline plotter: {e}")
             msg = str(e).lower()
@@ -1555,13 +1544,6 @@ class LoggerNode(Node):
             self._safe_log_warn(f"Failed to generate cone offline plots: {e}")
 
         self._safe_log_info(f"Generated {total} plots in {self._run_session.plots_path}")
-
-    def _cone_output_filename(self, stem: str, ext: str, suffix: str = '') -> str:
-        clean_stem = stem.strip()
-        clean_ext = ext.strip().lstrip('.')
-        if suffix:
-            return f'{clean_stem}_{suffix}.{clean_ext}'
-        return f'{clean_stem}.{clean_ext}'
 
     def _path_eval_lookup_transform(self, *, target_frame: str, source_frame: str, stamp):
         if self._path_eval_tf_buffer is None:

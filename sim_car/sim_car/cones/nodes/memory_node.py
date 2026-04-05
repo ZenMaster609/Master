@@ -102,15 +102,7 @@ class ConeMemoryNode(Node):
 
         self.create_timer(1.0 / max(1.0, self.publish_rate_hz), self._on_timer)
 
-        self._plot_enabled = False
-        self._plot_ready = False
-        self._plt = None
         self._fig = None
-        self._ax = None
-        if self.enable_track_live_plot:
-            self._init_live_plot()
-            if self._plot_enabled:
-                self.create_timer(1.0 / max(0.1, self.track_plot_update_hz), self._update_live_plot)
 
         self.get_logger().info(
             'cone_memory_node ready '
@@ -170,8 +162,6 @@ class ConeMemoryNode(Node):
         self.declare_parameter('believed_track_viz_show_center', False)
         self.declare_parameter('believed_track_viz_show_cones', False)
 
-        self.declare_parameter('enable_track_live_plot', True)
-        self.declare_parameter('track_plot_update_hz', 2.0)
         self.declare_parameter('save_track_plot_on_shutdown', True)
         self.declare_parameter('track_plot_filename', 'cone_memory_track.png')
         self.declare_parameter('track_plot_data_filename', 'cone_memory_track_data.csv')
@@ -257,8 +247,6 @@ class ConeMemoryNode(Node):
         self.believed_track_viz_show_center = bool(self.get_parameter('believed_track_viz_show_center').value)
         self.believed_track_viz_show_cones = bool(self.get_parameter('believed_track_viz_show_cones').value)
 
-        self.enable_track_live_plot = bool(self.get_parameter('enable_track_live_plot').value)
-        self.track_plot_update_hz = max(0.1, float(self.get_parameter('track_plot_update_hz').value))
         self.save_track_plot_on_shutdown = bool(self.get_parameter('save_track_plot_on_shutdown').value)
         self.track_plot_filename = str(self.get_parameter('track_plot_filename').value).strip() or 'cone_memory_track.png'
         self.track_plot_data_filename = str(self.get_parameter('track_plot_data_filename').value).strip()
@@ -1210,22 +1198,6 @@ class ConeMemoryNode(Node):
             return 75_000
         return 100_000
 
-    def _init_live_plot(self) -> None:
-        try:
-            import matplotlib.pyplot as plt
-
-            self._plt = plt
-            self._plt.ion()
-            self._fig, self._ax = self._plt.subplots(figsize=(9, 7))
-            self._fig.suptitle('Cone Memory Track Belief')
-            self._plot_enabled = True
-            self._plot_ready = True
-            self.get_logger().info('cone memory live plot enabled')
-        except Exception as exc:  # pylint: disable=broad-except
-            self._plot_enabled = False
-            self._plot_ready = False
-            self.get_logger().warn(f'failed to initialize live plot ({exc}); continuing without live window')
-
     def _planner_track_snapshot(self, now_sec: float) -> list[ConeTrack]:
         return self._local_tracker.planner_tracks(
             now_sec=now_sec,
@@ -1233,81 +1205,6 @@ class ConeMemoryNode(Node):
             publish_stale_tracks=self.publish_stale_tracks,
             stale_planner_ttl_sec=self.stale_planner_ttl_sec,
         )
-
-    def _update_live_plot(self) -> None:
-        if not self._plot_enabled or not self._plot_ready or self._ax is None or self._plt is None:
-            return
-        try:
-            base_in_odom, _resolved_odom, _resolved_base = self._lookup_transform_with_alias(
-                self.odom_frame,
-                self.base_frame,
-                Time().to_msg(),
-            )
-            pose = self._resolve_base_pose(Time().to_msg(), base_in_odom)
-            if pose is None:
-                veh_x, veh_y, veh_yaw = 0.0, 0.0, 0.0
-            else:
-                veh_x, veh_y, veh_yaw = pose
-            heading_x, heading_y = (math.cos(veh_yaw), math.sin(veh_yaw))
-            tracks = self._planner_track_snapshot(float(self.get_clock().now().nanoseconds) * 1e-9)
-            left, right, center = self._infer_track_boundaries_and_centerline(
-                tracks=tracks,
-                min_track_confidence=self.believed_track_viz_min_confidence,
-                min_color_confidence=self.believed_track_viz_min_confidence,
-                vehicle_x=veh_x,
-                vehicle_y=veh_y,
-                heading_x=heading_x,
-                heading_y=heading_y,
-            )
-
-            self._ax.clear()
-            blue_x = []
-            blue_y = []
-            yellow_x = []
-            yellow_y = []
-            other_x = []
-            other_y = []
-            for track in tracks:
-                if float(track.track_confidence) < self.believed_track_viz_min_confidence:
-                    continue
-                label, color_conf = track.class_label()
-                if float(color_conf) < self.believed_track_viz_min_confidence:
-                    continue
-                if label == 'blue':
-                    blue_x.append(track.x)
-                    blue_y.append(track.y)
-                elif label == 'yellow':
-                    yellow_x.append(track.x)
-                    yellow_y.append(track.y)
-                else:
-                    other_x.append(track.x)
-                    other_y.append(track.y)
-
-            if blue_x:
-                self._ax.scatter(blue_x, blue_y, s=20, c='tab:blue', label='blue cones')
-            if yellow_x:
-                self._ax.scatter(yellow_x, yellow_y, s=20, c='gold', label='yellow cones')
-            if other_x:
-                self._ax.scatter(other_x, other_y, s=16, c='gray', label='other cones')
-
-            if left:
-                self._ax.plot([p[0] for p in left], [p[1] for p in left], color='tab:blue', linewidth=2.0, label='left boundary')
-            if right:
-                self._ax.plot([p[0] for p in right], [p[1] for p in right], color='goldenrod', linewidth=2.0, label='right boundary')
-            if center:
-                self._ax.plot([p[0] for p in center], [p[1] for p in center], color='black', linewidth=2.0, label='centerline')
-
-            self._ax.scatter([veh_x], [veh_y], s=80, c='red', marker='x', label='vehicle')
-            self._ax.set_xlabel('odom x [m]')
-            self._ax.set_ylabel('odom y [m]')
-            self._ax.set_aspect('equal', adjustable='box')
-            self._ax.grid(True, alpha=0.25)
-            self._ax.legend(loc='best', fontsize=8)
-            self._fig.tight_layout()
-            self._fig.canvas.draw_idle()
-            self._plt.pause(0.001)
-        except Exception:
-            self._plot_ready = False
 
     def _save_track_plot_and_data(self) -> None:
         if self._last_plot_save_attempted:
@@ -1655,11 +1552,6 @@ class ConeMemoryNode(Node):
 
     def destroy_node(self):
         self._save_track_plot_and_data()
-        if self._plot_enabled and self._plt is not None and self._fig is not None:
-            try:
-                self._plt.close(self._fig)
-            except Exception:
-                pass
         return super().destroy_node()
 
 

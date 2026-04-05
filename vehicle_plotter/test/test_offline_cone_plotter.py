@@ -15,7 +15,7 @@ if str(PACKAGE_ROOT) not in sys.path:
 from vehicle_plotter.plotting.offline_cone_plotter import OfflineConePlotter
 
 
-def test_compute_total_rmse_percent_matches_live_definition():
+def test_compute_total_rmse_percent_matches_binwise_definition():
     bin_centers = np.asarray([0.5, 1.5, 2.5], dtype=np.float32)
     rmse_by_source = {
         'monocular': np.asarray([0.1, 0.2, np.nan], dtype=np.float32),
@@ -43,52 +43,23 @@ def test_compute_source_rmse_percent_matches_binwise_definition():
     assert math.isclose(float(source_rmse_pct['stereo'][1]), (0.4 / 1.5) * 100.0, rel_tol=1e-6, abs_tol=1e-6)
 
 
-def test_compute_classification_counts_ignores_missing_values():
-    predicted = np.asarray([1.0, 2.0, np.nan, 0.0], dtype=np.float32)
-    ground_truth = np.asarray([1.0, 0.0, 3.0, np.nan], dtype=np.float32)
-
-    correct_count, incorrect_count = OfflineConePlotter._compute_classification_counts(
-        predicted,
-        ground_truth,
-    )
-
-    assert correct_count == 1
-    assert incorrect_count == 1
-
-
-def test_generate_range_rmse_plot_writes_png(tmp_path):
+def test_generate_all_range_rmse_plots_writes_expected_pngs(tmp_path):
     session_path = tmp_path / 'session'
     logs_path = session_path / 'logs'
     logs_path.mkdir(parents=True)
     (session_path / 'plots').mkdir(parents=True)
 
-    csv_path = logs_path / 'cone_range_rmse_samples.csv'
-    csv_path.write_text(
+    (logs_path / 'cone_range_rmse_samples_mono.csv').write_text(
         '\n'.join(
             [
                 'timestamp,source,gt_range_m,error_m,predicted_class_id,ground_truth_class_id',
                 '1.0,monocular,0.2,0.1,1,1',
                 '1.1,monocular,1.2,0.2,0,1',
-                '1.2,stereo,1.7,0.4,,',
             ]
         ),
         encoding='utf-8',
     )
-
-    output_path = OfflineConePlotter(session_path).generate_range_rmse_plot()
-
-    assert output_path is not None
-    assert output_path.exists()
-    assert output_path.suffix == '.png'
-
-
-def test_generate_combined_range_rmse_plot_writes_png(tmp_path):
-    session_path = tmp_path / 'session'
-    logs_path = session_path / 'logs'
-    logs_path.mkdir(parents=True)
-    (session_path / 'plots').mkdir(parents=True)
-
-    (logs_path / 'cone_range_rmse_samples.csv').write_text(
+    (logs_path / 'cone_range_rmse_samples_stereo.csv').write_text(
         '\n'.join(
             [
                 'timestamp,source,gt_range_m,error_m,predicted_class_id,ground_truth_class_id',
@@ -109,8 +80,56 @@ def test_generate_combined_range_rmse_plot_writes_png(tmp_path):
         encoding='utf-8',
     )
 
-    output_path = OfflineConePlotter(session_path).generate_combined_range_rmse_plot()
+    output_paths = OfflineConePlotter(session_path).generate_all_range_rmse_plots()
 
-    assert output_path is not None
-    assert output_path.exists()
-    assert output_path.name == 'cone_range_binned_rmse_camera_lidar.png'
+    assert [path.name for path in output_paths] == [
+        'cone_range_rmse_mono.png',
+        'cone_range_rmse_stereo.png',
+        'cone_range_rmse_lidar.png',
+    ]
+    assert all(path.exists() for path in output_paths)
+
+
+def test_generate_all_range_rmse_plots_creates_empty_pngs_for_missing_data(tmp_path):
+    session_path = tmp_path / 'session'
+    (session_path / 'logs').mkdir(parents=True)
+    (session_path / 'plots').mkdir(parents=True)
+
+    output_paths = OfflineConePlotter(session_path).generate_all_range_rmse_plots()
+
+    assert [path.name for path in output_paths] == [
+        'cone_range_rmse_mono.png',
+        'cone_range_rmse_stereo.png',
+        'cone_range_rmse_lidar.png',
+    ]
+    assert all(path.exists() for path in output_paths)
+
+
+def test_all_sources_use_identical_binning_when_loaded(tmp_path):
+    session_path = tmp_path / 'session'
+    logs_path = session_path / 'logs'
+    logs_path.mkdir(parents=True)
+
+    for filename, source in (
+        ('cone_range_rmse_samples_mono.csv', 'monocular'),
+        ('cone_range_rmse_samples_stereo.csv', 'stereo'),
+        ('cone_range_rmse_samples_lidar.csv', 'lidar'),
+    ):
+        (logs_path / filename).write_text(
+            '\n'.join(
+                [
+                    'timestamp,source,gt_range_m,error_m,predicted_class_id,ground_truth_class_id',
+                    f'1.0,{source},2.2,0.1,1,1',
+                ]
+            ),
+            encoding='utf-8',
+        )
+
+    plotter = OfflineConePlotter(session_path)
+    mono_stats = plotter._load_source_stats('cone_range_rmse_samples_mono.csv', expected_source='monocular')
+    stereo_stats = plotter._load_source_stats('cone_range_rmse_samples_stereo.csv', expected_source='stereo')
+    lidar_stats = plotter._load_source_stats('cone_range_rmse_samples_lidar.csv', expected_source='lidar')
+
+    assert np.array_equal(mono_stats.bin_centers, stereo_stats.bin_centers)
+    assert np.array_equal(stereo_stats.bin_centers, lidar_stats.bin_centers)
+    assert mono_stats.total_counts.shape == stereo_stats.total_counts.shape == lidar_stats.total_counts.shape

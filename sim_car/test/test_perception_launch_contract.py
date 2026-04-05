@@ -76,14 +76,9 @@ def test_full_launch_declares_and_passes_thesis_controller_diagnostics():
     content = FULL_LAUNCH.read_text(encoding='utf-8')
 
     assert "DeclareLaunchArgument(\n        'thesis_controller_diagnostics'" in content
-    assert "DeclareLaunchArgument(\n        'thesis_controller_diagnostics_live_plot_enabled'" in content
+    assert "thesis_controller_diagnostics_live_plot_enabled" not in content
     assert "'thesis_controller_diagnostics'" in content
     assert "'thesis_controller_diagnostics_enabled': LaunchConfiguration('thesis_controller_diagnostics')" in content
-    assert (
-        "'enable_thesis_controller_diagnostics_plot': LaunchConfiguration(\n"
-        "                'thesis_controller_diagnostics_live_plot_enabled'\n"
-        "            )"
-    ) in content
     assert "'diagnostics.publish_thesis_context': ParameterValue(" in content
 
 
@@ -99,12 +94,16 @@ def test_full_launch_declares_and_passes_path_tracking_eval():
     assert "'path_tracking_eval_track_name': LaunchConfiguration('track')" in content
 
 
-def test_full_launch_declares_camera_cone_rmse_plotting_and_wires_it():
+def test_full_launch_always_wires_offline_cone_eval_topics():
     content = FULL_LAUNCH.read_text(encoding='utf-8')
 
-    assert "DeclareLaunchArgument(\n        'camera_cone_rmse_plotting'" in content
-    assert content.count("LaunchConfiguration('camera_cone_rmse_plotting')") >= 4
+    assert "DeclareLaunchArgument(\n        'camera_cone_rmse_plotting'" not in content
+    assert "DeclareLaunchArgument(\n        'lidar_cone_rmse_plotting'" not in content
+    assert "DeclareLaunchArgument(\n        'cone_rmse_plotting'" not in content
     assert "'camera_cone_eval_topic': PythonExpression([" in content
+    assert "'enable_log': 'true'" in content
+    assert "'source_name': camera_source_name" in content
+    assert "'source_name': 'lidar'" in content
 
 
 def test_full_launch_supports_only_migrated_planners():

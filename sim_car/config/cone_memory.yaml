@@ -50,8 +50,6 @@ cone_memory_node:
     believed_track_viz_show_center: false
     believed_track_viz_show_cones: false
 
-    enable_track_live_plot: true
-    track_plot_update_hz: 2.0
     save_track_plot_on_shutdown: true
     track_plot_filename: "cone_memory_track.png"
     track_plot_data_filename: "cone_memory_track_data.csv"

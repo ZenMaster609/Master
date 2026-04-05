@@ -89,9 +89,58 @@ def test_branch_sequence_advances_right_right_left_left_straight() -> None:
 
     now_sec = _enter_crossroads(machine)
     assert machine.stage_name() == "right_1"
+    assert machine.current_route_pass() == 1
+    assert machine.total_route_passes() == 1
+    assert machine.completed_route_passes() == 0
 
     now_sec = _complete_lap(machine, center_xy=machine.config.right_circle_center_xy, start_t=now_sec)
     assert machine.stage_name() == "right_2"
+    assert machine.current_route_pass() == 1
+
+    now_sec = _complete_lap(machine, center_xy=machine.config.right_circle_center_xy, start_t=now_sec)
+    assert machine.stage_name() == "left_1"
+    assert machine.current_route_pass() == 1
+
+    now_sec = _complete_lap(machine, center_xy=machine.config.left_circle_center_xy, start_t=now_sec)
+    assert machine.stage_name() == "left_2"
+    assert machine.current_route_pass() == 1
+
+    _complete_lap(machine, center_xy=machine.config.left_circle_center_xy, start_t=now_sec)
+    assert machine.stage_name() == "straight"
+    assert machine.active_branch() == "straight"
+    assert machine.completed_laps == 4
+    assert machine.current_route_pass() == 1
+    assert machine.completed_route_passes() == 1
+
+
+def test_route_laps_repeats_sequence_before_straight_and_resets_stage_numbering() -> None:
+    machine = SkidpadStateMachine(SkidpadRouterConfig(route_laps=2))
+
+    now_sec = _enter_crossroads(machine)
+    assert machine.stage_name() == "right_1"
+    assert machine.current_route_pass() == 1
+    assert machine.total_route_passes() == 2
+    assert machine.completed_route_passes() == 0
+
+    now_sec = _complete_lap(machine, center_xy=machine.config.right_circle_center_xy, start_t=now_sec)
+    assert machine.stage_name() == "right_2"
+    assert machine.current_route_pass() == 1
+
+    now_sec = _complete_lap(machine, center_xy=machine.config.right_circle_center_xy, start_t=now_sec)
+    assert machine.stage_name() == "left_1"
+
+    now_sec = _complete_lap(machine, center_xy=machine.config.left_circle_center_xy, start_t=now_sec)
+    assert machine.stage_name() == "left_2"
+
+    now_sec = _complete_lap(machine, center_xy=machine.config.left_circle_center_xy, start_t=now_sec)
+    assert machine.stage_name() == "right_1"
+    assert machine.completed_laps == 4
+    assert machine.current_route_pass() == 2
+    assert machine.completed_route_passes() == 1
+
+    now_sec = _complete_lap(machine, center_xy=machine.config.right_circle_center_xy, start_t=now_sec)
+    assert machine.stage_name() == "right_2"
+    assert machine.current_route_pass() == 2
 
     now_sec = _complete_lap(machine, center_xy=machine.config.right_circle_center_xy, start_t=now_sec)
     assert machine.stage_name() == "left_1"
@@ -101,8 +150,22 @@ def test_branch_sequence_advances_right_right_left_left_straight() -> None:
 
     _complete_lap(machine, center_xy=machine.config.left_circle_center_xy, start_t=now_sec)
     assert machine.stage_name() == "straight"
-    assert machine.active_branch() == "straight"
-    assert machine.completed_laps == 4
+    assert machine.completed_laps == 8
+    assert machine.current_route_pass() == 2
+    assert machine.completed_route_passes() == 2
+
+
+def test_route_laps_non_positive_values_clamp_to_one() -> None:
+    machine = SkidpadStateMachine(SkidpadRouterConfig(route_laps=0))
+    now_sec = _enter_crossroads(machine)
+
+    now_sec = _complete_lap(machine, center_xy=machine.config.right_circle_center_xy, start_t=now_sec)
+    now_sec = _complete_lap(machine, center_xy=machine.config.right_circle_center_xy, start_t=now_sec)
+    now_sec = _complete_lap(machine, center_xy=machine.config.left_circle_center_xy, start_t=now_sec)
+    _complete_lap(machine, center_xy=machine.config.left_circle_center_xy, start_t=now_sec)
+
+    assert machine.stage_name() == "straight"
+    assert machine.total_route_passes() == 1
 
 
 def test_right_routing_suppresses_left_lobe_and_parking() -> None:
@@ -156,16 +219,19 @@ def test_straight_routing_adds_synthetic_bridge_pairs() -> None:
 
 
 def test_test_park_only_skips_laps_and_routes_straight() -> None:
-    machine = SkidpadStateMachine(SkidpadRouterConfig(test_park_only=True))
+    machine = SkidpadStateMachine(SkidpadRouterConfig(test_park_only=True, route_laps=3))
 
     assert machine.active_branch() == "straight"
     assert machine.stage_name() == "approach"
+    assert machine.total_route_passes() == 0
+    assert machine.current_route_pass() == 0
 
     _enter_crossroads(machine)
 
     assert machine.active_branch() == "straight"
     assert machine.stage_name() == "straight"
     assert machine.completed_laps == 0
+    assert machine.completed_route_passes() == 0
 
     points = np.asarray(
         [

@@ -2,7 +2,7 @@
 """
 Offline replay launch file.
 
-Replays a rosbag and runs the plotter for visualization.
+Replays a rosbag and optionally runs the logger for offline artifacts.
 
 Usage:
     ros2 launch vehicle_plotter offline_replay.launch.py bag_path:=/path/to/rosbag
@@ -15,8 +15,8 @@ Usage:
 
 from launch import LaunchDescription
 from launch.actions import DeclareLaunchArgument, ExecuteProcess
-from launch.substitutions import LaunchConfiguration
 from launch.conditions import IfCondition
+from launch.substitutions import LaunchConfiguration
 from launch_ros.actions import Node
 
 
@@ -37,12 +37,6 @@ def generate_launch_description():
         'loop',
         default_value='false',
         description='Loop playback'
-    )
-
-    enable_plot_arg = DeclareLaunchArgument(
-        'enable_plot',
-        default_value='true',
-        description='Enable plotting'
     )
 
     enable_log_arg = DeclareLaunchArgument(
@@ -68,33 +62,19 @@ def generate_launch_description():
         output='screen',
     )
 
-    # Plotter node
-    plotter_node = Node(
-        package='vehicle_plotter',
-        executable='plotter_node',
-        name='plotter',
-        output='screen',
-        condition=IfCondition(LaunchConfiguration('enable_plot')),
-        parameters=[{
-            'update_rate_hz': 30.0,
-            'direct_from_sensors': False,
-            'use_sim_time': True,
-        }],
-    )
-
     # Logger node (optional, for re-processing)
     logger_node = Node(
         package='vehicle_plotter',
         executable='logger_node',
         name='logger',
         output='screen',
-        condition=IfCondition(LaunchConfiguration('enable_log')),
         parameters=[{
             'format': 'parquet',
             'base_path': LaunchConfiguration('log_path'),
             'session_name': 'replay',
             'use_sim_time': True,
         }],
+        condition=IfCondition(LaunchConfiguration('enable_log')),
     )
 
     return LaunchDescription([
@@ -102,12 +82,10 @@ def generate_launch_description():
         bag_path_arg,
         rate_arg,
         loop_arg,
-        enable_plot_arg,
         enable_log_arg,
         log_path_arg,
 
         # Nodes
         rosbag_play,
-        plotter_node,
         logger_node,
     ])
