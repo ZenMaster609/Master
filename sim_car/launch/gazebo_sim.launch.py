@@ -43,6 +43,7 @@ def generate_launch_description():
     planner_rate_hz = LaunchConfiguration('planner_rate_hz', default='60.0')
     topic_prefix = LaunchConfiguration('topic_prefix', default='/sim/raw')
     sensors_render_engine = LaunchConfiguration('sensors_render_engine', default='ogre')
+    physics_model = LaunchConfiguration('physics_model', default='pointmass')
 
     resource_path = os.path.join(pkg_sim_car)
     resource_paths = [
@@ -107,6 +108,11 @@ def generate_launch_description():
             description='Planner/controller/odom target rate in Hz'
         ),
         DeclareLaunchArgument(
+            'physics_model',
+            default_value='pointmass',
+            description="Physics model for Gazebo dynamics: 'pointmass' or 'bicycle'"
+        ),
+        DeclareLaunchArgument(
             'topic_prefix',
             default_value='/sim/raw',
             description='Topic prefix for sim sensors (/sim or /sim/raw)'
@@ -163,6 +169,8 @@ def _launch_simulation(context, *args, **kwargs):
     camera_rate_value = float(LaunchConfiguration('camera_rate_hz').perform(context))
     perception_rate_value = float(LaunchConfiguration('perception_rate_hz').perform(context))
     planner_rate_value = float(LaunchConfiguration('planner_rate_hz').perform(context))
+    physics_model_value = LaunchConfiguration('physics_model').perform(context)
+    vehicle_model_value = _resolve_vehicle_model(physics_model_value)
     updated_eufs_config = _write_updated_eufs_config(eufs_config_path, update_rate_value)
     spawn_x = LaunchConfiguration('spawn_x').perform(context)
     spawn_y = LaunchConfiguration('spawn_y').perform(context)
@@ -175,6 +183,7 @@ def _launch_simulation(context, *args, **kwargs):
         camera_rate_value,
         perception_rate_value,
         planner_rate_value,
+        vehicle_model_value,
         updated_eufs_config,
         topic_prefix,
         spawn_x,
@@ -403,6 +412,17 @@ def _write_updated_eufs_config(config_path, update_rate_hz):
         return tmp.name
 
 
+def _resolve_vehicle_model(physics_model: str) -> str:
+    normalized = str(physics_model).strip().lower()
+    if normalized in {'pointmass', 'point_mass'}:
+        return 'PointMass'
+    if normalized in {'bicycle', 'dynamicbicycle', 'dynamic_bicycle'}:
+        return 'DynamicBicycle'
+    raise RuntimeError(
+        f"Unsupported physics_model='{physics_model}'. Use 'pointmass' or 'bicycle'."
+    )
+
+
 def _build_robot_description(
     urdf_path,
     imu_rate,
@@ -410,6 +430,7 @@ def _build_robot_description(
     camera_rate_hz,
     perception_rate_hz,
     planner_rate_hz,
+    vehicle_model,
     eufs_config_path,
     topic_prefix,
     spawn_x,
@@ -444,6 +465,10 @@ def _build_robot_description(
 
     for plugin in root.findall(".//gazebo/plugin"):
         if plugin.get('filename') == 'libeufs_gz_dynamics.so':
+            vehicle_model_elem = plugin.find('vehicle_model')
+            if vehicle_model_elem is None:
+                vehicle_model_elem = ET.SubElement(plugin, 'vehicle_model')
+            vehicle_model_elem.text = vehicle_model
             yaml_elem = plugin.find('yaml_config')
             if yaml_elem is None:
                 yaml_elem = ET.SubElement(plugin, 'yaml_config')

@@ -18,13 +18,24 @@ PATH_TRACKING_EVAL_FIELDNAMES = [
     "status",
     "frame_id",
     "gt_source_frame",
+    "odom_child_frame_id",
+    "resolved_control_frame",
     "vehicle_x_m",
     "vehicle_y_m",
+    "body_center_x_m",
+    "body_center_y_m",
+    "front_axle_x_m",
+    "front_axle_y_m",
     "planner_reference_x_m",
     "planner_reference_y_m",
     "gt_reference_x_m",
     "gt_reference_y_m",
+    "planner_reference_vs_gt_cte_m",
+    "body_center_vs_planner_cte_m",
+    "front_axle_vs_planner_cte_m",
     "controller_vs_planner_cte_m",
+    "body_center_vs_gt_cte_m",
+    "front_axle_vs_gt_cte_m",
     "controller_vs_gt_cte_m",
     "planner_vs_gt_cte_rms_m",
     "planner_vs_gt_cte_p95_m",
@@ -780,6 +791,27 @@ def analyze_path_tracking_csv(csv_path: Path) -> dict[str, float]:
     t = _series(rows, "timestamp_sec")
     controller_vs_planner = _series(rows, "controller_vs_planner_cte_m")
     controller_vs_gt = _series(rows, "controller_vs_gt_cte_m")
+    body_center_vs_planner = _series_with_fallback(
+        rows,
+        primary_key="body_center_vs_planner_cte_m",
+        fallback_key="controller_vs_planner_cte_m",
+    )
+    front_axle_vs_planner = _series_with_fallback(
+        rows,
+        primary_key="front_axle_vs_planner_cte_m",
+        fallback_key="controller_vs_planner_cte_m",
+    )
+    body_center_vs_gt = _series_with_fallback(
+        rows,
+        primary_key="body_center_vs_gt_cte_m",
+        fallback_key="controller_vs_gt_cte_m",
+    )
+    front_axle_vs_gt = _series_with_fallback(
+        rows,
+        primary_key="front_axle_vs_gt_cte_m",
+        fallback_key="controller_vs_gt_cte_m",
+    )
+    planner_reference_vs_gt = _series(rows, "planner_reference_vs_gt_cte_m")
     planner_vs_gt_rms = _series(rows, "planner_vs_gt_cte_rms_m")
     planner_vs_gt_p95 = _series(rows, "planner_vs_gt_cte_p95_m")
     planner_vs_gt_max = _series(rows, "planner_vs_gt_cte_max_m")
@@ -792,12 +824,27 @@ def analyze_path_tracking_csv(csv_path: Path) -> dict[str, float]:
         "sample_count": float(len(rows)),
         "valid_sample_count": valid_sample_count,
         "duration_sec": duration_sec,
+        "body_center_vs_planner_cte_rms_m": _nanrms(np.abs(body_center_vs_planner)),
+        "body_center_vs_planner_cte_p95_m": _nanpercentile(np.abs(body_center_vs_planner), 95.0),
+        "body_center_vs_planner_cte_max_m": _nanmax(np.abs(body_center_vs_planner)),
+        "front_axle_vs_planner_cte_rms_m": _nanrms(np.abs(front_axle_vs_planner)),
+        "front_axle_vs_planner_cte_p95_m": _nanpercentile(np.abs(front_axle_vs_planner), 95.0),
+        "front_axle_vs_planner_cte_max_m": _nanmax(np.abs(front_axle_vs_planner)),
         "controller_vs_planner_cte_rms_m": _nanrms(np.abs(controller_vs_planner)),
         "controller_vs_planner_cte_p95_m": _nanpercentile(np.abs(controller_vs_planner), 95.0),
         "controller_vs_planner_cte_max_m": _nanmax(np.abs(controller_vs_planner)),
+        "body_center_vs_gt_cte_rms_m": _nanrms(np.abs(body_center_vs_gt)),
+        "body_center_vs_gt_cte_p95_m": _nanpercentile(np.abs(body_center_vs_gt), 95.0),
+        "body_center_vs_gt_cte_max_m": _nanmax(np.abs(body_center_vs_gt)),
+        "front_axle_vs_gt_cte_rms_m": _nanrms(np.abs(front_axle_vs_gt)),
+        "front_axle_vs_gt_cte_p95_m": _nanpercentile(np.abs(front_axle_vs_gt), 95.0),
+        "front_axle_vs_gt_cte_max_m": _nanmax(np.abs(front_axle_vs_gt)),
         "controller_vs_gt_cte_rms_m": _nanrms(np.abs(controller_vs_gt)),
         "controller_vs_gt_cte_p95_m": _nanpercentile(np.abs(controller_vs_gt), 95.0),
         "controller_vs_gt_cte_max_m": _nanmax(np.abs(controller_vs_gt)),
+        "planner_reference_vs_gt_cte_rms_m": _nanrms(np.abs(planner_reference_vs_gt)),
+        "planner_reference_vs_gt_cte_p95_m": _nanpercentile(np.abs(planner_reference_vs_gt), 95.0),
+        "planner_reference_vs_gt_cte_max_m": _nanmax(np.abs(planner_reference_vs_gt)),
         "planner_vs_gt_cte_rms_m": _nanrms(planner_vs_gt_rms),
         "planner_vs_gt_cte_p95_m": _nanpercentile(planner_vs_gt_p95, 95.0),
         "planner_vs_gt_cte_max_m": _nanmax(planner_vs_gt_max),
@@ -820,12 +867,27 @@ def write_path_tracking_summary_files(summary: dict[str, float], json_path: Path
         f"sample_count: {summary.get('sample_count', float('nan')):.0f}",
         f"valid_sample_count: {summary.get('valid_sample_count', float('nan')):.0f}",
         f"duration_sec: {summary.get('duration_sec', float('nan')):.3f}",
+        f"planner_reference_vs_gt_cte_rms_m: {summary.get('planner_reference_vs_gt_cte_rms_m', float('nan')):.6f}",
+        f"planner_reference_vs_gt_cte_p95_m: {summary.get('planner_reference_vs_gt_cte_p95_m', float('nan')):.6f}",
+        f"planner_reference_vs_gt_cte_max_m: {summary.get('planner_reference_vs_gt_cte_max_m', float('nan')):.6f}",
         f"planner_vs_gt_cte_rms_m: {summary.get('planner_vs_gt_cte_rms_m', float('nan')):.6f}",
         f"planner_vs_gt_cte_p95_m: {summary.get('planner_vs_gt_cte_p95_m', float('nan')):.6f}",
         f"planner_vs_gt_cte_max_m: {summary.get('planner_vs_gt_cte_max_m', float('nan')):.6f}",
+        f"body_center_vs_planner_cte_rms_m: {summary.get('body_center_vs_planner_cte_rms_m', float('nan')):.6f}",
+        f"body_center_vs_planner_cte_p95_m: {summary.get('body_center_vs_planner_cte_p95_m', float('nan')):.6f}",
+        f"body_center_vs_planner_cte_max_m: {summary.get('body_center_vs_planner_cte_max_m', float('nan')):.6f}",
+        f"front_axle_vs_planner_cte_rms_m: {summary.get('front_axle_vs_planner_cte_rms_m', float('nan')):.6f}",
+        f"front_axle_vs_planner_cte_p95_m: {summary.get('front_axle_vs_planner_cte_p95_m', float('nan')):.6f}",
+        f"front_axle_vs_planner_cte_max_m: {summary.get('front_axle_vs_planner_cte_max_m', float('nan')):.6f}",
         f"controller_vs_planner_cte_rms_m: {summary.get('controller_vs_planner_cte_rms_m', float('nan')):.6f}",
         f"controller_vs_planner_cte_p95_m: {summary.get('controller_vs_planner_cte_p95_m', float('nan')):.6f}",
         f"controller_vs_planner_cte_max_m: {summary.get('controller_vs_planner_cte_max_m', float('nan')):.6f}",
+        f"body_center_vs_gt_cte_rms_m: {summary.get('body_center_vs_gt_cte_rms_m', float('nan')):.6f}",
+        f"body_center_vs_gt_cte_p95_m: {summary.get('body_center_vs_gt_cte_p95_m', float('nan')):.6f}",
+        f"body_center_vs_gt_cte_max_m: {summary.get('body_center_vs_gt_cte_max_m', float('nan')):.6f}",
+        f"front_axle_vs_gt_cte_rms_m: {summary.get('front_axle_vs_gt_cte_rms_m', float('nan')):.6f}",
+        f"front_axle_vs_gt_cte_p95_m: {summary.get('front_axle_vs_gt_cte_p95_m', float('nan')):.6f}",
+        f"front_axle_vs_gt_cte_max_m: {summary.get('front_axle_vs_gt_cte_max_m', float('nan')):.6f}",
         f"controller_vs_gt_cte_rms_m: {summary.get('controller_vs_gt_cte_rms_m', float('nan')):.6f}",
         f"controller_vs_gt_cte_p95_m: {summary.get('controller_vs_gt_cte_p95_m', float('nan')):.6f}",
         f"controller_vs_gt_cte_max_m: {summary.get('controller_vs_gt_cte_max_m', float('nan')):.6f}",
@@ -851,6 +913,17 @@ def _safe_float(value: object) -> float:
 
 def _series(rows: list[dict[str, str]], key: str) -> np.ndarray:
     return np.asarray([_safe_float(row.get(key, float("nan"))) for row in rows], dtype=np.float64)
+
+
+def _series_with_fallback(
+    rows: list[dict[str, str]],
+    *,
+    primary_key: str,
+    fallback_key: str,
+) -> np.ndarray:
+    primary = _series(rows, primary_key)
+    fallback = _series(rows, fallback_key)
+    return np.where(np.isfinite(primary), primary, fallback)
 
 
 def _nanrms(values: np.ndarray) -> float:

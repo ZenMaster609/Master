@@ -33,7 +33,8 @@ SUPPORTED_TRACKS = {
     'smalltrack': 'small_track.world',
 }
 MIGRATED_PLANNERS = {'midpoint', 'single_boundary', 'corridor'}
-SUPPORTED_PLANNERS = {'midpoint', 'single_boundary', 'corridor', 'none'}
+CONFIGURED_PLANNERS = MIGRATED_PLANNERS | {'linetest'}
+SUPPORTED_PLANNERS = CONFIGURED_PLANNERS | {'none'}
 SUPPORTED_CONTROLLERS = {'stanley', 'pure_pursuit', 'none'}
 
 
@@ -161,6 +162,12 @@ def generate_launch_description():
         description='Sign applied to Ackermann steering before cmd_vel conversion (+1 or -1)'
     )
 
+    physics_model_arg = DeclareLaunchArgument(
+        'physics_model',
+        default_value='pointmass',
+        description="Physics model for Gazebo dynamics: 'pointmass' or 'bicycle'"
+    )
+
     use_sim_time_arg = DeclareLaunchArgument(
         'use_sim_time',
         default_value='true',
@@ -188,7 +195,7 @@ def generate_launch_description():
     planner_arg = DeclareLaunchArgument(
         'planner',
         default_value='midpoint',
-        description="Planner to launch: 'midpoint', 'single_boundary', 'corridor', or 'none'"
+        description="Planner to launch: 'midpoint', 'single_boundary', 'corridor', 'linetest', or 'none'"
     )
 
     controller_arg = DeclareLaunchArgument(
@@ -215,7 +222,7 @@ def generate_launch_description():
         description=(
             "RViz profile to load when rviz_config is not provided: "
             "'planner', 'clean', 'planner_debug', 'midpoint', "
-            "'single_boundary', or 'corridor'"
+            "'single_boundary', 'corridor', or 'linetest'"
         )
     )
 
@@ -475,6 +482,7 @@ def generate_launch_description():
             'camera_rate_hz': LaunchConfiguration('camera_rate_hz'),
             'perception_rate_hz': LaunchConfiguration('perception_rate_hz'),
             'planner_rate_hz': LaunchConfiguration('planner_rate_hz'),
+            'physics_model': LaunchConfiguration('physics_model'),
             'sensors_render_engine': LaunchConfiguration('sensors_render_engine'),
             'topic_prefix': topic_prefix,
             'spawn_x': resolved_spawn_x,
@@ -550,7 +558,10 @@ def generate_launch_description():
                 "'.lower() == 'single_boundary' else "
                 "'/corridor_planner/diagnostics' if '",
                 LaunchConfiguration('planner'),
-                "'.lower() == 'corridor' else '/midpoint_planner/diagnostics'",
+                "'.lower() == 'corridor' else "
+                "'/linetest_planner/diagnostics' if '",
+                LaunchConfiguration('planner'),
+                "'.lower() == 'linetest' else '/midpoint_planner/diagnostics'",
             ]),
             'thesis_controller_diagnostics_enabled': LaunchConfiguration('thesis_controller_diagnostics'),
             'path_tracking_eval_enabled': LaunchConfiguration('path_tracking_eval'),
@@ -940,6 +951,37 @@ def generate_launch_description():
         ])),
     )
 
+    linetest_planner_node = Node(
+        package='sim_car',
+        executable='linetest_planner_node',
+        name='linetest_planner_node',
+        output='screen',
+        parameters=[
+            resolved_planner_config,
+            resolved_controller_config,
+            {
+                'use_sim_time': ParameterValue(
+                    LaunchConfiguration('use_sim_time'),
+                    value_type=bool,
+                ),
+                'topics.odom_topic': '/sim/odom',
+                'runtime.publish_rate_hz': ParameterValue(
+                    LaunchConfiguration('planner_rate_hz'),
+                    value_type=float,
+                ),
+                'diagnostics.publish_thesis_context': ParameterValue(
+                    LaunchConfiguration('thesis_controller_diagnostics'),
+                    value_type=bool,
+                ),
+            },
+        ],
+        condition=IfCondition(PythonExpression([
+            "'",
+            LaunchConfiguration('planner'),
+            "'.lower() == 'linetest'"
+        ])),
+    )
+
     camera_debug_viewer_node = Node(
         package='rqt_image_view',
         executable='rqt_image_view',
@@ -1004,6 +1046,7 @@ def generate_launch_description():
         steering_arg,
         control_bridge_arg,
         ackermann_steering_sign_arg,
+        physics_model_arg,
         use_sim_time_arg,
         sensor_pipeline_arg,
         measure_arg,
@@ -1054,6 +1097,7 @@ def generate_launch_description():
         midpoint_planner_node,
         single_boundary_planner_node,
         corridor_planner_node,
+        linetest_planner_node,
         camera_debug_viewer_node,
         rviz_node,
         steering_gui_node,
@@ -1100,9 +1144,11 @@ def _resolve_track_bundle(sim_car_share: Path, track: str, planner: str) -> dict
         )
     if normalized_planner not in SUPPORTED_PLANNERS:
         raise RuntimeError(
-            "Unsupported launch argument planner='%s'. Supported values: midpoint, single_boundary, corridor, none"
+            "Unsupported launch argument planner='%s'. Supported values: midpoint, single_boundary, corridor, linetest, none"
             % planner
         )
+    if normalized_planner == 'linetest' and normalized_track != 'acceleration':
+        raise RuntimeError("planner='linetest' is only supported with track='acceleration'")
 
     config_dir = sim_car_share / 'config' / normalized_track
     bundle = {
@@ -1114,6 +1160,8 @@ def _resolve_track_bundle(sim_car_share: Path, track: str, planner: str) -> dict
     }
     if normalized_planner in MIGRATED_PLANNERS:
         bundle['planner_config'] = str(config_dir / f'{normalized_planner}_planner.yaml')
+    elif normalized_planner == 'linetest':
+        bundle['planner_config'] = str(sim_car_share / 'config' / 'acceleration' / 'linetest.yaml')
     return bundle
 
 
@@ -1190,7 +1238,7 @@ def _resolve_launch_selection(
         'controller_override': normalized_controller,
     }
 
-    if selection['planner'] in MIGRATED_PLANNERS and not Path(selection['planner_config']).exists():
+    if selection['planner'] in CONFIGURED_PLANNERS and not Path(selection['planner_config']).exists():
         raise RuntimeError(f"Planner config does not exist: {selection['planner_config']}")
     if not Path(selection['spawn_config']).exists():
         raise RuntimeError(f"Spawn config does not exist: {selection['spawn_config']}")
@@ -1211,7 +1259,7 @@ def _configure_track_selection(context, *_args, **_kwargs):
         controller_override=LaunchConfiguration('controller').perform(context),
     )
 
-    if selection['planner'] in MIGRATED_PLANNERS:
+    if selection['planner'] in CONFIGURED_PLANNERS:
         override_payload = {}
         if selection['controller_override']:
             override_payload = {
@@ -1272,6 +1320,7 @@ def _configure_rviz_config(context, *_args, **_kwargs):
             'midpoint': 'midpoint_planner.rviz',
             'single_boundary': 'single_boundary_planner.rviz',
             'corridor': 'corridor_planner.rviz',
+            'linetest': 'planner_debug.rviz',
             'none': 'driving_clean.rviz',
         }
         if rviz_profile in {'planner', 'auto'}:
@@ -1303,9 +1352,11 @@ def _validate_planner_and_controller_args(context, *_args, **_kwargs):
         )
     if planner not in SUPPORTED_PLANNERS:
         raise RuntimeError(
-            "Unsupported launch argument planner='%s'. Supported values: midpoint, single_boundary, corridor, none"
+            "Unsupported launch argument planner='%s'. Supported values: midpoint, single_boundary, corridor, linetest, none"
             % planner
         )
+    if planner == 'linetest' and track != 'acceleration':
+        raise RuntimeError("planner='linetest' is only supported with track='acceleration'")
     if controller and controller not in SUPPORTED_CONTROLLERS:
         raise RuntimeError(
             "Unsupported launch argument controller='%s'. Supported values: stanley, pure_pursuit, none"

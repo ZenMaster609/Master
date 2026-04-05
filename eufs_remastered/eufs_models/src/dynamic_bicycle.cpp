@@ -57,8 +57,9 @@ State DynamicBicycle::_fKinCorrection(const State &x_in, const State &x_state, c
   State x = x_in;
   const double v_x_dot = Fx / (_param.inertia.m);
   const double v = std::hypot(x_state.v_x, x_state.v_y);
-  const double v_blend = 0.5 * (v - 1.5);
-  const double blend = std::fmax(std::fmin(1.0, v_blend), 0.0);
+  const double blend_start = _param.dynamics.kinematic_blend_start_mps;
+  const double blend_end = std::max(blend_start + 1e-6, _param.dynamics.kinematic_blend_end_mps);
+  const double blend = std::fmax(std::fmin((v - blend_start) / (blend_end - blend_start), 1.0), 0.0);
 
   x.v_x = blend * x.v_x + (1.0 - blend) * (x_state.v_x + dt * v_x_dot);
 

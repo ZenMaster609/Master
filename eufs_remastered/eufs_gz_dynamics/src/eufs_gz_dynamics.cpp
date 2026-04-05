@@ -1,12 +1,16 @@
 #include <algorithm>
 #include <cmath>
 #include <deque>
+#include <limits>
 #include <memory>
 #include <mutex>
 #include <string>
 #include <thread>
 #include <utility>
 
+#include <diagnostic_msgs/msg/diagnostic_array.hpp>
+#include <diagnostic_msgs/msg/diagnostic_status.hpp>
+#include <diagnostic_msgs/msg/key_value.hpp>
 #include <geometry_msgs/msg/twist.hpp>
 #include <rclcpp/rclcpp.hpp>
 #include <rclcpp/contexts/default_context.hpp>
@@ -140,6 +144,7 @@ class EufsRaceCarModel final : public gz_sim::System,
     }
 
     vehicle_->updateState(state_, actual_input_, dt);
+    PublishPhysicsDiagnostics(sim_time_sec);
 
     ApplyModelState(_ecm);
     UpdateWheelJoints(_ecm, dt);
@@ -173,6 +178,8 @@ class EufsRaceCarModel final : public gz_sim::System,
             EnqueueCommand(std::move(cmd));
           });
     }
+    physics_diag_pub_ = node_->create_publisher<diagnostic_msgs::msg::DiagnosticArray>(
+        physics_diag_topic_, 10);
 
     rclcpp::ExecutorOptions exec_options;
     exec_options.context = node_->get_node_base_interface()->get_context();
@@ -206,6 +213,12 @@ class EufsRaceCarModel final : public gz_sim::System,
     }
     if (_sdf->HasElement("cmd_vel_topic")) {
       cmd_vel_topic_ = _sdf->Get<std::string>("cmd_vel_topic");
+    }
+    if (_sdf->HasElement("physics_diag_topic")) {
+      physics_diag_topic_ = _sdf->Get<std::string>("physics_diag_topic");
+    }
+    if (_sdf->HasElement("physics_diag_rate_hz")) {
+      physics_diag_rate_hz_ = _sdf->Get<double>("physics_diag_rate_hz");
     }
     if (_sdf->HasElement("initial_x")) {
       initial_x_ = _sdf->Get<double>("initial_x");
@@ -300,6 +313,75 @@ class EufsRaceCarModel final : public gz_sim::System,
     return std::atan2(wheelbase_ * angular, linear);
   }
 
+  void PublishPhysicsDiagnostics(double sim_time_sec) {
+    if (!physics_diag_pub_ || physics_diag_rate_hz_ <= 0.0) {
+      return;
+    }
+    if (last_physics_diag_pub_sec_ >= 0.0 &&
+        (sim_time_sec - last_physics_diag_pub_sec_) < (1.0 / physics_diag_rate_hz_)) {
+      return;
+    }
+    last_physics_diag_pub_sec_ = sim_time_sec;
+
+    const auto &param = vehicle_->getParam();
+    const double state_speed = std::hypot(state_.v_x, state_.v_y);
+    const double sideslip_rad = std::atan2(state_.v_y, std::max(1e-6, state_.v_x));
+    const double slip_front =
+        vehicle_model_ == "DynamicBicycle"
+            ? vehicle_->getSlipAngle(state_, actual_input_, true)
+            : std::numeric_limits<double>::quiet_NaN();
+    const double slip_rear =
+        vehicle_model_ == "DynamicBicycle"
+            ? vehicle_->getSlipAngle(state_, actual_input_, false)
+            : std::numeric_limits<double>::quiet_NaN();
+    const double blend_start = param.dynamics.kinematic_blend_start_mps;
+    const double blend_end = std::max(blend_start + 1e-6, param.dynamics.kinematic_blend_end_mps);
+    const double kinematic_blend =
+        std::clamp((state_speed - blend_start) / (blend_end - blend_start), 0.0, 1.0);
+    const double kinematic_vy_ref =
+        std::tan(actual_input_.delta) * state_.v_x * param.kinematic.l_R / param.kinematic.l;
+    const double kinematic_yaw_rate_ref =
+        std::tan(actual_input_.delta) * state_.v_x / param.kinematic.l;
+
+    diagnostic_msgs::msg::DiagnosticStatus status;
+    status.level = diagnostic_msgs::msg::DiagnosticStatus::OK;
+    status.name = "eufs_gz_dynamics/physics_debug";
+    status.message = vehicle_model_;
+    status.hardware_id = "sim_car";
+
+    const auto push_value = [&status](const std::string &key, double value) {
+      diagnostic_msgs::msg::KeyValue item;
+      item.key = key;
+      item.value = std::to_string(value);
+      status.values.push_back(std::move(item));
+    };
+
+    push_value("state_vx_mps", state_.v_x);
+    push_value("state_vy_mps", state_.v_y);
+    push_value("state_speed_mps", state_speed);
+    push_value("state_yaw_rad", state_.yaw);
+    push_value("state_yaw_rate_rps", state_.r_z);
+    push_value("state_ax_mps2", state_.a_x);
+    push_value("state_ay_mps2", state_.a_y);
+    push_value("desired_speed_mps", desired_input_.vel);
+    push_value("desired_accel_mps2", desired_input_.acc);
+    push_value("actual_accel_mps2", actual_input_.acc);
+    push_value("desired_steering_rad", desired_input_.delta);
+    push_value("actual_steering_rad", actual_input_.delta);
+    push_value("steering_tracking_error_rad", actual_input_.delta - desired_input_.delta);
+    push_value("sideslip_rad", sideslip_rad);
+    push_value("slip_angle_front_rad", slip_front);
+    push_value("slip_angle_rear_rad", slip_rear);
+    push_value("kinematic_blend", kinematic_blend);
+    push_value("kinematic_vy_ref_mps", kinematic_vy_ref);
+    push_value("kinematic_yaw_rate_ref_rps", kinematic_yaw_rate_ref);
+
+    diagnostic_msgs::msg::DiagnosticArray msg;
+    msg.header.stamp = node_->now();
+    msg.status.push_back(std::move(status));
+    physics_diag_pub_->publish(msg);
+  }
+
   void ApplyModelState(gz_sim::EntityComponentManager &_ecm) {
     const double yaw = state_.yaw + offset_.Rot().Yaw();
     const double cos_yaw = std::cos(offset_.Rot().Yaw());
@@ -366,6 +448,7 @@ class EufsRaceCarModel final : public gz_sim::System,
 
   std::shared_ptr<rclcpp::Node> node_;
   rclcpp::Subscription<geometry_msgs::msg::Twist>::SharedPtr sub_cmd_vel_;
+  rclcpp::Publisher<diagnostic_msgs::msg::DiagnosticArray>::SharedPtr physics_diag_pub_;
   std::unique_ptr<rclcpp::executors::SingleThreadedExecutor> executor_;
   std::thread spin_thread_;
 
@@ -386,6 +469,7 @@ class EufsRaceCarModel final : public gz_sim::System,
   double control_delay_sec_ = 0.0;
   double last_cmd_time_sec_ = 0.0;
   double last_update_time_sec_ = 0.0;
+  double last_physics_diag_pub_sec_ = -1.0;
 
   double wheel_radius_ = 0.25;
   double wheelbase_ = 1.58;
@@ -404,6 +488,8 @@ class EufsRaceCarModel final : public gz_sim::System,
   std::string yaml_config_path_;
 
   std::string cmd_vel_topic_ = "/cmd_vel";
+  std::string physics_diag_topic_ = "/sim/physics_diagnostics";
+  double physics_diag_rate_hz_ = 50.0;
   bool use_cmd_vel_ = true;
 
   CommandMode command_mode_ = CommandMode::kVelocity;

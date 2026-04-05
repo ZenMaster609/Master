@@ -25,6 +25,8 @@ aero:
 dynamics:
   update_rate_hz: 50.0
   control_delay_sec: 0.0
+  kinematic_blend_start_mps: 3.5
+  kinematic_blend_end_mps: 7.0
 
 control:
   max_speed: 75.0           # m/s

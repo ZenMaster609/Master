@@ -146,6 +146,27 @@ def test_parse_planner_diag_with_thesis_context_keys():
     assert abs(out['path_curvature_abs_p95_1pm'] - 0.82) < 1e-9
 
 
+def test_parse_planner_diag_with_physics_debug_keys():
+    msg = _Diag([
+        _Status(
+            'eufs_gz_dynamics/physics_debug',
+            [
+                _KV('state_vx_mps', '4.1'),
+                _KV('state_vy_mps', '0.3'),
+                _KV('sideslip_rad', '0.07'),
+                _KV('kinematic_blend', '1.0'),
+                _KV('slip_angle_front_rad', '-0.02'),
+            ],
+        )
+    ])
+    out = parse_planner_diag(msg)
+    assert abs(out['state_vx_mps'] - 4.1) < 1e-9
+    assert abs(out['state_vy_mps'] - 0.3) < 1e-9
+    assert abs(out['sideslip_rad'] - 0.07) < 1e-9
+    assert abs(out['kinematic_blend'] - 1.0) < 1e-9
+    assert abs(out['slip_angle_front_rad'] + 0.02) < 1e-9
+
+
 def test_parse_planner_diag_missing_keys_returns_nan():
     msg = _Diag([_Status('other_status', [])])
     out = parse_planner_diag(msg)

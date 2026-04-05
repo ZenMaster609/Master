@@ -36,6 +36,8 @@ from tf2_ros import Buffer, TransformException, TransformListener
 from vehicle_plotter_msgs.msg import VehicleState as VehicleStateMsg
 from vehicle_plotter_msgs.msg import RunSession as RunSessionMsg
 from std_msgs.msg import Float32, String
+from sim_car.cones.tracking.pose import convert_odom_child_pose_to_base_frame
+from sim_car.sensors.steering_convention import steering_joint_mean_to_deg
 
 from ..core.vehicle_state import VehicleState
 from ..core.run_session import RunSession
@@ -135,6 +137,7 @@ class LoggerNode(Node):
         self.declare_parameter('controller_diagnostics_odom_topic', '/sim/odom')
         self.declare_parameter('controller_diagnostics_path_topic', '/planned_centerline')
         self.declare_parameter('controller_diagnostics_planner_diag_topic', '/midpoint_planner/diagnostics')
+        self.declare_parameter('controller_diagnostics_physics_diag_topic', '/sim/physics_diagnostics')
         self.declare_parameter('controller_diagnostics_filename', 'steering_tracking_diagnostics.csv')
         self.declare_parameter('controller_diagnostics_summary_json', 'steering_tracking_summary.json')
         self.declare_parameter('controller_diagnostics_summary_txt', 'steering_tracking_summary.txt')
@@ -152,6 +155,7 @@ class LoggerNode(Node):
         self.declare_parameter('path_tracking_eval_summary_json', 'path_tracking_eval_summary.json')
         self.declare_parameter('path_tracking_eval_summary_txt', 'path_tracking_eval_summary.txt')
         self.declare_parameter('path_tracking_eval_autostop_laps', 0)
+        self.declare_parameter('control_reference_wheelbase_m', 1.65)
 
         # Get parameters
         self._log_format = self.get_parameter('format').value
@@ -202,6 +206,9 @@ class LoggerNode(Node):
         self._steering_diag_planner_diag_topic = str(
             self.get_parameter('controller_diagnostics_planner_diag_topic').value
         ).strip() or '/midpoint_planner/diagnostics'
+        self._steering_diag_physics_diag_topic = str(
+            self.get_parameter('controller_diagnostics_physics_diag_topic').value
+        ).strip() or '/sim/physics_diagnostics'
         self._steering_diag_filename = str(
             self.get_parameter('controller_diagnostics_filename').value
         ).strip() or 'steering_tracking_diagnostics.csv'
@@ -255,6 +262,10 @@ class LoggerNode(Node):
         self._path_tracking_eval_autostop_laps = max(
             0,
             int(self.get_parameter('path_tracking_eval_autostop_laps').value),
+        )
+        self._control_reference_wheelbase_m = max(
+            0.1,
+            float(self.get_parameter('control_reference_wheelbase_m').value),
         )
 
         # Parse base path
@@ -311,6 +322,8 @@ class LoggerNode(Node):
         self._path_eval_start_heading_xy: Optional[np.ndarray] = None
         self._path_eval_vehicle_xy = np.asarray([float('nan'), float('nan')], dtype=np.float64)
         self._path_eval_vehicle_frame = ''
+        self._path_eval_vehicle_child_frame = ''
+        self._path_eval_vehicle_yaw_rad = float('nan')
         self._path_eval_vehicle_stamp = None
         self._path_eval_planner_xy = np.empty((0, 2), dtype=np.float64)
         self._path_eval_planner_frame = ''
@@ -448,6 +461,12 @@ class LoggerNode(Node):
             self._steering_diag_planner_callback,
             10,
         )
+        self._diag_physics_sub = self.create_subscription(
+            DiagnosticArray,
+            self._steering_diag_physics_diag_topic,
+            self._steering_diag_physics_callback,
+            10,
+        )
         self.get_logger().info(
             'Controller diagnostics subscriptions enabled: '
             f'cmd={self._steering_diag_cmd_topic} '
@@ -455,6 +474,8 @@ class LoggerNode(Node):
             f'joint_states={self._steering_diag_joint_states_topic} '
             f'odom={self._steering_diag_odom_topic} '
             f'path={self._steering_diag_path_topic} '
+            f'planner_diag={self._steering_diag_planner_diag_topic} '
+            f'physics_diag={self._steering_diag_physics_diag_topic} '
             f'oscillation={self._steering_diag_enabled} thesis={self._thesis_diag_enabled}'
         )
 
@@ -531,12 +552,20 @@ class LoggerNode(Node):
             return
         left_rad = float(msg.position[idx_left])
         right_rad = float(msg.position[idx_right])
-        avg_deg = math.degrees(0.5 * (left_rad + right_rad))
+        avg_deg = steering_joint_mean_to_deg(left_rad, right_rad)
         self._diag_actual_steering_deg = avg_deg
 
     def _steering_diag_odom_callback(self, msg: Odometry) -> None:
-        self._diag_vehicle_x_m = float(msg.pose.pose.position.x)
-        self._diag_vehicle_y_m = float(msg.pose.pose.position.y)
+        resolved_control_pose = self._resolve_control_pose_from_odom(
+            msg,
+            base_frame='front_axle',
+        )
+        if resolved_control_pose is None:
+            self._diag_vehicle_x_m = float(msg.pose.pose.position.x)
+            self._diag_vehicle_y_m = float(msg.pose.pose.position.y)
+        else:
+            self._diag_vehicle_x_m = float(resolved_control_pose[0])
+            self._diag_vehicle_y_m = float(resolved_control_pose[1])
         q = msg.pose.pose.orientation
         self._diag_vehicle_yaw_rad = self._yaw_from_quat(float(q.x), float(q.y), float(q.z), float(q.w))
         self._diag_vehicle_yaw_rate_rps = float(msg.twist.twist.angular.z)
@@ -555,7 +584,10 @@ class LoggerNode(Node):
         self._diag_centerline_xy = points
 
     def _steering_diag_planner_callback(self, msg: DiagnosticArray) -> None:
-        self._diag_planner_metrics = parse_planner_diag(msg)
+        self._merge_diag_metrics(parse_planner_diag(msg))
+
+    def _steering_diag_physics_callback(self, msg: DiagnosticArray) -> None:
+        self._merge_diag_metrics(parse_planner_diag(msg))
 
     def _path_tracking_eval_gt_callback(self, msg: ConeArrayWithCovariance) -> None:
         self._path_eval_latest_gt_msg = msg
@@ -566,10 +598,12 @@ class LoggerNode(Node):
         y = float(msg.pose.pose.position.y)
         self._path_eval_vehicle_xy = np.asarray([x, y], dtype=np.float64)
         self._path_eval_vehicle_frame = str(msg.header.frame_id).strip() or 'odom'
+        self._path_eval_vehicle_child_frame = str(msg.child_frame_id).strip()
         self._path_eval_vehicle_stamp = msg.header.stamp
 
         q = msg.pose.pose.orientation
         yaw = self._yaw_from_quat(float(q.x), float(q.y), float(q.z), float(q.w))
+        self._path_eval_vehicle_yaw_rad = yaw
         heading_xy = np.asarray([math.cos(yaw), math.sin(yaw)], dtype=np.float64)
         if self._path_eval_start_xy is None:
             self._path_eval_start_xy = np.asarray([x, y], dtype=np.float64)
@@ -735,6 +769,11 @@ class LoggerNode(Node):
             return 'lidar'
         return ''
 
+    def _merge_diag_metrics(self, values: Dict[str, float]) -> None:
+        for key, value in values.items():
+            if math.isfinite(float(value)):
+                self._diag_planner_metrics[key] = float(value)
+
     def _cone_depth_samples_callback(self, msg: String) -> None:
         payload = str(msg.data)
         lines = [line.strip() for line in payload.splitlines() if line.strip()]
@@ -890,6 +929,24 @@ class LoggerNode(Node):
                 'vehicle_yaw_rad',
                 'vehicle_yaw_rate_rps',
                 'vehicle_speed_mps',
+                'physics_state_vx_mps',
+                'physics_state_vy_mps',
+                'physics_state_speed_mps',
+                'physics_state_yaw_rad',
+                'physics_state_yaw_rate_rps',
+                'physics_state_ax_mps2',
+                'physics_state_ay_mps2',
+                'physics_desired_accel_mps2',
+                'physics_actual_accel_mps2',
+                'physics_desired_steering_rad',
+                'physics_actual_steering_rad',
+                'physics_steering_tracking_error_rad',
+                'physics_sideslip_rad',
+                'physics_slip_angle_front_rad',
+                'physics_slip_angle_rear_rad',
+                'physics_kinematic_blend',
+                'physics_kinematic_vy_ref_mps',
+                'physics_kinematic_yaw_rate_ref_rps',
                 'speed_term_mps',
                 'centerline_available',
                 'centerline_point_count',
@@ -1048,6 +1105,48 @@ class LoggerNode(Node):
             'vehicle_yaw_rad': self._diag_vehicle_yaw_rad,
             'vehicle_yaw_rate_rps': self._diag_vehicle_yaw_rate_rps,
             'vehicle_speed_mps': vehicle_speed,
+            'physics_state_vx_mps': float(self._diag_planner_metrics.get('state_vx_mps', float('nan'))),
+            'physics_state_vy_mps': float(self._diag_planner_metrics.get('state_vy_mps', float('nan'))),
+            'physics_state_speed_mps': float(
+                self._diag_planner_metrics.get('state_speed_mps', float('nan'))
+            ),
+            'physics_state_yaw_rad': float(self._diag_planner_metrics.get('state_yaw_rad', float('nan'))),
+            'physics_state_yaw_rate_rps': float(
+                self._diag_planner_metrics.get('state_yaw_rate_rps', float('nan'))
+            ),
+            'physics_state_ax_mps2': float(self._diag_planner_metrics.get('state_ax_mps2', float('nan'))),
+            'physics_state_ay_mps2': float(self._diag_planner_metrics.get('state_ay_mps2', float('nan'))),
+            'physics_desired_accel_mps2': float(
+                self._diag_planner_metrics.get('desired_accel_mps2', float('nan'))
+            ),
+            'physics_actual_accel_mps2': float(
+                self._diag_planner_metrics.get('actual_accel_mps2', float('nan'))
+            ),
+            'physics_desired_steering_rad': float(
+                self._diag_planner_metrics.get('desired_steering_rad', float('nan'))
+            ),
+            'physics_actual_steering_rad': float(
+                self._diag_planner_metrics.get('actual_steering_rad', float('nan'))
+            ),
+            'physics_steering_tracking_error_rad': float(
+                self._diag_planner_metrics.get('steering_tracking_error_rad', float('nan'))
+            ),
+            'physics_sideslip_rad': float(self._diag_planner_metrics.get('sideslip_rad', float('nan'))),
+            'physics_slip_angle_front_rad': float(
+                self._diag_planner_metrics.get('slip_angle_front_rad', float('nan'))
+            ),
+            'physics_slip_angle_rear_rad': float(
+                self._diag_planner_metrics.get('slip_angle_rear_rad', float('nan'))
+            ),
+            'physics_kinematic_blend': float(
+                self._diag_planner_metrics.get('kinematic_blend', float('nan'))
+            ),
+            'physics_kinematic_vy_ref_mps': float(
+                self._diag_planner_metrics.get('kinematic_vy_ref_mps', float('nan'))
+            ),
+            'physics_kinematic_yaw_rate_ref_rps': float(
+                self._diag_planner_metrics.get('kinematic_yaw_rate_ref_rps', float('nan'))
+            ),
             'speed_term_mps': float(self._diag_planner_metrics.get('speed_term_mps', float('nan'))),
             'centerline_available': centerline_available,
             'centerline_point_count': centerline_count,
@@ -1123,13 +1222,24 @@ class LoggerNode(Node):
             'status': 'waiting_for_inputs',
             'frame_id': '',
             'gt_source_frame': '',
+            'odom_child_frame_id': '',
+            'resolved_control_frame': '',
             'vehicle_x_m': float('nan'),
             'vehicle_y_m': float('nan'),
+            'body_center_x_m': float('nan'),
+            'body_center_y_m': float('nan'),
+            'front_axle_x_m': float('nan'),
+            'front_axle_y_m': float('nan'),
             'planner_reference_x_m': float('nan'),
             'planner_reference_y_m': float('nan'),
             'gt_reference_x_m': float('nan'),
             'gt_reference_y_m': float('nan'),
+            'planner_reference_vs_gt_cte_m': float('nan'),
+            'body_center_vs_planner_cte_m': float('nan'),
+            'front_axle_vs_planner_cte_m': float('nan'),
             'controller_vs_planner_cte_m': float('nan'),
+            'body_center_vs_gt_cte_m': float('nan'),
+            'front_axle_vs_gt_cte_m': float('nan'),
             'controller_vs_gt_cte_m': float('nan'),
             'planner_vs_gt_cte_rms_m': float('nan'),
             'planner_vs_gt_cte_p95_m': float('nan'),
@@ -1143,6 +1253,8 @@ class LoggerNode(Node):
 
         vehicle_xy = np.asarray(self._path_eval_vehicle_xy, dtype=np.float64)
         vehicle_frame = str(self._path_eval_vehicle_frame).strip() or 'odom'
+        odom_child_frame = str(self._path_eval_vehicle_child_frame).strip()
+        row['odom_child_frame_id'] = odom_child_frame
 
         if self._path_eval_gt_midline_source is None or self._path_eval_gt_midline_source.midline_xy.shape[0] < 2:
             row['status'] = 'waiting_for_gt_track'
@@ -1156,18 +1268,34 @@ class LoggerNode(Node):
         target_frame = self._path_eval_planner_frame if planner_available else vehicle_frame
         row['frame_id'] = target_frame
 
-        vehicle_xy_target = self._path_eval_transform_point_to_frame(
+        body_center_xy_target = self._path_eval_transform_point_to_frame(
             vehicle_xy,
             source_frame=vehicle_frame,
             target_frame=target_frame,
             stamp=self._path_eval_vehicle_stamp,
         )
-        if vehicle_xy_target is None:
+        if body_center_xy_target is None:
             row['status'] = 'frame_transform_unavailable'
             self._path_eval_csv_writer.writerow(row)
             return
-        row['vehicle_x_m'] = float(vehicle_xy_target[0])
-        row['vehicle_y_m'] = float(vehicle_xy_target[1])
+        row['vehicle_x_m'] = float(body_center_xy_target[0])
+        row['vehicle_y_m'] = float(body_center_xy_target[1])
+        row['body_center_x_m'] = float(body_center_xy_target[0])
+        row['body_center_y_m'] = float(body_center_xy_target[1])
+
+        front_axle_xy_target = self._path_eval_resolve_control_point_to_frame(
+            point_xy=vehicle_xy,
+            source_frame=vehicle_frame,
+            child_frame=odom_child_frame,
+            yaw_rad=self._path_eval_vehicle_yaw_rad,
+            target_frame=target_frame,
+            stamp=self._path_eval_vehicle_stamp,
+            base_frame='front_axle',
+        )
+        if front_axle_xy_target is not None:
+            row['resolved_control_frame'] = 'front_axle'
+            row['front_axle_x_m'] = float(front_axle_xy_target[0])
+            row['front_axle_y_m'] = float(front_axle_xy_target[1])
 
         gt_midline_target = self._path_eval_transform_path_to_frame(
             gt_source.midline_xy,
@@ -1206,50 +1334,89 @@ class LoggerNode(Node):
         self._path_eval_last_target_frame = target_frame
 
         gt_nearest_idx, gt_nearest_point = eval_nearest_point_on_polyline(
-            float(vehicle_xy_target[0]),
-            float(vehicle_xy_target[1]),
+            float(body_center_xy_target[0]),
+            float(body_center_xy_target[1]),
             gt_midline_target,
         )
         if gt_nearest_idx >= 0:
-            controller_vs_gt_cte, _ = eval_signed_cross_track_error(
-                float(vehicle_xy_target[0]),
-                float(vehicle_xy_target[1]),
+            body_center_vs_gt_cte, _ = eval_signed_cross_track_error(
+                float(body_center_xy_target[0]),
+                float(body_center_xy_target[1]),
                 gt_midline_target,
             )
-            row['controller_vs_gt_cte_m'] = controller_vs_gt_cte
+            row['body_center_vs_gt_cte_m'] = body_center_vs_gt_cte
+            row['controller_vs_gt_cte_m'] = body_center_vs_gt_cte
             row['gt_reference_x_m'] = float(gt_nearest_point[0])
             row['gt_reference_y_m'] = float(gt_nearest_point[1])
+        if front_axle_xy_target is not None:
+            front_axle_vs_gt_cte, _ = eval_signed_cross_track_error(
+                float(front_axle_xy_target[0]),
+                float(front_axle_xy_target[1]),
+                gt_midline_target,
+            )
+            row['front_axle_vs_gt_cte_m'] = front_axle_vs_gt_cte
 
         if planner_available:
-            planner_nearest_idx, planner_nearest_point = eval_nearest_point_on_polyline(
-                float(vehicle_xy_target[0]),
-                float(vehicle_xy_target[1]),
+            body_center_planner_nearest_idx, body_center_planner_nearest_point = eval_nearest_point_on_polyline(
+                float(body_center_xy_target[0]),
+                float(body_center_xy_target[1]),
                 self._path_eval_planner_xy,
             )
-            if planner_nearest_idx >= 0:
-                controller_vs_planner_cte, _ = eval_signed_cross_track_error(
-                    float(vehicle_xy_target[0]),
-                    float(vehicle_xy_target[1]),
+            if body_center_planner_nearest_idx >= 0:
+                body_center_vs_planner_cte, _ = eval_signed_cross_track_error(
+                    float(body_center_xy_target[0]),
+                    float(body_center_xy_target[1]),
                     self._path_eval_planner_xy,
                 )
-                row['controller_vs_planner_cte_m'] = controller_vs_planner_cte
-                row['planner_reference_x_m'] = float(planner_nearest_point[0])
-                row['planner_reference_y_m'] = float(planner_nearest_point[1])
-                self._path_eval_reference_trace_points.append(np.asarray(planner_nearest_point, dtype=np.float64))
+                row['body_center_vs_planner_cte_m'] = body_center_vs_planner_cte
+                row['controller_vs_planner_cte_m'] = body_center_vs_planner_cte
+            planner_reference_point = (
+                np.asarray(body_center_planner_nearest_point, dtype=np.float64)
+                if body_center_planner_nearest_idx >= 0
+                else None
+            )
+            if front_axle_xy_target is not None:
+                front_axle_vs_planner_cte, _ = eval_signed_cross_track_error(
+                    float(front_axle_xy_target[0]),
+                    float(front_axle_xy_target[1]),
+                    self._path_eval_planner_xy,
+                )
+                row['front_axle_vs_planner_cte_m'] = front_axle_vs_planner_cte
+                front_axle_planner_nearest_idx, front_axle_planner_nearest_point = eval_nearest_point_on_polyline(
+                    float(front_axle_xy_target[0]),
+                    float(front_axle_xy_target[1]),
+                    self._path_eval_planner_xy,
+                )
+                if front_axle_planner_nearest_idx >= 0:
+                    planner_reference_point = np.asarray(front_axle_planner_nearest_point, dtype=np.float64)
+
+            if planner_reference_point is not None:
+                row['planner_reference_x_m'] = float(planner_reference_point[0])
+                row['planner_reference_y_m'] = float(planner_reference_point[1])
+                self._path_eval_reference_trace_points.append(np.asarray(planner_reference_point, dtype=np.float64))
+                planner_reference_vs_gt_cte, _ = eval_signed_cross_track_error(
+                    float(planner_reference_point[0]),
+                    float(planner_reference_point[1]),
+                    gt_midline_target,
+                )
+                row['planner_reference_vs_gt_cte_m'] = planner_reference_vs_gt_cte
 
             planner_metrics = compare_planner_path_to_gt(
                 planner_xy=self._path_eval_planner_xy,
                 gt_midline_xy=gt_midline_target,
-                vehicle_xy=vehicle_xy_target,
+                vehicle_xy=body_center_xy_target,
                 resolution_m=0.5,
             )
             row['planner_vs_gt_cte_rms_m'] = float(planner_metrics.get('planner_vs_gt_cte_rms_m', float('nan')))
             row['planner_vs_gt_cte_p95_m'] = float(planner_metrics.get('planner_vs_gt_cte_p95_m', float('nan')))
             row['planner_vs_gt_cte_max_m'] = float(planner_metrics.get('planner_vs_gt_cte_max_m', float('nan')))
             if (
-                math.isfinite(row['controller_vs_planner_cte_m'])
-                and math.isfinite(row['controller_vs_gt_cte_m'])
-                and math.isfinite(row['planner_vs_gt_cte_rms_m'])
+                math.isfinite(row['front_axle_vs_planner_cte_m'])
+                and math.isfinite(row['front_axle_vs_gt_cte_m'])
+                and (
+                    math.isfinite(row['planner_reference_vs_gt_cte_m'])
+                    or math.isfinite(row['planner_vs_gt_cte_rms_m'])
+                )
             ):
                 row['sample_valid_flag'] = 1.0
                 row['status'] = 'ok'
@@ -1414,8 +1581,8 @@ class LoggerNode(Node):
             self._safe_log_info(
                 'Path tracking evaluation summary: '
                 f"planner_vs_gt_rms={summary.get('planner_vs_gt_cte_rms_m', float('nan')):.4f} m "
-                f"ctrl_vs_planner_rms={summary.get('controller_vs_planner_cte_rms_m', float('nan')):.4f} m "
-                f"ctrl_vs_gt_rms={summary.get('controller_vs_gt_cte_rms_m', float('nan')):.4f} m"
+                f"front_axle_vs_planner_rms={summary.get('front_axle_vs_planner_cte_rms_m', float('nan')):.4f} m "
+                f"front_axle_vs_gt_rms={summary.get('front_axle_vs_gt_cte_rms_m', float('nan')):.4f} m"
             )
         except Exception as exc:
             self._safe_log_warn(f'Failed path tracking evaluation analysis: {exc}')
@@ -1650,6 +1817,92 @@ class LoggerNode(Node):
             'Path tracking evaluation is assuming identity transform between '
             f'{source_frame} and {target_frame}; no TF was provided for this world-frame pair.'
         )
+
+    def _resolve_control_pose_from_odom(
+        self,
+        msg: Odometry,
+        *,
+        base_frame: str,
+    ) -> Optional[tuple[float, float, float]]:
+        pose = msg.pose.pose
+        q = pose.orientation
+        return self._convert_odom_child_pose_to_base_frame(
+            child_frame=str(msg.child_frame_id).strip(),
+            base_frame=base_frame,
+            tx=float(pose.position.x),
+            ty=float(pose.position.y),
+            yaw=self._yaw_from_quat(float(q.x), float(q.y), float(q.z), float(q.w)),
+        )
+
+    def _path_eval_resolve_control_point_to_frame(
+        self,
+        *,
+        point_xy: np.ndarray,
+        source_frame: str,
+        child_frame: str,
+        yaw_rad: float,
+        target_frame: str,
+        stamp,
+        base_frame: str,
+    ) -> Optional[np.ndarray]:
+        source_frame = str(source_frame).strip()
+        target_frame = str(target_frame).strip()
+        resolved_pose = self._convert_odom_child_pose_to_base_frame(
+            child_frame=child_frame,
+            base_frame=base_frame,
+            tx=float(point_xy[0]),
+            ty=float(point_xy[1]),
+            yaw=float(yaw_rad),
+        )
+        if resolved_pose is None:
+            return None
+        return self._path_eval_transform_point_to_frame(
+            np.asarray([float(resolved_pose[0]), float(resolved_pose[1])], dtype=np.float64),
+            source_frame=source_frame,
+            target_frame=target_frame,
+            stamp=stamp,
+        )
+
+    def _convert_odom_child_pose_to_base_frame(
+        self,
+        *,
+        child_frame: str,
+        base_frame: str,
+        tx: float,
+        ty: float,
+        yaw: float,
+    ) -> Optional[tuple[float, float, float]]:
+        return convert_odom_child_pose_to_base_frame(
+            child_frame=child_frame,
+            base_frame=base_frame,
+            tx=tx,
+            ty=ty,
+            yaw=yaw,
+            wheelbase_m=self._control_reference_wheelbase_m,
+            is_alias=self._is_control_frame_alias,
+        )
+
+    @staticmethod
+    def _control_frame_aliases(frame: str) -> set[str]:
+        out: set[str] = set()
+
+        def add(token: str) -> None:
+            normalized = str(token).strip().strip('/')
+            if normalized:
+                out.add(normalized)
+
+        add(frame)
+        normalized = str(frame).strip().strip('/').lower()
+        if normalized == 'odom':
+            add('odom')
+        if normalized in {'front_axle', 'base_link', 'base_footprint'}:
+            add('front_axle')
+            add('base_link')
+            add('base_footprint')
+        return out
+
+    def _is_control_frame_alias(self, frame_a: str, frame_b: str) -> bool:
+        return bool(self._control_frame_aliases(frame_a).intersection(self._control_frame_aliases(frame_b)))
 
     @staticmethod
     def _yaw_from_quat(qx: float, qy: float, qz: float, qw: float) -> float:

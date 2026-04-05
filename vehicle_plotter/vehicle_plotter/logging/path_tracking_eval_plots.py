@@ -33,7 +33,7 @@ def _read_rows(csv_path: Path) -> list[dict[str, float | str]]:
             for key, value in raw_row.items():
                 if key is None:
                     continue
-                if key in {"status", "frame_id", "gt_source_frame"}:
+                if key in {"status", "frame_id", "gt_source_frame", "odom_child_frame_id", "resolved_control_frame"}:
                     row[str(key)] = "" if value is None else str(value)
                 else:
                     row[str(key)] = _safe_float(value)
@@ -48,6 +48,27 @@ def _series(rows: list[dict[str, float | str]], key: str) -> np.ndarray:
 def _xy_series(rows: list[dict[str, float | str]], x_key: str, y_key: str) -> np.ndarray:
     x = _series(rows, x_key)
     y = _series(rows, y_key)
+    valid = np.isfinite(x) & np.isfinite(y)
+    if not np.any(valid):
+        return np.empty((0, 2), dtype=np.float64)
+    return np.column_stack((x[valid], y[valid])).astype(np.float64)
+
+
+def _series_prefer(rows: list[dict[str, float | str]], preferred_key: str, fallback_key: str) -> np.ndarray:
+    preferred = _series(rows, preferred_key)
+    fallback = _series(rows, fallback_key)
+    return np.where(np.isfinite(preferred), preferred, fallback)
+
+
+def _xy_series_prefer(
+    rows: list[dict[str, float | str]],
+    preferred_x_key: str,
+    preferred_y_key: str,
+    fallback_x_key: str,
+    fallback_y_key: str,
+) -> np.ndarray:
+    x = _series_prefer(rows, preferred_x_key, fallback_x_key)
+    y = _series_prefer(rows, preferred_y_key, fallback_y_key)
     valid = np.isfinite(x) & np.isfinite(y)
     if not np.any(valid):
         return np.empty((0, 2), dtype=np.float64)
@@ -311,9 +332,19 @@ def compute_path_tracking_overlay_average_distances(
         }
 
     planner_reference_xy = _xy_series(rows, "planner_reference_x_m", "planner_reference_y_m")
-    vehicle_xy = _xy_series(rows, "vehicle_x_m", "vehicle_y_m")
-    controller_vs_planner_cte = np.abs(_series(rows, "controller_vs_planner_cte_m"))
-    controller_vs_gt_cte = np.abs(_series(rows, "controller_vs_gt_cte_m"))
+    vehicle_xy = _xy_series_prefer(
+        rows,
+        "front_axle_x_m",
+        "front_axle_y_m",
+        "vehicle_x_m",
+        "vehicle_y_m",
+    )
+    controller_vs_planner_cte = np.abs(
+        _series_prefer(rows, "front_axle_vs_planner_cte_m", "controller_vs_planner_cte_m")
+    )
+    controller_vs_gt_cte = np.abs(
+        _series_prefer(rows, "front_axle_vs_gt_cte_m", "controller_vs_gt_cte_m")
+    )
     if gt_reference_segments_xy:
         planner_vs_gt_avg_dist_m = _mean_distance_to_polyline_set_m(planner_reference_xy, gt_reference_segments_xy)
         controller_vs_gt_avg_dist_m = _mean_distance_to_polyline_set_m(vehicle_xy, gt_reference_segments_xy)
@@ -367,20 +398,26 @@ def generate_path_tracking_cte_plot(
     import matplotlib.pyplot as plt
 
     t = _relative_time(rows)
-    planner_vs_gt = _series(rows, "planner_vs_gt_cte_rms_m")
-    cte_planner = _series(rows, "controller_vs_planner_cte_m")
-    cte_gt = _series(rows, "controller_vs_gt_cte_m")
+    planner_vs_gt = _series_prefer(rows, "planner_reference_vs_gt_cte_m", "planner_vs_gt_cte_rms_m")
+    cte_planner = _series_prefer(rows, "front_axle_vs_planner_cte_m", "controller_vs_planner_cte_m")
+    cte_gt = _series_prefer(rows, "front_axle_vs_gt_cte_m", "controller_vs_gt_cte_m")
 
     fig, ax = plt.subplots(figsize=(12.0, 5.0))
     valid_planner_vs_gt = np.isfinite(t) & np.isfinite(planner_vs_gt)
     valid_planner = np.isfinite(t) & np.isfinite(cte_planner)
     valid_gt = np.isfinite(t) & np.isfinite(cte_gt)
     if np.any(valid_planner_vs_gt):
-        ax.plot(t[valid_planner_vs_gt], planner_vs_gt[valid_planner_vs_gt], color="#2ca02c", linewidth=1.8, label="Planner vs GT")
+        ax.plot(
+            t[valid_planner_vs_gt],
+            planner_vs_gt[valid_planner_vs_gt],
+            color="#2ca02c",
+            linewidth=1.8,
+            label="Planner ref vs GT",
+        )
     if np.any(valid_planner):
-        ax.plot(t[valid_planner], cte_planner[valid_planner], color="#d62728", linewidth=1.8, label="Controller vs Planner")
+        ax.plot(t[valid_planner], cte_planner[valid_planner], color="#d62728", linewidth=1.8, label="Front axle vs Planner")
     if np.any(valid_gt):
-        ax.plot(t[valid_gt], cte_gt[valid_gt], color="#1f77b4", linewidth=1.8, label="Controller vs GT")
+        ax.plot(t[valid_gt], cte_gt[valid_gt], color="#1f77b4", linewidth=1.8, label="Front axle vs GT")
     ax.axhline(0.0, color="#7f7f7f", linewidth=1.0, alpha=0.6)
     ax.set_title(title)
     ax.set_xlabel("Time (s)")
@@ -423,8 +460,8 @@ def generate_path_tracking_overlay_plot(
     matplotlib.use("Agg")
     import matplotlib.pyplot as plt
 
-    vehicle_x = _series(rows, "vehicle_x_m")
-    vehicle_y = _series(rows, "vehicle_y_m")
+    vehicle_x = _series_prefer(rows, "front_axle_x_m", "vehicle_x_m")
+    vehicle_y = _series_prefer(rows, "front_axle_y_m", "vehicle_y_m")
     valid_vehicle = np.isfinite(vehicle_x) & np.isfinite(vehicle_y)
     avg_distances = compute_path_tracking_overlay_average_distances(
         csv_path,
@@ -472,8 +509,8 @@ def generate_path_tracking_overlay_plot(
     text_lines = [
         f"Avg track width: {_format_distance_cm(track_width_m)}",
         f"Planner avg dist to GT midline: {_format_distance_with_half_width_percent(avg_distances['planner_vs_gt_avg_dist_m'], track_width_m)}",
-        f"Controller avg dist to GT midline: {_format_distance_with_half_width_percent(avg_distances['controller_vs_gt_avg_dist_m'], track_width_m)}",
-        f"Controller avg dist to planner trace: {_format_distance_with_half_width_percent(avg_distances['controller_vs_planner_avg_dist_m'], track_width_m)}",
+        f"Front axle avg dist to GT midline: {_format_distance_with_half_width_percent(avg_distances['controller_vs_gt_avg_dist_m'], track_width_m)}",
+        f"Front axle avg dist to planner trace: {_format_distance_with_half_width_percent(avg_distances['controller_vs_planner_avg_dist_m'], track_width_m)}",
     ]
     if lap_count is not None:
         text_lines.append(f"Completed laps: {int(lap_count)}")

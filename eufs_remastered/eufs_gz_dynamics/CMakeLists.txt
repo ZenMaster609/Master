@@ -6,6 +6,7 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
 find_package(ament_cmake REQUIRED)
 find_package(rclcpp REQUIRED)
+find_package(diagnostic_msgs REQUIRED)
 find_package(geometry_msgs REQUIRED)
 find_package(eufs_models REQUIRED)
 find_package(ignition-gazebo6 REQUIRED)
@@ -22,6 +23,7 @@ target_include_directories(${PROJECT_NAME} PRIVATE
 
 ament_target_dependencies(${PROJECT_NAME}
   rclcpp
+  diagnostic_msgs
   geometry_msgs
   eufs_models
 )

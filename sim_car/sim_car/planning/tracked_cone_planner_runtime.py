@@ -23,6 +23,7 @@ from tf2_ros import Buffer, TransformException, TransformListener
 from vehicle_plotter_msgs.msg import ConeDetectionArray
 from visualization_msgs.msg import Marker, MarkerArray
 
+from sim_car.cones.tracking.pose import convert_odom_child_pose_to_base_frame
 from sim_car.cones.tracking.fusion import normalize_color, resolve_boundary_colors_for_planning
 from sim_car.controllers.factory import create_steering_controller
 from sim_car.controllers.stanley_controller import StanleyConfig
@@ -1063,20 +1064,15 @@ class TrackedConePlannerRuntime(Node):
         ty: float,
         yaw: float,
     ) -> Optional[tuple[float, float, float]]:
-        if self._is_alias(child_frame, self.base_frame):
-            return tx, ty, yaw
-
-        child_is_body_center = self._is_alias(child_frame, 'base_footprint') or self._is_alias(child_frame, 'base_link')
-        base_is_front_axle = self._is_alias(self.base_frame, 'front_axle')
-        if child_is_body_center and base_is_front_axle:
-            front_axle_offset_m = 0.5 * self._configured_wheelbase_m()
-            x_front, y_front = self._base_point_to_odom(front_axle_offset_m, 0.0, tx, ty, yaw)
-            return x_front, y_front, yaw
-
-        if self._is_alias(child_frame, 'front_axle') and child_is_body_center:
-            return tx, ty, yaw
-
-        return None
+        return convert_odom_child_pose_to_base_frame(
+            child_frame=child_frame,
+            base_frame=self.base_frame,
+            tx=tx,
+            ty=ty,
+            yaw=yaw,
+            wheelbase_m=self._configured_wheelbase_m(),
+            is_alias=self._is_alias,
+        )
 
     def _configured_wheelbase_m(self) -> float:
         stanley_wheelbase = float(self.get_parameter('stanley.wheelbase_m').value)

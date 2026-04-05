@@ -13,6 +13,7 @@ from rclpy.node import Node
 from sensor_msgs.msg import JointState
 from std_msgs.msg import Float32
 
+from .steering_convention import steering_joint_mean_to_deg
 from .topic_utils import apply_topic_prefix
 
 
@@ -44,6 +45,7 @@ class SteeringSensorNode(Node):
         self.declare_parameter('publish_rate', 100.0)  # Hz
         self.declare_parameter('bias', 0.0)  # degrees
         self.declare_parameter('dropout_probability', 0.0)  # 0-1
+        self.declare_parameter('steering_sign', -1.0)
         self.declare_parameter('topic_prefix', '/sim/raw')
 
         # Get parameters
@@ -52,6 +54,7 @@ class SteeringSensorNode(Node):
         self.publish_rate = self.get_parameter('publish_rate').value
         self.bias = self.get_parameter('bias').value
         self.dropout_probability = self.get_parameter('dropout_probability').value
+        self.steering_sign = self.get_parameter('steering_sign').value
         self.topic_prefix = str(self.get_parameter('topic_prefix').value)
 
         # Latency buffer (stores (timestamp, value) pairs)
@@ -81,7 +84,8 @@ class SteeringSensorNode(Node):
         self.get_logger().info(
             f'Steering sensor initialized: '
             f'noise={self.noise_stddev}deg, latency={self.latency_ms}ms, '
-            f'rate={self.publish_rate}Hz, bias={self.bias}deg'
+            f'rate={self.publish_rate}Hz, bias={self.bias}deg, '
+            f'steering_sign={self.steering_sign:+.1f}'
         )
 
     def joint_state_callback(self, msg: JointState):
@@ -105,10 +109,12 @@ class SteeringSensorNode(Node):
         # Get current time
         now = self.get_clock().now().nanoseconds / 1e9
 
-        # Compute average steering angle (use average of both front wheels)
-        # Convert from radians to degrees
-        avg_steering_rad = (self.steering_fl + self.steering_fr) / 2.0
-        avg_steering_deg = math.degrees(avg_steering_rad)
+        # Convert joint-sign steering into controller-sign steering.
+        avg_steering_deg = steering_joint_mean_to_deg(
+            self.steering_fl,
+            self.steering_fr,
+            sign=self.steering_sign,
+        )
 
         # Add to latency buffer
         self.latency_buffer.append((now, avg_steering_deg))

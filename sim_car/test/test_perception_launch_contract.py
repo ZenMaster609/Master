@@ -109,14 +109,17 @@ def test_full_launch_always_wires_offline_cone_eval_topics():
 def test_full_launch_supports_only_migrated_planners():
     content = FULL_LAUNCH.read_text(encoding='utf-8')
 
-    assert "Planner to launch: 'midpoint', 'single_boundary', 'corridor', or 'none'" in content
+    assert "Planner to launch: 'midpoint', 'single_boundary', 'corridor', 'linetest', or 'none'" in content
     assert "executable='midpoint_planner_node'" in content
     assert "executable='single_boundary_planner_node'" in content
     assert "executable='corridor_planner_node'" in content
+    assert "executable='linetest_planner_node'" in content
     assert "\"'.lower() == 'midpoint'\"" in content
     assert "\"'.lower() == 'single_boundary'\"" in content
     assert "\"'.lower() == 'corridor'\"" in content
-    assert "SUPPORTED_PLANNERS = {'midpoint', 'single_boundary', 'corridor', 'none'}" in content
+    assert "\"'.lower() == 'linetest'\"" in content
+    assert "CONFIGURED_PLANNERS = MIGRATED_PLANNERS | {'linetest'}" in content
+    assert "SUPPORTED_PLANNERS = CONFIGURED_PLANNERS | {'none'}" in content
 
 
 def test_full_launch_declares_track_arg_and_optional_controller_override():
@@ -134,10 +137,11 @@ def test_full_launch_supports_planner_specific_rviz_profiles():
 
     assert "default_value='planner'" in content
     assert "'planner', 'clean', 'planner_debug', 'midpoint'," in content
-    assert "'single_boundary', or 'corridor'" in content
+    assert "'single_boundary', 'corridor', or 'linetest'" in content
     assert "'midpoint': 'midpoint_planner.rviz'" in content
     assert "'single_boundary': 'single_boundary_planner.rviz'" in content
     assert "'corridor': 'corridor_planner.rviz'" in content
+    assert "'linetest': 'planner_debug.rviz'" in content
 
 
 def test_full_launch_uses_resolved_track_specific_planner_configs():
@@ -198,6 +202,31 @@ def test_track_bundle_loads_track_spawn_defaults():
         assert selection['spawn_x'] == spawn_x
         assert selection['spawn_y'] == spawn_y
         assert selection['spawn_yaw'] == spawn_yaw
+
+
+def test_track_bundle_resolves_acceleration_linetest_config_path():
+    selection = full_sim_launch._resolve_launch_selection(
+        SIM_CAR_SHARE,
+        track='acceleration',
+        planner='linetest',
+    )
+
+    assert selection['planner_config'] == str(SIM_CAR_SHARE / 'config' / 'acceleration' / 'linetest.yaml')
+    assert selection['spawn_config'] == str(SIM_CAR_SHARE / 'config' / 'acceleration' / 'spawn.yaml')
+
+
+def test_track_bundle_rejects_linetest_for_non_acceleration_tracks():
+    for track in ('skidpad', 'smalltrack'):
+        try:
+            full_sim_launch._resolve_launch_selection(
+                SIM_CAR_SHARE,
+                track=track,
+                planner='linetest',
+            )
+        except RuntimeError as exc:
+            assert "planner='linetest' is only supported with track='acceleration'" in str(exc)
+        else:  # pragma: no cover - defensive
+            raise AssertionError(f'linetest unexpectedly allowed for track={track}')
 
 
 def test_track_bundle_overrides_world_spawn_and_controller_when_requested():
@@ -282,3 +311,13 @@ def test_removed_legacy_configs_are_absent():
     assert not (SIM_CAR_SHARE / 'config' / 'single_boundary_planner.yaml').exists()
     assert not (SIM_CAR_SHARE / 'config' / 'corridor_planner.yaml').exists()
     assert not (SIM_CAR_SHARE / 'config' / 'controllers').exists()
+
+
+def test_linetest_config_only_uses_declared_and_read_parameters():
+    declared, read_params = _planner_node_contract('linetest')
+    config_path = SIM_CAR_SHARE / 'config' / 'acceleration' / 'linetest.yaml'
+    config = yaml.safe_load(config_path.read_text(encoding='utf-8')) or {}
+    params = _flatten(config['linetest_planner_node']['ros__parameters'])
+
+    assert set(params).issubset(declared)
+    assert set(params).issubset(read_params)

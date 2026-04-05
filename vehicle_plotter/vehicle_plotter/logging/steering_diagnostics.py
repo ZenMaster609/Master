@@ -50,6 +50,24 @@ PLANNER_DIAG_DEFAULTS: dict[str, float] = {
     "hold_remaining_s": float("nan"),
     "control_path_point_count": float("nan"),
     "zero_cmd_sent_flag": float("nan"),
+    "state_vx_mps": float("nan"),
+    "state_vy_mps": float("nan"),
+    "state_speed_mps": float("nan"),
+    "state_yaw_rad": float("nan"),
+    "state_yaw_rate_rps": float("nan"),
+    "state_ax_mps2": float("nan"),
+    "state_ay_mps2": float("nan"),
+    "desired_accel_mps2": float("nan"),
+    "actual_accel_mps2": float("nan"),
+    "desired_steering_rad": float("nan"),
+    "actual_steering_rad": float("nan"),
+    "steering_tracking_error_rad": float("nan"),
+    "sideslip_rad": float("nan"),
+    "slip_angle_front_rad": float("nan"),
+    "slip_angle_rear_rad": float("nan"),
+    "kinematic_blend": float("nan"),
+    "kinematic_vy_ref_mps": float("nan"),
+    "kinematic_yaw_rate_ref_rps": float("nan"),
 }
 
 
@@ -145,6 +163,7 @@ def parse_planner_diag(diag_msg: Any) -> dict[str, float]:
             name.endswith("/stability")
             or name.endswith("/control_debug")
             or name.endswith("/thesis_context")
+            or name.endswith("/physics_debug")
         ):
             continue
         values = getattr(status, "values", [])

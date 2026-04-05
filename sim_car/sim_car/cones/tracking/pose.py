@@ -9,6 +9,12 @@ PlanarPose = tuple[float, float, float]
 FrameAliasMatcher = Callable[[str, str], bool]
 
 
+def _frame_token(frame: str) -> tuple[str, str]:
+    normalized = str(frame).strip().strip("/").lower()
+    leaf = normalized.split("/")[-1] if normalized else ""
+    return normalized, leaf
+
+
 def odom_point_to_base(x_odom: float, y_odom: float, pose: PlanarPose) -> tuple[float, float]:
     tx, ty, yaw = pose
     dx = x_odom - tx
@@ -46,13 +52,22 @@ def convert_odom_child_pose_to_base_frame(
     wheelbase_m: float,
     is_alias: FrameAliasMatcher,
 ) -> Optional[PlanarPose]:
-    if is_alias(child_frame, base_frame):
+    child_token, child_leaf = _frame_token(child_frame)
+    base_token, base_leaf = _frame_token(base_frame)
+
+    child_is_body_center = child_leaf in {"base_footprint", "base_link"}
+    base_is_body_center = base_leaf in {"base_footprint", "base_link"}
+    child_is_front_axle = child_leaf == "front_axle"
+    base_is_front_axle = base_leaf == "front_axle"
+
+    if child_token and child_token == base_token:
         return tx, ty, yaw
 
-    child_is_body_center = is_alias(child_frame, 'base_footprint') or is_alias(child_frame, 'base_link')
-    base_is_body_center = is_alias(base_frame, 'base_footprint') or is_alias(base_frame, 'base_link')
-    base_is_front_axle = is_alias(base_frame, 'front_axle')
-    child_is_front_axle = is_alias(child_frame, 'front_axle')
+    if child_is_body_center and base_is_body_center:
+        return tx, ty, yaw
+
+    if child_is_front_axle and base_is_front_axle:
+        return tx, ty, yaw
 
     if child_is_body_center and base_is_front_axle:
         x_base, y_base, _z_base = base_point_to_odom(0.5 * wheelbase_m, 0.0, 0.0, (tx, ty, yaw))
@@ -61,5 +76,8 @@ def convert_odom_child_pose_to_base_frame(
     if child_is_front_axle and base_is_body_center:
         x_base, y_base, _z_base = base_point_to_odom(-0.5 * wheelbase_m, 0.0, 0.0, (tx, ty, yaw))
         return x_base, y_base, yaw
+
+    if is_alias(child_frame, base_frame):
+        return tx, ty, yaw
 
     return None

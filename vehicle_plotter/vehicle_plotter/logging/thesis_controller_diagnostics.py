@@ -30,6 +30,14 @@ THESIS_DIAG_FIELDNAMES = [
     'final_steering_cmd_rad',
     'vehicle_speed_mps',
     'vehicle_yaw_rate_rps',
+    'physics_state_vx_mps',
+    'physics_state_vy_mps',
+    'physics_sideslip_rad',
+    'physics_slip_angle_front_rad',
+    'physics_slip_angle_rear_rad',
+    'physics_kinematic_blend',
+    'physics_kinematic_vy_ref_mps',
+    'physics_kinematic_yaw_rate_ref_rps',
     'cte_m',
     'cte_abs_m',
     'heading_error_rad',
@@ -132,6 +140,22 @@ def build_thesis_sample_row(
         'final_steering_cmd_rad': final_cmd,
         'vehicle_speed_mps': speed_mps,
         'vehicle_yaw_rate_rps': vehicle_yaw_rate_rps,
+        'physics_state_vx_mps': float(planner_metrics.get('state_vx_mps', float('nan'))),
+        'physics_state_vy_mps': float(planner_metrics.get('state_vy_mps', float('nan'))),
+        'physics_sideslip_rad': float(planner_metrics.get('sideslip_rad', float('nan'))),
+        'physics_slip_angle_front_rad': float(
+            planner_metrics.get('slip_angle_front_rad', float('nan'))
+        ),
+        'physics_slip_angle_rear_rad': float(
+            planner_metrics.get('slip_angle_rear_rad', float('nan'))
+        ),
+        'physics_kinematic_blend': float(planner_metrics.get('kinematic_blend', float('nan'))),
+        'physics_kinematic_vy_ref_mps': float(
+            planner_metrics.get('kinematic_vy_ref_mps', float('nan'))
+        ),
+        'physics_kinematic_yaw_rate_ref_rps': float(
+            planner_metrics.get('kinematic_yaw_rate_ref_rps', float('nan'))
+        ),
         'cte_m': cte_m,
         'cte_abs_m': abs(cte_m) if math.isfinite(cte_m) else float('nan'),
         'heading_error_rad': heading_err,

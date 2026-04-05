@@ -39,6 +39,7 @@ struct Param {
     kinematic = config["kinematics"].as<Param::Kinematic>();
     tire = config["tire"].as<Param::Tire>();
     aero = config["aero"].as<Param::Aero>();
+    dynamics = config["dynamics"].as<Param::Dynamics>();
     input_ranges = config["input_ranges"].as<Param::InputRanges>();
   }
 
@@ -72,6 +73,13 @@ struct Param {
     double c_drag;
   };
 
+  struct Dynamics {
+    double update_rate_hz;
+    double control_delay_sec;
+    double kinematic_blend_start_mps;
+    double kinematic_blend_end_mps;
+  };
+
   struct InputRanges {
     struct Range {
       double min;
@@ -87,6 +95,7 @@ struct Param {
   Kinematic kinematic;
   Tire tire;
   Aero aero;
+  Dynamics dynamics;
   InputRanges input_ranges;
 };
 
@@ -136,6 +145,19 @@ struct convert<eufs::models::Param::Aero> {
   static bool decode(const Node &node, eufs::models::Param::Aero &cType) {
     cType.c_down = node["C_Down"].as<double>();
     cType.c_drag = node["C_drag"].as<double>();
+    return true;
+  }
+};
+
+template <>
+struct convert<eufs::models::Param::Dynamics> {
+  static bool decode(const Node &node, eufs::models::Param::Dynamics &cType) {
+    cType.update_rate_hz = node["update_rate_hz"].as<double>();
+    cType.control_delay_sec = node["control_delay_sec"].as<double>();
+    cType.kinematic_blend_start_mps =
+        node["kinematic_blend_start_mps"] ? node["kinematic_blend_start_mps"].as<double>() : 1.5;
+    cType.kinematic_blend_end_mps =
+        node["kinematic_blend_end_mps"] ? node["kinematic_blend_end_mps"].as<double>() : 3.5;
     return true;
   }
 };
