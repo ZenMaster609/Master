@@ -16,6 +16,7 @@ from vehicle_plotter.logging.steering_diagnostics import (  # noqa: E402
     heading_error,
     nearest_point_on_polyline,
     parse_planner_diag,
+    parse_planner_diag_text,
     signed_cross_track_error,
 )
 from vehicle_plotter.logging.stanley_debug_plots import generate_stanley_debug_plot  # noqa: E402
@@ -65,6 +66,7 @@ def test_parse_planner_diag_with_keys():
             [
                 _KV('centerline_jump_max_m', '0.7'),
                 _KV('selected_edge_churn_ratio', '0.4'),
+                _KV('selected_chain_churn_ratio', '0.45'),
                 _KV('tracked_cones_frame_delta_p95_m', '0.3'),
                 _KV('planner_state_code', '2'),
                 _KV('operator_reason_code', '5'),
@@ -77,12 +79,39 @@ def test_parse_planner_diag_with_keys():
     out = parse_planner_diag(msg)
     assert abs(out['centerline_jump_max_m'] - 0.7) < 1e-9
     assert abs(out['selected_edge_churn_ratio'] - 0.4) < 1e-9
+    assert abs(out['selected_chain_churn_ratio'] - 0.45) < 1e-9
     assert abs(out['tracked_cones_frame_delta_p95_m'] - 0.3) < 1e-9
     assert abs(out['planner_state_code'] - 2.0) < 1e-9
     assert abs(out['operator_reason_code'] - 5.0) < 1e-9
     assert abs(out['hold_remaining_s'] - 1.2) < 1e-9
     assert abs(out['control_path_point_count'] - 4.0) < 1e-9
     assert abs(out['zero_cmd_sent_flag'] - 1.0) < 1e-9
+
+
+def test_parse_planner_diag_text_extracts_and_clears_string_fields():
+    populated = _Diag([
+        _Status(
+            'midpoint_planner/stability',
+            [
+                _KV('publish_mode', 'live'),
+                _KV('hold_reason', 'reseed'),
+                _KV('candidate_source', 'station'),
+                _KV('midline_update_mode', 'buffer'),
+                _KV('planner_mode', 'corridor'),
+            ],
+        )
+    ])
+    out = parse_planner_diag_text(populated)
+    assert out['publish_mode'] == 'live'
+    assert out['hold_reason'] == 'reseed'
+    assert out['candidate_source'] == 'station'
+    assert out['midline_update_mode'] == 'buffer'
+    assert out['planner_mode'] == 'corridor'
+
+    cleared = _Diag([_Status('midpoint_planner/stability', [])])
+    cleared_out = parse_planner_diag_text(cleared)
+    assert cleared_out['publish_mode'] == ''
+    assert cleared_out['hold_reason'] == ''
 
 
 def test_parse_planner_diag_accepts_midpoint_prefix():
@@ -98,6 +127,7 @@ def test_parse_planner_diag_accepts_midpoint_prefix():
     out = parse_planner_diag(msg)
     assert abs(out['centerline_jump_max_m'] - 0.5) < 1e-9
     assert abs(out['selected_edge_churn_ratio'] - 0.2) < 1e-9
+    assert abs(out['selected_chain_churn_ratio'] - 0.2) < 1e-9
 
 
 def test_parse_planner_diag_with_control_debug_keys():

@@ -18,6 +18,7 @@ from vehicle_plotter.logging.path_tracking_eval import (  # noqa: E402
     build_gt_midline_from_cones,
     build_stitched_reference_trace,
     compare_planner_path_to_gt,
+    nearest_point_on_polyline_with_progress,
     should_assume_identity_transform,
 )
 from vehicle_plotter.logging.path_tracking_eval_plots import (  # noqa: E402
@@ -109,6 +110,16 @@ def test_compare_planner_path_to_gt_reports_expected_offset():
     assert abs(metrics['planner_vs_gt_cte_rms_m'] - 0.4) < 0.05
     assert abs(metrics['planner_vs_gt_cte_p95_m'] - 0.4) < 0.05
     assert abs(metrics['planner_vs_gt_cte_max_m'] - 0.4) < 0.05
+
+
+def test_nearest_point_with_progress_reports_arclength():
+    path = np.asarray([[0.0, 0.0], [2.0, 0.0], [2.0, 2.0]], dtype=np.float64)
+
+    idx, pt, progress_m = nearest_point_on_polyline_with_progress(2.0, 1.0, path)
+
+    assert idx == 1
+    assert np.allclose(pt, [2.0, 1.0])
+    assert abs(progress_m - 3.0) < 1e-9
 
 
 def test_build_stitched_reference_trace_collapses_dense_duplicates():

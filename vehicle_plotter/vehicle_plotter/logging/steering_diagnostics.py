@@ -10,9 +10,39 @@ from typing import Any
 
 import numpy as np
 
+CORRIDOR_ANALYSIS_SAMPLE_PREFIXES = (
+    "corridor_raw_anchor",
+    "corridor_prevalidation_centerline",
+    "corridor_buffer_centerline",
+    "corridor_control_path",
+)
+CORRIDOR_ANALYSIS_SAMPLE_COUNT = 8
+CORRIDOR_ANALYSIS_SAMPLE_SPACING_M = 1.0
+
+
+def corridor_analysis_sample_metric_keys() -> list[str]:
+    keys: list[str] = []
+    for prefix in CORRIDOR_ANALYSIS_SAMPLE_PREFIXES:
+        keys.append(f"{prefix}_point_count")
+        for idx in range(CORRIDOR_ANALYSIS_SAMPLE_COUNT):
+            keys.append(f"{prefix}_p{idx}_x_m")
+            keys.append(f"{prefix}_p{idx}_y_m")
+    return keys
+
+
+PLANNER_DIAG_TEXT_DEFAULTS: dict[str, str] = {
+    "candidate_source": "",
+    "midline_update_mode": "",
+    "publish_mode": "",
+    "hold_reason": "",
+    "operator_reason": "",
+    "planner_mode": "",
+}
+
 PLANNER_DIAG_DEFAULTS: dict[str, float] = {
     "centerline_jump_max_m": float("nan"),
     "selected_edge_churn_ratio": float("nan"),
+    "selected_chain_churn_ratio": float("nan"),
     "tracked_cones_frame_delta_p95_m": float("nan"),
     "heading_error_rad": float("nan"),
     "cross_track_error_m": float("nan"),
@@ -39,6 +69,15 @@ PLANNER_DIAG_DEFAULTS: dict[str, float] = {
     "plan_fallback_flag": float("nan"),
     "centerline_point_count": float("nan"),
     "selected_edge_count": float("nan"),
+    "selected_chain_length": float("nan"),
+    "selected_chain_median_width_m": float("nan"),
+    "expected_width_prior_m": float("nan"),
+    "corridor_sample_count": float("nan"),
+    "corridor_width_min_m": float("nan"),
+    "corridor_width_median_m": float("nan"),
+    "corridor_width_max_m": float("nan"),
+    "left_chain_length": float("nan"),
+    "right_chain_length": float("nan"),
     "path_length_m": float("nan"),
     "path_curvature_abs_p95_1pm": float("nan"),
     "planner_state_code": float("nan"),
@@ -69,6 +108,8 @@ PLANNER_DIAG_DEFAULTS: dict[str, float] = {
     "kinematic_vy_ref_mps": float("nan"),
     "kinematic_yaw_rate_ref_rps": float("nan"),
 }
+for _key in corridor_analysis_sample_metric_keys():
+    PLANNER_DIAG_DEFAULTS[_key] = float("nan")
 
 
 def normalize_angle(angle_rad: float) -> float:
@@ -172,6 +213,30 @@ def parse_planner_diag(diag_msg: Any) -> dict[str, float]:
             value = _safe_float(getattr(item, "value", "nan"))
             if key in defaults:
                 defaults[key] = value
+    if not math.isfinite(defaults["selected_chain_churn_ratio"]):
+        defaults["selected_chain_churn_ratio"] = float(defaults["selected_edge_churn_ratio"])
+    if not math.isfinite(defaults["selected_edge_churn_ratio"]):
+        defaults["selected_edge_churn_ratio"] = float(defaults["selected_chain_churn_ratio"])
+    return defaults
+
+
+def parse_planner_diag_text(diag_msg: Any) -> dict[str, str]:
+    """Extract planner text metrics from DiagnosticArray-like message."""
+    defaults = dict(PLANNER_DIAG_TEXT_DEFAULTS)
+    statuses = getattr(diag_msg, "status", None)
+    if statuses is None:
+        return defaults
+
+    for status in statuses:
+        name = str(getattr(status, "name", ""))
+        if not name.endswith("/stability"):
+            continue
+        values = getattr(status, "values", [])
+        for item in values:
+            key = str(getattr(item, "key", ""))
+            if key not in defaults:
+                continue
+            defaults[key] = str(getattr(item, "value", "")).strip()
     return defaults
 
 
@@ -187,7 +252,18 @@ def analyze_csv(csv_path: Path) -> dict[str, float]:
     heading = np.asarray([_safe_float(r.get("heading_error_rad", "nan")) for r in rows], dtype=np.float64)
     desired = np.asarray([_safe_float(r.get("desired_steering_rad", "nan")) for r in rows], dtype=np.float64)
     actual = np.asarray([_safe_float(r.get("actual_steering_rad", "nan")) for r in rows], dtype=np.float64)
-    churn = np.asarray([_safe_float(r.get("planner_selected_edge_churn_ratio", "nan")) for r in rows], dtype=np.float64)
+    churn = np.asarray(
+        [
+            _safe_float(
+                r.get(
+                    "planner_selected_chain_churn_ratio",
+                    r.get("planner_selected_edge_churn_ratio", "nan"),
+                )
+            )
+            for r in rows
+        ],
+        dtype=np.float64,
+    )
     jump = np.asarray([_safe_float(r.get("planner_centerline_jump_max_m", "nan")) for r in rows], dtype=np.float64)
 
     dt = _median_dt(t)

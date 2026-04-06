@@ -382,6 +382,67 @@ def test_candidate_path_rejects_projected_corridor_jump_against_stored_midline()
     assert reason == "candidate_jump_rejected"
 
 
+def test_candidate_path_accepts_validated_jump_when_near_field_stays_aligned():
+    node = _make_node()
+    node._midline_buffer_path = np.array(
+        [[0.0, 0.0], [1.0, 0.0], [2.0, 0.0], [3.0, 0.0], [4.0, 0.0], [5.0, 0.0]],
+        dtype=np.float64,
+    )
+    node._extract_forward_path_from_pose = lambda path, vehicle_xy, resolution_m: np.array(path, copy=True)
+    node._resample_midline_stations = lambda path: np.array(path, copy=True)
+    candidate = np.array(
+        [[0.0, 0.0], [1.0, 0.0], [2.0, 0.05], [3.0, 0.10], [4.0, 1.30], [5.0, 1.30]],
+        dtype=np.float64,
+    )
+    result = _sample_result()
+
+    ok, reason = node._candidate_path_is_updateable(
+        candidate_centerline=candidate,
+        vehicle_x=0.0,
+        vehicle_y=0.0,
+        vehicle_yaw=0.0,
+        result=result,
+        candidate_source="validated",
+    )
+
+    assert ok is True
+    assert reason == "candidate_jump_near_field_ok"
+
+
+def test_validated_near_field_jump_ok_replaces_buffer_directly():
+    node = _make_node()
+    stored_path = np.array(
+        [[0.0, 0.0], [1.0, 0.0], [2.0, 0.0], [3.0, 0.0], [4.0, 0.0], [5.0, 0.0]],
+        dtype=np.float64,
+    )
+    candidate = np.array(
+        [[0.0, 0.0], [1.0, 0.0], [2.0, 0.05], [3.0, 0.10], [4.0, 1.30], [5.0, 1.30]],
+        dtype=np.float64,
+    )
+    node._midline_buffer_path = np.array(stored_path, copy=True)
+    node._midline_buffer_confidence = 1.0
+    node._midline_buffer_last_update_sec = 10.0
+    node._extract_forward_path_from_pose = lambda path, vehicle_xy, resolution_m: np.array(path, copy=True)
+    node._resample_midline_stations = lambda path: np.array(path, copy=True)
+    result = _sample_result()
+
+    updated = node._update_midline_buffer(
+        candidate_centerline=candidate,
+        candidate_source="validated",
+        candidate_update_ok=True,
+        candidate_update_reason="candidate_jump_near_field_ok",
+        frame_id="odom",
+        vehicle_x=0.0,
+        vehicle_y=0.0,
+        vehicle_yaw=0.0,
+        result=result,
+        now_sec=11.0,
+    )
+
+    assert node._last_midline_update_mode == "direct"
+    assert np.allclose(updated, candidate)
+
+
 def test_select_candidate_centerline_recovers_live_corridor_after_near_field_reject():
     node = _make_node()
     result = _sample_result()
@@ -391,6 +452,7 @@ def test_select_candidate_centerline_recovers_live_corridor_after_near_field_rej
     centerline, source = node._select_candidate_centerline(
         result=result,
         support_chain=result.midpoints_raw,
+        memory_midpoint_chain=result.midpoints_raw,
         frame_id="odom",
         vehicle_x=0.0,
         vehicle_y=0.0,
@@ -413,6 +475,7 @@ def test_select_candidate_centerline_completes_recoverable_corridor_prefix():
     centerline, source = node._select_candidate_centerline(
         result=result,
         support_chain=result.midpoints_raw,
+        memory_midpoint_chain=result.midpoints_raw,
         frame_id="odom",
         vehicle_x=0.0,
         vehicle_y=0.0,

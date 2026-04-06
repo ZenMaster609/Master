@@ -11,6 +11,7 @@ from typing import Any
 import numpy as np
 
 from .steering_diagnostics import (
+    corridor_analysis_sample_metric_keys,
     heading_error,
     nearest_point_on_polyline,
     signed_cross_track_error,
@@ -55,8 +56,22 @@ THESIS_DIAG_FIELDNAMES = [
     'path_curvature_abs_p95_1pm',
     'planner_centerline_jump_max_m',
     'planner_selected_edge_churn_ratio',
+    'planner_selected_chain_churn_ratio',
     'planner_tracked_cones_frame_delta_p95_m',
+    'planner_selected_chain_length',
+    'planner_left_chain_length',
+    'planner_right_chain_length',
+    'planner_corridor_sample_count',
+    'planner_corridor_width_min_m',
+    'planner_corridor_width_median_m',
+    'planner_corridor_width_max_m',
+    'planner_publish_mode',
+    'planner_hold_reason',
+    'planner_candidate_source',
+    'planner_midline_update_mode',
+    'planner_mode',
 ]
+THESIS_DIAG_FIELDNAMES.extend(corridor_analysis_sample_metric_keys())
 
 
 def build_thesis_sample_row(
@@ -74,6 +89,7 @@ def build_thesis_sample_row(
     vehicle_speed_mps: float,
     centerline_xy: np.ndarray,
     planner_metrics: dict[str, float],
+    planner_text_metrics: dict[str, str] | None = None,
 ) -> dict[str, float]:
     actual_rad = math.radians(actual_steering_deg) if math.isfinite(actual_steering_deg) else float('nan')
     cmd_age_sec = now_sec - cmd_recv_sec if math.isfinite(cmd_recv_sec) else float('nan')
@@ -126,7 +142,9 @@ def build_thesis_sample_row(
     if not math.isfinite(centerline_point_count):
         centerline_point_count = float(centerline_count)
 
-    return {
+    text_metrics = planner_text_metrics or {}
+
+    row: dict[str, float | str] = {
         'timestamp_sec': now_sec,
         'cmd_stamp_sec': cmd_stamp_sec,
         'cmd_age_sec': cmd_age_sec,
@@ -185,10 +203,45 @@ def build_thesis_sample_row(
         'planner_selected_edge_churn_ratio': float(
             planner_metrics.get('selected_edge_churn_ratio', float('nan'))
         ),
+        'planner_selected_chain_churn_ratio': float(
+            planner_metrics.get(
+                'selected_chain_churn_ratio',
+                planner_metrics.get('selected_edge_churn_ratio', float('nan')),
+            )
+        ),
         'planner_tracked_cones_frame_delta_p95_m': float(
             planner_metrics.get('tracked_cones_frame_delta_p95_m', float('nan'))
         ),
+        'planner_selected_chain_length': float(
+            planner_metrics.get('selected_chain_length', float('nan'))
+        ),
+        'planner_left_chain_length': float(
+            planner_metrics.get('left_chain_length', float('nan'))
+        ),
+        'planner_right_chain_length': float(
+            planner_metrics.get('right_chain_length', float('nan'))
+        ),
+        'planner_corridor_sample_count': float(
+            planner_metrics.get('corridor_sample_count', float('nan'))
+        ),
+        'planner_corridor_width_min_m': float(
+            planner_metrics.get('corridor_width_min_m', float('nan'))
+        ),
+        'planner_corridor_width_median_m': float(
+            planner_metrics.get('corridor_width_median_m', float('nan'))
+        ),
+        'planner_corridor_width_max_m': float(
+            planner_metrics.get('corridor_width_max_m', float('nan'))
+        ),
+        'planner_publish_mode': str(text_metrics.get('publish_mode', '')).strip(),
+        'planner_hold_reason': str(text_metrics.get('hold_reason', '')).strip(),
+        'planner_candidate_source': str(text_metrics.get('candidate_source', '')).strip(),
+        'planner_midline_update_mode': str(text_metrics.get('midline_update_mode', '')).strip(),
+        'planner_mode': str(text_metrics.get('planner_mode', '')).strip(),
     }
+    for key in corridor_analysis_sample_metric_keys():
+        row[key] = float(planner_metrics.get(key, float('nan')))
+    return row
 
 
 def analyze_thesis_csv(csv_path: Path) -> dict[str, float]:
@@ -204,7 +257,9 @@ def analyze_thesis_csv(csv_path: Path) -> dict[str, float]:
     steering_error = _series(rows, 'steering_error_rad')
     steering_saturated = _series(rows, 'steering_saturated_flag')
     jump = _series(rows, 'planner_centerline_jump_max_m')
-    churn = _series(rows, 'planner_selected_edge_churn_ratio')
+    churn = _series(rows, 'planner_selected_chain_churn_ratio')
+    if not np.any(np.isfinite(churn)):
+        churn = _series(rows, 'planner_selected_edge_churn_ratio')
 
     dt = _median_dt(t)
     lag_samples, lag_sec = _estimate_lag(desired, actual, dt)

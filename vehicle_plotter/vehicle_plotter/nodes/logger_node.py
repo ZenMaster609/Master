@@ -54,6 +54,7 @@ from ..logging.path_tracking_eval import (
     build_stitched_reference_trace,
     compare_planner_path_to_gt,
     nearest_point_on_polyline as eval_nearest_point_on_polyline,
+    nearest_point_on_polyline_with_progress as eval_nearest_point_on_polyline_with_progress,
     path_cumulative_lengths,
     signed_cross_track_error as eval_signed_cross_track_error,
     should_assume_identity_transform,
@@ -68,14 +69,21 @@ from ..logging.path_tracking_eval_plots import (
 )
 from ..logging.steering_diagnostics import (
     PLANNER_DIAG_DEFAULTS,
+    PLANNER_DIAG_TEXT_DEFAULTS,
     analyze_csv,
     heading_error,
     nearest_point_on_polyline,
     parse_planner_diag,
+    parse_planner_diag_text,
     signed_cross_track_error,
     write_summary_files,
 )
 from ..logging.stanley_debug_plots import generate_stanley_debug_plot
+from ..logging.corridor_oscillation_analysis import (
+    generate_corridor_oscillation_plot,
+    analyze_corridor_oscillation,
+    write_corridor_oscillation_summary_files,
+)
 from ..logging.thesis_controller_diagnostics import (
     THESIS_DIAG_FIELDNAMES,
     analyze_thesis_csv,
@@ -303,6 +311,7 @@ class LoggerNode(Node):
         self._diag_vehicle_speed_mps = float('nan')
         self._diag_centerline_xy = np.empty((0, 2), dtype=np.float64)
         self._diag_planner_metrics: Dict[str, float] = dict(PLANNER_DIAG_DEFAULTS)
+        self._diag_planner_text_metrics: Dict[str, str] = dict(PLANNER_DIAG_TEXT_DEFAULTS)
         self._diag_file_handle = None
         self._diag_csv_writer: Optional[csv.DictWriter] = None
         self._thesis_diag_file_handle = None
@@ -585,6 +594,7 @@ class LoggerNode(Node):
 
     def _steering_diag_planner_callback(self, msg: DiagnosticArray) -> None:
         self._merge_diag_metrics(parse_planner_diag(msg))
+        self._merge_diag_text_metrics(parse_planner_diag_text(msg))
 
     def _steering_diag_physics_callback(self, msg: DiagnosticArray) -> None:
         self._merge_diag_metrics(parse_planner_diag(msg))
@@ -773,6 +783,10 @@ class LoggerNode(Node):
         for key, value in values.items():
             if math.isfinite(float(value)):
                 self._diag_planner_metrics[key] = float(value)
+
+    def _merge_diag_text_metrics(self, values: Dict[str, str]) -> None:
+        for key, value in values.items():
+            self._diag_planner_text_metrics[key] = str(value).strip()
 
     def _cone_depth_samples_callback(self, msg: String) -> None:
         payload = str(msg.data)
@@ -967,6 +981,7 @@ class LoggerNode(Node):
                 'nearest_path_point_y_m',
                 'planner_centerline_jump_max_m',
                 'planner_selected_edge_churn_ratio',
+                'planner_selected_chain_churn_ratio',
                 'planner_tracked_cones_frame_delta_p95_m',
                 'planner_state_code',
                 'planner_fresh_publish_flag',
@@ -1045,7 +1060,12 @@ class LoggerNode(Node):
                 heading_geom = heading_error(self._diag_vehicle_yaw_rad, tangent_yaw)
 
         planner_jump = float(self._diag_planner_metrics.get('centerline_jump_max_m', float('nan')))
-        planner_churn = float(self._diag_planner_metrics.get('selected_edge_churn_ratio', float('nan')))
+        planner_churn = float(
+            self._diag_planner_metrics.get(
+                'selected_chain_churn_ratio',
+                self._diag_planner_metrics.get('selected_edge_churn_ratio', float('nan')),
+            )
+        )
         planner_tracked_delta = float(self._diag_planner_metrics.get('tracked_cones_frame_delta_p95_m', float('nan')))
         planner_state_code = float(self._diag_planner_metrics.get('planner_state_code', float('nan')))
         planner_fresh_publish_flag = float(self._diag_planner_metrics.get('fresh_publish_flag', float('nan')))
@@ -1173,6 +1193,7 @@ class LoggerNode(Node):
             'nearest_path_point_y_m': float(nearest_path_point[1]),
             'planner_centerline_jump_max_m': planner_jump,
             'planner_selected_edge_churn_ratio': planner_churn,
+            'planner_selected_chain_churn_ratio': planner_churn,
             'planner_tracked_cones_frame_delta_p95_m': planner_tracked_delta,
             'planner_state_code': planner_state_code,
             'planner_fresh_publish_flag': planner_fresh_publish_flag,
@@ -1201,6 +1222,7 @@ class LoggerNode(Node):
                 vehicle_speed_mps=vehicle_speed,
                 centerline_xy=self._diag_centerline_xy,
                 planner_metrics=self._diag_planner_metrics,
+                planner_text_metrics=self._diag_planner_text_metrics,
             )
             self._thesis_diag_csv_writer.writerow(thesis_row)
         self._diag_flush_counter += 1
@@ -1232,8 +1254,10 @@ class LoggerNode(Node):
             'front_axle_y_m': float('nan'),
             'planner_reference_x_m': float('nan'),
             'planner_reference_y_m': float('nan'),
+            'planner_reference_s_m': float('nan'),
             'gt_reference_x_m': float('nan'),
             'gt_reference_y_m': float('nan'),
+            'gt_reference_s_m': float('nan'),
             'planner_reference_vs_gt_cte_m': float('nan'),
             'body_center_vs_planner_cte_m': float('nan'),
             'front_axle_vs_planner_cte_m': float('nan'),
@@ -1333,7 +1357,7 @@ class LoggerNode(Node):
         )
         self._path_eval_last_target_frame = target_frame
 
-        gt_nearest_idx, gt_nearest_point = eval_nearest_point_on_polyline(
+        gt_nearest_idx, gt_nearest_point, gt_nearest_progress_m = eval_nearest_point_on_polyline_with_progress(
             float(body_center_xy_target[0]),
             float(body_center_xy_target[1]),
             gt_midline_target,
@@ -1348,6 +1372,7 @@ class LoggerNode(Node):
             row['controller_vs_gt_cte_m'] = body_center_vs_gt_cte
             row['gt_reference_x_m'] = float(gt_nearest_point[0])
             row['gt_reference_y_m'] = float(gt_nearest_point[1])
+            row['gt_reference_s_m'] = float(gt_nearest_progress_m)
         if front_axle_xy_target is not None:
             front_axle_vs_gt_cte, _ = eval_signed_cross_track_error(
                 float(front_axle_xy_target[0]),
@@ -1375,6 +1400,13 @@ class LoggerNode(Node):
                 if body_center_planner_nearest_idx >= 0
                 else None
             )
+            planner_reference_progress_m = float('nan')
+            if body_center_planner_nearest_idx >= 0:
+                _idx, _point, planner_reference_progress_m = eval_nearest_point_on_polyline_with_progress(
+                    float(body_center_xy_target[0]),
+                    float(body_center_xy_target[1]),
+                    self._path_eval_planner_xy,
+                )
             if front_axle_xy_target is not None:
                 front_axle_vs_planner_cte, _ = eval_signed_cross_track_error(
                     float(front_axle_xy_target[0]),
@@ -1382,17 +1414,23 @@ class LoggerNode(Node):
                     self._path_eval_planner_xy,
                 )
                 row['front_axle_vs_planner_cte_m'] = front_axle_vs_planner_cte
-                front_axle_planner_nearest_idx, front_axle_planner_nearest_point = eval_nearest_point_on_polyline(
+                (
+                    front_axle_planner_nearest_idx,
+                    front_axle_planner_nearest_point,
+                    front_axle_planner_progress_m,
+                ) = eval_nearest_point_on_polyline_with_progress(
                     float(front_axle_xy_target[0]),
                     float(front_axle_xy_target[1]),
                     self._path_eval_planner_xy,
                 )
                 if front_axle_planner_nearest_idx >= 0:
                     planner_reference_point = np.asarray(front_axle_planner_nearest_point, dtype=np.float64)
+                    planner_reference_progress_m = float(front_axle_planner_progress_m)
 
             if planner_reference_point is not None:
                 row['planner_reference_x_m'] = float(planner_reference_point[0])
                 row['planner_reference_y_m'] = float(planner_reference_point[1])
+                row['planner_reference_s_m'] = float(planner_reference_progress_m)
                 self._path_eval_reference_trace_points.append(np.asarray(planner_reference_point, dtype=np.float64))
                 planner_reference_vs_gt_cte, _ = eval_signed_cross_track_error(
                     float(planner_reference_point[0]),
@@ -1486,6 +1524,7 @@ class LoggerNode(Node):
                 self._save_cone_range_rmse_samples_csv()
                 self._finalize_steering_diag_outputs()
                 self._finalize_path_tracking_eval_outputs()
+                self._finalize_corridor_oscillation_outputs()
 
             # Auto-generate plots if enabled
             if self._auto_plot and self._run_session is not None:
@@ -1651,6 +1690,59 @@ class LoggerNode(Node):
                 self._safe_log_warn('Path tracking overlay plot skipped: GT midline unavailable')
         except Exception as exc:
             self._safe_log_warn(f'Failed path tracking overlay plot generation: {exc}')
+
+    def _finalize_corridor_oscillation_outputs(self) -> None:
+        if self._run_session is None or not self._thesis_diag_enabled:
+            return
+
+        thesis_csv_path = self._run_session.logs_path / self._thesis_diag_filename
+        if not thesis_csv_path.exists():
+            return
+
+        path_tracking_csv_path = None
+        if self._path_tracking_eval_enabled:
+            candidate = self._run_session.logs_path / self._path_tracking_eval_filename
+            if candidate.exists():
+                path_tracking_csv_path = candidate
+
+        try:
+            summary = analyze_corridor_oscillation(thesis_csv_path, path_tracking_csv_path)
+        except Exception as exc:
+            self._safe_log_warn(f'Failed corridor oscillation analysis: {exc}')
+            return
+
+        if summary.get('sample_count', 0.0) <= 0.0:
+            return
+        if summary.get('profile_row_count', 0.0) <= 0.0:
+            self._safe_log_warn('Corridor oscillation analysis skipped: no corridor profile samples found')
+            return
+
+        summary_json = self._run_session.logs_path / 'corridor_oscillation_summary.json'
+        summary_txt = self._run_session.logs_path / 'corridor_oscillation_summary.txt'
+        try:
+            write_corridor_oscillation_summary_files(summary, summary_json, summary_txt)
+            self._safe_log_info(
+                'Corridor oscillation summary: '
+                f"planner_ref_vs_gt_rms={summary.get('planner_reference_vs_gt_cte_rms_m', float('nan')):.4f} m "
+                f"buffer_delta_p95={summary.get('buffer_vs_prevalidation_abs_p95_m', float('nan')):.4f} m "
+                f"anchor_delta_p95={summary.get('control_vs_buffer_abs_p95_m', float('nan')):.4f} m"
+            )
+        except Exception as exc:
+            self._safe_log_warn(f'Failed corridor oscillation summary write: {exc}')
+
+        try:
+            plot_path = self._run_session.plots_path / 'corridor_oscillation_analysis.png'
+            generated_path = generate_corridor_oscillation_plot(
+                thesis_csv_path,
+                path_tracking_csv_path,
+                plot_path,
+            )
+            if generated_path is not None:
+                self._safe_log_info(f'Generated corridor oscillation plot: {generated_path}')
+            else:
+                self._safe_log_warn('Corridor oscillation plot skipped: no thesis diagnostics rows')
+        except Exception as exc:
+            self._safe_log_warn(f'Failed corridor oscillation plot generation: {exc}')
 
     def _save_cone_range_rmse_samples_csv(self) -> None:
         if self._run_session is None:

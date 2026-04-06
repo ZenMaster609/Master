@@ -80,7 +80,9 @@ def _draw_thesis_figure(fig, rows: list[dict[str, float]], title: str) -> None:
     speed = _series(rows, 'vehicle_speed_mps')
     curvature = _series(rows, 'path_curvature_abs_p95_1pm')
     jump = _series(rows, 'planner_centerline_jump_max_m')
-    churn = _series(rows, 'planner_selected_edge_churn_ratio')
+    churn = _series(rows, 'planner_selected_chain_churn_ratio')
+    if not np.any(np.isfinite(churn)):
+        churn = _series(rows, 'planner_selected_edge_churn_ratio')
     hold_flag = _series(rows, 'plan_hold_active_flag')
     fallback_flag = _series(rows, 'plan_fallback_flag')
 

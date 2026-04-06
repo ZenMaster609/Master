@@ -197,12 +197,23 @@ def compute_corridor_centerline(
             filtered_track_width_m=expected_width,
         )
 
+    prior_centerline_local = None
+    if prior is not None and prior.previous_centerline is not None:
+        previous_centerline = np.asarray(prior.previous_centerline, dtype=np.float64)
+        if previous_centerline.shape[0] >= 2 and np.all(np.isfinite(previous_centerline)):
+            prior_centerline_local = _to_vehicle_frame(
+                previous_centerline,
+                vehicle_xy,
+                vehicle_yaw,
+            )
+
     corridor = _build_corridor(
         left_chain=left_chain,
         right_chain=right_chain,
         vehicle_xy=vehicle_xy,
         vehicle_yaw=vehicle_yaw,
         config=config,
+        prior_centerline_local=prior_centerline_local,
     )
     if corridor is None:
         reject_counts["corridor_geometry"] += 1
@@ -301,6 +312,7 @@ def compute_corridor_centerline(
         elif curvature_max > _effective_curvature_limit(
             config=config,
             corridor_sample_count=corridor_sample_count,
+            heading_delta_max_rad=heading_delta_max,
         ):
             reject_counts["curvature"] += 1
             status = "path curvature exceeded limit"
@@ -584,6 +596,7 @@ def _build_corridor(
     vehicle_xy: tuple[float, float],
     vehicle_yaw: float,
     config: CorridorPlannerConfig,
+    prior_centerline_local: Optional[np.ndarray] = None,
 ) -> Optional[dict[str, np.ndarray]]:
     dx = max(0.05, float(config.boundary_resample_dx))
     left_local = _resample_boundary_by_station(left_chain.local_points, dx)
@@ -599,6 +612,7 @@ def _build_corridor(
             left_local=np.asarray(left_local[:station_count], dtype=np.float64),
             right_local=np.asarray(right_local[:station_count], dtype=np.float64),
             config=config,
+            prior_centerline_local=prior_centerline_local,
         )
         if station_candidate is not None:
             corridor_candidates.append(station_candidate)
@@ -609,6 +623,7 @@ def _build_corridor(
             left_local=_resample_to_count(left_chain.local_points, progress_count),
             right_local=_resample_to_count(right_chain.local_points, progress_count),
             config=config,
+            prior_centerline_local=prior_centerline_local,
         )
         if normalized_candidate is not None:
             corridor_candidates.append(normalized_candidate)
@@ -618,11 +633,7 @@ def _build_corridor(
 
     chosen = max(
         corridor_candidates,
-        key=lambda candidate: (
-            int(candidate["anchors_local"].shape[0]),
-            -float(np.std(candidate["widths_m"])) if candidate["widths_m"].size else float("-inf"),
-            -float(np.max(candidate["widths_m"])) if candidate["widths_m"].size else float("-inf"),
-        ),
+        key=lambda candidate: _corridor_candidate_score(candidate, config),
     )
 
     left_local = np.asarray(chosen["left_local"], dtype=np.float64)
@@ -657,6 +668,7 @@ def _build_corridor_candidate(
     left_local: np.ndarray,
     right_local: np.ndarray,
     config: CorridorPlannerConfig,
+    prior_centerline_local: Optional[np.ndarray] = None,
 ) -> Optional[dict[str, np.ndarray]]:
     if left_local.shape[0] < 2 or right_local.shape[0] < 2:
         return None
@@ -680,12 +692,76 @@ def _build_corridor_candidate(
         return None
 
     anchors_local = 0.5 * (left_valid + right_valid)
+    centerline_local = _fit_centerline_from_anchors(anchors_local, config)
+    width_std_m = float(np.std(widths_valid)) if widths_valid.size else float("inf")
+    width_range_m = (
+        float(np.max(widths_valid) - np.min(widths_valid))
+        if widths_valid.size
+        else float("inf")
+    )
+    centerline_curvature_abs_max = _path_curvature_abs_max(
+        _resample_path(
+            centerline_local,
+            resolution_m=float(config.path_resolution_m),
+            max_length_m=float(config.max_path_length_m),
+        )
+    )
+    centerline_heading_delta_max = _path_heading_delta_max(centerline_local)
+    if prior_centerline_local is not None and prior_centerline_local.shape[0] >= 2:
+        prior_alignment = _path_alignment_metrics(
+            current_local=centerline_local,
+            previous_local=prior_centerline_local,
+            horizon_m=min(float(config.jump_check_horizon_m), 4.0),
+        )
+    else:
+        prior_alignment = {
+            "lateral_max_m": float("nan"),
+            "lateral_mean_m": float("nan"),
+            "displacement_max_m": float("nan"),
+            "displacement_mean_m": float("nan"),
+            "heading_delta_rad": float("nan"),
+        }
     return {
         "left_local": left_valid,
         "right_local": right_valid,
         "widths_m": widths_valid,
         "anchors_local": anchors_local,
+        "centerline_local": centerline_local,
+        "width_std_m": width_std_m,
+        "width_range_m": width_range_m,
+        "centerline_curvature_abs_max_1pm": centerline_curvature_abs_max,
+        "centerline_heading_delta_max_rad": centerline_heading_delta_max,
+        "prior_lateral_mean_m": float(prior_alignment["lateral_mean_m"]),
+        "prior_lateral_max_m": float(prior_alignment["lateral_max_m"]),
+        "prior_heading_delta_rad": float(prior_alignment["heading_delta_rad"]),
     }
+
+
+def _corridor_candidate_score(
+    candidate: dict[str, np.ndarray | float],
+    config: CorridorPlannerConfig,
+) -> tuple[float, ...]:
+    del config
+    anchor_count = float(np.asarray(candidate["anchors_local"], dtype=np.float64).shape[0])
+    width_std_m = float(candidate.get("width_std_m", float("inf")))
+    width_range_m = float(candidate.get("width_range_m", float("inf")))
+    curvature_abs_max = float(candidate.get("centerline_curvature_abs_max_1pm", float("inf")))
+    heading_delta_max = float(candidate.get("centerline_heading_delta_max_rad", float("inf")))
+    prior_lateral_mean_m = float(candidate.get("prior_lateral_mean_m", float("nan")))
+    prior_lateral_max_m = float(candidate.get("prior_lateral_max_m", float("nan")))
+    prior_heading_delta_rad = float(candidate.get("prior_heading_delta_rad", float("nan")))
+    has_prior_alignment = 1.0 if math.isfinite(prior_lateral_mean_m) else 0.0
+    return (
+        has_prior_alignment,
+        -prior_lateral_mean_m if has_prior_alignment else 0.0,
+        -prior_lateral_max_m if has_prior_alignment else 0.0,
+        -prior_heading_delta_rad if has_prior_alignment else 0.0,
+        anchor_count,
+        -width_std_m,
+        -width_range_m,
+        -curvature_abs_max,
+        -heading_delta_max,
+    )
 
 
 def _corridor_valid_mask(
@@ -818,12 +894,17 @@ def _effective_curvature_limit(
     *,
     config: CorridorPlannerConfig,
     corridor_sample_count: int,
+    heading_delta_max_rad: float = 0.0,
 ) -> float:
     limit = float(config.max_curvature)
     if limit < 0.2:
         return limit
     if corridor_sample_count >= int(config.min_required_corridor_samples) + 2:
         limit *= 1.75
+    if float(heading_delta_max_rad) >= 0.28:
+        limit *= 1.35
+    elif float(heading_delta_max_rad) >= 0.18:
+        limit *= 1.15
     return limit
 
 
@@ -843,12 +924,20 @@ def _fit_centerline_from_anchors(
 ) -> np.ndarray:
     fitted = np.asarray(anchors_local, dtype=np.float64)
     window = max(1, int(config.path_fit_smoothing_window))
+    anchor_heading_delta_max = _path_heading_delta_max(fitted)
+    curvature_limit = float(config.max_curvature)
+    if anchor_heading_delta_max >= 0.28:
+        window = max(1, window - 2)
+        curvature_limit *= 1.35
+    elif anchor_heading_delta_max >= 0.14:
+        window = max(1, window - 1)
+        curvature_limit *= 1.15
     if fitted.shape[0] <= 2 or window <= 1:
         return fitted
 
     best = np.array(fitted, copy=True)
     best_curvature = float("inf")
-    for _ in range(4):
+    for _ in range(3):
         candidate = _moving_average_points(fitted, window)
         candidate_rs = _resample_path(
             candidate,
@@ -859,7 +948,7 @@ def _fit_centerline_from_anchors(
         if curvature < best_curvature:
             best = candidate
             best_curvature = curvature
-        if curvature <= float(config.max_curvature):
+        if curvature <= curvature_limit:
             return candidate
         fitted = candidate
     return best
@@ -1071,26 +1160,88 @@ def _near_field_delta_metrics(
 
     current_local = _to_vehicle_frame(current, vehicle_xy, vehicle_yaw)
     previous_local = _to_vehicle_frame(previous, vehicle_xy, vehicle_yaw)
-    current_rs = _resample_path(current_local, 0.25, horizon_m)
-    previous_rs = _resample_path(previous_local, 0.25, horizon_m)
-    count = min(current_rs.shape[0], previous_rs.shape[0])
-    if count <= 0:
-        return {
-            "lateral_max_m": 0.0,
-            "lateral_mean_m": 0.0,
-            "displacement_max_m": 0.0,
-            "displacement_mean_m": 0.0,
-        }
+    alignment = _path_alignment_metrics(
+        current_local=current_local,
+        previous_local=previous_local,
+        horizon_m=min(float(horizon_m), 3.0),
+    )
+    return {
+        "lateral_max_m": float(alignment["lateral_max_m"]),
+        "lateral_mean_m": float(alignment["lateral_mean_m"]),
+        "displacement_max_m": float(alignment["displacement_max_m"]),
+        "displacement_mean_m": float(alignment["displacement_mean_m"]),
+    }
 
-    delta = current_rs[:count] - previous_rs[:count]
+
+def _path_alignment_metrics(
+    *,
+    current_local: Optional[np.ndarray],
+    previous_local: Optional[np.ndarray],
+    horizon_m: float,
+) -> dict[str, float]:
+    empty = {
+        "lateral_max_m": 0.0,
+        "lateral_mean_m": 0.0,
+        "displacement_max_m": 0.0,
+        "displacement_mean_m": 0.0,
+        "heading_delta_rad": 0.0,
+    }
+    if current_local is None or previous_local is None:
+        return empty
+    current_prefix = _local_forward_prefix(
+        np.asarray(current_local, dtype=np.float64),
+        horizon_m=float(horizon_m),
+    )
+    previous_prefix = _local_forward_prefix(
+        np.asarray(previous_local, dtype=np.float64),
+        horizon_m=float(horizon_m),
+    )
+    if current_prefix.shape[0] < 2 or previous_prefix.shape[0] < 2:
+        return empty
+
+    count = min(current_prefix.shape[0], previous_prefix.shape[0])
+    if count < 2:
+        return empty
+    delta = current_prefix[:count] - previous_prefix[:count]
     lateral = np.abs(delta[:, 1])
     displacement = np.hypot(delta[:, 0], delta[:, 1])
+    current_heading = _path_start_heading_error(current_prefix[:count])
+    previous_heading = _path_start_heading_error(previous_prefix[:count])
+    heading_delta = abs(
+        float(
+            math.atan2(
+                math.sin(current_heading - previous_heading),
+                math.cos(current_heading - previous_heading),
+            )
+        )
+    )
     return {
         "lateral_max_m": float(np.max(lateral)) if lateral.size else 0.0,
         "lateral_mean_m": float(np.mean(lateral)) if lateral.size else 0.0,
         "displacement_max_m": float(np.max(displacement)) if displacement.size else 0.0,
         "displacement_mean_m": float(np.mean(displacement)) if displacement.size else 0.0,
+        "heading_delta_rad": heading_delta,
     }
+
+
+def _local_forward_prefix(path_local: np.ndarray, *, horizon_m: float) -> np.ndarray:
+    pts = np.asarray(path_local, dtype=np.float64)
+    if pts.shape[0] < 2:
+        return np.empty((0, 2), dtype=np.float64)
+    valid_mask = np.isfinite(pts[:, 0]) & np.isfinite(pts[:, 1]) & (pts[:, 0] >= -0.1)
+    pts = pts[valid_mask]
+    if pts.shape[0] < 2:
+        return np.empty((0, 2), dtype=np.float64)
+    cumulative = _path_cumulative_lengths(pts)
+    total = min(float(cumulative[-1]), max(0.25, float(horizon_m)))
+    if total <= 1e-6:
+        return np.asarray(pts[:1], dtype=np.float64)
+    samples = np.arange(0.0, total + 1e-9, 0.25, dtype=np.float64)
+    if samples.size == 0 or samples[-1] < total:
+        samples = np.concatenate((samples, [total]))
+    x = np.interp(samples, cumulative, pts[:, 0])
+    y = np.interp(samples, cumulative, pts[:, 1])
+    return np.column_stack((x, y)).astype(np.float64)
 
 
 def _path_heading_delta_max(path_local: np.ndarray) -> float:

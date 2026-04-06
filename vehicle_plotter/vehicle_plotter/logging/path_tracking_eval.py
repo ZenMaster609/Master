@@ -28,8 +28,10 @@ PATH_TRACKING_EVAL_FIELDNAMES = [
     "front_axle_y_m",
     "planner_reference_x_m",
     "planner_reference_y_m",
+    "planner_reference_s_m",
     "gt_reference_x_m",
     "gt_reference_y_m",
+    "gt_reference_s_m",
     "planner_reference_vs_gt_cte_m",
     "body_center_vs_planner_cte_m",
     "front_axle_vs_planner_cte_m",
@@ -587,16 +589,27 @@ def build_gt_midline_from_cones(
 
 
 def nearest_point_on_polyline(x: float, y: float, path_xy: np.ndarray) -> tuple[int, np.ndarray]:
+    seg_idx, nearest, _progress_m = nearest_point_on_polyline_with_progress(x, y, path_xy)
+    return seg_idx, nearest
+
+
+def nearest_point_on_polyline_with_progress(
+    x: float,
+    y: float,
+    path_xy: np.ndarray,
+) -> tuple[int, np.ndarray, float]:
     path_xy = _as_xy(path_xy)
     if path_xy.shape[0] == 0:
-        return -1, np.asarray([float("nan"), float("nan")], dtype=np.float64)
+        return -1, np.asarray([float("nan"), float("nan")], dtype=np.float64), float("nan")
     if path_xy.shape[0] == 1:
-        return 0, np.asarray(path_xy[0], dtype=np.float64)
+        return 0, np.asarray(path_xy[0], dtype=np.float64), 0.0
 
     p = np.asarray([float(x), float(y)], dtype=np.float64)
+    cumulative = path_cumulative_lengths(path_xy)
     best_idx = -1
     best_point = np.asarray([float("nan"), float("nan")], dtype=np.float64)
     best_dist_sq = float("inf")
+    best_progress_m = float("nan")
 
     for idx in range(path_xy.shape[0] - 1):
         a = path_xy[idx]
@@ -604,6 +617,7 @@ def nearest_point_on_polyline(x: float, y: float, path_xy: np.ndarray) -> tuple[
         ab = b - a
         denom = float(np.dot(ab, ab))
         if denom <= 1e-12:
+            t = 0.0
             cand = np.asarray(a, dtype=np.float64)
         else:
             t = float(np.clip(np.dot(p - a, ab) / denom, 0.0, 1.0))
@@ -614,8 +628,10 @@ def nearest_point_on_polyline(x: float, y: float, path_xy: np.ndarray) -> tuple[
             best_dist_sq = dist_sq
             best_idx = idx
             best_point = cand
+            seg_len = float(np.hypot(*(b - a)))
+            best_progress_m = float(cumulative[idx] + (t * seg_len))
 
-    return best_idx, best_point
+    return best_idx, best_point, best_progress_m
 
 
 def normalize_angle(angle_rad: float) -> float:
