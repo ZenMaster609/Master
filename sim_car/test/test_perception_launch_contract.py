@@ -244,6 +244,26 @@ def test_track_bundle_loads_track_speed_control_defaults():
         assert selection['speed_control'] == speed_control
 
 
+def test_track_bundle_loads_optional_track_planner_limit_defaults():
+    expected = {
+        'acceleration': {},
+        'smalltrack': {},
+        'skidpad': {
+            'filtering.max_cone_range_m': 14.0,
+            'centerline.max_path_length_m': 14.0,
+            'filtering.planning_horizon_m': 14.0,
+        },
+    }
+
+    for track, planner_limits in expected.items():
+        selection = full_sim_launch._resolve_launch_selection(
+            SIM_CAR_SHARE,
+            track=track,
+            planner='midpoint',
+        )
+        assert selection['planner_limits'] == planner_limits
+
+
 def test_track_bundle_resolves_acceleration_linetest_and_default_controller_config_paths():
     selection = full_sim_launch._resolve_launch_selection(
         SIM_CAR_SHARE,
@@ -375,6 +395,12 @@ def test_track_specific_spawn_configs_define_pose_and_speed_control():
         }
 
 
+def test_skidpad_spawn_config_defines_max_planner_length():
+    config_path = SIM_CAR_SHARE / 'config' / 'skidpad' / 'spawn.yaml'
+    config = _load_yaml(config_path)
+    assert config['planner_limits'] == {'max_planner_length_m': 14.0}
+
+
 def test_speed_control_spawn_configs_only_use_declared_and_read_parameters():
     for track in TRACKS:
         config_path = SIM_CAR_SHARE / 'config' / track / 'spawn.yaml'
@@ -385,6 +411,28 @@ def test_speed_control_spawn_configs_only_use_declared_and_read_parameters():
             declared, read_params = _planner_node_contract(planner)
             assert set(params).issubset(declared)
             assert set(params).issubset(read_params)
+
+
+def test_planner_limit_spawn_configs_only_use_declared_and_read_parameters():
+    config_path = SIM_CAR_SHARE / 'config' / 'skidpad' / 'spawn.yaml'
+    config = _load_yaml(config_path)
+    params = {
+        'filtering.max_cone_range_m': config['planner_limits']['max_planner_length_m'],
+        'centerline.max_path_length_m': config['planner_limits']['max_planner_length_m'],
+        'filtering.planning_horizon_m': config['planner_limits']['max_planner_length_m'],
+    }
+
+    for planner in MIGRATED_PLANNERS:
+        declared, read_params = _planner_node_contract(planner)
+        if planner == 'corridor':
+            expected_keys = set(params)
+        else:
+            expected_keys = {
+                'filtering.max_cone_range_m',
+                'centerline.max_path_length_m',
+            }
+        assert expected_keys.issubset(declared)
+        assert expected_keys.issubset(read_params)
 
 
 def test_smalltrack_spawn_config_keeps_lap_tracking():

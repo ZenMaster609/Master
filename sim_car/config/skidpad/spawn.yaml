@@ -8,3 +8,6 @@ speed_control:
   speed_max_mps: 4.17
   curvature_speed_gain: 4.0
   lowpass_speed_alpha: 0.15
+
+planner_limits:
+  max_planner_length_m: 14.0

@@ -1224,6 +1224,25 @@ def _load_speed_control_defaults(spawn_config_path: str) -> dict[str, float]:
     return resolved
 
 
+def _load_planner_limit_overrides(spawn_config_path: str) -> dict[str, float]:
+    config = _load_yaml_file(spawn_config_path)
+    planner_limits = config.get('planner_limits')
+    if not isinstance(planner_limits, dict):
+        return {}
+
+    max_planner_length = planner_limits.get('max_planner_length_m')
+    if max_planner_length is None:
+        return {}
+
+    max_planner_length_m = float(max_planner_length)
+    return {
+        'filtering.max_cone_range_m': max_planner_length_m,
+        'centerline.max_path_length_m': max_planner_length_m,
+        # Corridor planner also gates forward planning by horizon.
+        'filtering.planning_horizon_m': max_planner_length_m,
+    }
+
+
 def _load_yaml_file(config_path: str) -> dict:
     try:
         with open(config_path, 'r', encoding='utf-8') as config_file:
@@ -1251,6 +1270,7 @@ def _resolve_launch_selection(
     spawn_defaults = _load_spawn_defaults(bundle['spawn_config'])
     lap_tracking_defaults = _load_lap_tracking_defaults(bundle['spawn_config'])
     speed_control_defaults = _load_speed_control_defaults(bundle['spawn_config'])
+    planner_limit_overrides = _load_planner_limit_overrides(bundle['spawn_config'])
 
     selection = {
         'track': bundle['track'],
@@ -1265,6 +1285,7 @@ def _resolve_launch_selection(
         'spawn_yaw': str(spawn_yaw_override).strip() or spawn_defaults['spawn_yaw'],
         'path_tracking_autostop_laps': lap_tracking_defaults['autostop_laps'],
         'speed_control': speed_control_defaults,
+        'planner_limits': planner_limit_overrides,
     }
 
     if selection['planner'] == 'linetest' and not Path(selection['planner_config']).exists():
@@ -1312,6 +1333,11 @@ def _configure_track_selection(context, *_args, **_kwargs):
                 },
             },
         })
+        planner_config_path = _write_parameter_overlay({
+            '/**': {
+                'ros__parameters': selection['planner_limits'],
+            },
+        }) if selection['planner_limits'] else planner_config_path
     else:
         controller_config_path = _write_parameter_overlay({})
         speed_control_config_path = _write_parameter_overlay({})
