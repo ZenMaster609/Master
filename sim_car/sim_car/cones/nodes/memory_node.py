@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Local cone memory tracker with optional global track-belief plotting."""
+"""Local cone memory tracker with optional global track-belief export."""
 
 from __future__ import annotations
 
@@ -102,8 +102,6 @@ class ConeMemoryNode(Node):
 
         self.create_timer(1.0 / max(1.0, self.publish_rate_hz), self._on_timer)
 
-        self._fig = None
-
         self.get_logger().info(
             'cone_memory_node ready '
             f'lidar={self.lidar_cones_topic} camera={self.camera_cones_topic} tracked={self.tracked_cones_topic} '
@@ -163,7 +161,6 @@ class ConeMemoryNode(Node):
         self.declare_parameter('believed_track_viz_show_cones', False)
 
         self.declare_parameter('save_track_plot_on_shutdown', True)
-        self.declare_parameter('track_plot_filename', 'cone_memory_track.png')
         self.declare_parameter('track_plot_data_filename', 'cone_memory_track_data.csv')
 
         self.declare_parameter('lidar_cones_topic', '/sim/lidar/perception/cones_3d')
@@ -248,7 +245,6 @@ class ConeMemoryNode(Node):
         self.believed_track_viz_show_cones = bool(self.get_parameter('believed_track_viz_show_cones').value)
 
         self.save_track_plot_on_shutdown = bool(self.get_parameter('save_track_plot_on_shutdown').value)
-        self.track_plot_filename = str(self.get_parameter('track_plot_filename').value).strip() or 'cone_memory_track.png'
         self.track_plot_data_filename = str(self.get_parameter('track_plot_data_filename').value).strip()
 
         self.lidar_cones_topic = str(self.get_parameter('lidar_cones_topic').value)
@@ -1206,21 +1202,13 @@ class ConeMemoryNode(Node):
             stale_planner_ttl_sec=self.stale_planner_ttl_sec,
         )
 
-    def _save_track_plot_and_data(self) -> None:
+    def _save_track_data(self) -> None:
         if self._last_plot_save_attempted:
             return
         self._last_plot_save_attempted = True
 
         if not self.save_track_plot_on_shutdown:
             return
-
-        plots_dir = self._resolve_plots_dir()
-        if plots_dir is None:
-            self.get_logger().warn('could not resolve plots output directory for cone memory plot')
-            return
-
-        plots_dir.mkdir(parents=True, exist_ok=True)
-        png_path = plots_dir / self.track_plot_filename
 
         base_in_odom, _resolved_odom, _resolved_base = self._lookup_transform_with_alias(
             self.odom_frame,
@@ -1243,28 +1231,6 @@ class ConeMemoryNode(Node):
             heading_x=heading_x,
             heading_y=heading_y,
         )
-
-        try:
-            if self._fig is not None:
-                self._fig.savefig(str(png_path), dpi=180)
-            else:
-                import matplotlib.pyplot as plt
-
-                fig, ax = plt.subplots(figsize=(9, 7))
-                self._render_static_plot(
-                    ax=ax,
-                    tracks=tracks,
-                    veh_x=veh_x,
-                    veh_y=veh_y,
-                    left=left,
-                    right=right,
-                    center=center,
-                )
-                fig.savefig(str(png_path), dpi=180)
-                plt.close(fig)
-            self.get_logger().info(f'saved cone memory track plot: {png_path}')
-        except Exception as exc:  # pylint: disable=broad-except
-            self.get_logger().warn(f'failed to save cone memory track plot: {exc}')
 
         if self.track_plot_data_filename:
             logs_dir = self._resolve_logs_dir()
@@ -1294,76 +1260,6 @@ class ConeMemoryNode(Node):
                 self.get_logger().info(f'saved cone memory track data: {csv_path}')
             except Exception as exc:  # pylint: disable=broad-except
                 self.get_logger().warn(f'failed to save cone memory track data csv: {exc}')
-
-    def _render_static_plot(
-        self,
-        *,
-        ax,
-        tracks: list[ConeTrack],
-        veh_x: float,
-        veh_y: float,
-        left: list[tuple[float, float]],
-        right: list[tuple[float, float]],
-        center: list[tuple[float, float]],
-    ) -> None:
-        blue_x = []
-        blue_y = []
-        yellow_x = []
-        yellow_y = []
-        other_x = []
-        other_y = []
-        for track in tracks:
-            label, color_conf = track.class_label()
-            if float(track.track_confidence) < self.believed_track_viz_min_confidence:
-                continue
-            if float(color_conf) < self.believed_track_viz_min_confidence:
-                continue
-            if label == 'blue':
-                blue_x.append(track.x)
-                blue_y.append(track.y)
-            elif label == 'yellow':
-                yellow_x.append(track.x)
-                yellow_y.append(track.y)
-            else:
-                other_x.append(track.x)
-                other_y.append(track.y)
-
-        if blue_x:
-            ax.scatter(blue_x, blue_y, s=20, c='tab:blue', label='blue cones')
-        if yellow_x:
-            ax.scatter(yellow_x, yellow_y, s=20, c='gold', label='yellow cones')
-        if other_x:
-            ax.scatter(other_x, other_y, s=16, c='gray', label='other cones')
-        if left:
-            ax.plot([p[0] for p in left], [p[1] for p in left], color='tab:blue', linewidth=2.0, label='left boundary')
-        if right:
-            ax.plot([p[0] for p in right], [p[1] for p in right], color='goldenrod', linewidth=2.0, label='right boundary')
-        if center:
-            ax.plot([p[0] for p in center], [p[1] for p in center], color='black', linewidth=2.0, label='centerline')
-        ax.scatter([veh_x], [veh_y], s=80, c='red', marker='x', label='vehicle')
-        ax.set_xlabel('odom x [m]')
-        ax.set_ylabel('odom y [m]')
-        ax.set_aspect('equal', adjustable='box')
-        ax.grid(True, alpha=0.25)
-        ax.legend(loc='best', fontsize=8)
-
-    def _resolve_plots_dir(self) -> Optional[Path]:
-        if self._run_session_run_id:
-            if self._run_session_base_path:
-                base_path = Path(self._run_session_base_path).expanduser()
-            else:
-                base_path = self._default_multidata_root()
-            return base_path / self._run_session_run_id / 'plots'
-
-        root = self._default_multidata_root()
-        if not root.exists():
-            return None
-
-        run_dirs = [p for p in root.iterdir() if p.is_dir()]
-        if not run_dirs:
-            return None
-        latest = max(run_dirs, key=lambda p: p.stat().st_mtime)
-        return latest / 'plots'
 
     def _resolve_logs_dir(self) -> Optional[Path]:
         if self._run_session_run_id:
@@ -1551,7 +1447,7 @@ class ConeMemoryNode(Node):
             self._last_throttled_log_sec[key] = now_sec
 
     def destroy_node(self):
-        self._save_track_plot_and_data()
+        self._save_track_data()
         return super().destroy_node()
 
 
