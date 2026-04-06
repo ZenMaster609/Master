@@ -442,7 +442,6 @@ def test_validated_near_field_jump_ok_replaces_buffer_directly():
     assert node._last_midline_update_mode == "direct"
     assert np.allclose(updated, candidate)
 
-
 def test_select_candidate_centerline_recovers_live_corridor_after_near_field_reject():
     node = _make_node()
     result = _sample_result()
