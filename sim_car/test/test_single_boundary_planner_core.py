@@ -10,6 +10,7 @@ PACKAGE_ROOT = TEST_DIR.parent
 if str(PACKAGE_ROOT) not in sys.path:
     sys.path.insert(0, str(PACKAGE_ROOT))
 
+import sim_car.planning.single_boundary_planner_core as core  # noqa: E402
 from sim_car.cones.tracking.fusion import resolve_boundary_colors_for_planning  # noqa: E402
 from sim_car.planning.single_boundary_planner_core import (  # noqa: E402
     SingleBoundaryPlannerConfig,
@@ -127,3 +128,46 @@ def test_all_orange_track_is_resolved_to_single_boundary_path():
 
     assert result.status == "ok"
     assert result.centerline.shape[0] >= 3
+
+
+def test_near_field_delta_metrics_ignore_far_field_divergence_when_prefix_stays_aligned():
+    previous = np.array(
+        [[0.0, 0.0], [1.0, 0.0], [2.0, 0.0], [3.0, 0.0], [4.0, 0.0], [5.0, 0.0]],
+        dtype=np.float64,
+    )
+    current = np.array(
+        [[0.0, 0.0], [1.0, 0.0], [2.0, 0.05], [3.0, 0.10], [4.0, 1.30], [5.0, 1.30]],
+        dtype=np.float64,
+    )
+
+    near_field = core._near_field_delta_metrics(
+        current=current,
+        previous=previous,
+        vehicle_xy=(0.0, 0.0),
+        vehicle_yaw=0.0,
+        horizon_m=8.0,
+    )
+
+    assert near_field["lateral_max_m"] <= 0.10 + 1e-9
+    assert near_field["lateral_mean_m"] < 0.05
+
+
+def test_near_field_delta_metrics_reject_actual_prefix_shift():
+    previous = np.array(
+        [[0.0, 0.0], [1.0, 0.0], [2.0, 0.0], [3.0, 0.0], [4.0, 0.0]],
+        dtype=np.float64,
+    )
+    current = np.array(
+        [[0.0, 0.75], [1.0, 0.75], [2.0, 0.80], [3.0, 0.90], [4.0, 1.20]],
+        dtype=np.float64,
+    )
+
+    near_field = core._near_field_delta_metrics(
+        current=current,
+        previous=previous,
+        vehicle_xy=(0.0, 0.0),
+        vehicle_yaw=0.0,
+        horizon_m=8.0,
+    )
+
+    assert near_field["lateral_max_m"] >= 0.75 - 1e-9

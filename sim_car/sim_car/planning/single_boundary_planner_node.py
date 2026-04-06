@@ -48,6 +48,10 @@ MSG_TRACK_STATE_TENTATIVE = int(getattr(ConeDetection, "TRACK_STATE_TENTATIVE", 
 MSG_TRACK_STATE_CONFIRMED = int(getattr(ConeDetection, "TRACK_STATE_CONFIRMED", 1))
 MSG_TRACK_STATE_STALE = int(getattr(ConeDetection, "TRACK_STATE_STALE", 2))
 IDENTITY_WORLD_FRAMES = frozenset({"map", "odom"})
+_VALIDATED_JUMP_ACCEPT_HORIZON_M = 3.0
+_VALIDATED_JUMP_ACCEPT_LATERAL_MAX_M = 0.45
+_VALIDATED_JUMP_ACCEPT_LATERAL_MEAN_M = 0.25
+_VALIDATED_JUMP_ACCEPT_HEADING_DELTA_RAD = 0.30
 
 
 @dataclass
@@ -306,6 +310,7 @@ class SingleBoundaryPlannerNode(TrackedConePlannerBase):
         self._midline_buffer_path: Optional[np.ndarray] = None
         self._midline_buffer_confidence: float = 0.0
         self._midline_buffer_last_update_sec: float = -1.0
+        self._last_midline_update_mode: str = "hold"
         self._last_viz_left_boundary: Optional[np.ndarray] = None
         self._last_viz_right_boundary: Optional[np.ndarray] = None
         self._last_viz_raw_offset_path: Optional[np.ndarray] = None
@@ -1090,6 +1095,7 @@ class SingleBoundaryPlannerNode(TrackedConePlannerBase):
             candidate_centerline=raw_centerline,
             candidate_source=candidate_source,
             candidate_update_ok=candidate_update_ok,
+            candidate_update_reason=candidate_update_reason,
             frame_id=target_frame,
             vehicle_x=vehicle_x,
             vehicle_y=vehicle_y,
@@ -1478,6 +1484,7 @@ class SingleBoundaryPlannerNode(TrackedConePlannerBase):
         candidate_centerline: np.ndarray,
         candidate_source: str,
         candidate_update_ok: Optional[bool],
+        candidate_update_reason: str = "ok",
         frame_id: str,
         vehicle_x: float,
         vehicle_y: float,
@@ -1485,11 +1492,13 @@ class SingleBoundaryPlannerNode(TrackedConePlannerBase):
         result: SingleBoundaryPlannerResult,
         now_sec: float,
     ) -> np.ndarray:
+        self._last_midline_update_mode = "hold"
         if not self._is_alias(frame_id, self.odom_frame):
             if candidate_centerline.shape[0] > 0:
                 self._midline_buffer_path = np.array(candidate_centerline, copy=True)
                 self._midline_buffer_last_update_sec = now_sec
                 self._midline_buffer_confidence = 1.0
+                self._last_midline_update_mode = "direct"
             return candidate_centerline
 
         candidate_valid = (
@@ -1523,15 +1532,21 @@ class SingleBoundaryPlannerNode(TrackedConePlannerBase):
             candidate_samples = self._resample_midline_stations(candidate_forward)
             if stored_forward is None or stored_forward.shape[0] < 2:
                 updated = candidate_samples
+                self._last_midline_update_mode = "direct"
             else:
                 stored_samples = self._resample_midline_stations(stored_forward)
-                updated = self._blend_midline_samples(
-                    stored_samples=stored_samples,
-                    candidate_samples=candidate_samples,
-                    vehicle_x=vehicle_x,
-                    vehicle_y=vehicle_y,
-                    vehicle_yaw=vehicle_yaw,
-                )
+                if candidate_source == "validated" and candidate_update_reason == "candidate_jump_near_field_ok":
+                    updated = candidate_samples
+                    self._last_midline_update_mode = "direct"
+                else:
+                    updated = self._blend_midline_samples(
+                        stored_samples=stored_samples,
+                        candidate_samples=candidate_samples,
+                        vehicle_x=vehicle_x,
+                        vehicle_y=vehicle_y,
+                        vehicle_yaw=vehicle_yaw,
+                    )
+                    self._last_midline_update_mode = "blend"
             self._midline_buffer_path = np.array(updated, copy=True)
             self._midline_buffer_last_update_sec = now_sec
             self._midline_buffer_confidence = min(1.0, self._midline_buffer_confidence + 0.25)
@@ -1549,7 +1564,9 @@ class SingleBoundaryPlannerNode(TrackedConePlannerBase):
             self._midline_buffer_path = None
             return np.empty((0, 2), dtype=np.float64)
         if stored_forward is not None and stored_forward.shape[0] >= 2:
+            self._last_midline_update_mode = "hold"
             return self._resample_midline_stations(stored_forward)
+        self._last_midline_update_mode = "hold"
         return np.array(self._midline_buffer_path, copy=True)
 
     def _candidate_path_is_updateable(
@@ -1584,12 +1601,184 @@ class SingleBoundaryPlannerNode(TrackedConePlannerBase):
                 min(self.midline_horizon_m, self.centerline_jump_horizon_m),
             )
             if jump > self.candidate_jump_reject_threshold_m:
+                if self._should_accept_large_candidate_jump(
+                    candidate_centerline=candidate_centerline,
+                    candidate_source=candidate_source,
+                    vehicle_x=vehicle_x,
+                    vehicle_y=vehicle_y,
+                    vehicle_yaw=vehicle_yaw,
+                ):
+                    return True, "candidate_jump_near_field_ok"
                 return False, "candidate_jump_rejected"
         if candidate_source == "single_boundary_raw_offset":
             return True, "single_boundary_raw_offset_soft_accept"
         if result.status != "ok":
             return False, result.reject_reason or result.status
         return True, "ok"
+
+    def _should_accept_large_candidate_jump(
+        self,
+        *,
+        candidate_centerline: np.ndarray,
+        candidate_source: str,
+        vehicle_x: float,
+        vehicle_y: float,
+        vehicle_yaw: float,
+    ) -> bool:
+        if candidate_source != "validated":
+            return False
+        metrics = self._candidate_transition_metrics(
+            candidate_centerline=candidate_centerline,
+            vehicle_x=vehicle_x,
+            vehicle_y=vehicle_y,
+            vehicle_yaw=vehicle_yaw,
+            horizon_m=_VALIDATED_JUMP_ACCEPT_HORIZON_M,
+        )
+        if int(metrics["sample_count"]) < 2:
+            return False
+        return (
+            float(metrics["lateral_max_m"]) <= _VALIDATED_JUMP_ACCEPT_LATERAL_MAX_M
+            and float(metrics["lateral_mean_m"]) <= _VALIDATED_JUMP_ACCEPT_LATERAL_MEAN_M
+            and float(metrics["heading_delta_rad"]) <= _VALIDATED_JUMP_ACCEPT_HEADING_DELTA_RAD
+        )
+
+    def _candidate_transition_metrics(
+        self,
+        *,
+        candidate_centerline: np.ndarray,
+        vehicle_x: float,
+        vehicle_y: float,
+        vehicle_yaw: float,
+        horizon_m: float,
+    ) -> dict[str, float]:
+        empty = {
+            "sample_count": 0.0,
+            "lateral_max_m": float("inf"),
+            "lateral_mean_m": float("inf"),
+            "displacement_max_m": float("inf"),
+            "displacement_mean_m": float("inf"),
+            "heading_delta_rad": float("inf"),
+        }
+        if self._midline_buffer_path is None or self._midline_buffer_path.shape[0] < 2:
+            return empty
+        stored_forward = self._extract_forward_path_from_pose(
+            path=self._midline_buffer_path,
+            vehicle_xy=(vehicle_x, vehicle_y),
+            resolution_m=self.midline_station_spacing_m,
+        )
+        candidate_forward = self._extract_forward_path_from_pose(
+            path=candidate_centerline,
+            vehicle_xy=(vehicle_x, vehicle_y),
+            resolution_m=self.midline_station_spacing_m,
+        )
+        stored_path = (
+            np.asarray(stored_forward, dtype=np.float64)
+            if stored_forward is not None and stored_forward.shape[0] >= 2
+            else np.asarray(self._midline_buffer_path, dtype=np.float64)
+        )
+        candidate_path = (
+            np.asarray(candidate_forward, dtype=np.float64)
+            if candidate_forward is not None and candidate_forward.shape[0] >= 2
+            else np.asarray(candidate_centerline, dtype=np.float64)
+        )
+        if stored_path.shape[0] < 2 or candidate_path.shape[0] < 2:
+            return empty
+
+        stored_samples = self._resample_midline_stations(stored_path)
+        candidate_samples = self._resample_midline_stations(candidate_path)
+        count = min(stored_samples.shape[0], candidate_samples.shape[0])
+        if count < 2:
+            return empty
+
+        sample_limit = max(
+            2,
+            int(
+                math.floor(
+                    max(0.25, float(horizon_m))
+                    / max(0.05, float(self.midline_station_spacing_m))
+                )
+            )
+            + 1,
+        )
+        count = min(count, sample_limit)
+        stored_local = self._centerline_to_vehicle_frame(
+            centerline=stored_samples[:count],
+            frame_id=self.odom_frame,
+            vehicle_x=vehicle_x,
+            vehicle_y=vehicle_y,
+            vehicle_yaw=vehicle_yaw,
+        )
+        candidate_local = self._centerline_to_vehicle_frame(
+            centerline=candidate_samples[:count],
+            frame_id=self.odom_frame,
+            vehicle_x=vehicle_x,
+            vehicle_y=vehicle_y,
+            vehicle_yaw=vehicle_yaw,
+        )
+        stored_local = self._local_forward_prefix_samples(
+            path_local=stored_local,
+            horizon_m=horizon_m,
+        )
+        candidate_local = self._local_forward_prefix_samples(
+            path_local=candidate_local,
+            horizon_m=horizon_m,
+        )
+        count = min(stored_local.shape[0], candidate_local.shape[0])
+        if count < 2:
+            return empty
+
+        stored_local = stored_local[:count]
+        candidate_local = candidate_local[:count]
+        delta = candidate_local - stored_local
+        lateral = np.abs(delta[:, 1])
+        displacement = np.hypot(delta[:, 0], delta[:, 1])
+        candidate_heading = math.atan2(
+            float(candidate_local[1, 1] - candidate_local[0, 1]),
+            float(candidate_local[1, 0] - candidate_local[0, 0]),
+        )
+        stored_heading = math.atan2(
+            float(stored_local[1, 1] - stored_local[0, 1]),
+            float(stored_local[1, 0] - stored_local[0, 0]),
+        )
+        heading_delta = abs(
+            float(
+                math.atan2(
+                    math.sin(candidate_heading - stored_heading),
+                    math.cos(candidate_heading - stored_heading),
+                )
+            )
+        )
+        return {
+            "sample_count": float(count),
+            "lateral_max_m": float(np.max(lateral)) if lateral.size else 0.0,
+            "lateral_mean_m": float(np.mean(lateral)) if lateral.size else 0.0,
+            "displacement_max_m": float(np.max(displacement)) if displacement.size else 0.0,
+            "displacement_mean_m": float(np.mean(displacement)) if displacement.size else 0.0,
+            "heading_delta_rad": heading_delta,
+        }
+
+    def _local_forward_prefix_samples(
+        self,
+        *,
+        path_local: np.ndarray,
+        horizon_m: float,
+    ) -> np.ndarray:
+        pts = np.asarray(path_local, dtype=np.float64)
+        if pts.shape[0] < 2:
+            return np.empty((0, 2), dtype=np.float64)
+        valid_mask = np.isfinite(pts[:, 0]) & np.isfinite(pts[:, 1]) & (pts[:, 0] >= -0.1)
+        pts = pts[valid_mask]
+        if pts.shape[0] < 2:
+            return np.empty((0, 2), dtype=np.float64)
+        cumulative = self._path_cumulative_lengths(pts)
+        total = min(float(cumulative[-1]), max(0.25, float(horizon_m)))
+        if total <= 1e-6:
+            return np.asarray(pts[:1], dtype=np.float64)
+        step = max(0.05, float(self.midline_station_spacing_m))
+        samples = np.arange(0.0, total + 1e-9, step, dtype=np.float64)
+        if samples.size == 0 or samples[-1] < total:
+            samples = np.concatenate((samples, [total]))
+        return self._sample_path_at_lengths(pts, cumulative, samples)
 
     def _select_candidate_centerline(
         self,

@@ -59,6 +59,7 @@ def _make_node() -> SingleBoundaryPlannerNode:
     node._hold_mode_active = False
     node._hold_clean_frame_count = 0
     node._active_planner_mode = "single_boundary"
+    node._last_midline_update_mode = "hold"
     node.show_raw_cones = False
     node.show_boundary_chains = False
     node.show_pair_lines = False
@@ -70,6 +71,29 @@ def _make_node() -> SingleBoundaryPlannerNode:
     node._last_viz_left_boundary = None
     node._last_viz_right_boundary = None
     node._last_viz_raw_offset_path = None
+    node._midline_buffer_path = None
+    node._midline_buffer_confidence = 0.0
+    node._midline_buffer_last_update_sec = -1.0
+    node.midline_hold_last_valid_duration_s = 1.25
+    node.midline_min_buffer_confidence = 0.1
+    node.midline_station_spacing_m = 0.5
+    node.midline_horizon_m = 20.0
+    node.midline_near_distance_m = 4.0
+    node.midline_mid_distance_m = 12.0
+    node.midline_control_handoff_distance_m = 1.5
+    node.midline_near_alpha = 0.06
+    node.midline_mid_alpha = 0.18
+    node.midline_far_alpha = 0.35
+    node.midline_near_max_shift_m = 0.10
+    node.midline_mid_max_shift_m = 0.20
+    node.midline_far_max_shift_m = 0.40
+    node.centerline_jump_horizon_m = 8.0
+    node.candidate_jump_reject_threshold_m = 1.0
+    node.candidate_min_points = 2
+    node.candidate_min_extent_m = 1.0
+    node.odom_frame = "odom"
+    node.base_frame = "front_axle"
+    node._is_alias = lambda frame_a, frame_b: frame_a == frame_b
     node.get_clock = lambda: _FakeClock(TimeMsg(sec=1, nanosec=0))
     return node
 
@@ -157,3 +181,105 @@ def test_build_markers_show_remembered_cones_instead_of_filtered_subset():
         _marker_xy(by_ns["remembered_cones"]),
         np.array([[1.0, 1.0], [2.0, -2.0]], dtype=np.float64),
     )
+
+
+def test_candidate_path_accepts_validated_jump_when_near_field_stays_aligned():
+    node = _make_node()
+    node._midline_buffer_path = np.array(
+        [[0.0, 0.0], [1.0, 0.0], [2.0, 0.0], [3.0, 0.0], [4.0, 0.0], [5.0, 0.0]],
+        dtype=np.float64,
+    )
+    node._extract_forward_path_from_pose = lambda path, vehicle_xy, resolution_m: np.array(path, copy=True)
+    node._resample_midline_stations = lambda path: np.array(path, copy=True)
+    candidate = np.array(
+        [[0.0, 0.0], [1.0, 0.0], [2.0, 0.05], [3.0, 0.10], [4.0, 1.30], [5.0, 1.30]],
+        dtype=np.float64,
+    )
+    result = _sample_result()
+
+    ok, reason = node._candidate_path_is_updateable(
+        candidate_centerline=candidate,
+        vehicle_x=0.0,
+        vehicle_y=0.0,
+        vehicle_yaw=0.0,
+        result=result,
+        candidate_source="validated",
+    )
+
+    assert ok is True
+    assert reason == "candidate_jump_near_field_ok"
+
+
+def test_candidate_path_rejects_validated_jump_when_near_field_is_shifted():
+    node = _make_node()
+    node._midline_buffer_path = np.array([[0.0, 0.0], [2.0, 0.0], [4.0, 0.0]], dtype=np.float64)
+    node._extract_forward_path_from_pose = lambda path, vehicle_xy, resolution_m: np.array(path, copy=True)
+    node._resample_midline_stations = lambda path: np.array(path, copy=True)
+    candidate = np.array([[0.0, 1.2], [2.0, 1.2], [4.0, 1.2]], dtype=np.float64)
+    result = _sample_result()
+
+    ok, reason = node._candidate_path_is_updateable(
+        candidate_centerline=candidate,
+        vehicle_x=0.0,
+        vehicle_y=0.0,
+        vehicle_yaw=0.0,
+        result=result,
+        candidate_source="validated",
+    )
+
+    assert ok is False
+    assert reason == "candidate_jump_rejected"
+
+
+def test_validated_near_field_jump_ok_replaces_buffer_directly():
+    node = _make_node()
+    stored_path = np.array(
+        [[0.0, 0.0], [1.0, 0.0], [2.0, 0.0], [3.0, 0.0], [4.0, 0.0], [5.0, 0.0]],
+        dtype=np.float64,
+    )
+    candidate = np.array(
+        [[0.0, 0.0], [1.0, 0.0], [2.0, 0.05], [3.0, 0.10], [4.0, 1.30], [5.0, 1.30]],
+        dtype=np.float64,
+    )
+    node._midline_buffer_path = np.array(stored_path, copy=True)
+    node._midline_buffer_confidence = 1.0
+    node._midline_buffer_last_update_sec = 10.0
+    node._extract_forward_path_from_pose = lambda path, vehicle_xy, resolution_m: np.array(path, copy=True)
+    node._resample_midline_stations = lambda path: np.array(path, copy=True)
+    result = _sample_result()
+
+    updated = node._update_midline_buffer(
+        candidate_centerline=candidate,
+        candidate_source="validated",
+        candidate_update_ok=True,
+        candidate_update_reason="candidate_jump_near_field_ok",
+        frame_id="odom",
+        vehicle_x=0.0,
+        vehicle_y=0.0,
+        vehicle_yaw=0.0,
+        result=result,
+        now_sec=11.0,
+    )
+
+    assert node._last_midline_update_mode == "direct"
+    assert np.allclose(updated, candidate)
+
+
+def test_single_boundary_raw_offset_soft_accept_still_works():
+    node = _make_node()
+    result = _sample_result()
+    result.status = "near-field continuity rejected fresh path"
+    result.reject_reason = result.status
+    candidate = np.array([[0.0, 0.0], [1.5, 0.1], [3.0, 0.2]], dtype=np.float64)
+
+    ok, reason = node._candidate_path_is_updateable(
+        candidate_centerline=candidate,
+        vehicle_x=0.0,
+        vehicle_y=0.0,
+        vehicle_yaw=0.0,
+        result=result,
+        candidate_source="single_boundary_raw_offset",
+    )
+
+    assert ok is True
+    assert reason == "single_boundary_raw_offset_soft_accept"

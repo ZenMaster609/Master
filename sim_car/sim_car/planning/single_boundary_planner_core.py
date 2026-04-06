@@ -983,26 +983,83 @@ def _near_field_delta_metrics(
 
     current_local = _to_vehicle_frame(current, vehicle_xy, vehicle_yaw)
     previous_local = _to_vehicle_frame(previous, vehicle_xy, vehicle_yaw)
-    current_rs = _resample_path(current_local, 0.25, horizon_m)
-    previous_rs = _resample_path(previous_local, 0.25, horizon_m)
-    count = min(current_rs.shape[0], previous_rs.shape[0])
-    if count <= 0:
-        return {
-            "lateral_max_m": 0.0,
-            "lateral_mean_m": 0.0,
-            "displacement_max_m": 0.0,
-            "displacement_mean_m": 0.0,
-        }
+    alignment = _path_alignment_metrics(
+        current_local=current_local,
+        previous_local=previous_local,
+        horizon_m=min(float(horizon_m), 3.0),
+    )
+    return {
+        "lateral_max_m": float(alignment["lateral_max_m"]),
+        "lateral_mean_m": float(alignment["lateral_mean_m"]),
+        "displacement_max_m": float(alignment["displacement_max_m"]),
+        "displacement_mean_m": float(alignment["displacement_mean_m"]),
+    }
 
-    delta = current_rs[:count] - previous_rs[:count]
+
+def _path_alignment_metrics(
+    *,
+    current_local: Optional[np.ndarray],
+    previous_local: Optional[np.ndarray],
+    horizon_m: float,
+) -> dict[str, float]:
+    empty = {
+        "lateral_max_m": 0.0,
+        "lateral_mean_m": 0.0,
+        "displacement_max_m": 0.0,
+        "displacement_mean_m": 0.0,
+        "heading_delta_rad": 0.0,
+    }
+    if current_local is None or previous_local is None:
+        return empty
+    current_prefix = _local_forward_prefix(
+        np.asarray(current_local, dtype=np.float64),
+        horizon_m=float(horizon_m),
+    )
+    previous_prefix = _local_forward_prefix(
+        np.asarray(previous_local, dtype=np.float64),
+        horizon_m=float(horizon_m),
+    )
+    if current_prefix.shape[0] < 2 or previous_prefix.shape[0] < 2:
+        return empty
+
+    count = min(current_prefix.shape[0], previous_prefix.shape[0])
+    if count < 2:
+        return empty
+    delta = current_prefix[:count] - previous_prefix[:count]
     lateral = np.abs(delta[:, 1])
     displacement = np.hypot(delta[:, 0], delta[:, 1])
+    current_heading = _path_start_heading_error(current_prefix[:count])
+    previous_heading = _path_start_heading_error(previous_prefix[:count])
+    heading_delta = abs(
+        float(
+            math.atan2(
+                math.sin(current_heading - previous_heading),
+                math.cos(current_heading - previous_heading),
+            )
+        )
+    )
     return {
         "lateral_max_m": float(np.max(lateral)) if lateral.size else 0.0,
         "lateral_mean_m": float(np.mean(lateral)) if lateral.size else 0.0,
         "displacement_max_m": float(np.max(displacement)) if displacement.size else 0.0,
         "displacement_mean_m": float(np.mean(displacement)) if displacement.size else 0.0,
+        "heading_delta_rad": heading_delta,
     }
+
+
+def _local_forward_prefix(path_local: np.ndarray, *, horizon_m: float) -> np.ndarray:
+    pts = np.asarray(path_local, dtype=np.float64)
+    if pts.shape[0] < 2:
+        return np.empty((0, 2), dtype=np.float64)
+    valid_mask = np.isfinite(pts[:, 0]) & np.isfinite(pts[:, 1]) & (pts[:, 0] >= -0.1)
+    pts = pts[valid_mask]
+    if pts.shape[0] < 2:
+        return np.empty((0, 2), dtype=np.float64)
+    cumulative = _path_cumulative_lengths(pts)
+    total = min(float(cumulative[-1]), max(0.25, float(horizon_m)))
+    if total <= 1e-6:
+        return np.asarray(pts[:1], dtype=np.float64)
+    return _resample_path(pts, 0.25, total)
 
 
 def _path_heading_delta_max(path_local: np.ndarray) -> float:
