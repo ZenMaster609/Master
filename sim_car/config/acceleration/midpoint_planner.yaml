@@ -1,6 +1,0 @@
-midpoint_planner_node:
-  ros__parameters:
-    filtering:
-      max_cone_range_m: 20.0
-    stanley:
-      lookahead_idx_offset: 4

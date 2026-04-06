@@ -164,7 +164,7 @@ def generate_launch_description():
 
     physics_model_arg = DeclareLaunchArgument(
         'physics_model',
-        default_value='pointmass',
+        default_value='bicycle',
         description="Physics model for Gazebo dynamics: 'pointmass' or 'bicycle'"
     )
 
@@ -200,8 +200,8 @@ def generate_launch_description():
 
     controller_arg = DeclareLaunchArgument(
         'controller',
-        default_value='',
-        description="Optional controller override: 'stanley', 'pure_pursuit', or 'none'"
+        default_value='stanley',
+        description="Controller to launch: 'stanley', 'pure_pursuit', or 'none'"
     )
 
     rviz_arg = DeclareLaunchArgument(
@@ -434,6 +434,7 @@ def generate_launch_description():
     resolved_spawn_yaw = LaunchConfiguration('resolved_spawn_yaw')
     resolved_planner_config = LaunchConfiguration('resolved_planner_config')
     resolved_controller_config = LaunchConfiguration('resolved_controller_config')
+    resolved_speed_control_config = LaunchConfiguration('resolved_speed_control_config')
     resolved_path_tracking_autostop_laps = LaunchConfiguration('resolved_path_tracking_autostop_laps')
     resolved_shutdown_on_logger_exit = LaunchConfiguration('resolved_shutdown_on_logger_exit')
     launch_args_validation = OpaqueFunction(function=_validate_planner_and_controller_args)
@@ -859,6 +860,7 @@ def generate_launch_description():
         parameters=[
             resolved_planner_config,
             resolved_controller_config,
+            resolved_speed_control_config,
             {
                 'use_sim_time': ParameterValue(
                     LaunchConfiguration('use_sim_time'),
@@ -893,6 +895,7 @@ def generate_launch_description():
         parameters=[
             resolved_planner_config,
             resolved_controller_config,
+            resolved_speed_control_config,
             {
                 'use_sim_time': ParameterValue(
                     LaunchConfiguration('use_sim_time'),
@@ -927,6 +930,7 @@ def generate_launch_description():
         parameters=[
             resolved_planner_config,
             resolved_controller_config,
+            resolved_speed_control_config,
             {
                 'use_sim_time': ParameterValue(
                     LaunchConfiguration('use_sim_time'),
@@ -959,6 +963,7 @@ def generate_launch_description():
         parameters=[
             resolved_planner_config,
             resolved_controller_config,
+            resolved_speed_control_config,
             {
                 'use_sim_time': ParameterValue(
                     LaunchConfiguration('use_sim_time'),
@@ -1133,9 +1138,10 @@ def _write_parameter_overlay(parameters: dict) -> str:
         return temp_file.name
 
 
-def _resolve_track_bundle(sim_car_share: Path, track: str, planner: str) -> dict[str, str]:
+def _resolve_track_bundle(sim_car_share: Path, track: str, planner: str, controller: str) -> dict[str, str]:
     normalized_track = str(track).strip().lower() or 'smalltrack'
     normalized_planner = str(planner).strip().lower()
+    normalized_controller = str(controller).strip().lower() or 'stanley'
 
     if normalized_track not in SUPPORTED_TRACKS:
         raise RuntimeError(
@@ -1149,19 +1155,26 @@ def _resolve_track_bundle(sim_car_share: Path, track: str, planner: str) -> dict
         )
     if normalized_planner == 'linetest' and normalized_track != 'acceleration':
         raise RuntimeError("planner='linetest' is only supported with track='acceleration'")
+    if normalized_controller not in SUPPORTED_CONTROLLERS:
+        raise RuntimeError(
+            "Unsupported launch argument controller='%s'. Supported values: stanley, pure_pursuit, none"
+            % controller
+        )
 
     config_dir = sim_car_share / 'config' / normalized_track
     bundle = {
         'track': normalized_track,
         'planner': normalized_planner,
+        'controller': normalized_controller,
         'world': str(sim_car_share / 'worlds' / SUPPORTED_TRACKS[normalized_track]),
         'spawn_config': str(config_dir / 'spawn.yaml'),
         'planner_config': '',
+        'controller_config': '',
     }
-    if normalized_planner in MIGRATED_PLANNERS:
-        bundle['planner_config'] = str(config_dir / f'{normalized_planner}_planner.yaml')
-    elif normalized_planner == 'linetest':
+    if normalized_planner == 'linetest':
         bundle['planner_config'] = str(sim_car_share / 'config' / 'acceleration' / 'linetest.yaml')
+    if normalized_controller in {'stanley', 'pure_pursuit'}:
+        bundle['controller_config'] = str(config_dir / f'{normalized_controller}_controller.yaml')
     return bundle
 
 
@@ -1192,6 +1205,25 @@ def _load_lap_tracking_defaults(spawn_config_path: str) -> dict[str, str]:
     }
 
 
+def _load_speed_control_defaults(spawn_config_path: str) -> dict[str, float]:
+    config = _load_yaml_file(spawn_config_path)
+    speed_control = config.get('speed_control')
+    if not isinstance(speed_control, dict):
+        raise RuntimeError(f"Spawn config missing 'speed_control' mapping: {spawn_config_path}")
+
+    resolved = {}
+    for key in (
+        'speed_min_mps',
+        'speed_max_mps',
+        'curvature_speed_gain',
+        'lowpass_speed_alpha',
+    ):
+        if key not in speed_control:
+            raise RuntimeError(f"Spawn config missing 'speed_control.{key}': {spawn_config_path}")
+        resolved[key] = float(speed_control[key])
+    return resolved
+
+
 def _load_yaml_file(config_path: str) -> dict:
     try:
         with open(config_path, 'r', encoding='utf-8') as config_file:
@@ -1214,32 +1246,31 @@ def _resolve_launch_selection(
     spawn_yaw_override: str = '',
     controller_override: str = '',
 ) -> dict[str, str]:
-    bundle = _resolve_track_bundle(sim_car_share, track, planner)
+    normalized_controller = str(controller_override).strip().lower() or 'stanley'
+    bundle = _resolve_track_bundle(sim_car_share, track, planner, normalized_controller)
     spawn_defaults = _load_spawn_defaults(bundle['spawn_config'])
     lap_tracking_defaults = _load_lap_tracking_defaults(bundle['spawn_config'])
-    normalized_controller = str(controller_override).strip().lower()
-
-    if normalized_controller and normalized_controller not in SUPPORTED_CONTROLLERS:
-        raise RuntimeError(
-            "Unsupported launch argument controller='%s'. Supported values: stanley, pure_pursuit, none"
-            % controller_override
-        )
+    speed_control_defaults = _load_speed_control_defaults(bundle['spawn_config'])
 
     selection = {
         'track': bundle['track'],
         'planner': bundle['planner'],
+        'controller': bundle['controller'],
         'world': str(world_override).strip() or bundle['world'],
         'planner_config': bundle['planner_config'],
+        'controller_config': bundle['controller_config'],
         'spawn_config': bundle['spawn_config'],
         'spawn_x': str(spawn_x_override).strip() or spawn_defaults['spawn_x'],
         'spawn_y': str(spawn_y_override).strip() or spawn_defaults['spawn_y'],
         'spawn_yaw': str(spawn_yaw_override).strip() or spawn_defaults['spawn_yaw'],
         'path_tracking_autostop_laps': lap_tracking_defaults['autostop_laps'],
-        'controller_override': normalized_controller,
+        'speed_control': speed_control_defaults,
     }
 
-    if selection['planner'] in CONFIGURED_PLANNERS and not Path(selection['planner_config']).exists():
+    if selection['planner'] == 'linetest' and not Path(selection['planner_config']).exists():
         raise RuntimeError(f"Planner config does not exist: {selection['planner_config']}")
+    if selection['controller'] in {'stanley', 'pure_pursuit'} and not Path(selection['controller_config']).exists():
+        raise RuntimeError(f"Controller config does not exist: {selection['controller_config']}")
     if not Path(selection['spawn_config']).exists():
         raise RuntimeError(f"Spawn config does not exist: {selection['spawn_config']}")
 
@@ -1259,29 +1290,40 @@ def _configure_track_selection(context, *_args, **_kwargs):
         controller_override=LaunchConfiguration('controller').perform(context),
     )
 
+    planner_config_path = selection['planner_config'] if selection['planner'] == 'linetest' else _write_parameter_overlay({})
+
     if selection['planner'] in CONFIGURED_PLANNERS:
-        override_payload = {}
-        if selection['controller_override']:
-            override_payload = {
+        if selection['controller'] == 'none':
+            controller_config_path = _write_parameter_overlay({
                 '/**': {
                     'ros__parameters': {
                         'control': {
-                            'controller_type': selection['controller_override'],
+                            'controller_type': 'none',
                         },
                     },
                 },
-            }
-        controller_config_path = _write_parameter_overlay(override_payload)
+            })
+        else:
+            controller_config_path = selection['controller_config']
+        speed_control_config_path = _write_parameter_overlay({
+            '/**': {
+                'ros__parameters': {
+                    'speed_control': selection['speed_control'],
+                },
+            },
+        })
     else:
         controller_config_path = _write_parameter_overlay({})
+        speed_control_config_path = _write_parameter_overlay({})
 
     return [
         SetLaunchConfiguration('resolved_world', selection['world']),
         SetLaunchConfiguration('resolved_spawn_x', selection['spawn_x']),
         SetLaunchConfiguration('resolved_spawn_y', selection['spawn_y']),
         SetLaunchConfiguration('resolved_spawn_yaw', selection['spawn_yaw']),
-        SetLaunchConfiguration('resolved_planner_config', selection['planner_config']),
+        SetLaunchConfiguration('resolved_planner_config', planner_config_path),
         SetLaunchConfiguration('resolved_controller_config', controller_config_path),
+        SetLaunchConfiguration('resolved_speed_control_config', speed_control_config_path),
         SetLaunchConfiguration(
             'resolved_path_tracking_autostop_laps',
             selection['path_tracking_autostop_laps'],
@@ -1336,7 +1378,7 @@ def _validate_planner_and_controller_args(context, *_args, **_kwargs):
     bridge = LaunchConfiguration('bridge').perform(context).strip().lower()
     track = LaunchConfiguration('track').perform(context).strip().lower()
     planner = LaunchConfiguration('planner').perform(context).strip().lower()
-    controller = LaunchConfiguration('controller').perform(context).strip().lower()
+    controller = LaunchConfiguration('controller').perform(context).strip().lower() or 'stanley'
 
     supported_bridges = {'ackermann'}
 
@@ -1357,7 +1399,7 @@ def _validate_planner_and_controller_args(context, *_args, **_kwargs):
         )
     if planner == 'linetest' and track != 'acceleration':
         raise RuntimeError("planner='linetest' is only supported with track='acceleration'")
-    if controller and controller not in SUPPORTED_CONTROLLERS:
+    if controller not in SUPPORTED_CONTROLLERS:
         raise RuntimeError(
             "Unsupported launch argument controller='%s'. Supported values: stanley, pure_pursuit, none"
             % controller

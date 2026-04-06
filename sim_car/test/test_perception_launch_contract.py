@@ -16,6 +16,8 @@ TRACKS = {
     'smalltrack': 'small_track.world',
 }
 MIGRATED_PLANNERS = ('midpoint', 'single_boundary', 'corridor')
+CONFIGURED_PLANNERS = MIGRATED_PLANNERS + ('linetest',)
+CONTROLLERS = ('stanley', 'pure_pursuit')
 
 spec = importlib.util.spec_from_file_location('full_sim_launch', FULL_LAUNCH)
 assert spec is not None
@@ -59,6 +61,10 @@ def _planner_node_contract(planner: str) -> tuple[set[str], set[str]]:
 
     assert declared_defaults is not None, planner
     return set(declared_defaults), read_parameters
+
+
+def _load_yaml(path: pathlib.Path) -> dict:
+    return yaml.safe_load(path.read_text(encoding='utf-8')) or {}
 
 
 def test_full_launch_uses_single_perception_node_with_stereo_toggle():
@@ -122,13 +128,13 @@ def test_full_launch_supports_only_migrated_planners():
     assert "SUPPORTED_PLANNERS = CONFIGURED_PLANNERS | {'none'}" in content
 
 
-def test_full_launch_declares_track_arg_and_optional_controller_override():
+def test_full_launch_declares_track_arg_and_controller_selection():
     content = FULL_LAUNCH.read_text(encoding='utf-8')
 
     assert "DeclareLaunchArgument(\n        'track'" in content
     assert "Track preset to load: 'acceleration', 'skidpad', or 'smalltrack'" in content
-    assert "Optional controller override: 'stanley', 'pure_pursuit', or 'none'" in content
-    assert "default_value=''" in content
+    assert "Controller to launch: 'stanley', 'pure_pursuit', or 'none'" in content
+    assert "default_value='stanley'" in content
     assert "config', 'controllers'" not in content
 
 
@@ -144,16 +150,18 @@ def test_full_launch_supports_planner_specific_rviz_profiles():
     assert "'linetest': 'planner_debug.rviz'" in content
 
 
-def test_full_launch_uses_resolved_track_specific_planner_configs():
+def test_full_launch_uses_resolved_controller_and_speed_control_configs():
     content = FULL_LAUNCH.read_text(encoding='utf-8')
 
     midpoint_block = content.split("midpoint_planner_node = Node(", 1)[1].split("single_boundary_planner_node = Node(", 1)[0]
     single_boundary_block = content.split("single_boundary_planner_node = Node(", 1)[1].split("corridor_planner_node = Node(", 1)[0]
     corridor_block = content.split("corridor_planner_node = Node(", 1)[1].split("camera_debug_viewer_node = Node(", 1)[0]
+    linetest_block = content.split("linetest_planner_node = Node(", 1)[1].split("camera_debug_viewer_node = Node(", 1)[0]
 
-    assert "resolved_planner_config" in midpoint_block
-    assert "resolved_planner_config" in single_boundary_block
-    assert "resolved_planner_config" in corridor_block
+    for block in (midpoint_block, single_boundary_block, corridor_block, linetest_block):
+        assert "resolved_controller_config" in block
+        assert "resolved_speed_control_config" in block
+
     assert "config', 'midpoint_planner.yaml'" not in content
     assert "config', 'single_boundary_planner.yaml'" not in content
     assert "config', 'corridor_planner.yaml'" not in content
@@ -166,14 +174,13 @@ def test_full_launch_wires_skidpad_router_output_into_migrated_planners() -> Non
     assert "PathJoinSubstitution([sim_car_share, 'config', 'skidpad', 'skidpad_router.yaml'])" in content
     assert "'topics.output_topic': '/tracked_cones/skidpad_routed'" in content
     assert "'topics.viz_topic': router_viz_topic" in content
-    assert "router passes normal cones through unchanged until that" in content
     assert "'/tracked_cones/skidpad_routed' if '" in content
     assert "'.lower() in ('skidpad', 'acceleration') else ('/tracked_cones' if '" in content
     assert "'routing.event_mode': LaunchConfiguration('track')" in content
     assert "'.lower() in ('skidpad', 'acceleration') else '/skidpad_router/markers_hidden'" in content
 
 
-def test_track_bundle_resolves_world_and_planner_config_paths():
+def test_track_bundle_resolves_world_spawn_and_default_controller_config_paths():
     for track, world_name in TRACKS.items():
         for planner in MIGRATED_PLANNERS:
             selection = full_sim_launch._resolve_launch_selection(
@@ -182,7 +189,9 @@ def test_track_bundle_resolves_world_and_planner_config_paths():
                 planner=planner,
             )
             assert selection['world'] == str(SIM_CAR_SHARE / 'worlds' / world_name)
-            assert selection['planner_config'] == str(SIM_CAR_SHARE / 'config' / track / f'{planner}_planner.yaml')
+            assert selection['planner_config'] == ''
+            assert selection['controller'] == 'stanley'
+            assert selection['controller_config'] == str(SIM_CAR_SHARE / 'config' / track / 'stanley_controller.yaml')
             assert selection['spawn_config'] == str(SIM_CAR_SHARE / 'config' / track / 'spawn.yaml')
 
 
@@ -204,7 +213,38 @@ def test_track_bundle_loads_track_spawn_defaults():
         assert selection['spawn_yaw'] == spawn_yaw
 
 
-def test_track_bundle_resolves_acceleration_linetest_config_path():
+def test_track_bundle_loads_track_speed_control_defaults():
+    expected = {
+        'acceleration': {
+            'speed_min_mps': 4.17,
+            'speed_max_mps': 4.17,
+            'curvature_speed_gain': 4.0,
+            'lowpass_speed_alpha': 0.15,
+        },
+        'skidpad': {
+            'speed_min_mps': 1.0,
+            'speed_max_mps': 4.17,
+            'curvature_speed_gain': 4.0,
+            'lowpass_speed_alpha': 0.15,
+        },
+        'smalltrack': {
+            'speed_min_mps': 1.0,
+            'speed_max_mps': 4.17,
+            'curvature_speed_gain': 4.0,
+            'lowpass_speed_alpha': 0.15,
+        },
+    }
+
+    for track, speed_control in expected.items():
+        selection = full_sim_launch._resolve_launch_selection(
+            SIM_CAR_SHARE,
+            track=track,
+            planner='midpoint',
+        )
+        assert selection['speed_control'] == speed_control
+
+
+def test_track_bundle_resolves_acceleration_linetest_and_default_controller_config_paths():
     selection = full_sim_launch._resolve_launch_selection(
         SIM_CAR_SHARE,
         track='acceleration',
@@ -212,6 +252,7 @@ def test_track_bundle_resolves_acceleration_linetest_config_path():
     )
 
     assert selection['planner_config'] == str(SIM_CAR_SHARE / 'config' / 'acceleration' / 'linetest.yaml')
+    assert selection['controller_config'] == str(SIM_CAR_SHARE / 'config' / 'acceleration' / 'stanley_controller.yaml')
     assert selection['spawn_config'] == str(SIM_CAR_SHARE / 'config' / 'acceleration' / 'spawn.yaml')
 
 
@@ -225,7 +266,7 @@ def test_track_bundle_rejects_linetest_for_non_acceleration_tracks():
             )
         except RuntimeError as exc:
             assert "planner='linetest' is only supported with track='acceleration'" in str(exc)
-        else:  # pragma: no cover - defensive
+        else:
             raise AssertionError(f'linetest unexpectedly allowed for track={track}')
 
 
@@ -245,79 +286,142 @@ def test_track_bundle_overrides_world_spawn_and_controller_when_requested():
     assert selection['spawn_x'] == '1.0'
     assert selection['spawn_y'] == '2.0'
     assert selection['spawn_yaw'] == '3.0'
-    assert selection['controller_override'] == 'pure_pursuit'
+    assert selection['controller'] == 'pure_pursuit'
+    assert selection['controller_config'] == str(SIM_CAR_SHARE / 'config' / 'smalltrack' / 'pure_pursuit_controller.yaml')
 
 
-def test_track_specific_planner_configs_only_use_declared_and_read_parameters():
-    for planner in MIGRATED_PLANNERS:
-        declared, read_params = _planner_node_contract(planner)
-        for track in TRACKS:
-            config_path = SIM_CAR_SHARE / 'config' / track / f'{planner}_planner.yaml'
-            config = yaml.safe_load(config_path.read_text(encoding='utf-8')) or {}
-            node_name = f'{planner}_planner_node'
-            params = _flatten(config[node_name]['ros__parameters'])
+def test_track_bundle_supports_controller_none_without_controller_config_file():
+    selection = full_sim_launch._resolve_launch_selection(
+        SIM_CAR_SHARE,
+        track='smalltrack',
+        planner='corridor',
+        controller_override='none',
+    )
 
+    assert selection['controller'] == 'none'
+    assert selection['controller_config'] == ''
+
+
+def test_controller_configs_only_use_declared_and_read_parameters():
+    for track in TRACKS:
+        for controller in CONTROLLERS:
+            config_path = SIM_CAR_SHARE / 'config' / track / f'{controller}_controller.yaml'
+            config = _load_yaml(config_path)
+            params = _flatten(config['/**']['ros__parameters'])
+
+            for planner in CONFIGURED_PLANNERS:
+                declared, read_params = _planner_node_contract(planner)
+                assert set(params).issubset(declared)
+                assert set(params).issubset(read_params)
+
+
+def test_controller_configs_match_expected_sparse_overrides():
+    expected = {
+        ('acceleration', 'stanley'): {
+            'control.controller_type': 'stanley',
+            'stanley.k_gain': 1.2,
+            'stanley.heading_gain': 1.6,
+            'stanley.lookahead_idx_offset': 4,
+        },
+        ('acceleration', 'pure_pursuit'): {
+            'control.controller_type': 'pure_pursuit',
+            'pure_pursuit.lookahead_m': 3.0,
+            'pure_pursuit.min_lookahead_m': 1.5,
+            'pure_pursuit.max_lookahead_m': 8.0,
+        },
+        ('skidpad', 'stanley'): {
+            'control.controller_type': 'stanley',
+            'stanley.k_gain': 1.4,
+            'stanley.heading_gain': 1.8,
+            'stanley.lookahead_idx_offset': 0,
+        },
+        ('skidpad', 'pure_pursuit'): {
+            'control.controller_type': 'pure_pursuit',
+            'pure_pursuit.lookahead_m': 3.0,
+            'pure_pursuit.min_lookahead_m': 1.5,
+            'pure_pursuit.max_lookahead_m': 8.0,
+        },
+        ('smalltrack', 'stanley'): {
+            'control.controller_type': 'stanley',
+            'stanley.k_gain': 1.2,
+            'stanley.heading_gain': 1.6,
+            'stanley.lookahead_idx_offset': 1,
+        },
+        ('smalltrack', 'pure_pursuit'): {
+            'control.controller_type': 'pure_pursuit',
+            'pure_pursuit.lookahead_m': 2.0,
+            'pure_pursuit.min_lookahead_m': 0.5,
+            'pure_pursuit.max_lookahead_m': 10.0,
+        },
+    }
+
+    for (track, controller), expected_flat in expected.items():
+        config_path = SIM_CAR_SHARE / 'config' / track / f'{controller}_controller.yaml'
+        config = _load_yaml(config_path)
+        params = _flatten(config['/**']['ros__parameters'])
+        assert params == expected_flat
+
+
+def test_track_specific_spawn_configs_define_pose_and_speed_control():
+    for track in TRACKS:
+        config_path = SIM_CAR_SHARE / 'config' / track / 'spawn.yaml'
+        config = _load_yaml(config_path)
+        assert set(config['spawn']) == {'spawn_x', 'spawn_y', 'spawn_yaw'}
+        assert set(config['speed_control']) == {
+            'speed_min_mps',
+            'speed_max_mps',
+            'curvature_speed_gain',
+            'lowpass_speed_alpha',
+        }
+
+
+def test_speed_control_spawn_configs_only_use_declared_and_read_parameters():
+    for track in TRACKS:
+        config_path = SIM_CAR_SHARE / 'config' / track / 'spawn.yaml'
+        config = _load_yaml(config_path)
+        params = _flatten({'speed_control': config['speed_control']})
+
+        for planner in CONFIGURED_PLANNERS:
+            declared, read_params = _planner_node_contract(planner)
             assert set(params).issubset(declared)
             assert set(params).issubset(read_params)
 
 
-def test_track_specific_planner_configs_match_expected_sparse_overrides():
-    expected = {
-        ('acceleration', 'midpoint'): {
-            'filtering.max_cone_range_m': 20.0,
-            'stanley.lookahead_idx_offset': 4,
-        },
-        ('acceleration', 'single_boundary'): {},
-        ('acceleration', 'corridor'): {},
-        ('smalltrack', 'midpoint'): {},
-        ('smalltrack', 'single_boundary'): {
-            'filtering.max_cone_range_m': 20.0,
-            'midline_memory.horizon_m': 20.0,
-            'stanley.lookahead_idx_offset': 1,
-            'pure_pursuit.lookahead_m': 2.0,
-            'pure_pursuit.min_lookahead_m': 0.5,
-            'pure_pursuit.max_lookahead_m': 10.0,
-            'speed_control.speed_max_mps': 4.17,
-        },
-        ('smalltrack', 'corridor'): {},
-        ('skidpad', 'midpoint'): {},
-        ('skidpad', 'single_boundary'): {
-            'filtering.max_cone_range_m': 14.0,
-            'centerline.max_path_length_m': 14.0,
-            'stanley.k_gain': 1.4,
-            'stanley.heading_gain': 1.8,
-            'speed_control.speed_max_mps': 4.17,
-        },
-        ('skidpad', 'corridor'): {},
-    }
-
-    for (track, planner), expected_flat in expected.items():
-        config_path = SIM_CAR_SHARE / 'config' / track / f'{planner}_planner.yaml'
-        config = yaml.safe_load(config_path.read_text(encoding='utf-8')) or {}
-        node_name = f'{planner}_planner_node'
-        params = _flatten(config[node_name]['ros__parameters'])
-        assert params == expected_flat
+def test_smalltrack_spawn_config_keeps_lap_tracking():
+    config_path = SIM_CAR_SHARE / 'config' / 'smalltrack' / 'spawn.yaml'
+    config = _load_yaml(config_path)
+    assert config['lap_tracking'] == {'auto_suspend_after_laps': 1}
 
 
-def test_track_specific_spawn_configs_define_pose():
-    for track in TRACKS:
-        config_path = SIM_CAR_SHARE / 'config' / track / 'spawn.yaml'
-        config = yaml.safe_load(config_path.read_text(encoding='utf-8')) or {}
-        assert set(config['spawn']) == {'spawn_x', 'spawn_y', 'spawn_yaw'}
-
-
-def test_removed_legacy_configs_are_absent():
+def test_removed_legacy_configs_are_absent_and_controller_configs_exist():
     assert not (SIM_CAR_SHARE / 'config' / 'midpoint_planner.yaml').exists()
     assert not (SIM_CAR_SHARE / 'config' / 'single_boundary_planner.yaml').exists()
     assert not (SIM_CAR_SHARE / 'config' / 'corridor_planner.yaml').exists()
     assert not (SIM_CAR_SHARE / 'config' / 'controllers').exists()
 
+    for track in TRACKS:
+        for planner in MIGRATED_PLANNERS:
+            assert not (SIM_CAR_SHARE / 'config' / track / f'{planner}_planner.yaml').exists()
+        for controller in CONTROLLERS:
+            assert (SIM_CAR_SHARE / 'config' / track / f'{controller}_controller.yaml').exists()
+
 
 def test_linetest_config_only_uses_declared_and_read_parameters():
     declared, read_params = _planner_node_contract('linetest')
     config_path = SIM_CAR_SHARE / 'config' / 'acceleration' / 'linetest.yaml'
-    config = yaml.safe_load(config_path.read_text(encoding='utf-8')) or {}
+    config = _load_yaml(config_path)
     params = _flatten(config['linetest_planner_node']['ros__parameters'])
 
     assert set(params).issubset(declared)
     assert set(params).issubset(read_params)
+
+
+def test_linetest_config_no_longer_contains_controller_or_speed_control_blocks():
+    config_path = SIM_CAR_SHARE / 'config' / 'acceleration' / 'linetest.yaml'
+    config = _load_yaml(config_path)
+    params = config['linetest_planner_node']['ros__parameters']
+
+    assert 'control' not in params
+    assert 'stanley' not in params
+    assert 'pure_pursuit' not in params
+    assert 'speed_control' not in params

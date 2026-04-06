@@ -1,5 +1,6 @@
 from setuptools import find_packages, setup
 from glob import glob
+from pathlib import Path
 import os
 
 
@@ -13,7 +14,52 @@ def walk_data_files(source_dir, install_dir):
         data.append((dest_dir, [os.path.join(root, f) for f in files]))
     return data
 
+
+def _workspace_root_from_source(source_path: Path) -> Path | None:
+    parts = source_path.parts
+    if 'src' not in parts:
+        return None
+    src_index = parts.index('src')
+    if src_index == 0:
+        return None
+    return Path(*parts[:src_index])
+
+
+def prune_stale_build_config(source_dir: str, package_name: str) -> None:
+    source_root = Path(source_dir).resolve()
+    workspace_root = _workspace_root_from_source(source_root)
+    if workspace_root is None:
+        return
+
+    build_config_root = workspace_root / 'build' / package_name / 'config'
+    if not build_config_root.exists():
+        return
+
+    expected_relpaths = {
+        path.relative_to(source_root)
+        for path in source_root.rglob('*')
+        if path.is_file()
+    }
+
+    for path in sorted(build_config_root.rglob('*'), reverse=True):
+        try:
+            relpath = path.relative_to(build_config_root)
+        except ValueError:
+            continue
+
+        if path.is_dir() and not path.is_symlink():
+            if not any(path.iterdir()):
+                path.rmdir()
+            continue
+
+        if relpath in expected_relpaths:
+            continue
+
+        if path.exists() or path.is_symlink():
+            path.unlink()
+
 package_name = 'sim_car'
+prune_stale_build_config('config', package_name)
 
 setup(
     name=package_name,
