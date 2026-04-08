@@ -12,7 +12,9 @@ that path. Per-node toggles are kept for compatibility, but are no longer
 needed for normal use.
 """
 
+from dataclasses import dataclass
 from launch import LaunchDescription
+import sys
 import tempfile
 from pathlib import Path
 
@@ -26,16 +28,34 @@ from launch_ros.substitutions import FindPackageShare
 from ament_index_python.packages import get_package_share_directory
 import yaml
 
+try:
+    from sim_car.planning.planner_registry import (
+        CONFIGURED_PLANNERS,
+        MIGRATED_PLANNERS,
+        SUPPORTED_CONTROLLERS,
+        SUPPORTED_PLANNERS,
+        get_planner_spec,
+        planner_allowed_for_track,
+    )
+except ModuleNotFoundError:
+    source_package_root = Path(__file__).resolve().parents[1]
+    if str(source_package_root) not in sys.path:
+        sys.path.insert(0, str(source_package_root))
+    from sim_car.planning.planner_registry import (
+        CONFIGURED_PLANNERS,
+        MIGRATED_PLANNERS,
+        SUPPORTED_CONTROLLERS,
+        SUPPORTED_PLANNERS,
+        get_planner_spec,
+        planner_allowed_for_track,
+    )
+
 
 SUPPORTED_TRACKS = {
     'acceleration': 'acceleration.world',
     'skidpad': 'skidpad.world',
     'smalltrack': 'small_track.world',
 }
-MIGRATED_PLANNERS = {'midpoint', 'single_boundary', 'corridor'}
-CONFIGURED_PLANNERS = MIGRATED_PLANNERS | {'linetest'}
-SUPPORTED_PLANNERS = CONFIGURED_PLANNERS | {'none'}
-SUPPORTED_CONTROLLERS = {'stanley', 'pure_pursuit', 'none'}
 
 POINTCLOUD3D_LIDAR_PARAMS = {
     'max_detection_range_m': 25.0,
@@ -50,6 +70,56 @@ LEGACY_CONE_MEMORY_CONFIRM_HITS = 3
 POINTCLOUD3D_CONE_MEMORY_CONFIRM_HITS = 1
 LEGACY_PLANNER_MIN_CONFIDENCE = 0.3
 POINTCLOUD3D_PLANNER_MIN_CONFIDENCE = 0.15
+
+
+@dataclass(frozen=True)
+class LaunchSelection:
+    track: str
+    planner: str
+    controller: str
+    world: str
+    planner_config: str
+    controller_config: str
+    spawn_config: str
+    spawn_x: str
+    spawn_y: str
+    spawn_yaw: str
+    path_tracking_autostop_laps: str
+    speed_control: dict[str, float]
+    planner_limits: dict[str, float]
+    planner_diagnostics_topic: str
+    planner_default_rviz_profile: str
+
+    def controller_overlay_parameters(self) -> dict:
+        if self.controller != 'none':
+            return {}
+        return {
+            '/**': {
+                'ros__parameters': {
+                    'control': {
+                        'controller_type': 'none',
+                    },
+                },
+            },
+        }
+
+    def speed_control_overlay_parameters(self) -> dict:
+        return {
+            '/**': {
+                'ros__parameters': {
+                    'speed_control': self.speed_control,
+                },
+            },
+        }
+
+    def planner_overlay_parameters(self) -> dict:
+        if not self.planner_limits:
+            return {}
+        return {
+            '/**': {
+                'ros__parameters': self.planner_limits,
+            },
+        }
 
 
 def _lidar_pipeline_match_expr(pipeline: str):
@@ -69,6 +139,14 @@ def _lidar_pipeline_enabled_condition(pipeline: str):
         "'.lower() == 'true')) and (",
         _lidar_pipeline_match_expr(pipeline),
         ")",
+    ]))
+
+
+def _planner_selected_condition(planner_name: str):
+    return IfCondition(PythonExpression([
+        "'",
+        LaunchConfiguration('planner'),
+        f"'.lower() == '{planner_name}'",
     ]))
 
 
@@ -550,6 +628,7 @@ def generate_launch_description():
     resolved_planner_config = LaunchConfiguration('resolved_planner_config')
     resolved_controller_config = LaunchConfiguration('resolved_controller_config')
     resolved_speed_control_config = LaunchConfiguration('resolved_speed_control_config')
+    resolved_planner_diagnostics_topic = LaunchConfiguration('resolved_planner_diagnostics_topic')
     resolved_path_tracking_autostop_laps = LaunchConfiguration('resolved_path_tracking_autostop_laps')
     resolved_shutdown_on_logger_exit = LaunchConfiguration('resolved_shutdown_on_logger_exit')
     launch_args_validation = OpaqueFunction(function=_validate_planner_and_controller_args)
@@ -687,20 +766,7 @@ def generate_launch_description():
             'controller_diagnostics_joint_states_topic': '/sim/joint_states',
             'controller_diagnostics_odom_topic': '/sim/odom',
             'controller_diagnostics_path_topic': '/planned_centerline',
-            'controller_diagnostics_planner_diag_topic': PythonExpression([
-                "'/midpoint_planner/diagnostics' if '",
-                LaunchConfiguration('planner'),
-                "'.lower() == 'midpoint' else "
-                "'/single_boundary_planner/diagnostics' if '",
-                LaunchConfiguration('planner'),
-                "'.lower() == 'single_boundary' else "
-                "'/corridor_planner/diagnostics' if '",
-                LaunchConfiguration('planner'),
-                "'.lower() == 'corridor' else "
-                "'/linetest_planner/diagnostics' if '",
-                LaunchConfiguration('planner'),
-                "'.lower() == 'linetest' else '/midpoint_planner/diagnostics'",
-            ]),
+            'controller_diagnostics_planner_diag_topic': resolved_planner_diagnostics_topic,
             'thesis_controller_diagnostics_enabled': LaunchConfiguration('thesis_controller_diagnostics'),
             'path_tracking_eval_enabled': LaunchConfiguration('path_tracking_eval'),
             'path_tracking_eval_gt_track_topic': '/ground_truth/track',
@@ -1002,7 +1068,7 @@ def generate_launch_description():
 
     midpoint_planner_node = Node(
         package='sim_car',
-        executable='midpoint_planner_node',
+        executable=get_planner_spec('midpoint').executable,
         name='midpoint_planner_node',
         output='screen',
         parameters=[
@@ -1029,16 +1095,12 @@ def generate_launch_description():
                 ),
             },
         ],
-        condition=IfCondition(PythonExpression([
-            "'",
-            LaunchConfiguration('planner'),
-            "'.lower() == 'midpoint'"
-        ])),
+        condition=_planner_selected_condition('midpoint'),
     )
 
     single_boundary_planner_node = Node(
         package='sim_car',
-        executable='single_boundary_planner_node',
+        executable=get_planner_spec('single_boundary').executable,
         name='single_boundary_planner_node',
         output='screen',
         parameters=[
@@ -1065,16 +1127,12 @@ def generate_launch_description():
                 ),
             },
         ],
-        condition=IfCondition(PythonExpression([
-            "'",
-            LaunchConfiguration('planner'),
-            "'.lower() == 'single_boundary'"
-        ])),
+        condition=_planner_selected_condition('single_boundary'),
     )
 
     corridor_planner_node = Node(
         package='sim_car',
-        executable='corridor_planner_node',
+        executable=get_planner_spec('corridor').executable,
         name='corridor_planner_node',
         output='screen',
         parameters=[
@@ -1099,16 +1157,12 @@ def generate_launch_description():
                 ),
             },
         ],
-        condition=IfCondition(PythonExpression([
-            "'",
-            LaunchConfiguration('planner'),
-            "'.lower() == 'corridor'"
-        ])),
+        condition=_planner_selected_condition('corridor'),
     )
 
     linetest_planner_node = Node(
         package='sim_car',
-        executable='linetest_planner_node',
+        executable=get_planner_spec('linetest').executable,
         name='linetest_planner_node',
         output='screen',
         parameters=[
@@ -1131,11 +1185,7 @@ def generate_launch_description():
                 ),
             },
         ],
-        condition=IfCondition(PythonExpression([
-            "'",
-            LaunchConfiguration('planner'),
-            "'.lower() == 'linetest'"
-        ])),
+        condition=_planner_selected_condition('linetest'),
     )
 
     camera_debug_viewer_node = Node(
@@ -1331,6 +1381,7 @@ def _resolve_track_bundle(sim_car_share: Path, track: str, planner: str, control
     normalized_track = str(track).strip().lower() or 'smalltrack'
     normalized_planner = str(planner).strip().lower()
     normalized_controller = str(controller).strip().lower() or 'stanley'
+    planner_spec = get_planner_spec(normalized_planner)
 
     if normalized_track not in SUPPORTED_TRACKS:
         raise RuntimeError(
@@ -1342,8 +1393,12 @@ def _resolve_track_bundle(sim_car_share: Path, track: str, planner: str, control
             "Unsupported launch argument planner='%s'. Supported values: midpoint, single_boundary, corridor, linetest, none"
             % planner
         )
-    if normalized_planner == 'linetest' and normalized_track != 'acceleration':
-        raise RuntimeError("planner='linetest' is only supported with track='acceleration'")
+    if not planner_allowed_for_track(planner_name=normalized_planner, track_name=normalized_track):
+        allowed_tracks = sorted(planner_spec.allowed_tracks or ())
+        allowed_text = ', '.join(allowed_tracks)
+        raise RuntimeError(
+            "planner='%s' is only supported with track='%s'" % (normalized_planner, allowed_text)
+        )
     if normalized_controller not in SUPPORTED_CONTROLLERS:
         raise RuntimeError(
             "Unsupported launch argument controller='%s'. Supported values: stanley, pure_pursuit, none"
@@ -1355,6 +1410,7 @@ def _resolve_track_bundle(sim_car_share: Path, track: str, planner: str, control
         'track': normalized_track,
         'planner': normalized_planner,
         'controller': normalized_controller,
+        'planner_spec': planner_spec,
         'world': str(sim_car_share / 'worlds' / SUPPORTED_TRACKS[normalized_track]),
         'spawn_config': str(config_dir / 'spawn.yaml'),
         'planner_config': '',
@@ -1453,36 +1509,37 @@ def _resolve_launch_selection(
     spawn_y_override: str = '',
     spawn_yaw_override: str = '',
     controller_override: str = '',
-) -> dict[str, str]:
+) -> LaunchSelection:
     normalized_controller = str(controller_override).strip().lower() or 'stanley'
     bundle = _resolve_track_bundle(sim_car_share, track, planner, normalized_controller)
     spawn_defaults = _load_spawn_defaults(bundle['spawn_config'])
     lap_tracking_defaults = _load_lap_tracking_defaults(bundle['spawn_config'])
     speed_control_defaults = _load_speed_control_defaults(bundle['spawn_config'])
     planner_limit_overrides = _load_planner_limit_overrides(bundle['spawn_config'])
+    selection = LaunchSelection(
+        track=bundle['track'],
+        planner=bundle['planner'],
+        controller=bundle['controller'],
+        world=str(world_override).strip() or bundle['world'],
+        planner_config=bundle['planner_config'],
+        controller_config=bundle['controller_config'],
+        spawn_config=bundle['spawn_config'],
+        spawn_x=str(spawn_x_override).strip() or spawn_defaults['spawn_x'],
+        spawn_y=str(spawn_y_override).strip() or spawn_defaults['spawn_y'],
+        spawn_yaw=str(spawn_yaw_override).strip() or spawn_defaults['spawn_yaw'],
+        path_tracking_autostop_laps=lap_tracking_defaults['autostop_laps'],
+        speed_control=speed_control_defaults,
+        planner_limits=planner_limit_overrides,
+        planner_diagnostics_topic=bundle['planner_spec'].diagnostics_topic,
+        planner_default_rviz_profile=bundle['planner_spec'].default_rviz_profile,
+    )
 
-    selection = {
-        'track': bundle['track'],
-        'planner': bundle['planner'],
-        'controller': bundle['controller'],
-        'world': str(world_override).strip() or bundle['world'],
-        'planner_config': bundle['planner_config'],
-        'controller_config': bundle['controller_config'],
-        'spawn_config': bundle['spawn_config'],
-        'spawn_x': str(spawn_x_override).strip() or spawn_defaults['spawn_x'],
-        'spawn_y': str(spawn_y_override).strip() or spawn_defaults['spawn_y'],
-        'spawn_yaw': str(spawn_yaw_override).strip() or spawn_defaults['spawn_yaw'],
-        'path_tracking_autostop_laps': lap_tracking_defaults['autostop_laps'],
-        'speed_control': speed_control_defaults,
-        'planner_limits': planner_limit_overrides,
-    }
-
-    if selection['planner'] == 'linetest' and not Path(selection['planner_config']).exists():
-        raise RuntimeError(f"Planner config does not exist: {selection['planner_config']}")
-    if selection['controller'] in {'stanley', 'pure_pursuit'} and not Path(selection['controller_config']).exists():
-        raise RuntimeError(f"Controller config does not exist: {selection['controller_config']}")
-    if not Path(selection['spawn_config']).exists():
-        raise RuntimeError(f"Spawn config does not exist: {selection['spawn_config']}")
+    if selection.planner == 'linetest' and not Path(selection.planner_config).exists():
+        raise RuntimeError(f'Planner config does not exist: {selection.planner_config}')
+    if selection.controller in {'stanley', 'pure_pursuit'} and not Path(selection.controller_config).exists():
+        raise RuntimeError(f'Controller config does not exist: {selection.controller_config}')
+    if not Path(selection.spawn_config).exists():
+        raise RuntimeError(f'Spawn config does not exist: {selection.spawn_config}')
 
     return selection
 
@@ -1500,55 +1557,40 @@ def _configure_track_selection(context, *_args, **_kwargs):
         controller_override=LaunchConfiguration('controller').perform(context),
     )
 
-    planner_config_path = selection['planner_config'] if selection['planner'] == 'linetest' else _write_parameter_overlay({})
+    planner_config_path = selection.planner_config if selection.planner == 'linetest' else _write_parameter_overlay({})
 
-    if selection['planner'] in CONFIGURED_PLANNERS:
-        if selection['controller'] == 'none':
-            controller_config_path = _write_parameter_overlay({
-                '/**': {
-                    'ros__parameters': {
-                        'control': {
-                            'controller_type': 'none',
-                        },
-                    },
-                },
-            })
+    if selection.planner in CONFIGURED_PLANNERS:
+        if selection.controller == 'none':
+            controller_config_path = _write_parameter_overlay(selection.controller_overlay_parameters())
         else:
-            controller_config_path = selection['controller_config']
-        speed_control_config_path = _write_parameter_overlay({
-            '/**': {
-                'ros__parameters': {
-                    'speed_control': selection['speed_control'],
-                },
-            },
-        })
-        planner_config_path = _write_parameter_overlay({
-            '/**': {
-                'ros__parameters': selection['planner_limits'],
-            },
-        }) if selection['planner_limits'] else planner_config_path
+            controller_config_path = selection.controller_config
+        speed_control_config_path = _write_parameter_overlay(selection.speed_control_overlay_parameters())
+        planner_overlay_parameters = selection.planner_overlay_parameters()
+        if planner_overlay_parameters:
+            planner_config_path = _write_parameter_overlay(planner_overlay_parameters)
     else:
         controller_config_path = _write_parameter_overlay({})
         speed_control_config_path = _write_parameter_overlay({})
 
     return [
-        SetLaunchConfiguration('resolved_world', selection['world']),
-        SetLaunchConfiguration('resolved_spawn_x', selection['spawn_x']),
-        SetLaunchConfiguration('resolved_spawn_y', selection['spawn_y']),
-        SetLaunchConfiguration('resolved_spawn_yaw', selection['spawn_yaw']),
+        SetLaunchConfiguration('resolved_world', selection.world),
+        SetLaunchConfiguration('resolved_spawn_x', selection.spawn_x),
+        SetLaunchConfiguration('resolved_spawn_y', selection.spawn_y),
+        SetLaunchConfiguration('resolved_spawn_yaw', selection.spawn_yaw),
         SetLaunchConfiguration('resolved_planner_config', planner_config_path),
         SetLaunchConfiguration('resolved_controller_config', controller_config_path),
         SetLaunchConfiguration('resolved_speed_control_config', speed_control_config_path),
+        SetLaunchConfiguration('resolved_planner_diagnostics_topic', selection.planner_diagnostics_topic),
         SetLaunchConfiguration(
             'resolved_path_tracking_autostop_laps',
-            selection['path_tracking_autostop_laps'],
+            selection.path_tracking_autostop_laps,
         ),
         SetLaunchConfiguration(
             'resolved_shutdown_on_logger_exit',
             'true'
             if (
-                selection['track'] == 'smalltrack'
-                and int(selection['path_tracking_autostop_laps']) > 0
+                selection.track == 'smalltrack'
+                and int(selection.path_tracking_autostop_laps) > 0
             )
             else 'false',
         ),
@@ -1581,7 +1623,8 @@ def _configure_rviz_config(context, *_args, **_kwargs):
             'none': 'driving_clean.rviz',
         }
         if rviz_profile in {'planner', 'auto'}:
-            resolved_filename = profile_to_filename.get(planner, 'driving_clean.rviz')
+            planner_profile = get_planner_spec(planner).default_rviz_profile if planner in SUPPORTED_PLANNERS else 'clean'
+            resolved_filename = profile_to_filename.get(planner_profile, 'driving_clean.rviz')
         else:
             resolved_filename = profile_to_filename.get(rviz_profile, 'driving_clean.rviz')
         base_config = str(Path(sim_car_share) / 'rviz' / resolved_filename)
@@ -1743,8 +1786,11 @@ def _validate_planner_and_controller_args(context, *_args, **_kwargs):
             "Unsupported launch argument planner='%s'. Supported values: midpoint, single_boundary, corridor, linetest, none"
             % planner
         )
-    if planner == 'linetest' and track != 'acceleration':
-        raise RuntimeError("planner='linetest' is only supported with track='acceleration'")
+    if not planner_allowed_for_track(planner_name=planner, track_name=track):
+        planner_spec = get_planner_spec(planner)
+        allowed_tracks = sorted(planner_spec.allowed_tracks or ())
+        allowed_text = ', '.join(allowed_tracks)
+        raise RuntimeError("planner='%s' is only supported with track='%s'" % (planner, allowed_text))
     if controller not in SUPPORTED_CONTROLLERS:
         raise RuntimeError(
             "Unsupported launch argument controller='%s'. Supported values: stanley, pure_pursuit, none"
