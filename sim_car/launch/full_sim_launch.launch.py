@@ -931,6 +931,7 @@ def generate_launch_description():
                     LaunchConfiguration('planner_rate_hz'),
                     value_type=float,
                 ),
+                'filtering.min_confidence': 0.15,
                 'lap_tracking.gt_track_topic': '/ground_truth/track',
                 'lap_tracking.target_laps': resolved_path_tracking_autostop_laps,
                 'diagnostics.publish_thesis_context': ParameterValue(
@@ -966,6 +967,7 @@ def generate_launch_description():
                     LaunchConfiguration('planner_rate_hz'),
                     value_type=float,
                 ),
+                'filtering.min_confidence': 0.15,
                 'lap_tracking.gt_track_topic': '/ground_truth/track',
                 'lap_tracking.target_laps': resolved_path_tracking_autostop_laps,
                 'diagnostics.publish_thesis_context': ParameterValue(
@@ -1001,6 +1003,7 @@ def generate_launch_description():
                     LaunchConfiguration('planner_rate_hz'),
                     value_type=float,
                 ),
+                'filtering.min_confidence': 0.15,
                 'diagnostics.publish_thesis_context': ParameterValue(
                     LaunchConfiguration('thesis_controller_diagnostics'),
                     value_type=bool,

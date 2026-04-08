@@ -423,10 +423,10 @@ def _normalize_angle_deg(angle_deg: float) -> float:
 
 def _cluster_radius_for_range(range_m: float) -> float:
     if range_m < 6.0:
-        return 0.18
+        return 0.20
     if range_m < 12.0:
-        return 0.24
-    return 0.30
+        return 0.28
+    return 0.35
 
 
 def _acceptance_thresholds_for_range(
@@ -445,33 +445,44 @@ def _acceptance_thresholds_for_range(
         return {
             'min_points': max(3, min_cluster_points if min_cluster_points < 3 else 3),
             'max_points': max_cluster_points,
-            'min_width': min_cluster_width_m,
+            'min_width': min(min_cluster_width_m, 0.03),
             'max_width': max_cluster_width_m,
-            'min_depth': min_cluster_depth_m,
+            'min_depth': min(min_cluster_depth_m, 0.02),
             'max_depth': max_cluster_depth_m,
-            'min_height': min_cluster_height_m,
+            'min_height': min(min_cluster_height_m, 0.10),
             'max_height': max_cluster_height_m,
         }
     if range_m < 10.0:
         return {
             'min_points': max(2, min_cluster_points if min_cluster_points < 2 else 2),
             'max_points': max_cluster_points,
-            'min_width': 0.02,
+            'min_width': 0.0,
             'max_width': max(max_cluster_width_m, 0.70),
-            'min_depth': 0.01,
-            'max_depth': max_cluster_depth_m,
-            'min_height': 0.08,
+            'min_depth': 0.0,
+            'max_depth': max(max_cluster_depth_m, 0.70),
+            'min_height': 0.03,
             'max_height': max(max_cluster_height_m, 0.75),
         }
+    if range_m < 18.0:
+        return {
+            'min_points': 1,
+            'max_points': max_cluster_points,
+            'min_width': 0.0,
+            'max_width': max(max_cluster_width_m, 1.00),
+            'min_depth': 0.0,
+            'max_depth': max(max_cluster_depth_m, 1.00),
+            'min_height': 0.0,
+            'max_height': max(max_cluster_height_m, 1.00),
+        }
     return {
-        'min_points': max(2, min_cluster_points if min_cluster_points < 2 else 2),
+        'min_points': 1,
         'max_points': max_cluster_points,
-        'min_width': 0.01,
-        'max_width': max(max_cluster_width_m, 0.85),
-        'min_depth': 0.005,
-        'max_depth': max_cluster_depth_m,
-        'min_height': 0.05,
-        'max_height': max(max_cluster_height_m, 0.90),
+        'min_width': 0.0,
+        'max_width': max(max_cluster_width_m, 1.20),
+        'min_depth': 0.0,
+        'max_depth': max(max_cluster_depth_m, 1.20),
+        'min_height': 0.0,
+        'max_height': max(max_cluster_height_m, 1.20),
     }
 
 

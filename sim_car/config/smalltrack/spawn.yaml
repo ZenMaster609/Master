@@ -4,8 +4,8 @@ spawn:
   spawn_yaw: 0
 
 speed_control:
-  speed_min_mps: 0.0
-  speed_max_mps: 0.0
+  speed_min_mps: 1.0
+  speed_max_mps: 2.0
   curvature_speed_gain: 4.0
   lowpass_speed_alpha: 0.15
 

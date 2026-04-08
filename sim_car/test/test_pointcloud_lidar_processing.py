@@ -379,6 +379,24 @@ def test_range_adaptive_detection_rejects_single_point_sparse_return() -> None:
     assert detections == []
 
 
+def test_range_adaptive_detection_accepts_single_point_far_return() -> None:
+    cone = np.asarray([[12.0, 0.0, 0.20]], dtype=np.float32)
+    detections = detect_cone_like_clusters(
+        cone,
+        max_cluster_radius_m=0.30,
+        min_cluster_points=3,
+        max_cluster_points=80,
+        min_cluster_width_m=0.05,
+        max_cluster_width_m=0.60,
+        min_cluster_depth_m=0.05,
+        max_cluster_depth_m=0.60,
+        min_cluster_height_m=0.15,
+        max_cluster_height_m=0.60,
+    )
+    assert len(detections) == 1
+    assert 11.0 < detections[0].x_m < 13.0
+
+
 def test_summarize_clusters_for_debug_includes_rejected_wall() -> None:
     wall = np.asarray(
         [
