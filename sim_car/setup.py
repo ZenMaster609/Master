@@ -102,6 +102,7 @@ setup(
             'brake_temp_rl_node = sim_car.sensors.brake_temp_rl_node:main',
             'pitot_dynamic_pressure_node = sim_car.sensors.pitot_dynamic_pressure_node:main',
             'measurement_node = sim_car.sensors.measurement_node:main',
+            'odom_delay_node = sim_car.sensors.odom_delay_node:main',
             'odom_tf_broadcaster_node = sim_car.sensors.odom_tf_broadcaster_node:main',
             'perception_node = sim_car.perception.perception_node:main',
             'cone_evaluator_node = sim_car.cones.nodes.evaluator_node:main',

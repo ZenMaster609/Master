@@ -159,6 +159,12 @@ def generate_launch_description():
         description='Planner/controller/odom target rate in Hz'
     )
 
+    planner_odom_delay_ms_arg = DeclareLaunchArgument(
+        'planner_odom_delay_ms',
+        default_value='40.0',
+        description='Fixed delay applied to planner/controller odometry feed (ms)'
+    )
+
     sensors_render_engine_arg = DeclareLaunchArgument(
         'sensors_render_engine',
         default_value='ogre2',
@@ -479,6 +485,7 @@ def generate_launch_description():
         'camera_rate_hz',
         'perception_rate_hz',
         'planner_rate_hz',
+        'planner_odom_delay_ms',
         'sensors_render_engine',
         'track',
         'world',
@@ -565,6 +572,7 @@ def generate_launch_description():
         LaunchConfiguration('measure'),
         "'.lower() == 'true')) else '/sim'"
     ])
+    delayed_planner_odom_topic = '/sim/odom_delayed'
     camera_source_name = PythonExpression([
         "'stereo' if '",
         LaunchConfiguration('stereo'),
@@ -622,6 +630,26 @@ def generate_launch_description():
         parameters=[{
             'use_sim_time': LaunchConfiguration('use_sim_time'),
             'config_path': resolved_measurement_config,
+        }],
+    )
+
+    odom_delay_node = Node(
+        package='sim_car',
+        executable='odom_delay_node',
+        name='odom_delay_node',
+        output='screen',
+        parameters=[{
+            'use_sim_time': ParameterValue(
+                LaunchConfiguration('use_sim_time'),
+                value_type=bool,
+            ),
+            'input_topic': '/sim/odom',
+            'output_topic': delayed_planner_odom_topic,
+            'delay_ms': ParameterValue(
+                LaunchConfiguration('planner_odom_delay_ms'),
+                value_type=float,
+            ),
+            'flush_rate_hz': 200.0,
         }],
     )
 
@@ -957,7 +985,7 @@ def generate_launch_description():
                 ),
                 'topics.input_topic': router_input_topic,
                 'topics.output_topic': '/tracked_cones/skidpad_routed',
-                'topics.odom_topic': '/sim/odom',
+                'topics.odom_topic': delayed_planner_odom_topic,
                 'topics.cmd_topic': '/cmd',
                 'topics.viz_topic': router_viz_topic,
                 'routing.event_mode': LaunchConfiguration('track'),
@@ -987,7 +1015,7 @@ def generate_launch_description():
                     value_type=bool,
                 ),
                 'topics.tracked_cones_topic': planner_input_topic,
-                'topics.odom_topic': '/sim/odom',
+                'topics.odom_topic': delayed_planner_odom_topic,
                 'runtime.publish_rate_hz': ParameterValue(
                     LaunchConfiguration('planner_rate_hz'),
                     value_type=float,
@@ -1023,7 +1051,7 @@ def generate_launch_description():
                     value_type=bool,
                 ),
                 'topics.tracked_cones_topic': planner_input_topic,
-                'topics.odom_topic': '/sim/odom',
+                'topics.odom_topic': delayed_planner_odom_topic,
                 'runtime.publish_rate_hz': ParameterValue(
                     LaunchConfiguration('planner_rate_hz'),
                     value_type=float,
@@ -1059,7 +1087,7 @@ def generate_launch_description():
                     value_type=bool,
                 ),
                 'topics.tracked_cones_topic': planner_input_topic,
-                'topics.odom_topic': '/sim/odom',
+                'topics.odom_topic': delayed_planner_odom_topic,
                 'runtime.publish_rate_hz': ParameterValue(
                     LaunchConfiguration('planner_rate_hz'),
                     value_type=float,
@@ -1092,7 +1120,7 @@ def generate_launch_description():
                     LaunchConfiguration('use_sim_time'),
                     value_type=bool,
                 ),
-                'topics.odom_topic': '/sim/odom',
+                'topics.odom_topic': delayed_planner_odom_topic,
                 'runtime.publish_rate_hz': ParameterValue(
                     LaunchConfiguration('planner_rate_hz'),
                     value_type=float,
@@ -1125,14 +1153,14 @@ def generate_launch_description():
         name='odom_tf_broadcaster_node',
         output='screen',
         parameters=[{
-            'use_sim_time': ParameterValue(
-                LaunchConfiguration('use_sim_time'),
-                value_type=bool,
-            ),
-            'odom_topic': '/sim/odom',
-            'default_frame_id': 'odom',
-            'default_child_frame_id': 'base_footprint',
-        }],
+                'use_sim_time': ParameterValue(
+                    LaunchConfiguration('use_sim_time'),
+                    value_type=bool,
+                ),
+                'odom_topic': delayed_planner_odom_topic,
+                'default_frame_id': 'odom',
+                'default_child_frame_id': 'base_footprint',
+            }],
     )
 
     pointcloud_sensor_frame_tf_node = Node(
@@ -1189,6 +1217,7 @@ def generate_launch_description():
         camera_rate_arg,
         perception_rate_arg,
         planner_rate_arg,
+        planner_odom_delay_ms_arg,
         sensors_render_engine_arg,
         track_arg,
         world_arg,
@@ -1247,6 +1276,7 @@ def generate_launch_description():
         gazebo_launch,
         sim_nodes_launch,
         measurement_node,
+        odom_delay_node,
         plotter_launch,
         steering_bridge_node,
         perception_node,
