@@ -40,6 +40,59 @@ class PointClusterDetection:
     reason: str = ''
 
 
+@dataclass(frozen=True)
+class _AcceptancePolicy:
+    max_range_m: float
+    min_points: int
+    min_width_cap_m: float | None = None
+    max_width_floor_m: float | None = None
+    min_depth_cap_m: float | None = None
+    max_depth_floor_m: float | None = None
+    min_height_cap_m: float | None = None
+    max_height_floor_m: float | None = None
+
+
+_ACCEPTANCE_POLICIES: tuple[_AcceptancePolicy, ...] = (
+    _AcceptancePolicy(
+        max_range_m=5.0,
+        min_points=3,
+        min_width_cap_m=0.03,
+        min_depth_cap_m=0.02,
+        min_height_cap_m=0.10,
+    ),
+    _AcceptancePolicy(
+        max_range_m=10.0,
+        min_points=2,
+        min_width_cap_m=0.0,
+        max_width_floor_m=0.70,
+        min_depth_cap_m=0.0,
+        max_depth_floor_m=0.70,
+        min_height_cap_m=0.03,
+        max_height_floor_m=0.75,
+    ),
+    _AcceptancePolicy(
+        max_range_m=18.0,
+        min_points=1,
+        min_width_cap_m=0.0,
+        max_width_floor_m=1.00,
+        min_depth_cap_m=0.0,
+        max_depth_floor_m=1.00,
+        min_height_cap_m=0.0,
+        max_height_floor_m=1.00,
+    ),
+    _AcceptancePolicy(
+        max_range_m=float('inf'),
+        min_points=1,
+        min_width_cap_m=0.0,
+        max_width_floor_m=1.20,
+        min_depth_cap_m=0.0,
+        max_depth_floor_m=1.20,
+        min_height_cap_m=0.0,
+        max_height_floor_m=1.20,
+    ),
+)
+
+
 def pointcloud2_to_xyz_array(msg: PointCloud2) -> np.ndarray:
     """Decode XYZ fields from a PointCloud2 message into an ``Nx3`` float32 array."""
     if msg.width == 0 or msg.height == 0 or not msg.data:
@@ -259,61 +312,21 @@ def detect_cone_like_clusters(
     max_cluster_height_m: float,
 ) -> list[PointClusterDetection]:
     """Filter XY clusters into cone-like detections with range-adaptive acceptance."""
-    points = np.asarray(points_xyz, dtype=np.float32).reshape(-1, 3)
-    detections: list[PointClusterDetection] = []
-    min_pts = max(1, int(min_cluster_points))
-    max_pts = max(min_pts, int(max_cluster_points))
-
-    for cluster_indices in cluster_xy_points_adaptive(points, max_cluster_radius_m=max_cluster_radius_m):
-        cluster = points[cluster_indices]
-        count = int(cluster.shape[0])
-
-        mins = np.min(cluster, axis=0)
-        maxs = np.max(cluster, axis=0)
-        x_span = float(maxs[0] - mins[0])
-        y_span = float(maxs[1] - mins[1])
-        width = max(x_span, y_span)
-        depth = min(x_span, y_span)
-        height = float(maxs[2] - mins[2])
-
-        centroid = np.mean(cluster, axis=0)
-        ranges = np.linalg.norm(cluster[:, :2], axis=1)
-        centroid_range = float(math.hypot(float(centroid[0]), float(centroid[1])))
-        thresholds = _acceptance_thresholds_for_range(
-            centroid_range,
-            min_cluster_points=min_pts,
-            max_cluster_points=max_pts,
-            min_cluster_width_m=float(min_cluster_width_m),
-            max_cluster_width_m=float(max_cluster_width_m),
-            min_cluster_depth_m=float(min_cluster_depth_m),
-            max_cluster_depth_m=float(max_cluster_depth_m),
-            min_cluster_height_m=float(min_cluster_height_m),
-            max_cluster_height_m=float(max_cluster_height_m),
+    return [
+        detection for detection in summarize_clusters_for_debug(
+            points_xyz,
+            max_cluster_radius_m=max_cluster_radius_m,
+            min_cluster_points=min_cluster_points,
+            max_cluster_points=max_cluster_points,
+            min_cluster_width_m=min_cluster_width_m,
+            max_cluster_width_m=max_cluster_width_m,
+            min_cluster_depth_m=min_cluster_depth_m,
+            max_cluster_depth_m=max_cluster_depth_m,
+            min_cluster_height_m=min_cluster_height_m,
+            max_cluster_height_m=max_cluster_height_m,
         )
-
-        accepted, reason = _cluster_acceptance_reason(
-            count=count,
-            width=width,
-            depth=depth,
-            height=height,
-            thresholds=thresholds,
-        )
-        detections.append(
-            PointClusterDetection(
-                x_m=float(centroid[0]),
-                y_m=float(centroid[1]),
-                z_m=float(centroid[2]),
-                width_m=float(width),
-                depth_m=float(depth),
-                height_m=float(height),
-                point_count=count,
-                min_range_m=float(np.min(ranges)),
-                max_range_m=float(np.max(ranges)),
-                accepted=accepted,
-                reason=reason,
-            )
-        )
-    return [detection for detection in detections if detection.accepted]
+        if detection.accepted
+    ]
 
 
 def summarize_clusters_for_debug(
@@ -336,16 +349,7 @@ def summarize_clusters_for_debug(
     max_pts = max(min_pts, int(max_cluster_points))
     for cluster_indices in cluster_xy_points_adaptive(points, max_cluster_radius_m=max_cluster_radius_m):
         cluster = points[cluster_indices]
-        count = int(cluster.shape[0])
-        mins = np.min(cluster, axis=0)
-        maxs = np.max(cluster, axis=0)
-        x_span = float(maxs[0] - mins[0])
-        y_span = float(maxs[1] - mins[1])
-        width = max(x_span, y_span)
-        depth = min(x_span, y_span)
-        height = float(maxs[2] - mins[2])
         centroid = np.mean(cluster, axis=0)
-        ranges = np.linalg.norm(cluster[:, :2], axis=1)
         centroid_range = float(math.hypot(float(centroid[0]), float(centroid[1])))
         thresholds = _acceptance_thresholds_for_range(
             centroid_range,
@@ -358,28 +362,7 @@ def summarize_clusters_for_debug(
             min_cluster_height_m=float(min_cluster_height_m),
             max_cluster_height_m=float(max_cluster_height_m),
         )
-        accepted, reason = _cluster_acceptance_reason(
-            count=count,
-            width=width,
-            depth=depth,
-            height=height,
-            thresholds=thresholds,
-        )
-        detections.append(
-            PointClusterDetection(
-                x_m=float(centroid[0]),
-                y_m=float(centroid[1]),
-                z_m=float(centroid[2]),
-                width_m=float(width),
-                depth_m=float(depth),
-                height_m=float(height),
-                point_count=count,
-                min_range_m=float(np.min(ranges)),
-                max_range_m=float(np.max(ranges)),
-                accepted=accepted,
-                reason=reason,
-            )
-        )
+        detections.append(_summarize_cluster(cluster, thresholds))
     return detections
 
 
@@ -441,49 +424,42 @@ def _acceptance_thresholds_for_range(
     min_cluster_height_m: float,
     max_cluster_height_m: float,
 ) -> dict[str, float]:
-    if range_m < 5.0:
-        return {
-            'min_points': max(3, min_cluster_points if min_cluster_points < 3 else 3),
-            'max_points': max_cluster_points,
-            'min_width': min(min_cluster_width_m, 0.03),
-            'max_width': max_cluster_width_m,
-            'min_depth': min(min_cluster_depth_m, 0.02),
-            'max_depth': max_cluster_depth_m,
-            'min_height': min(min_cluster_height_m, 0.10),
-            'max_height': max_cluster_height_m,
-        }
-    if range_m < 10.0:
-        return {
-            'min_points': max(2, min_cluster_points if min_cluster_points < 2 else 2),
-            'max_points': max_cluster_points,
-            'min_width': 0.0,
-            'max_width': max(max_cluster_width_m, 0.70),
-            'min_depth': 0.0,
-            'max_depth': max(max_cluster_depth_m, 0.70),
-            'min_height': 0.03,
-            'max_height': max(max_cluster_height_m, 0.75),
-        }
-    if range_m < 18.0:
-        return {
-            'min_points': 1,
-            'max_points': max_cluster_points,
-            'min_width': 0.0,
-            'max_width': max(max_cluster_width_m, 1.00),
-            'min_depth': 0.0,
-            'max_depth': max(max_cluster_depth_m, 1.00),
-            'min_height': 0.0,
-            'max_height': max(max_cluster_height_m, 1.00),
-        }
+    policy = _acceptance_policy_for_range(range_m)
     return {
-        'min_points': 1,
+        'min_points': _effective_min_points(policy, min_cluster_points),
         'max_points': max_cluster_points,
-        'min_width': 0.0,
-        'max_width': max(max_cluster_width_m, 1.20),
-        'min_depth': 0.0,
-        'max_depth': max(max_cluster_depth_m, 1.20),
-        'min_height': 0.0,
-        'max_height': max(max_cluster_height_m, 1.20),
+        'min_width': _cap_minimum(min_cluster_width_m, policy.min_width_cap_m),
+        'max_width': _floor_maximum(max_cluster_width_m, policy.max_width_floor_m),
+        'min_depth': _cap_minimum(min_cluster_depth_m, policy.min_depth_cap_m),
+        'max_depth': _floor_maximum(max_cluster_depth_m, policy.max_depth_floor_m),
+        'min_height': _cap_minimum(min_cluster_height_m, policy.min_height_cap_m),
+        'max_height': _floor_maximum(max_cluster_height_m, policy.max_height_floor_m),
     }
+
+
+def _acceptance_policy_for_range(range_m: float) -> _AcceptancePolicy:
+    for policy in _ACCEPTANCE_POLICIES:
+        if range_m < policy.max_range_m:
+            return policy
+    return _ACCEPTANCE_POLICIES[-1]
+
+
+def _effective_min_points(policy: _AcceptancePolicy, _configured_min_points: int) -> int:
+    return int(policy.min_points)
+
+
+def _cap_minimum(configured_value: float, cap_value: float | None) -> float:
+    configured = float(configured_value)
+    if cap_value is None:
+        return configured
+    return min(configured, float(cap_value))
+
+
+def _floor_maximum(configured_value: float, floor_value: float | None) -> float:
+    configured = float(configured_value)
+    if floor_value is None:
+        return configured
+    return max(configured, float(floor_value))
 
 
 def _cluster_acceptance_reason(
@@ -511,6 +487,39 @@ def _cluster_acceptance_reason(
     if height > float(thresholds['max_height']):
         return False, 'too_tall'
     return True, ''
+
+
+def _summarize_cluster(cluster: np.ndarray, thresholds: dict[str, float]) -> PointClusterDetection:
+    count = int(cluster.shape[0])
+    mins = np.min(cluster, axis=0)
+    maxs = np.max(cluster, axis=0)
+    x_span = float(maxs[0] - mins[0])
+    y_span = float(maxs[1] - mins[1])
+    width = max(x_span, y_span)
+    depth = min(x_span, y_span)
+    height = float(maxs[2] - mins[2])
+    centroid = np.mean(cluster, axis=0)
+    ranges = np.linalg.norm(cluster[:, :2], axis=1)
+    accepted, reason = _cluster_acceptance_reason(
+        count=count,
+        width=width,
+        depth=depth,
+        height=height,
+        thresholds=thresholds,
+    )
+    return PointClusterDetection(
+        x_m=float(centroid[0]),
+        y_m=float(centroid[1]),
+        z_m=float(centroid[2]),
+        width_m=float(width),
+        depth_m=float(depth),
+        height_m=float(height),
+        point_count=count,
+        min_range_m=float(np.min(ranges)),
+        max_range_m=float(np.max(ranges)),
+        accepted=accepted,
+        reason=reason,
+    )
 
 
 def summarize_rejection_reasons(clusters: Sequence[PointClusterDetection]) -> dict[str, int]:

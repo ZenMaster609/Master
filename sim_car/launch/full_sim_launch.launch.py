@@ -37,6 +37,93 @@ CONFIGURED_PLANNERS = MIGRATED_PLANNERS | {'linetest'}
 SUPPORTED_PLANNERS = CONFIGURED_PLANNERS | {'none'}
 SUPPORTED_CONTROLLERS = {'stanley', 'pure_pursuit', 'none'}
 
+POINTCLOUD3D_LIDAR_PARAMS = {
+    'max_detection_range_m': 25.0,
+    'thinning_start_range_m': 12.0,
+    'thinning_keep_ratio_at_max_range': 1.0,
+    'ground_base_cutoff_m': 0.035,
+    'ground_range_bias_m': 0.01,
+    'ground_range_slope_m_per_m': 0.004,
+    'downsample_stride': 1,
+}
+LEGACY_CONE_MEMORY_CONFIRM_HITS = 3
+POINTCLOUD3D_CONE_MEMORY_CONFIRM_HITS = 1
+LEGACY_PLANNER_MIN_CONFIDENCE = 0.3
+POINTCLOUD3D_PLANNER_MIN_CONFIDENCE = 0.15
+
+
+def _lidar_pipeline_match_expr(pipeline: str):
+    return PythonExpression([
+        "'",
+        LaunchConfiguration('lidar_pipeline'),
+        f"'.lower() == '{pipeline}'",
+    ])
+
+
+def _lidar_pipeline_enabled_condition(pipeline: str):
+    return IfCondition(PythonExpression([
+        "(('",
+        LaunchConfiguration('lidar_enabled'),
+        "'.lower() == 'true') or ('",
+        LaunchConfiguration('cone_memory_enabled'),
+        "'.lower() == 'true')) and (",
+        _lidar_pipeline_match_expr(pipeline),
+        ")",
+    ]))
+
+
+def _pointcloud3d_lidar_parameters(topic_prefix):
+    parameters = {
+        'pointcloud_topic': PythonExpression(["'", topic_prefix, "' + '/lidar/points'"]),
+        'filtered_pointcloud_topic': PythonExpression(["'", topic_prefix, "' + '/lidar/points_filtered'"]),
+        'cone_detections_topic': PythonExpression(["'", topic_prefix, "' + '/lidar/perception/cones_3d'"]),
+        'lidar_frame': 'lidar_os1_link',
+        'cone_detections_frame': 'base_footprint',
+    }
+    parameters.update(POINTCLOUD3D_LIDAR_PARAMS)
+    return parameters
+
+
+def _cone_memory_pipeline_parameters():
+    return {
+        'min_seen_count': ParameterValue(
+            PythonExpression([
+                f"{POINTCLOUD3D_CONE_MEMORY_CONFIRM_HITS} if ",
+                _lidar_pipeline_match_expr('pointcloud3d'),
+                f' else {LEGACY_CONE_MEMORY_CONFIRM_HITS}',
+            ]),
+            value_type=int,
+        ),
+        'confirm_hits': ParameterValue(
+            PythonExpression([
+                f"{POINTCLOUD3D_CONE_MEMORY_CONFIRM_HITS} if ",
+                _lidar_pipeline_match_expr('pointcloud3d'),
+                f' else {LEGACY_CONE_MEMORY_CONFIRM_HITS}',
+            ]),
+            value_type=int,
+        ),
+    }
+
+
+def _planner_pipeline_parameters():
+    return {
+        'filtering.min_confidence': ParameterValue(
+            PythonExpression([
+                f"{POINTCLOUD3D_PLANNER_MIN_CONFIDENCE} if ",
+                _lidar_pipeline_match_expr('pointcloud3d'),
+                f' else {LEGACY_PLANNER_MIN_CONFIDENCE}',
+            ]),
+            value_type=float,
+        ),
+    }
+
+
+def _pointcloud3d_debug_topics(topic_prefix) -> dict[str, str]:
+    return {
+        'raw_pointcloud_topic': f'{topic_prefix}/lidar/points',
+        'filtered_pointcloud_topic': f'{topic_prefix}/lidar/points_filtered',
+    }
+
 
 def generate_launch_description():
     sim_car_share = FindPackageShare('sim_car')
@@ -748,15 +835,7 @@ def generate_launch_description():
         executable='lidar_node',
         name='lidar_node',
         output='screen',
-        condition=IfCondition(PythonExpression([
-            "(('",
-            LaunchConfiguration('lidar_enabled'),
-            "'.lower() == 'true') or ('",
-            LaunchConfiguration('cone_memory_enabled'),
-            "'.lower() == 'true')) and ('",
-            LaunchConfiguration('lidar_pipeline'),
-            "'.lower() == 'scan2d')",
-        ])),
+        condition=_lidar_pipeline_enabled_condition('scan2d'),
         parameters=[{
             'use_sim_time': ParameterValue(
                 LaunchConfiguration('use_sim_time'),
@@ -774,32 +853,13 @@ def generate_launch_description():
         executable='pointcloud_lidar_node',
         name='pointcloud_lidar_node',
         output='screen',
-        condition=IfCondition(PythonExpression([
-            "(('",
-            LaunchConfiguration('lidar_enabled'),
-            "'.lower() == 'true') or ('",
-            LaunchConfiguration('cone_memory_enabled'),
-            "'.lower() == 'true')) and ('",
-            LaunchConfiguration('lidar_pipeline'),
-            "'.lower() == 'pointcloud3d')",
-        ])),
+        condition=_lidar_pipeline_enabled_condition('pointcloud3d'),
         parameters=[{
             'use_sim_time': ParameterValue(
                 LaunchConfiguration('use_sim_time'),
                 value_type=bool,
             ),
-            'pointcloud_topic': PythonExpression(["'", topic_prefix, "' + '/lidar/points'"]),
-            'filtered_pointcloud_topic': PythonExpression(["'", topic_prefix, "' + '/lidar/points_filtered'"]),
-            'cone_detections_topic': PythonExpression(["'", topic_prefix, "' + '/lidar/perception/cones_3d'"]),
-            'lidar_frame': 'lidar_os1_link',
-            'cone_detections_frame': 'base_footprint',
-            'max_detection_range_m': 25.0,
-            'thinning_start_range_m': 12.0,
-            'thinning_keep_ratio_at_max_range': 1.0,
-            'ground_base_cutoff_m': 0.035,
-            'ground_range_bias_m': 0.01,
-            'ground_range_slope_m_per_m': 0.004,
-            'downsample_stride': 1,
+            **_pointcloud3d_lidar_parameters(topic_prefix),
         }],
     )
 
@@ -853,6 +913,7 @@ def generate_launch_description():
                     LaunchConfiguration('perception_rate_hz'),
                     value_type=float,
                 ),
+                **_cone_memory_pipeline_parameters(),
             },
         ],
     )
@@ -931,7 +992,7 @@ def generate_launch_description():
                     LaunchConfiguration('planner_rate_hz'),
                     value_type=float,
                 ),
-                'filtering.min_confidence': 0.15,
+                **_planner_pipeline_parameters(),
                 'lap_tracking.gt_track_topic': '/ground_truth/track',
                 'lap_tracking.target_laps': resolved_path_tracking_autostop_laps,
                 'diagnostics.publish_thesis_context': ParameterValue(
@@ -967,7 +1028,7 @@ def generate_launch_description():
                     LaunchConfiguration('planner_rate_hz'),
                     value_type=float,
                 ),
-                'filtering.min_confidence': 0.15,
+                **_planner_pipeline_parameters(),
                 'lap_tracking.gt_track_topic': '/ground_truth/track',
                 'lap_tracking.target_laps': resolved_path_tracking_autostop_laps,
                 'diagnostics.publish_thesis_context': ParameterValue(
@@ -1003,7 +1064,7 @@ def generate_launch_description():
                     LaunchConfiguration('planner_rate_hz'),
                     value_type=float,
                 ),
-                'filtering.min_confidence': 0.15,
+                **_planner_pipeline_parameters(),
                 'diagnostics.publish_thesis_context': ParameterValue(
                     LaunchConfiguration('thesis_controller_diagnostics'),
                     value_type=bool,
@@ -1085,11 +1146,7 @@ def generate_launch_description():
             'lidar_os1_link',
             'sim_car/base_footprint/front_lidar',
         ],
-        condition=IfCondition(PythonExpression([
-            "'",
-            LaunchConfiguration('lidar_pipeline'),
-            "'.lower() == 'pointcloud3d'",
-        ])),
+        condition=IfCondition(_lidar_pipeline_match_expr('pointcloud3d')),
     )
 
     rviz_node = Node(
@@ -1502,15 +1559,14 @@ def _configure_rviz_config(context, *_args, **_kwargs):
     lidar_pipeline = LaunchConfiguration('lidar_pipeline').perform(context).strip().lower()
     measurement_enabled = _launch_config_truthy(context, 'sensor_pipeline') or _launch_config_truthy(context, 'measure')
     topic_prefix = '/sim/raw' if measurement_enabled else '/sim'
-    pointcloud_topic = f'{topic_prefix}/lidar/points'
-    filtered_pointcloud_topic = f'{topic_prefix}/lidar/points_filtered'
+    pointcloud_debug_topics = _pointcloud3d_debug_topics(topic_prefix)
     raw_pointcloud_enabled = _launch_config_truthy(context, 'rviz_raw_pointcloud_debug') and lidar_pipeline == 'pointcloud3d'
     filtered_pointcloud_enabled = _launch_config_truthy(context, 'rviz_filtered_pointcloud_debug') and lidar_pipeline == 'pointcloud3d'
     resolved_config = _write_rviz_config_with_pointcloud_debugs(
         base_config,
-        raw_pointcloud_topic=pointcloud_topic,
+        raw_pointcloud_topic=pointcloud_debug_topics['raw_pointcloud_topic'],
         raw_enabled=raw_pointcloud_enabled,
-        filtered_pointcloud_topic=filtered_pointcloud_topic,
+        filtered_pointcloud_topic=pointcloud_debug_topics['filtered_pointcloud_topic'],
         filtered_enabled=filtered_pointcloud_enabled,
     )
 

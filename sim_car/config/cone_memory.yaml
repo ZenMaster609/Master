@@ -20,8 +20,8 @@ cone_memory_node:
     track_merge_radius_m: 0.85
     track_merge_longitudinal_tolerance_m: 2.50
     track_merge_lateral_tolerance_m: 0.55
-    min_seen_count: 1
-    confirm_hits: 1
+    min_seen_count: 3
+    confirm_hits: 3
     alpha_lidar: 0.25
     alpha_camera: 0.15
     track_confidence_gain: 0.25
