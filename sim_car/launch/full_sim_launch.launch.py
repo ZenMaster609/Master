@@ -232,6 +232,18 @@ def generate_launch_description():
         description='Explicit path to RViz display config file (overrides rviz_profile when set)'
     )
 
+    rviz_raw_pointcloud_debug_arg = DeclareLaunchArgument(
+        'rviz_raw_pointcloud_debug',
+        default_value='false',
+        description='Enable raw lidar PointCloud2 debug display in the launched RViz session'
+    )
+
+    rviz_filtered_pointcloud_debug_arg = DeclareLaunchArgument(
+        'rviz_filtered_pointcloud_debug',
+        default_value='true',
+        description='Enable filtered lidar PointCloud2 debug display in the launched RViz session'
+    )
+
     perception_queue_size_arg = DeclareLaunchArgument(
         'perception_queue_size',
         default_value='8',
@@ -254,6 +266,12 @@ def generate_launch_description():
         'lidar_enabled',
         default_value='true',
         description='Enable LiDAR cone detection/evaluation node'
+    )
+
+    lidar_pipeline_arg = DeclareLaunchArgument(
+        'lidar_pipeline',
+        default_value='pointcloud3d',
+        description="LiDAR perception path: 'pointcloud3d' or 'scan2d'"
     )
 
     cone_memory_enabled_arg = DeclareLaunchArgument(
@@ -399,10 +417,13 @@ def generate_launch_description():
         'use_rviz',
         'rviz_profile',
         'rviz_config',
+        'rviz_raw_pointcloud_debug',
+        'rviz_filtered_pointcloud_debug',
         'perception_queue_size',
         'cuda',
         'stereo',
         'lidar_enabled',
+        'lidar_pipeline',
         'cone_memory_enabled',
         'camera_range_m',
         'prefer_lidar_if_camera_missing_far',
@@ -484,6 +505,7 @@ def generate_launch_description():
             'perception_rate_hz': LaunchConfiguration('perception_rate_hz'),
             'planner_rate_hz': LaunchConfiguration('planner_rate_hz'),
             'physics_model': LaunchConfiguration('physics_model'),
+            'lidar_pipeline': LaunchConfiguration('lidar_pipeline'),
             'sensors_render_engine': LaunchConfiguration('sensors_render_engine'),
             'topic_prefix': topic_prefix,
             'spawn_x': resolved_spawn_x,
@@ -727,11 +749,13 @@ def generate_launch_description():
         name='lidar_node',
         output='screen',
         condition=IfCondition(PythonExpression([
-            "'",
+            "(('",
             LaunchConfiguration('lidar_enabled'),
-            "'.lower() == 'true' or '",
+            "'.lower() == 'true') or ('",
             LaunchConfiguration('cone_memory_enabled'),
-            "'.lower() == 'true'",
+            "'.lower() == 'true')) and ('",
+            LaunchConfiguration('lidar_pipeline'),
+            "'.lower() == 'scan2d')",
         ])),
         parameters=[{
             'use_sim_time': ParameterValue(
@@ -740,7 +764,42 @@ def generate_launch_description():
             ),
             'scan_topic': PythonExpression(["'", topic_prefix, "' + '/lidar'"]),
             'cone_detections_topic': PythonExpression(["'", topic_prefix, "' + '/lidar/perception/cones_3d'"]),
+            'lidar_frame': 'lidar_scan_link',
             'cone_detections_frame': 'front_axle',
+        }],
+    )
+
+    pointcloud_lidar_node = Node(
+        package='sim_car',
+        executable='pointcloud_lidar_node',
+        name='pointcloud_lidar_node',
+        output='screen',
+        condition=IfCondition(PythonExpression([
+            "(('",
+            LaunchConfiguration('lidar_enabled'),
+            "'.lower() == 'true') or ('",
+            LaunchConfiguration('cone_memory_enabled'),
+            "'.lower() == 'true')) and ('",
+            LaunchConfiguration('lidar_pipeline'),
+            "'.lower() == 'pointcloud3d')",
+        ])),
+        parameters=[{
+            'use_sim_time': ParameterValue(
+                LaunchConfiguration('use_sim_time'),
+                value_type=bool,
+            ),
+            'pointcloud_topic': PythonExpression(["'", topic_prefix, "' + '/lidar/points'"]),
+            'filtered_pointcloud_topic': PythonExpression(["'", topic_prefix, "' + '/lidar/points_filtered'"]),
+            'cone_detections_topic': PythonExpression(["'", topic_prefix, "' + '/lidar/perception/cones_3d'"]),
+            'lidar_frame': 'lidar_os1_link',
+            'cone_detections_frame': 'base_footprint',
+            'max_detection_range_m': 25.0,
+            'thinning_start_range_m': 12.0,
+            'thinning_keep_ratio_at_max_range': 1.0,
+            'ground_base_cutoff_m': 0.035,
+            'ground_range_bias_m': 0.01,
+            'ground_range_slope_m_per_m': 0.004,
+            'downsample_stride': 1,
         }],
     )
 
@@ -996,6 +1055,40 @@ def generate_launch_description():
         condition=IfCondition(camera_debug_enabled_expr),
     )
 
+    odom_tf_broadcaster_node = Node(
+        package='sim_car',
+        executable='odom_tf_broadcaster_node',
+        name='odom_tf_broadcaster_node',
+        output='screen',
+        parameters=[{
+            'use_sim_time': ParameterValue(
+                LaunchConfiguration('use_sim_time'),
+                value_type=bool,
+            ),
+            'odom_topic': '/sim/odom',
+            'default_frame_id': 'odom',
+            'default_child_frame_id': 'base_footprint',
+        }],
+    )
+
+    pointcloud_sensor_frame_tf_node = Node(
+        package='tf2_ros',
+        executable='static_transform_publisher',
+        name='pointcloud_lidar_sensor_frame_tf',
+        output='screen',
+        arguments=[
+            '0', '0', '0',
+            '0', '0', '0',
+            'lidar_os1_link',
+            'sim_car/base_footprint/front_lidar',
+        ],
+        condition=IfCondition(PythonExpression([
+            "'",
+            LaunchConfiguration('lidar_pipeline'),
+            "'.lower() == 'pointcloud3d'",
+        ])),
+    )
+
     rviz_node = Node(
         package='rviz2',
         executable='rviz2',
@@ -1062,10 +1155,13 @@ def generate_launch_description():
         use_rviz_arg,
         rviz_profile_arg,
         rviz_config_arg,
+        rviz_raw_pointcloud_debug_arg,
+        rviz_filtered_pointcloud_debug_arg,
         perception_queue_size_arg,
         cuda_arg,
         stereo_arg,
         lidar_enabled_arg,
+        lidar_pipeline_arg,
         cone_memory_enabled_arg,
         camera_range_arg,
         prefer_lidar_if_camera_missing_far_arg,
@@ -1096,6 +1192,7 @@ def generate_launch_description():
         perception_node,
         camera_cone_evaluator_node,
         lidar_node,
+        pointcloud_lidar_node,
         lidar_cone_evaluator_node,
         cone_memory_node,
         skidpad_router_node,
@@ -1104,6 +1201,8 @@ def generate_launch_description():
         corridor_planner_node,
         linetest_planner_node,
         camera_debug_viewer_node,
+        odom_tf_broadcaster_node,
+        pointcloud_sensor_frame_tf_node,
         rviz_node,
         steering_gui_node,
         run_artifacts_node,
@@ -1376,7 +1475,7 @@ def _configure_measurement_config(context, *_args, **_kwargs):
 def _configure_rviz_config(context, *_args, **_kwargs):
     explicit_config = LaunchConfiguration('rviz_config').perform(context).strip()
     if explicit_config:
-        resolved_config = explicit_config
+        base_config = explicit_config
     else:
         sim_car_share = get_package_share_directory('sim_car')
         rviz_profile = LaunchConfiguration('rviz_profile').perform(context).strip().lower()
@@ -1395,9 +1494,141 @@ def _configure_rviz_config(context, *_args, **_kwargs):
             resolved_filename = profile_to_filename.get(planner, 'driving_clean.rviz')
         else:
             resolved_filename = profile_to_filename.get(rviz_profile, 'driving_clean.rviz')
-        resolved_config = str(Path(sim_car_share) / 'rviz' / resolved_filename)
+        base_config = str(Path(sim_car_share) / 'rviz' / resolved_filename)
+
+    lidar_pipeline = LaunchConfiguration('lidar_pipeline').perform(context).strip().lower()
+    measurement_enabled = _launch_config_truthy(context, 'sensor_pipeline') or _launch_config_truthy(context, 'measure')
+    topic_prefix = '/sim/raw' if measurement_enabled else '/sim'
+    pointcloud_topic = f'{topic_prefix}/lidar/points'
+    filtered_pointcloud_topic = f'{topic_prefix}/lidar/points_filtered'
+    raw_pointcloud_enabled = _launch_config_truthy(context, 'rviz_raw_pointcloud_debug') and lidar_pipeline == 'pointcloud3d'
+    filtered_pointcloud_enabled = _launch_config_truthy(context, 'rviz_filtered_pointcloud_debug') and lidar_pipeline == 'pointcloud3d'
+    resolved_config = _write_rviz_config_with_pointcloud_debugs(
+        base_config,
+        raw_pointcloud_topic=pointcloud_topic,
+        raw_enabled=raw_pointcloud_enabled,
+        filtered_pointcloud_topic=filtered_pointcloud_topic,
+        filtered_enabled=filtered_pointcloud_enabled,
+    )
 
     return [SetLaunchConfiguration('resolved_rviz_config', resolved_config)]
+
+
+def _launch_config_truthy(context, name: str) -> bool:
+    return LaunchConfiguration(name).perform(context).strip().lower() in {'true', '1', 'yes', 'on'}
+
+
+def _write_rviz_config_with_pointcloud_debugs(
+    base_config: str,
+    *,
+    raw_pointcloud_topic: str,
+    raw_enabled: bool,
+    filtered_pointcloud_topic: str,
+    filtered_enabled: bool,
+) -> str:
+    with open(base_config, 'r', encoding='utf-8') as rviz_file:
+        config = yaml.safe_load(rviz_file) or {}
+
+    viz_manager = config.setdefault('Visualization Manager', {})
+    displays = viz_manager.setdefault('Displays', [])
+    insert_idx = len(displays)
+    for idx, item in enumerate(displays):
+        if isinstance(item, dict) and item.get('Name') == 'Raw Lidar Debug':
+            insert_idx = idx + 1
+            break
+
+    _upsert_rviz_pointcloud_display(
+        displays,
+        name='Raw PointCloud Debug',
+        topic=raw_pointcloud_topic,
+        enabled=bool(raw_enabled),
+        unreliable=False,
+        insert_idx=insert_idx,
+        color='255; 255; 255',
+    )
+    _upsert_rviz_pointcloud_display(
+        displays,
+        name='Filtered PointCloud Debug',
+        topic=filtered_pointcloud_topic,
+        enabled=bool(filtered_enabled),
+        unreliable=True,
+        insert_idx=insert_idx + 1,
+        color='0; 255; 0',
+    )
+
+    with tempfile.NamedTemporaryFile(mode='w', delete=False, suffix='.rviz', encoding='utf-8') as tmp:
+        yaml.safe_dump(config, tmp, default_flow_style=False, sort_keys=False)
+        return tmp.name
+
+
+def _upsert_rviz_pointcloud_display(
+    displays: list,
+    *,
+    name: str,
+    topic: str,
+    enabled: bool,
+    unreliable: bool,
+    insert_idx: int,
+    color: str,
+) -> None:
+    topic_config = {
+        'Value': topic,
+        'Depth': 10,
+        'Durability Policy': 'Volatile',
+        'History Policy': 'Keep Last',
+        'Reliability Policy': 'Best Effort' if unreliable else 'Reliable',
+    }
+
+    display = None
+    for item in displays:
+        if isinstance(item, dict) and item.get('Name') == name:
+            display = item
+            break
+
+    if display is None:
+        display = {
+            'Alpha': 1,
+            'Autocompute Intensity Bounds': True,
+            'Autocompute Value Bounds': {
+                'Max Value': 10,
+                'Min Value': -10,
+                'Value': True,
+            },
+            'Axis': 'Z',
+            'Channel Name': 'intensity',
+            'Class': 'rviz_default_plugins/PointCloud2',
+            'Color': color,
+            'Color Transformer': 'FlatColor',
+            'Decay Time': 0,
+            'Enabled': False,
+            'Invert Rainbow': False,
+            'Max Color': '255; 255; 255',
+            'Max Intensity': 4096,
+            'Min Color': '0; 0; 0',
+            'Min Intensity': 0,
+            'Name': name,
+            'Position Transformer': 'XYZ',
+            'Queue Size': 20,
+            'Selectable': True,
+            'Size (Pixels)': 6,
+            'Size (m)': 0.06,
+            'Style': 'Flat Squares',
+            'Topic': topic_config,
+            'Use Fixed Frame': True,
+            'Use rainbow': False,
+            'Value': False,
+        }
+        displays.insert(insert_idx, display)
+
+    display['Topic'] = topic_config
+    display['Enabled'] = bool(enabled)
+    display['Value'] = bool(enabled)
+    display['Color Transformer'] = 'FlatColor'
+    display['Color'] = color
+    display['Use rainbow'] = False
+    display['Queue Size'] = 20
+    display['Size (Pixels)'] = 6
+    display['Size (m)'] = 0.06
 
 
 def _validate_planner_and_controller_args(context, *_args, **_kwargs):

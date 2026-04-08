@@ -6,11 +6,13 @@
   <xacro:arg name="camera_rate_hz" default="15.0"/>
   <xacro:arg name="perception_rate_hz" default="60.0"/>
   <xacro:arg name="planner_rate_hz" default="60.0"/>
+  <xacro:arg name="lidar_pipeline" default="pointcloud3d"/>
   <xacro:arg name="publish_track_cones" default="true"/>
   <xacro:arg name="enable_cone_miscoloring" default="false"/>
   <xacro:arg name="cone_confusion_yaml" default="$(find gazebo_cone_plugins)/config/cone_confusion_matrix.yaml"/>
 
-  <xacro:property name="config" value="${load_yaml('$(arg config_file)')}"/>
+  <xacro:property name="config" value="${xacro.load_yaml('$(arg config_file)')}"/>
+  <xacro:property name="lidar_pipeline_mode" value="$(arg lidar_pipeline)"/>
 
   <material name="tire_mat">
     <color rgba="0.05 0.05 0.05 1"/>
@@ -107,8 +109,8 @@
     <origin xyz="1.71 -0.06 0.2" rpy="0 0 0"/>
   </joint>
 
-  <!-- 2D LiDAR Sensor Link -->
-  <link name="lidar_link">
+  <!-- Legacy 2D LiDAR Sensor Link -->
+  <link name="lidar_scan_link">
     <visual>
       <geometry>
         <cylinder radius="0.04" length="0.05"/>
@@ -121,10 +123,30 @@
     </inertial>
   </link>
 
-  <joint name="lidar_joint" type="fixed">
+  <joint name="lidar_scan_joint" type="fixed">
     <parent link="chassis"/>
-    <child link="lidar_link"/>
+    <child link="lidar_scan_link"/>
     <origin xyz="1.45 0 -0.09" rpy="0 0 0"/>
+  </joint>
+
+  <!-- OS1-style 3D LiDAR Sensor Link -->
+  <link name="lidar_os1_link">
+    <visual>
+      <geometry>
+        <cylinder radius="0.04" length="0.05"/>
+      </geometry>
+      <material name="silver"/>
+    </visual>
+    <inertial>
+      <mass value="0.12"/>
+      <inertia ixx="0.00005" ixy="0.0" ixz="0.0" iyy="0.00005" iyz="0.0" izz="0.00005"/>
+    </inertial>
+  </link>
+
+  <joint name="lidar_os1_joint" type="fixed">
+    <parent link="chassis"/>
+    <child link="lidar_os1_link"/>
+    <origin xyz="1.855 0 0.32" rpy="0 0 0"/>
   </joint>
 
   <!-- EUFS dynamics plugin (gz-sim) -->
@@ -328,38 +350,77 @@
     </sensor>
   </gazebo>
 
-  <!-- Front 260-degree 2D LiDAR Sensor -->
-  <gazebo reference="lidar_link">
-    <sensor name="front_lidar" type="gpu_lidar">
-      <topic>$(arg topic_prefix)/lidar</topic>
-      <update_rate>$(arg perception_rate_hz)</update_rate>
-      <always_on>true</always_on>
-      <visualize>false</visualize>
-      <lidar>
-        <scan>
-          <horizontal>
-            <samples>1080</samples>
-            <resolution>1</resolution>
-            <min_angle>-1.91986218</min_angle>
-            <max_angle>1.91986218</max_angle>
-          </horizontal>
-          <vertical>
-            <samples>1</samples>
-            <resolution>1</resolution>
-            <min_angle>0.0</min_angle>
-            <max_angle>0.0</max_angle>
-          </vertical>
-        </scan>
-        <range>
-          <min>0.10</min>
-          <max>30.0</max>
-          <resolution>0.01</resolution>
-        </range>
-        <noise type="gaussian">
-          <mean>0.0</mean>
-          <stddev>0.02</stddev>
-        </noise>
-      </lidar>
-    </sensor>
-  </gazebo>
+  <xacro:if value="${lidar_pipeline_mode == 'scan2d'}">
+    <!-- Legacy front 260-degree 2D LiDAR Sensor -->
+    <gazebo reference="lidar_scan_link">
+      <sensor name="front_lidar" type="gpu_lidar">
+        <topic>$(arg topic_prefix)/lidar</topic>
+        <update_rate>$(arg perception_rate_hz)</update_rate>
+        <always_on>true</always_on>
+        <visualize>false</visualize>
+        <lidar>
+          <scan>
+            <horizontal>
+              <samples>1080</samples>
+              <resolution>1</resolution>
+              <min_angle>-1.91986218</min_angle>
+              <max_angle>1.91986218</max_angle>
+            </horizontal>
+            <vertical>
+              <samples>1</samples>
+              <resolution>1</resolution>
+              <min_angle>0.0</min_angle>
+              <max_angle>0.0</max_angle>
+            </vertical>
+          </scan>
+          <range>
+            <min>0.10</min>
+            <max>30.0</max>
+            <resolution>0.01</resolution>
+          </range>
+          <noise type="gaussian">
+            <mean>0.0</mean>
+            <stddev>0.02</stddev>
+          </noise>
+        </lidar>
+      </sensor>
+    </gazebo>
+  </xacro:if>
+
+  <xacro:unless value="${lidar_pipeline_mode == 'scan2d'}">
+    <!-- OS1-like 3D LiDAR profile -->
+    <gazebo reference="lidar_os1_link">
+      <sensor name="front_lidar" type="gpu_lidar">
+        <topic>$(arg topic_prefix)/lidar</topic>
+        <update_rate>10.0</update_rate>
+        <always_on>true</always_on>
+        <visualize>false</visualize>
+        <lidar>
+          <scan>
+            <horizontal>
+              <samples>1024</samples>
+              <resolution>1</resolution>
+              <min_angle>-3.14159265</min_angle>
+              <max_angle>3.14159265</max_angle>
+            </horizontal>
+            <vertical>
+              <samples>32</samples>
+              <resolution>1</resolution>
+              <min_angle>-0.3700098</min_angle>
+              <max_angle>0.3700098</max_angle>
+            </vertical>
+          </scan>
+          <range>
+            <min>0.50</min>
+            <max>50.0</max>
+            <resolution>0.01</resolution>
+          </range>
+          <noise type="gaussian">
+            <mean>0.0</mean>
+            <stddev>0.02</stddev>
+          </noise>
+        </lidar>
+      </sensor>
+    </gazebo>
+  </xacro:unless>
 </robot>
