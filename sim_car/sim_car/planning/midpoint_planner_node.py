@@ -23,9 +23,6 @@ from vehicle_plotter_msgs.msg import ConeDetection, ConeDetectionArray
 from visualization_msgs.msg import Marker, MarkerArray
 
 from sim_car.cones.tracking.fusion import normalize_color
-from sim_car.controllers.factory import create_steering_controller
-from sim_car.controllers.pure_pursuit_controller import PurePursuitConfig
-from sim_car.controllers.stanley_controller import StanleyConfig
 from sim_car.planning.triangulation_planner_core import (
     compute_centerline_jump_max,
     edge_churn_count,
@@ -160,70 +157,6 @@ class MidpointPlannerNode(TrackedConePlannerBase):
             f"cones={self.tracked_cones_topic} odom={self.odom_topic} "
             f"cmd={self.cmd_topic} path={self.centerline_topic} viz={self.viz_topic} "
             f"planning_frame={self.planning_frame} controller={self.controller_type}"
-        )
-
-    def _build_steering_controller(self):
-        stanley_config = StanleyConfig(
-            k_gain=max(0.0, float(self.get_parameter("stanley.k_gain").value)),
-            softening_speed_mps=max(0.0, float(self.get_parameter("stanley.softening_speed_mps").value)),
-            heading_gain=float(self.get_parameter("stanley.heading_gain").value),
-            lookahead_idx_offset=max(0, int(self.get_parameter("stanley.lookahead_idx_offset").value)),
-            steering_limit_rad=max(0.01, float(self.get_parameter("stanley.steering_limit_rad").value)),
-            steering_lowpass_alpha=float(
-                np.clip(float(self.get_parameter("stanley.steering_lowpass_alpha").value), 0.0, 1.0)
-            ),
-            steering_rate_limit_rad_s=max(
-                0.0,
-                float(self.get_parameter("stanley.steering_rate_limit_rad_s").value),
-            ),
-            use_yaw_rate_damping=bool(self.get_parameter("stanley.use_yaw_rate_damping").value),
-            yaw_rate_damping_gain=max(
-                0.0,
-                float(self.get_parameter("stanley.yaw_rate_damping_gain").value),
-            ),
-            wheelbase_m=max(0.1, float(self.get_parameter("stanley.wheelbase_m").value)),
-            cross_track_deadband_m=max(
-                0.0,
-                float(self.get_parameter("stanley.cross_track_deadband_m").value),
-            ),
-        )
-        pure_pursuit_config = PurePursuitConfig(
-            lookahead_m=max(0.0, float(self.get_parameter("pure_pursuit.lookahead_m").value)),
-            min_lookahead_m=max(0.01, float(self.get_parameter("pure_pursuit.min_lookahead_m").value)),
-            max_lookahead_m=max(
-                0.01,
-                float(self.get_parameter("pure_pursuit.max_lookahead_m").value),
-            ),
-            lookahead_gain=max(0.0, float(self.get_parameter("pure_pursuit.lookahead_gain").value)),
-            steering_limit_rad=max(
-                0.01,
-                float(self.get_parameter("pure_pursuit.steering_limit_rad").value),
-            ),
-            steering_lowpass_alpha=float(
-                np.clip(float(self.get_parameter("pure_pursuit.steering_lowpass_alpha").value), 0.0, 1.0)
-            ),
-            steering_rate_limit_rad_s=max(
-                0.0,
-                float(self.get_parameter("pure_pursuit.steering_rate_limit_rad_s").value),
-            ),
-            wheelbase_m=max(0.1, float(self.get_parameter("pure_pursuit.wheelbase_m").value)),
-        )
-        if pure_pursuit_config.max_lookahead_m < pure_pursuit_config.min_lookahead_m:
-            pure_pursuit_config = PurePursuitConfig(
-                lookahead_m=pure_pursuit_config.lookahead_m,
-                min_lookahead_m=pure_pursuit_config.min_lookahead_m,
-                max_lookahead_m=pure_pursuit_config.min_lookahead_m,
-                lookahead_gain=pure_pursuit_config.lookahead_gain,
-                steering_limit_rad=pure_pursuit_config.steering_limit_rad,
-                steering_lowpass_alpha=pure_pursuit_config.steering_lowpass_alpha,
-                steering_rate_limit_rad_s=pure_pursuit_config.steering_rate_limit_rad_s,
-                wheelbase_m=pure_pursuit_config.wheelbase_m,
-            )
-        return create_steering_controller(
-            controller_type=self.controller_type,
-            stanley_config=stanley_config,
-            pure_pursuit_config=pure_pursuit_config,
-            publish_rate_hz=self.publish_rate_hz,
         )
 
     def _declare_parameters(self) -> None:
@@ -739,27 +672,16 @@ class MidpointPlannerNode(TrackedConePlannerBase):
         )
         resolved_blue_count = sum(1 for color in colors if color == "blue")
         resolved_yellow_count = sum(1 for color in colors if color == "yellow")
-        track_ids, track_states, track_confidences = self._extract_cone_metadata(cones_msg)
-        self._active_remembered_cone_count = int(len(cones_msg.cones))
-        self._active_stale_cone_count = int(np.count_nonzero(track_states == MSG_TRACK_STATE_STALE))
-        planner_confidences = np.array(confidences, copy=True)
-        valid_track_conf_mask = track_confidences > 1e-6
-        planner_confidences[valid_track_conf_mask] = track_confidences[valid_track_conf_mask]
-        tentative_keep_mask = np.asarray(
-            [
-                self._tentative_cone_is_usable_for_planning(
-                    raw_color=getattr(cone, "color", ""),
-                    boundary_color=getattr(cone, "boundary_color", ""),
-                )
-                for cone in cones_msg.cones
-            ],
-            dtype=bool,
+        planning_frame = self._tracked_cone_planning_frame(
+            msg=cones_msg,
+            points_xy=points_xy,
+            colors=colors,
+            confidences=confidences,
         )
-        planner_confidences[
-            (track_ids > 0)
-            & (track_states == MSG_TRACK_STATE_TENTATIVE)
-            & (~tentative_keep_mask)
-        ] = 0.0
+        self._active_remembered_cone_count = int(len(cones_msg.cones))
+        self._active_stale_cone_count = int(
+            np.count_nonzero(planning_frame.track_states == MSG_TRACK_STATE_STALE)
+        )
         remembered_pair_entries = self._active_pair_memory_entries(
             vehicle_x=vehicle_x,
             vehicle_y=vehicle_y,
@@ -767,14 +689,11 @@ class MidpointPlannerNode(TrackedConePlannerBase):
         )
 
         result = compute_midpoint_centerline(
-            points_xy=points_xy,
-            colors=colors,
-            confidences=planner_confidences,
-            track_ids=track_ids,
-            raw_colors=[
-                normalize_color(getattr(cone, "color", ""))
-                for cone in cones_msg.cones
-            ],
+            points_xy=planning_frame.points_xy,
+            colors=planning_frame.colors,
+            confidences=planning_frame.planner_confidences,
+            track_ids=planning_frame.track_ids,
+            raw_colors=planning_frame.raw_colors,
             vehicle_xy=(vehicle_x, vehicle_y),
             vehicle_yaw=vehicle_yaw,
             config=self._core_config,
@@ -936,9 +855,9 @@ class MidpointPlannerNode(TrackedConePlannerBase):
                 vehicle_x=vehicle_x,
                 vehicle_y=vehicle_y,
                 vehicle_yaw=vehicle_yaw,
-                track_ids=track_ids,
-                track_states=track_states,
-                planner_confidences=planner_confidences,
+                track_ids=planning_frame.track_ids,
+                track_states=planning_frame.track_states,
+                planner_confidences=planning_frame.planner_confidences,
             )
             self._last_valid_pair_segments = (
                 np.array(pair_segments_for_viz, copy=True)
@@ -1285,24 +1204,6 @@ class MidpointPlannerNode(TrackedConePlannerBase):
         )
 
     @staticmethod
-    def _extract_cone_metadata(msg: ConeDetectionArray) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
-        track_ids: list[int] = []
-        track_states: list[int] = []
-        track_confidences: list[float] = []
-        for idx, cone in enumerate(msg.cones):
-            track_id = int(getattr(cone, "track_id", 0))
-            track_state = int(getattr(cone, "track_state", MSG_TRACK_STATE_CONFIRMED))
-            track_conf = float(getattr(cone, "track_confidence", 0.0))
-            track_ids.append(track_id if track_id > 0 else idx)
-            track_states.append(track_state)
-            track_confidences.append(max(0.0, min(1.0, track_conf)))
-        return (
-            np.asarray(track_ids, dtype=np.int64),
-            np.asarray(track_states, dtype=np.int64),
-            np.asarray(track_confidences, dtype=np.float64),
-        )
-
-    @staticmethod
     def _tentative_cone_is_usable_for_planning(
         *,
         raw_color: str,
@@ -1588,23 +1489,6 @@ class MidpointPlannerNode(TrackedConePlannerBase):
         if pair_segments_for_viz.size > 0:
             return int(pair_segments_for_viz.shape[0])
         return int(result.accepted_pair_count)
-
-    def _update_candidate_jump_reject_streak(
-        self,
-        *,
-        candidate_update_ok: bool,
-        candidate_update_reason: str,
-    ) -> tuple[bool, str]:
-        if not candidate_update_ok and candidate_update_reason == "candidate_jump_rejected":
-            self._candidate_jump_reject_streak += 1
-            if self._candidate_jump_reject_streak >= self.candidate_jump_recover_frames:
-                self._midline_buffer_path = None
-                self._midline_buffer_confidence = 0.0
-                self._midline_buffer_last_update_sec = -1.0
-                return True, "candidate_jump_recovery"
-        else:
-            self._candidate_jump_reject_streak = 0
-        return candidate_update_ok, candidate_update_reason
 
     def _apply_mode_hysteresis(self, candidate_mode: str) -> str:
         return "midpoint" if candidate_mode != "none" else "none"

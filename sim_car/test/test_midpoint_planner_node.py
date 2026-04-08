@@ -224,6 +224,35 @@ def test_publish_diagnostics_uses_midpoint_identity():
     assert values["midline_update_mode"] == "direct"
 
 
+def test_tracked_cone_planning_frame_keeps_hinted_tentative_cones_for_midpoint():
+    node = _make_node()
+    msg = ConeDetectionArray()
+    msg.header.frame_id = "odom"
+    msg.header.stamp = TimeMsg(sec=0, nanosec=0)
+
+    cone = ConeDetection()
+    cone.color = "orange"
+    cone.boundary_color = "blue"
+    cone.confidence = 0.2
+    cone.track_id = 41
+    cone.track_state = MSG_TRACK_STATE_TENTATIVE
+    cone.track_confidence = 0.85
+    msg.cones.append(cone)
+
+    planning_frame = node._tracked_cone_planning_frame(
+        msg=msg,
+        points_xy=np.array([[2.0, 1.0]], dtype=np.float64),
+        colors=["blue"],
+        confidences=np.array([0.2], dtype=np.float64),
+    )
+
+    assert planning_frame.track_ids.tolist() == [41]
+    assert planning_frame.track_states.tolist() == [MSG_TRACK_STATE_TENTATIVE]
+    assert planning_frame.boundary_hints == ["blue"]
+    assert planning_frame.raw_colors == ["orange"]
+    assert np.allclose(planning_frame.planner_confidences, np.array([0.85], dtype=np.float64))
+
+
 def test_build_operator_status_text_shows_chain_stage_and_pair_rejects():
     node = _make_node()
     node._active_planner_mode = "midpoint"

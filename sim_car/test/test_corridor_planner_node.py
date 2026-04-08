@@ -14,7 +14,9 @@ if str(PACKAGE_ROOT) not in sys.path:
     sys.path.insert(0, str(PACKAGE_ROOT))
 
 try:
+    from vehicle_plotter_msgs.msg import ConeDetection, ConeDetectionArray  # noqa: E402
     from sim_car.planning.corridor_planner_core import CorridorPlannerResult  # noqa: E402
+    from sim_car.planning.corridor_planner_node import MSG_TRACK_STATE_TENTATIVE  # noqa: E402
     from sim_car.planning.corridor_planner_node import CorridorPlannerNode  # noqa: E402
     from sim_car.planning.planner_runtime_types import PlannerIdentity  # noqa: E402
 except ImportError as exc:  # pragma: no cover - depends on generated ROS interfaces
@@ -189,6 +191,33 @@ def test_publish_diagnostics_uses_corridor_identity():
     values = {item.key: item.value for item in msg.status[0].values}
     assert values["planner_mode"] == "corridor"
     assert values["corridor_sample_count"] == "5"
+
+
+def test_tracked_cone_planning_frame_rejects_tentative_cones_for_corridor():
+    node = _make_node()
+    msg = ConeDetectionArray()
+    msg.header.frame_id = "odom"
+    msg.header.stamp = TimeMsg(sec=0, nanosec=0)
+
+    cone = ConeDetection()
+    cone.color = "orange"
+    cone.boundary_color = "blue"
+    cone.confidence = 0.2
+    cone.track_id = 41
+    cone.track_state = MSG_TRACK_STATE_TENTATIVE
+    cone.track_confidence = 0.85
+    msg.cones.append(cone)
+
+    planning_frame = node._tracked_cone_planning_frame(
+        msg=msg,
+        points_xy=np.array([[2.0, 1.0]], dtype=np.float64),
+        colors=["blue"],
+        confidences=np.array([0.2], dtype=np.float64),
+    )
+
+    assert planning_frame.track_ids.tolist() == [41]
+    assert planning_frame.track_states.tolist() == [MSG_TRACK_STATE_TENTATIVE]
+    assert np.allclose(planning_frame.planner_confidences, np.array([0.0], dtype=np.float64))
 
 
 def test_normalize_core_reject_reason_maps_to_no_safe_chain():
