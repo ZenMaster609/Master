@@ -190,6 +190,7 @@ class MidpointPlannerNode(TrackedConePlannerBase):
             "centerline.midpoint_order_reference_handoff_m": 6.0,
             "centerline.midpoint_order_history_size": 3,
             "centerline.midpoint_order_backtrack_tolerance_m": 0.35,
+            "lap_tracking.target_laps": 0,
             "validation.min_path_points": 4,
             "validation.min_forward_extent_m": 2.0,
             "validation.max_near_field_lateral_jump_m_sparse_pairs": 0.9,
@@ -209,6 +210,10 @@ class MidpointPlannerNode(TrackedConePlannerBase):
         apply_common_config_to_node(self, common)
         self.show_raw_offset_path = bool(
             self.get_parameter("debug.show_raw_offset_path").value
+        )
+        self.lap_tracking_target_laps = max(
+            0,
+            int(self.get_parameter("lap_tracking.target_laps").value),
         )
         self._core_config = MidpointPlannerConfig(
             max_cone_range_m=float(self.get_parameter("filtering.max_cone_range_m").value),
@@ -2165,10 +2170,15 @@ class MidpointPlannerNode(TrackedConePlannerBase):
         ]
         if reject_parts:
             lines.append("REJECTS: " + " | ".join(reject_parts))
-        lines.append("LAPS: 0/off")
+        lines.append(self._lap_status_text())
         return "\n".join(
             lines
         )
+
+    def _lap_status_text(self) -> str:
+        if self.lap_tracking_target_laps > 0:
+            return f"LAPS: 0/{int(self.lap_tracking_target_laps)}"
+        return "LAPS: 0/off"
 
     def _midpoint_debug_stage(self, result: MidpointPlannerResult) -> str:
         pair_ready = int(result.accepted_pair_count) >= int(

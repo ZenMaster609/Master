@@ -142,7 +142,8 @@ def test_full_launch_declares_and_passes_thesis_controller_diagnostics():
     assert "DeclareLaunchArgument(\n        'thesis_controller_diagnostics'" in content
     assert "thesis_controller_diagnostics_live_plot_enabled" not in content
     assert "'thesis_controller_diagnostics'" in content
-    assert "'thesis_controller_diagnostics_enabled': LaunchConfiguration('thesis_controller_diagnostics')" in content
+    assert "'thesis_controller_diagnostics_enabled': ParameterValue(" in content
+    assert "LaunchConfiguration('thesis_controller_diagnostics')" in content
     assert "'diagnostics.publish_thesis_context': ParameterValue(" in content
 
 
@@ -151,11 +152,15 @@ def test_full_launch_declares_and_passes_path_tracking_eval():
 
     assert "DeclareLaunchArgument(\n        'path_tracking_eval'" in content
     assert "'path_tracking_eval'" in content
-    assert "'path_tracking_eval_enabled': LaunchConfiguration('path_tracking_eval')" in content
+    assert "logger_node = Node(" in content
+    assert "'path_tracking_eval_enabled': ParameterValue(" in content
+    assert "LaunchConfiguration('path_tracking_eval')" in content
     assert "'path_tracking_eval_gt_track_topic': '/ground_truth/track'" in content
     assert "'path_tracking_eval_odom_topic': '/sim/odom'" in content
     assert "'path_tracking_eval_planner_path_topic': '/planned_centerline'" in content
     assert "'path_tracking_eval_track_name': LaunchConfiguration('track')" in content
+    assert "shutdown_on_logger_exit = RegisterEventHandler(" in content
+    assert "logger autostop reached lap target" in content
 
 
 def test_full_launch_always_wires_offline_cone_eval_topics():
@@ -165,7 +170,7 @@ def test_full_launch_always_wires_offline_cone_eval_topics():
     assert "DeclareLaunchArgument(\n        'lidar_cone_rmse_plotting'" not in content
     assert "DeclareLaunchArgument(\n        'cone_rmse_plotting'" not in content
     assert "'camera_cone_eval_topic': PythonExpression([" in content
-    assert "'enable_log': 'true'" in content
+    assert "'enable_log': 'false'" in content
     assert "'source_name': camera_source_name" in content
     assert "'source_name': 'lidar'" in content
 
@@ -232,6 +237,11 @@ def test_full_launch_wires_skidpad_router_output_into_migrated_planners() -> Non
     assert "'/tracked_cones/skidpad_routed' if '" in content
     assert "'.lower() in ('skidpad', 'acceleration') else ('/tracked_cones' if '" in content
     assert "'routing.event_mode': LaunchConfiguration('track')" in content
+    assert "'routing.shutdown_on_route_complete': False" in content
+    assert "'routing.shutdown_on_parking_complete': ParameterValue(" in content
+    assert "'.lower() in ('skidpad', 'acceleration')" in content
+    assert "shutdown_on_skidpad_router_exit = RegisterEventHandler(" in content
+    assert "skidpad/acceleration router mission target reached" in content
     assert "'.lower() in ('skidpad', 'acceleration') else '/skidpad_router/markers_hidden'" in content
 
 
@@ -284,7 +294,7 @@ def test_track_bundle_loads_track_speed_control_defaults():
         },
         'smalltrack': {
             'speed_min_mps': 1.0,
-            'speed_max_mps': 2.0,
+            'speed_max_mps': 4.17,
             'curvature_speed_gain': 4.0,
             'lowpass_speed_alpha': 0.15,
         },

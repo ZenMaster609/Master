@@ -18,8 +18,17 @@ import sys
 import tempfile
 from pathlib import Path
 
-from launch.actions import DeclareLaunchArgument, IncludeLaunchDescription, OpaqueFunction, SetLaunchConfiguration
+from launch.actions import (
+    DeclareLaunchArgument,
+    EmitEvent,
+    IncludeLaunchDescription,
+    OpaqueFunction,
+    RegisterEventHandler,
+    SetLaunchConfiguration,
+)
 from launch.conditions import IfCondition
+from launch.event_handlers import OnProcessExit
+from launch.events import Shutdown
 from launch.launch_description_sources import PythonLaunchDescriptionSource
 from launch.substitutions import EnvironmentVariable, LaunchConfiguration, PathJoinSubstitution, PythonExpression
 from launch_ros.actions import Node
@@ -737,7 +746,7 @@ def generate_launch_description():
             PathJoinSubstitution([vehicle_plotter_share, 'launch', 'plotter.launch.py'])
         ),
         launch_arguments={
-            'enable_log': 'true',
+            'enable_log': 'false',
             'enable_state_logging': PythonExpression([
                 "'true' if ('",
                 LaunchConfiguration('sensor_pipeline'),
@@ -747,6 +756,32 @@ def generate_launch_description():
             ]),
             'use_sim_time': LaunchConfiguration('use_sim_time'),
             'enable_rosbag': LaunchConfiguration('rosbagging'),
+        }.items(),
+    )
+
+    logger_node = Node(
+        package='vehicle_plotter',
+        executable='logger_node',
+        name='logger',
+        output='screen',
+        parameters=[{
+            'format': 'parquet',
+            'flush_interval_sec': 5.0,
+            'buffer_size': 1000,
+            'adapter': 'gazebo',
+            'enable_logging': True,
+            'state_topic': '/vehicle_plotter/state',
+            'enable_state_logging': ParameterValue(
+                PythonExpression([
+                    "'true' if ('",
+                    LaunchConfiguration('sensor_pipeline'),
+                    "'.lower() == 'true' or '",
+                    LaunchConfiguration('logging'),
+                    "'.lower() == 'true') else 'false'"
+                ]),
+                value_type=bool,
+            ),
+            'auto_plot_on_shutdown': True,
             'camera_cone_eval_topic': PythonExpression([
                 "'",
                 topic_prefix,
@@ -759,23 +794,47 @@ def generate_launch_description():
                 LaunchConfiguration('lidar_enabled'),
                 "'.lower() == 'true' else ''"
             ]),
-            'controller_diagnostics_enabled': LaunchConfiguration('controller_diagnostics'),
-            'controller_diagnostics_rate_hz': '50.0',
+            'controller_diagnostics_enabled': ParameterValue(
+                LaunchConfiguration('controller_diagnostics'),
+                value_type=bool,
+            ),
+            'controller_diagnostics_rate_hz': 50.0,
             'controller_diagnostics_cmd_topic': '/cmd',
             'controller_diagnostics_steering_topic': '/sim/steering_angle',
             'controller_diagnostics_joint_states_topic': '/sim/joint_states',
             'controller_diagnostics_odom_topic': '/sim/odom',
             'controller_diagnostics_path_topic': '/planned_centerline',
             'controller_diagnostics_planner_diag_topic': resolved_planner_diagnostics_topic,
-            'thesis_controller_diagnostics_enabled': LaunchConfiguration('thesis_controller_diagnostics'),
-            'path_tracking_eval_enabled': LaunchConfiguration('path_tracking_eval'),
+            'thesis_controller_diagnostics_enabled': ParameterValue(
+                LaunchConfiguration('thesis_controller_diagnostics'),
+                value_type=bool,
+            ),
+            'path_tracking_eval_enabled': ParameterValue(
+                LaunchConfiguration('path_tracking_eval'),
+                value_type=bool,
+            ),
             'path_tracking_eval_gt_track_topic': '/ground_truth/track',
             'path_tracking_eval_odom_topic': '/sim/odom',
             'path_tracking_eval_planner_path_topic': '/planned_centerline',
             'path_tracking_eval_track_name': LaunchConfiguration('track'),
-            'path_tracking_eval_autostop_laps': resolved_path_tracking_autostop_laps,
-            'shutdown_on_logger_exit': resolved_shutdown_on_logger_exit,
-        }.items(),
+            'path_tracking_eval_autostop_laps': ParameterValue(
+                resolved_path_tracking_autostop_laps,
+                value_type=int,
+            ),
+            'use_sim_time': False,
+        }],
+    )
+
+    shutdown_on_logger_exit = RegisterEventHandler(
+        OnProcessExit(
+            target_action=logger_node,
+            on_exit=[
+                EmitEvent(
+                    event=Shutdown(reason='logger autostop reached lap target'),
+                    condition=IfCondition(resolved_shutdown_on_logger_exit),
+                ),
+            ],
+        )
     )
 
     steering_gui_node = Node(
@@ -1055,6 +1114,15 @@ def generate_launch_description():
                 'topics.cmd_topic': '/cmd',
                 'topics.viz_topic': router_viz_topic,
                 'routing.event_mode': LaunchConfiguration('track'),
+                'routing.shutdown_on_route_complete': False,
+                'routing.shutdown_on_parking_complete': ParameterValue(
+                    PythonExpression([
+                        "'",
+                        LaunchConfiguration('track'),
+                        "'.lower() in ('skidpad', 'acceleration')",
+                    ]),
+                    value_type=bool,
+                ),
             },
         ],
         condition=IfCondition(PythonExpression([
@@ -1064,6 +1132,22 @@ def generate_launch_description():
             LaunchConfiguration('planner'),
             "'.lower() in ('midpoint', 'single_boundary', 'corridor')"
         ])),
+    )
+
+    shutdown_on_skidpad_router_exit = RegisterEventHandler(
+        OnProcessExit(
+            target_action=skidpad_router_node,
+            on_exit=[
+                EmitEvent(
+                    event=Shutdown(reason='skidpad/acceleration router mission target reached'),
+                    condition=IfCondition(PythonExpression([
+                        "'",
+                        LaunchConfiguration('track'),
+                        "'.lower() in ('skidpad', 'acceleration')",
+                    ])),
+                ),
+            ],
+        )
     )
 
     midpoint_planner_node = Node(
@@ -1328,6 +1412,8 @@ def generate_launch_description():
         measurement_node,
         odom_delay_node,
         plotter_launch,
+        logger_node,
+        shutdown_on_logger_exit,
         steering_bridge_node,
         perception_node,
         camera_cone_evaluator_node,
@@ -1336,6 +1422,7 @@ def generate_launch_description():
         lidar_cone_evaluator_node,
         cone_memory_node,
         skidpad_router_node,
+        shutdown_on_skidpad_router_exit,
         midpoint_planner_node,
         single_boundary_planner_node,
         corridor_planner_node,

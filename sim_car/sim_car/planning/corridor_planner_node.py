@@ -178,6 +178,7 @@ class CorridorPlannerNode(TrackedConePlannerBase):
             "corridor.path_fit_smoothing_window": 5,
             "corridor.membership_margin_m": 0.15,
             "midline_memory.pair_memory_retention_s": 12.0,
+            "lap_tracking.target_laps": 0,
             "validation.min_path_points": 4,
             "validation.min_forward_extent_m": 2.0,
             "validation.max_heading_delta_rad": 0.75,
@@ -198,6 +199,10 @@ class CorridorPlannerNode(TrackedConePlannerBase):
         self.pair_memory_retention_s = max(
             self.midline_hold_last_valid_duration_s,
             float(self.get_parameter("midline_memory.pair_memory_retention_s").value),
+        )
+        self.lap_tracking_target_laps = max(
+            0,
+            int(self.get_parameter("lap_tracking.target_laps").value),
         )
 
         self._core_config = CorridorPlannerConfig(
@@ -2247,9 +2252,14 @@ class CorridorPlannerNode(TrackedConePlannerBase):
                 f"STATE: {operator_state.upper()}",
                 f"MODE: {self._active_planner_mode.upper()}",
                 f"REASON: {self._operator_reason_label(operator_reason)}",
-                "LAPS: 0/off",
+                self._lap_status_text(),
             ]
         )
+
+    def _lap_status_text(self) -> str:
+        if self.lap_tracking_target_laps > 0:
+            return f"LAPS: 0/{int(self.lap_tracking_target_laps)}"
+        return "LAPS: 0/off"
 
     def _build_markers(
         self,

@@ -24,6 +24,7 @@ import csv
 import math
 import os
 import signal
+import threading
 import time
 import numpy as np
 
@@ -740,16 +741,47 @@ class LoggerNode(Node):
                 f'{snapshot.completed_laps}/{self._path_tracking_eval_autostop_laps}. '
                 'Shutting down logger to finalize outputs.'
             )
+            self._request_process_exit(parent_delay_s=0.1, force_delay_s=5.0)
             self.shutdown()
             if rclpy.ok():
                 rclpy.shutdown()
-            self._request_process_exit()
 
-    def _request_process_exit(self) -> None:
+    def _request_process_exit(self, *, parent_delay_s: float = 0.0, force_delay_s: float = 5.0) -> None:
+        # Autostop is meant to terminate the full launched sim, not only this logger node.
+        parent_pid = os.getppid()
+        process_group_id = os.getpgrp()
+
+        def _signal_parent_launch() -> None:
+            try:
+                if parent_pid > 1:
+                    os.kill(parent_pid, signal.SIGINT)
+            except Exception as exc:
+                self._safe_log_warn(f'Failed to interrupt parent launch process for autostop: {exc}')
+
+        def _force_exit_process_group() -> None:
+            try:
+                if parent_pid > 1:
+                    os.kill(parent_pid, signal.SIGINT)
+            except Exception:
+                pass
+            try:
+                os.killpg(process_group_id, signal.SIGINT)
+            except Exception:
+                pass
+            os._exit(0)
+
         try:
-            os.kill(os.getpid(), signal.SIGINT)
+            parent_timer = threading.Timer(max(0.0, float(parent_delay_s)), _signal_parent_launch)
+            parent_timer.daemon = True
+            parent_timer.start()
+            force_timer = threading.Timer(max(0.0, float(force_delay_s)), _force_exit_process_group)
+            force_timer.daemon = True
+            force_timer.start()
         except Exception as exc:
-            self.get_logger().warn(f'Failed to interrupt logger process for autostop exit: {exc}')
+            self.get_logger().warn(f'Failed to schedule launch shutdown for autostop exit: {exc}')
+            if parent_pid > 1:
+                os.kill(parent_pid, signal.SIGINT)
+            os.killpg(process_group_id, signal.SIGINT)
 
     @staticmethod
     def _derive_cone_metrics_prefix(cone_eval_topic: str) -> str:
