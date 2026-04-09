@@ -159,6 +159,14 @@ def _planner_selected_condition(planner_name: str):
     ]))
 
 
+def _planner_odom_delay_enabled_expr():
+    return PythonExpression([
+        "float('",
+        LaunchConfiguration('planner_odom_delay_ms'),
+        "') > 0.0",
+    ])
+
+
 def _pointcloud3d_lidar_parameters(topic_prefix):
     parameters = {
         'pointcloud_topic': PythonExpression(["'", topic_prefix, "' + '/lidar/points'"]),
@@ -248,8 +256,8 @@ def generate_launch_description():
 
     planner_odom_delay_ms_arg = DeclareLaunchArgument(
         'planner_odom_delay_ms',
-        default_value='40.0',
-        description='Fixed delay applied to planner/controller odometry feed (ms)'
+        default_value='0.0',
+        description='Optional fixed delay applied to planner/controller odometry feed (ms)'
     )
 
     sensors_render_engine_arg = DeclareLaunchArgument(
@@ -661,6 +669,11 @@ def generate_launch_description():
         "'.lower() == 'true')) else '/sim'"
     ])
     delayed_planner_odom_topic = '/sim/odom_delayed'
+    planner_odom_topic = PythonExpression([
+        "'/sim/odom_delayed' if ",
+        _planner_odom_delay_enabled_expr(),
+        " else '/sim/odom'",
+    ])
     camera_source_name = PythonExpression([
         "'stereo' if '",
         LaunchConfiguration('stereo'),
@@ -739,6 +752,7 @@ def generate_launch_description():
             ),
             'flush_rate_hz': 200.0,
         }],
+        condition=IfCondition(_planner_odom_delay_enabled_expr()),
     )
 
     plotter_launch = IncludeLaunchDescription(
@@ -1110,7 +1124,7 @@ def generate_launch_description():
                 ),
                 'topics.input_topic': router_input_topic,
                 'topics.output_topic': '/tracked_cones/skidpad_routed',
-                'topics.odom_topic': delayed_planner_odom_topic,
+                'topics.odom_topic': planner_odom_topic,
                 'topics.cmd_topic': '/cmd',
                 'topics.viz_topic': router_viz_topic,
                 'routing.event_mode': LaunchConfiguration('track'),
@@ -1165,7 +1179,7 @@ def generate_launch_description():
                     value_type=bool,
                 ),
                 'topics.tracked_cones_topic': planner_input_topic,
-                'topics.odom_topic': delayed_planner_odom_topic,
+                'topics.odom_topic': planner_odom_topic,
                 'runtime.publish_rate_hz': ParameterValue(
                     LaunchConfiguration('planner_rate_hz'),
                     value_type=float,
@@ -1197,7 +1211,7 @@ def generate_launch_description():
                     value_type=bool,
                 ),
                 'topics.tracked_cones_topic': planner_input_topic,
-                'topics.odom_topic': delayed_planner_odom_topic,
+                'topics.odom_topic': planner_odom_topic,
                 'runtime.publish_rate_hz': ParameterValue(
                     LaunchConfiguration('planner_rate_hz'),
                     value_type=float,
@@ -1229,7 +1243,7 @@ def generate_launch_description():
                     value_type=bool,
                 ),
                 'topics.tracked_cones_topic': planner_input_topic,
-                'topics.odom_topic': delayed_planner_odom_topic,
+                'topics.odom_topic': planner_odom_topic,
                 'runtime.publish_rate_hz': ParameterValue(
                     LaunchConfiguration('planner_rate_hz'),
                     value_type=float,
@@ -1258,7 +1272,7 @@ def generate_launch_description():
                     LaunchConfiguration('use_sim_time'),
                     value_type=bool,
                 ),
-                'topics.odom_topic': delayed_planner_odom_topic,
+                'topics.odom_topic': planner_odom_topic,
                 'runtime.publish_rate_hz': ParameterValue(
                     LaunchConfiguration('planner_rate_hz'),
                     value_type=float,
@@ -1291,10 +1305,11 @@ def generate_launch_description():
                     LaunchConfiguration('use_sim_time'),
                     value_type=bool,
                 ),
-                'odom_topic': delayed_planner_odom_topic,
+                'odom_topic': planner_odom_topic,
                 'default_frame_id': 'odom',
                 'default_child_frame_id': 'base_footprint',
             }],
+        condition=IfCondition(_planner_odom_delay_enabled_expr()),
     )
 
     pointcloud_sensor_frame_tf_node = Node(

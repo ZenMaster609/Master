@@ -1,11 +1,11 @@
 spawn:
   spawn_x: -13.6758
-  spawn_y: 10.4753
+  spawn_y: 10.3753
   spawn_yaw: 0
 
 speed_control:
   speed_min_mps: 1.0
-  speed_max_mps: 5.17
+  speed_max_mps: 4.17
   curvature_speed_gain: 4.0
   lowpass_speed_alpha: 0.15
 

@@ -264,7 +264,7 @@ def test_track_bundle_loads_track_spawn_defaults():
     expected = {
         'acceleration': ('-38.5', '0.0', '0.0'),
         'skidpad': ('0.0', '-10.0', '1.5708'),
-        'smalltrack': ('-13.6758', '10.4753', '0'),
+        'smalltrack': ('-13.6758', '10.3753', '0'),
     }
 
     for track, (spawn_x, spawn_y, spawn_yaw) in expected.items():

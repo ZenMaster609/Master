@@ -50,6 +50,17 @@ def test_full_launch_scopes_pointcloud3d_only_tuning_away_from_scan2d() -> None:
     assert "**_planner_pipeline_parameters()" in content
 
 
+def test_planner_odom_delay_is_opt_in_for_closed_loop_stability() -> None:
+    content = FULL_LAUNCH.read_text(encoding='utf-8')
+
+    assert "'planner_odom_delay_ms',\n        default_value='0.0'" in content
+    assert "def _planner_odom_delay_enabled_expr():" in content
+    assert "planner_odom_topic = PythonExpression([" in content
+    assert "'/sim/odom_delayed' if " in content
+    assert " else '/sim/odom'" in content
+    assert content.count("condition=IfCondition(_planner_odom_delay_enabled_expr())") == 2
+
+
 def test_cone_memory_defaults_remain_legacy_and_launch_applies_pointcloud3d_overrides() -> None:
     config_content = (REPO_ROOT / 'sim_car' / 'config' / 'cone_memory.yaml').read_text(encoding='utf-8')
     launch_content = FULL_LAUNCH.read_text(encoding='utf-8')
