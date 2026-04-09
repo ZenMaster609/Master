@@ -1,0 +1,8 @@
+/**:
+  ros__parameters:
+    control:
+      controller_type: pure_pursuit
+    pure_pursuit:
+      lookahead_m: 3.0
+      min_lookahead_m: 1.5
+      max_lookahead_m: 8.0

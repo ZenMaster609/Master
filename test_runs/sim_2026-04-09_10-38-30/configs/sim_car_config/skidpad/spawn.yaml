@@ -1,7 +1,7 @@
 spawn:
-  spawn_x: -13.6758
-  spawn_y: 10.3753
-  spawn_yaw: 0
+  spawn_x: 0.0
+  spawn_y: -10.0
+  spawn_yaw: 1.5708
 
 speed_control:
   speed_min_mps: 1.0
@@ -9,5 +9,5 @@ speed_control:
   curvature_speed_gain: 4.0
   lowpass_speed_alpha: 0.15
 
-lap_tracking:
-  auto_suspend_after_laps: 1
+planner_limits:
+  max_planner_length_m: 14.0
