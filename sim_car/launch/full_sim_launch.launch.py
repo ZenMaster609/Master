@@ -65,6 +65,27 @@ SUPPORTED_TRACKS = {
     'skidpad': 'skidpad.world',
     'smalltrack': 'small_track.world',
 }
+RUN_ID_TRACK_ABBREVIATIONS = {
+    'smalltrack': 'small',
+    'acceleration': 'acc',
+    'skidpad': 'skid',
+}
+RUN_ID_PLANNER_ABBREVIATIONS = {
+    'midpoint': 'mid',
+    'single_boundary': 'SB',
+    'corridor': 'cor',
+    'linetest': 'line',
+    'none': 'none',
+}
+RUN_ID_CONTROLLER_ABBREVIATIONS = {
+    'pure_pursuit': 'pp',
+    'stanley': 'stan',
+    'none': 'none',
+}
+RUN_ID_LIDAR_PIPELINE_ABBREVIATIONS = {
+    'scan2d': '2d',
+    'pointcloud3d': '3d',
+}
 
 POINTCLOUD3D_LIDAR_PARAMS = {
     'max_detection_range_m': 25.0,
@@ -655,6 +676,7 @@ def generate_launch_description():
     resolved_planner_diagnostics_topic = LaunchConfiguration('resolved_planner_diagnostics_topic')
     resolved_path_tracking_autostop_laps = LaunchConfiguration('resolved_path_tracking_autostop_laps')
     resolved_shutdown_on_logger_exit = LaunchConfiguration('resolved_shutdown_on_logger_exit')
+    resolved_run_id_prefix = LaunchConfiguration('resolved_run_id_prefix')
     launch_args_validation = OpaqueFunction(function=_validate_planner_and_controller_args)
     track_selection_setup = OpaqueFunction(function=_configure_track_selection)
     measurement_config_setup = OpaqueFunction(function=_configure_measurement_config)
@@ -777,6 +799,7 @@ def generate_launch_description():
             ]),
             'use_sim_time': LaunchConfiguration('use_sim_time'),
             'enable_rosbag': LaunchConfiguration('rosbagging'),
+            'run_id_prefix': resolved_run_id_prefix,
         }.items(),
     )
 
@@ -1625,6 +1648,26 @@ def _load_yaml_file(config_path: str) -> dict:
     return config
 
 
+def _abbreviated_run_id_prefix(track: str, planner: str, controller: str, lidar_pipeline: str) -> str:
+    normalized_track = str(track).strip().lower() or 'smalltrack'
+    normalized_planner = str(planner).strip().lower() or 'midpoint'
+    normalized_controller = str(controller).strip().lower() or 'stanley'
+    normalized_lidar_pipeline = str(lidar_pipeline).strip().lower() or 'pointcloud3d'
+
+    if normalized_lidar_pipeline not in RUN_ID_LIDAR_PIPELINE_ABBREVIATIONS:
+        raise RuntimeError(
+            "Unsupported launch argument lidar_pipeline='%s'. Supported values: pointcloud3d, scan2d"
+            % lidar_pipeline
+        )
+
+    return '_'.join([
+        RUN_ID_TRACK_ABBREVIATIONS.get(normalized_track, normalized_track),
+        RUN_ID_PLANNER_ABBREVIATIONS.get(normalized_planner, normalized_planner),
+        RUN_ID_CONTROLLER_ABBREVIATIONS.get(normalized_controller, normalized_controller),
+        RUN_ID_LIDAR_PIPELINE_ABBREVIATIONS[normalized_lidar_pipeline],
+    ])
+
+
 def _resolve_launch_selection(
     sim_car_share: Path,
     *,
@@ -1672,6 +1715,7 @@ def _resolve_launch_selection(
 
 def _configure_track_selection(context, *_args, **_kwargs):
     sim_car_share = Path(get_package_share_directory('sim_car'))
+    lidar_pipeline = LaunchConfiguration('lidar_pipeline').perform(context)
     selection = _resolve_launch_selection(
         sim_car_share,
         track=LaunchConfiguration('track').perform(context),
@@ -1681,6 +1725,12 @@ def _configure_track_selection(context, *_args, **_kwargs):
         spawn_y_override=LaunchConfiguration('spawn_y').perform(context),
         spawn_yaw_override=LaunchConfiguration('spawn_yaw').perform(context),
         controller_override=LaunchConfiguration('controller').perform(context),
+    )
+    run_id_prefix = _abbreviated_run_id_prefix(
+        selection.track,
+        selection.planner,
+        selection.controller,
+        lidar_pipeline,
     )
 
     planner_config_path = selection.planner_config if selection.planner == 'linetest' else _write_parameter_overlay({})
@@ -1720,6 +1770,7 @@ def _configure_track_selection(context, *_args, **_kwargs):
             )
             else 'false',
         ),
+        SetLaunchConfiguration('resolved_run_id_prefix', run_id_prefix),
     ]
 
 
@@ -1894,6 +1945,7 @@ def _validate_planner_and_controller_args(context, *_args, **_kwargs):
     track = LaunchConfiguration('track').perform(context).strip().lower()
     planner = LaunchConfiguration('planner').perform(context).strip().lower()
     controller = LaunchConfiguration('controller').perform(context).strip().lower() or 'stanley'
+    lidar_pipeline = LaunchConfiguration('lidar_pipeline').perform(context).strip().lower() or 'pointcloud3d'
 
     supported_bridges = {'ackermann'}
 
@@ -1921,6 +1973,11 @@ def _validate_planner_and_controller_args(context, *_args, **_kwargs):
         raise RuntimeError(
             "Unsupported launch argument controller='%s'. Supported values: stanley, pure_pursuit, none"
             % controller
+        )
+    if lidar_pipeline not in RUN_ID_LIDAR_PIPELINE_ABBREVIATIONS:
+        raise RuntimeError(
+            "Unsupported launch argument lidar_pipeline='%s'. Supported values: pointcloud3d, scan2d"
+            % lidar_pipeline
         )
     return []
 

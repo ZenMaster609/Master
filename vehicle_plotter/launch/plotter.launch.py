@@ -116,6 +116,11 @@ def generate_launch_description():
         default_value="",
         description="Base path for log files (empty = auto-detect ./multidata)",
     )
+    run_id_prefix_arg = DeclareLaunchArgument(
+        "run_id_prefix",
+        default_value="",
+        description="Optional run id prefix before the timestamp",
+    )
     use_sim_time_arg = DeclareLaunchArgument(
         "use_sim_time",
         default_value="true",
@@ -142,7 +147,10 @@ def generate_launch_description():
         executable="session_manager_node",
         name="session_manager",
         output="screen",
-        parameters=[{"broadcast_rate_hz": 1.0}],
+        parameters=[{
+            "broadcast_rate_hz": 1.0,
+            "run_id_prefix": LaunchConfiguration("run_id_prefix"),
+        }],
     )
 
     plotter_node = Node(
@@ -280,6 +288,7 @@ def generate_launch_description():
         state_topic_arg,
         log_format_arg,
         log_path_arg,
+        run_id_prefix_arg,
         use_sim_time_arg,
         enable_rosbag_arg,
         camera_cone_eval_topic_arg,

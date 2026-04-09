@@ -391,6 +391,41 @@ def test_track_bundle_supports_controller_none_without_controller_config_file():
     (
         'track',
         'planner',
+        'controller',
+        'lidar_pipeline',
+        'expected_prefix',
+    ),
+    [
+        ('smalltrack', 'midpoint', 'stanley', 'pointcloud3d', 'small_mid_stan_3d'),
+        ('acceleration', 'single_boundary', 'pure_pursuit', 'scan2d', 'acc_SB_pp_2d'),
+        ('skidpad', 'corridor', 'stanley', 'pointcloud3d', 'skid_cor_stan_3d'),
+    ],
+)
+def test_run_id_prefix_uses_abbreviated_launch_selection(
+    track: str,
+    planner: str,
+    controller: str,
+    lidar_pipeline: str,
+    expected_prefix: str,
+):
+    assert (
+        full_sim_launch._abbreviated_run_id_prefix(track, planner, controller, lidar_pipeline)
+        == expected_prefix
+    )
+
+
+def test_full_launch_passes_resolved_run_id_prefix_to_plotter_launch():
+    content = FULL_LAUNCH.read_text(encoding='utf-8')
+
+    assert "resolved_run_id_prefix = LaunchConfiguration('resolved_run_id_prefix')" in content
+    assert "'run_id_prefix': resolved_run_id_prefix" in content
+    assert "SetLaunchConfiguration('resolved_run_id_prefix', run_id_prefix)" in content
+
+
+@pytest.mark.parametrize(
+    (
+        'track',
+        'planner',
         'controller_override',
         'expected_controller',
         'expected_diag_topic',
