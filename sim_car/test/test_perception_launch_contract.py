@@ -587,6 +587,14 @@ def test_linetest_config_only_uses_declared_and_read_parameters():
     assert set(params).issubset(read_params)
 
 
+def test_linetest_config_stops_before_acceleration_parking_line():
+    config_path = SIM_CAR_SHARE / 'config' / 'acceleration' / 'linetest.yaml'
+    config = _load_yaml(config_path)
+    line = config['linetest_planner_node']['ros__parameters']['line']
+
+    assert line['end_x_m'] == 46.5
+
+
 def test_linetest_config_no_longer_contains_controller_or_speed_control_blocks():
     config_path = SIM_CAR_SHARE / 'config' / 'acceleration' / 'linetest.yaml'
     config = _load_yaml(config_path)

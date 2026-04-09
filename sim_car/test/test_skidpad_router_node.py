@@ -75,11 +75,17 @@ def _make_node(*, test_park_only: bool = False, route_laps: int = 1) -> SkidpadR
     node.acceleration_stop_row_min_points_per_side = 1
     node.stop_line_pair_max_distance_m = 1.0
     node.stop_margin_m = 1.0
+    node.target_margin_m = 3.5
+    node.stop_approach_speed_gain = 1.5
+    node.brake_activation_margin_m = 1.0
+    node.brake_command = 1.0
     node._stop_override_active = False
     node._stop_line_forward_distance_m = float("nan")
     node._stop_line_marker_points_odom = None
     node._diag_pub = _PublisherRecorder()
     node._viz_pub = _PublisherRecorder()
+    node._cmd_pub = _PublisherRecorder()
+    node._brake_pub = _PublisherRecorder()
     node.get_name = lambda: "skidpad_router_node"
     node._fake_logger = _FakeLogger()
     node.get_logger = lambda: node._fake_logger
@@ -447,6 +453,7 @@ def test_acceleration_stop_target_marker_appears_before_detected_stop_line() -> 
     node.event_mode = "acceleration"
     node._parking_mode_active = True
     node.stop_margin_m = 4.0
+    node.target_margin_m = 3.5
     node._stop_line_forward_distance_m = 50.0
     node._stop_line_marker_points_odom = ((50.0, 1.5), (50.0, -1.5))
 
@@ -455,12 +462,40 @@ def test_acceleration_stop_target_marker_appears_before_detected_stop_line() -> 
 
     assert target_marker.action == target_marker.ADD
     assert [(round(point.x, 2), round(point.y, 2)) for point in target_marker.points] == [
-        (46.0, 1.5),
-        (46.0, -1.5),
+        (46.5, 1.5),
+        (46.5, -1.5),
     ]
     assert center_marker.action == center_marker.ADD
-    assert round(center_marker.pose.position.x, 2) == 46.0
+    assert round(center_marker.pose.position.x, 2) == 46.5
     assert round(center_marker.pose.position.y, 2) == 0.0
+
+
+def test_parking_override_slows_to_target_margin_before_full_stop() -> None:
+    node = _make_node()
+    node.event_mode = "acceleration"
+    node._parking_mode_active = True
+    node._stop_override_active = True
+    node._latest_speed_mps = 4.0
+    node.target_margin_m = 3.5
+    node.stop_approach_speed_gain = 1.5
+    node.brake_activation_margin_m = 1.0
+    node._stop_line_forward_distance_m = 5.0
+    node._stop_line_marker_points_odom = ((5.0, 1.5), (5.0, -1.5))
+
+    node._publish_parking_override_cmd(TimeMsg(sec=1, nanosec=0))
+
+    assert len(node._cmd_pub.messages) == 1
+    assert node._cmd_pub.messages[0].drive.speed == pytest.approx(2.25)
+    assert len(node._brake_pub.messages) == 1
+    assert node._brake_pub.messages[0].data == pytest.approx(0.0)
+
+    node._stop_line_forward_distance_m = 3.5
+    node._publish_parking_override_cmd(TimeMsg(sec=2, nanosec=0))
+
+    assert len(node._cmd_pub.messages) == 2
+    assert node._cmd_pub.messages[1].drive.speed == pytest.approx(0.0)
+    assert len(node._brake_pub.messages) == 2
+    assert node._brake_pub.messages[1].data == pytest.approx(1.0)
 
 
 def test_acceleration_parking_status_marker_switches_from_searching_to_found() -> None:
@@ -648,7 +683,7 @@ def test_acceleration_parking_complete_shutdown_requests_rclpy_shutdown_once(mon
     node._parking_mode_active = True
     node._stop_override_active = True
     node._stop_line_marker_points_odom = ((1.0, 1.5), (1.0, -1.5))
-    node._stop_line_forward_distance_m = node.stop_margin_m
+    node._stop_line_forward_distance_m = node.target_margin_m
     node._latest_speed_mps = 0.0
 
     node._maybe_shutdown_after_parking_complete(stamp=TimeMsg(sec=10, nanosec=0))

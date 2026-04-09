@@ -94,6 +94,7 @@ def _make_node() -> LineTestPlannerNode:
         diagnostics_topic='/linetest_planner/diagnostics',
     )
     node._cmd_pub = _FakePublisher()
+    node._brake_pub = _FakePublisher()
     node._path_pub = _FakePublisher()
     node._points_pub = _FakePublisher()
     node._viz_pub = _FakePublisher()
@@ -110,6 +111,7 @@ def _make_node() -> LineTestPlannerNode:
     node.base_frame = 'front_axle'
     node.planning_frame = 'odom'
     node.cmd_topic = '/cmd'
+    node.brake_cmd_topic = '/sim/brake_cmd'
     node.centerline_topic = '/planned_centerline'
     node.viz_topic = '/planner_viz'
     node.points_topic = '/planned_centerline_points'
@@ -121,6 +123,8 @@ def _make_node() -> LineTestPlannerNode:
     node.speed_max_mps = 4.17
     node.curvature_speed_gain = 4.0
     node.lowpass_speed_alpha = 0.15
+    node.brake_activation_distance_m = 1.0
+    node.brake_command = 1.0
     node.line_start_x_m = -38.5
     node.line_start_y_m = 0.0
     node.line_end_x_m = 50.0
@@ -273,6 +277,20 @@ def test_odom_lag_compensation_shifts_linetest_control_path_for_both_controllers
     assert captured_path.shape[0] >= 2
     assert captured_path[0, 0] == pytest.approx(0.0, abs=1e-9)
     assert captured_path[1, 0] == pytest.approx(0.42, abs=1e-9)
+
+
+def test_linetest_brakes_near_configured_line_end() -> None:
+    node = _make_node()
+    node.controller_type = 'stanley'
+    node._controller = _CapturingController()
+    node._latest_odom_msg = _odom_msg(x=49.2, y=0.0, yaw=0.0, vx=4.0)
+    node._latest_speed_mps = 4.0
+    node._latest_yaw_rate_rps = 0.0
+
+    node._on_timer()
+
+    assert node._cmd_pub.messages[-1].drive.speed == pytest.approx(0.0)
+    assert node._brake_pub.messages[-1].data == pytest.approx(1.0)
 
 
 def test_publish_diagnostics_uses_linetest_identity_and_expected_keys():

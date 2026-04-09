@@ -9,6 +9,7 @@ skidpad_router_node:
       output_topic: "/tracked_cones/skidpad_routed"
       odom_topic: "/sim/odom"
       cmd_topic: "/cmd"
+      brake_cmd_topic: "/sim/brake_cmd"
       diagnostics_topic: "/skidpad_router/diagnostics"
       viz_topic: "/skidpad_router/markers"
 
@@ -38,8 +39,12 @@ skidpad_router_node:
       acceleration_stop_row_min_lateral_span_m: 2.0
       acceleration_stop_row_min_points_per_side: 1
       stop_margin_m: 4.0
+      target_margin_m: 3.5
       stop_line_pair_max_distance_m: 1.9
-      stop_override_publish_rate_hz: 50.0
+      stop_override_publish_rate_hz: 120.0
+      stop_approach_speed_gain: 1.5
+      brake_activation_margin_m: 1.0
+      brake_command: 1.0
 
     synthetic:
       pair_half_width_m: 1.6375

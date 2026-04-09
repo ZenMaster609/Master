@@ -4,5 +4,5 @@
       controller_type: stanley
     stanley:
       k_gain: 1.2
-      heading_gain: 1.6
+      heading_gain: 0.0
       lookahead_idx_offset: 4

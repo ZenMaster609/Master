@@ -16,6 +16,7 @@ from nav_msgs.msg import Odometry, Path
 from rclpy.executors import ExternalShutdownException
 from rclpy.node import Node
 from rclpy.qos import qos_profile_sensor_data
+from std_msgs.msg import Float32
 from visualization_msgs.msg import Marker, MarkerArray
 
 from sim_car.cones.tracking.pose import (
@@ -85,6 +86,7 @@ class LineTestPlannerNode(Node):
         self._last_throttled_log_sec: dict[str, float] = {}
 
         self._cmd_pub = self.create_publisher(AckermannDriveStamped, self.cmd_topic, 10)
+        self._brake_pub = self.create_publisher(Float32, self.brake_cmd_topic, 10)
         self._path_pub = self.create_publisher(Path, self.centerline_topic, 10)
         self._viz_pub = self.create_publisher(MarkerArray, self.viz_topic, 10)
         self._points_pub = self.create_publisher(PoseArray, self.points_topic, 10)
@@ -119,6 +121,7 @@ class LineTestPlannerNode(Node):
             'frames.odom_frame': 'odom',
             'frames.base_frame': 'front_axle',
             'topics.cmd_topic': '/cmd',
+            'topics.brake_cmd_topic': '/sim/brake_cmd',
             'topics.centerline_topic': '/planned_centerline',
             'topics.viz_topic': '/planner_viz',
             'topics.points_topic': '/planned_centerline_points',
@@ -151,6 +154,8 @@ class LineTestPlannerNode(Node):
             'speed_control.speed_max_mps': 4.0,
             'speed_control.curvature_speed_gain': 4.0,
             'speed_control.lowpass_speed_alpha': 0.15,
+            'parking.brake_activation_distance_m': 1.0,
+            'parking.brake_command': 1.0,
             'diagnostics.topic': '/linetest_planner/diagnostics',
             'diagnostics.publish_control_debug': True,
             'diagnostics.publish_thesis_context': False,
@@ -172,6 +177,7 @@ class LineTestPlannerNode(Node):
         self.base_frame = str(self.get_parameter('frames.base_frame').value).strip() or 'front_axle'
 
         self.cmd_topic = str(self.get_parameter('topics.cmd_topic').value)
+        self.brake_cmd_topic = str(self.get_parameter('topics.brake_cmd_topic').value)
         self.centerline_topic = str(self.get_parameter('topics.centerline_topic').value)
         self.viz_topic = str(self.get_parameter('topics.viz_topic').value)
         self.points_topic = str(self.get_parameter('topics.points_topic').value)
@@ -199,6 +205,11 @@ class LineTestPlannerNode(Node):
         self.lowpass_speed_alpha = float(
             np.clip(float(self.get_parameter('speed_control.lowpass_speed_alpha').value), 0.0, 1.0)
         )
+        self.brake_activation_distance_m = max(
+            0.0,
+            float(self.get_parameter('parking.brake_activation_distance_m').value),
+        )
+        self.brake_command = float(np.clip(float(self.get_parameter('parking.brake_command').value), 0.0, 1.0))
 
         self.diagnostics_topic = (
             str(self.get_parameter('diagnostics.topic').value).strip()
@@ -272,6 +283,7 @@ class LineTestPlannerNode(Node):
                 zero_cmd_sent_flag = int(self._apply_no_path_behavior())
         else:
             vehicle_x, vehicle_y, vehicle_yaw = vehicle_pose
+            line_remaining_m = self._line_remaining_distance_m(vehicle_x, vehicle_y)
             control_world = self._build_forward_control_path(vehicle_x, vehicle_y)
             control_path = self._centerline_to_vehicle_frame(
                 centerline=control_world,
@@ -285,7 +297,7 @@ class LineTestPlannerNode(Node):
             elif control_path.shape[0] == 0:
                 operator_state = 'stopped'
                 operator_reason = 'no_control_path'
-                zero_cmd_sent_flag = int(self._apply_no_path_behavior())
+                zero_cmd_sent_flag = int(self._apply_no_path_behavior(brake=True))
             else:
                 try:
                     controller_output = self._controller.compute(
@@ -319,7 +331,11 @@ class LineTestPlannerNode(Node):
                     )
                     self._last_speed_cmd = cmd_speed
                     self._last_steering_cmd = cmd_steering
+                    if self._linetest_brake_cmd(line_remaining_m) > 0.0:
+                        cmd_speed = 0.0
+                        self._last_speed_cmd = 0.0
                     self._publish_cmd(cmd_speed, cmd_steering)
+                    self._publish_brake_cmd(self._linetest_brake_cmd(line_remaining_m))
 
         status_text = self._build_status_text(
             operator_state=operator_state,
@@ -767,9 +783,10 @@ class LineTestPlannerNode(Node):
         alpha = self.lowpass_speed_alpha
         return float((alpha * v_des) + ((1.0 - alpha) * float(self._last_speed_cmd)))
 
-    def _apply_no_path_behavior(self) -> bool:
+    def _apply_no_path_behavior(self, *, brake: bool = False) -> bool:
         if self.stop_if_no_path:
             self._publish_cmd(0.0, 0.0)
+            self._publish_brake_cmd(self.brake_command if brake else 0.0)
             self._last_speed_cmd = 0.0
             self._last_steering_cmd = 0.0
             return True
@@ -783,6 +800,23 @@ class LineTestPlannerNode(Node):
         msg.drive.speed = float(speed_mps)
         msg.drive.steering_angle = float(steering_rad)
         self._cmd_pub.publish(msg)
+
+    def _line_remaining_distance_m(self, vehicle_x: float, vehicle_y: float) -> float:
+        if self._line_length_m <= 1e-9:
+            return 0.0
+        vehicle_xy = np.array([vehicle_x, vehicle_y], dtype=np.float64)
+        station_m = float(np.dot(vehicle_xy - self._line_start_xy, self._line_direction_xy))
+        return max(0.0, self._line_length_m - station_m)
+
+    def _linetest_brake_cmd(self, line_remaining_m: float) -> float:
+        if float(line_remaining_m) <= float(self.brake_activation_distance_m):
+            return float(self.brake_command)
+        return 0.0
+
+    def _publish_brake_cmd(self, command: float) -> None:
+        msg = Float32()
+        msg.data = float(np.clip(float(command), 0.0, 1.0))
+        self._brake_pub.publish(msg)
 
     def _throttled_warn(self, key: str, message: str) -> None:
         now_sec = time.monotonic()

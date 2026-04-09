@@ -3,6 +3,7 @@ linetest_planner_node:
     topics:
       centerline_topic: /planned_centerline
       cmd_topic: /cmd
+      brake_cmd_topic: /sim/brake_cmd
       odom_topic: /sim/odom
     runtime:
       publish_rate_hz: 60.0
@@ -13,6 +14,9 @@ linetest_planner_node:
     line:
       start_x_m: -38.5
       start_y_m: 0.0
-      end_x_m: 50.0
+      end_x_m: 46.5
       end_y_m: 0.0
       point_spacing_m: 0.5
+    parking:
+      brake_activation_distance_m: 1.0
+      brake_command: 1.0
