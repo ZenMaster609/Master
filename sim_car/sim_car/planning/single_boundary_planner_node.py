@@ -31,6 +31,11 @@ from sim_car.planning.triangulation_planner_core import (
     tracked_cones_frame_delta_p95,
 )
 from sim_car.planning.planner_runtime_types import PlannerIdentity
+from sim_car.planning.tracked_cone_planner_contract import (
+    COMMON_MIGRATED_TRACKED_CONE_PLANNER_DEFAULTS,
+    apply_common_config_to_node,
+    read_migrated_tracked_cone_planner_common_config,
+)
 from sim_car.planning.single_boundary_planner_core import (
     SingleBoundaryPlannerConfig,
     SingleBoundaryPlannerPrior,
@@ -363,216 +368,42 @@ class SingleBoundaryPlannerNode(TrackedConePlannerBase):
         )
 
     def _declare_parameters(self) -> None:
-        defaults = {
-            "frames.planning_frame": "odom",
-            "frames.odom_frame": "odom",
-            "frames.base_frame": "front_axle",
-            "frames.tf_timeout_s": 0.03,
-            "topics.tracked_cones_topic": "/tracked_cones",
-            "topics.cmd_topic": "/cmd",
-            "topics.centerline_topic": "/planned_centerline",
-            "topics.viz_topic": "/planner_viz",
-            "topics.points_topic": "/planned_centerline_points",
-            "topics.odom_topic": "/sim/odom",
-            "filtering.max_cone_range_m": 25.0,
-            "filtering.behind_drop_m": 5.0,
-            "filtering.min_confidence": 0.3,
-            "filtering.min_required_cones": 4,
-            "filtering.infer_unknown_by_side": True,
-            "filtering.infer_orange_by_side": True,
-            "filtering.orange_min_lateral_m": 0.9,
-            "filtering.orange_neighbor_radius_m": 3.5,
-            "filtering.orange_neighbor_margin_m": 0.75,
+        defaults = dict(COMMON_MIGRATED_TRACKED_CONE_PLANNER_DEFAULTS)
+        defaults.update({
             "filtering.allow_unknown_pair_completion": True,
             "filtering.unknown_pair_search_radius_m": 1.25,
             "filtering.unknown_pair_max_longitudinal_error_m": 1.5,
             "filtering.unknown_pair_max_width_error_m": 0.9,
             "filtering.max_consecutive_unknown_pairs": 2,
-            "boundary_chain.min_step_m": 0.8,
-            "boundary_chain.max_step_m": 5.5,
-            "boundary_chain.max_heading_change_rad": 0.95,
-            "boundary_chain.min_forward_progress_m": 0.2,
             "boundary_chain.min_chain_length": 2,
             "pairing.min_pair_width_m": 2.2,
             "pairing.max_pair_width_m": 5.4,
             "pairing.max_width_jump_m": 0.75,
             "pairing.min_pair_count": 3,
             "pairing.pair_reassignment_margin": 0.25,
-            "width_estimation.initial_width_m": 3.6,
-            "width_estimation.min_width_m": 2.4,
-            "width_estimation.max_width_m": 4.8,
-            "width_estimation.alpha": 0.18,
-            "width_estimation.max_delta_per_update_m": 0.2,
             "width_estimation.min_trustworthy_pairs": 3,
-            "centerline.path_resolution_m": 0.5,
-            "centerline.max_path_length_m": 30.0,
             "centerline.smoothing_window": 3,
-            "centerline.temporal_alpha": 0.25,
             "centerline.max_heading_delta_rad": 0.75,
-            "midline_memory.horizon_m": 30.0,
-            "midline_memory.station_spacing_m": 0.5,
-            "midline_memory.near_distance_m": 4.0,
-            "midline_memory.mid_distance_m": 12.0,
-            "midline_memory.control_handoff_distance_m": 1.5,
-            "midline_memory.near_alpha": 0.06,
-            "midline_memory.mid_alpha": 0.18,
-            "midline_memory.far_alpha": 0.35,
-            "midline_memory.near_max_lateral_shift_m": 0.10,
-            "midline_memory.mid_max_lateral_shift_m": 0.20,
-            "midline_memory.far_max_lateral_shift_m": 0.40,
-            "midline_memory.hold_last_valid_duration_s": 2.5,
-            "midline_memory.min_buffer_confidence": 0.20,
-            "runtime.publish_rate_hz": 180.0,
-            "runtime.log_throttle_s": 1.0,
             "lap_tracking.gt_track_topic": "/ground_truth/track",
             "lap_tracking.target_laps": 0,
-            "control.controller_type": "stanley",
-            "control.stop_if_no_path": True,
-            "stanley.k_gain": 1.2,
-            "stanley.softening_speed_mps": 0.0,
-            "stanley.heading_gain": 1.6,
-            "stanley.lookahead_idx_offset": 0,
-            "stanley.steering_limit_rad": 0.52,
-            "stanley.steering_lowpass_alpha": 1.0,
-            "stanley.steering_rate_limit_rad_s": 10.0,
-            "stanley.use_yaw_rate_damping": True,
-            "stanley.yaw_rate_damping_gain": 0.0,
-            "stanley.wheelbase_m": 1.65,
-            "stanley.cross_track_deadband_m": 0.0,
-            "pure_pursuit.lookahead_m": 3.0,
-            "pure_pursuit.min_lookahead_m": 1.5,
-            "pure_pursuit.max_lookahead_m": 8.0,
-            "pure_pursuit.lookahead_gain": 0.0,
-            "pure_pursuit.steering_limit_rad": 0.52,
-            "pure_pursuit.steering_lowpass_alpha": 1.0,
-            "pure_pursuit.steering_rate_limit_rad_s": 10.0,
-            "pure_pursuit.wheelbase_m": 1.65,
-            "speed_control.speed_min_mps": 1.0,
-            "speed_control.speed_max_mps": 4.0,
-            "speed_control.curvature_speed_gain": 4.0,
-            "speed_control.lowpass_speed_alpha": 0.15,
             "validation.min_path_points": 2,
             "validation.min_forward_extent_m": 1.0,
-            "validation.jump_check_horizon_m": 8.0,
-            "validation.max_near_field_lateral_jump_m": 0.6,
             "validation.max_near_field_lateral_jump_m_sparse_pairs": 0.9,
             "validation.max_near_field_lateral_jump_m_single_boundary": 5.0,
             "validation.max_start_heading_error_rad": 1.0,
-            "validation.hold_last_valid_s": 2.5,
-            "validation.hold_exit_clean_frames": 2,
-            "validation.candidate_jump_reject_threshold_m": 1.0,
-            "validation.candidate_jump_recover_frames": 3,
-            "validation.candidate_min_points": 4,
-            "validation.candidate_min_extent_m": 2.0,
             "diagnostics.topic": "/single_boundary_planner/diagnostics",
-            "diagnostics.centerline_jump_horizon_m": 8.0,
-            "diagnostics.edge_quantization_m": 0.05,
-            "diagnostics.jump_warn_threshold_m": 0.8,
-            "diagnostics.edge_churn_warn_threshold": 0.4,
-            "diagnostics.publish_control_debug": True,
-            "diagnostics.publish_thesis_context": False,
-            "debug.enable_markers": True,
-            "debug.show_raw_cones": True,
-            "debug.show_boundary_chains": True,
-            "debug.show_pair_lines": True,
-            "debug.show_raw_midpoint_chain": True,
             "debug.show_raw_offset_path": True,
-            "debug.show_raw_prevalidation_centerline": True,
-            "debug.publish_points_topic": False,
-            "debug.show_lookahead_point": True,
-        }
+        })
         for name, value in defaults.items():
             self.declare_parameter(name, value)
 
     def _read_parameters(self) -> None:
-        self.planning_frame = str(self.get_parameter("frames.planning_frame").value).strip() or "odom"
-        self.odom_frame = str(self.get_parameter("frames.odom_frame").value).strip() or "odom"
-        self.base_frame = str(self.get_parameter("frames.base_frame").value).strip() or "front_axle"
-        self.tf_timeout_s = max(0.0, float(self.get_parameter("frames.tf_timeout_s").value))
-
-        self.tracked_cones_topic = str(self.get_parameter("topics.tracked_cones_topic").value)
-        self.cmd_topic = str(self.get_parameter("topics.cmd_topic").value)
-        self.centerline_topic = str(self.get_parameter("topics.centerline_topic").value)
-        self.viz_topic = str(self.get_parameter("topics.viz_topic").value)
-        self.points_topic = str(self.get_parameter("topics.points_topic").value)
-        self.odom_topic = str(self.get_parameter("topics.odom_topic").value)
-        self.infer_unknown_by_side = bool(self.get_parameter("filtering.infer_unknown_by_side").value)
-        self.infer_orange_by_side = bool(self.get_parameter("filtering.infer_orange_by_side").value)
-        self.orange_min_lateral_m = float(self.get_parameter("filtering.orange_min_lateral_m").value)
-        self.orange_neighbor_radius_m = float(
-            self.get_parameter("filtering.orange_neighbor_radius_m").value
+        common = read_migrated_tracked_cone_planner_common_config(
+            self,
+            planner_label='single-boundary planner',
+            diagnostics_topic_fallback=self._planner_identity.diagnostics_topic,
         )
-        self.orange_neighbor_margin_m = float(
-            self.get_parameter("filtering.orange_neighbor_margin_m").value
-        )
-
-        self.centerline_path_resolution_m = max(
-            0.05,
-            float(self.get_parameter("centerline.path_resolution_m").value),
-        )
-        self.temporal_alpha = float(
-            np.clip(float(self.get_parameter("centerline.temporal_alpha").value), 0.0, 1.0)
-        )
-        # The hybrid planner now owns temporal stability through the persistent
-        # midline buffer. Keep the legacy parameter readable for compatibility,
-        # but do not stack a second whole-path smoother on top of it.
-        self.enable_temporal_smoothing = False
-        self.smoothing_alpha = self.temporal_alpha
-        self.enable_near_field_freeze = False
-        self.freeze_near_field_m = 0.0
-        self.freeze_blend_length_m = 0.0
-        self.enable_committed_near_field = False
-        self.commit_plan_horizon_m = 0.0
-        self.commit_stable_frames = 1
-        self.commit_update_max_churn_ratio = 1.0
-        self.midline_horizon_m = max(1.0, float(self.get_parameter("midline_memory.horizon_m").value))
-        self.midline_station_spacing_m = max(
-            0.05,
-            float(self.get_parameter("midline_memory.station_spacing_m").value),
-        )
-        self.midline_near_distance_m = max(
-            0.0,
-            float(self.get_parameter("midline_memory.near_distance_m").value),
-        )
-        self.midline_mid_distance_m = max(
-            self.midline_near_distance_m,
-            float(self.get_parameter("midline_memory.mid_distance_m").value),
-        )
-        self.midline_control_handoff_distance_m = max(
-            self.midline_station_spacing_m,
-            float(self.get_parameter("midline_memory.control_handoff_distance_m").value),
-        )
-        self.midline_near_alpha = float(
-            np.clip(float(self.get_parameter("midline_memory.near_alpha").value), 0.0, 1.0)
-        )
-        self.midline_mid_alpha = float(
-            np.clip(float(self.get_parameter("midline_memory.mid_alpha").value), 0.0, 1.0)
-        )
-        self.midline_far_alpha = float(
-            np.clip(float(self.get_parameter("midline_memory.far_alpha").value), 0.0, 1.0)
-        )
-        self.midline_near_max_shift_m = max(
-            0.0,
-            float(self.get_parameter("midline_memory.near_max_lateral_shift_m").value),
-        )
-        self.midline_mid_max_shift_m = max(
-            self.midline_near_max_shift_m,
-            float(self.get_parameter("midline_memory.mid_max_lateral_shift_m").value),
-        )
-        self.midline_far_max_shift_m = max(
-            self.midline_mid_max_shift_m,
-            float(self.get_parameter("midline_memory.far_max_lateral_shift_m").value),
-        )
-        self.midline_min_buffer_confidence = float(
-            np.clip(float(self.get_parameter("midline_memory.min_buffer_confidence").value), 0.0, 1.0)
-        )
-        self.midline_hold_last_valid_duration_s = max(
-            0.0,
-            float(self.get_parameter("midline_memory.hold_last_valid_duration_s").value),
-        )
-
-        self.publish_rate_hz = max(1.0, float(self.get_parameter("runtime.publish_rate_hz").value))
-        self.log_throttle_s = max(0.1, float(self.get_parameter("runtime.log_throttle_s").value))
+        apply_common_config_to_node(self, common)
         self.lap_tracking_gt_track_topic = str(
             self.get_parameter("lap_tracking.gt_track_topic").value
         ).strip() or "/ground_truth/track"
@@ -580,95 +411,9 @@ class SingleBoundaryPlannerNode(TrackedConePlannerBase):
             0,
             int(self.get_parameter("lap_tracking.target_laps").value),
         )
-
-        self.controller_type = (
-            str(self.get_parameter("control.controller_type").value).strip().lower() or "stanley"
-        )
-        if self.controller_type not in {"stanley", "pure_pursuit", "none"}:
-            raise ValueError(
-                "Unsupported control.controller_type '%s'. Supported values: stanley, pure_pursuit, none"
-                % self.controller_type
-            )
-        self._controller = self._build_steering_controller() if self.controller_type != "none" else None
-        self.stop_if_no_path = bool(self.get_parameter("control.stop_if_no_path").value)
-        if self.controller_type == "none":
-            self.get_logger().info("control.controller_type 'none'; controller output is disabled")
-
-        self.speed_min_mps = max(0.0, float(self.get_parameter("speed_control.speed_min_mps").value))
-        self.speed_max_mps = max(self.speed_min_mps, float(self.get_parameter("speed_control.speed_max_mps").value))
-        self.curvature_speed_gain = max(0.0, float(self.get_parameter("speed_control.curvature_speed_gain").value))
-        self.lowpass_speed_alpha = float(
-            np.clip(float(self.get_parameter("speed_control.lowpass_speed_alpha").value), 0.0, 1.0)
-        )
-        self.hold_last_valid_s = max(
-            self.midline_hold_last_valid_duration_s,
-            float(self.get_parameter("validation.hold_last_valid_s").value),
-        )
-        self.hold_exit_clean_frames = max(
-            1,
-            int(self.get_parameter("validation.hold_exit_clean_frames").value),
-        )
-        self.candidate_jump_reject_threshold_m = max(
-            0.0,
-            float(self.get_parameter("validation.candidate_jump_reject_threshold_m").value),
-        )
-        self.candidate_jump_recover_frames = max(
-            1,
-            int(self.get_parameter("validation.candidate_jump_recover_frames").value),
-        )
-        self.candidate_min_points = max(
-            2,
-            int(self.get_parameter("validation.candidate_min_points").value),
-        )
-        self.candidate_min_extent_m = max(
-            0.5,
-            float(self.get_parameter("validation.candidate_min_extent_m").value),
-        )
-        self.diagnostics_topic = (
-            str(self.get_parameter("diagnostics.topic").value).strip()
-            or self._planner_identity.diagnostics_topic
-        )
-        self.centerline_jump_horizon_m = max(
-            0.5,
-            float(self.get_parameter("diagnostics.centerline_jump_horizon_m").value),
-        )
-        self.edge_quantization_m = max(
-            1e-6,
-            float(self.get_parameter("diagnostics.edge_quantization_m").value),
-        )
-        self.jump_warn_threshold_m = max(
-            0.0,
-            float(self.get_parameter("diagnostics.jump_warn_threshold_m").value),
-        )
-        self.edge_churn_warn_threshold = max(
-            0.0,
-            float(self.get_parameter("diagnostics.edge_churn_warn_threshold").value),
-        )
-        self.publish_control_debug = bool(
-            self.get_parameter("diagnostics.publish_control_debug").value
-        )
-        self.publish_thesis_context = bool(
-            self.get_parameter("diagnostics.publish_thesis_context").value
-        )
-
-        self.enable_debug_markers = bool(self.get_parameter("debug.enable_markers").value)
-        self.show_raw_cones = bool(self.get_parameter("debug.show_raw_cones").value)
-        self.show_boundary_chains = bool(self.get_parameter("debug.show_boundary_chains").value)
-        self.show_pair_lines = bool(self.get_parameter("debug.show_pair_lines").value)
-        self.show_raw_midpoint_chain = bool(
-            self.get_parameter("debug.show_raw_midpoint_chain").value
-        )
         self.show_raw_offset_path = bool(
             self.get_parameter("debug.show_raw_offset_path").value
         )
-        self.show_raw_prevalidation_centerline = bool(
-            self.get_parameter("debug.show_raw_prevalidation_centerline").value
-        )
-        self.publish_points_topic = bool(self.get_parameter("debug.publish_points_topic").value)
-        self.show_lookahead_point = bool(self.get_parameter("debug.show_lookahead_point").value)
-        self.show_triangulation_edges = False
-        self.show_candidate_edges = False
-        self.show_selected_edges = False
 
         self._core_config = SingleBoundaryPlannerConfig(
             max_cone_range_m=float(self.get_parameter("filtering.max_cone_range_m").value),
@@ -1599,17 +1344,19 @@ class SingleBoundaryPlannerNode(TrackedConePlannerBase):
         if count < 2:
             return empty
 
-        sample_limit = max(
+        # Use the actual sampled arc length rather than the configured station
+        # spacing so the near-field acceptance gate remains correct even if the
+        # sampled paths are irregular or test doubles bypass the resampler.
+        horizon_limit_m = max(0.25, float(horizon_m))
+        stored_limit = max(
             2,
-            int(
-                math.floor(
-                    max(0.25, float(horizon_m))
-                    / max(0.05, float(self.midline_station_spacing_m))
-                )
-            )
-            + 1,
+            int(np.searchsorted(self._path_cumulative_lengths(stored_samples), horizon_limit_m, side="right")),
         )
-        count = min(count, sample_limit)
+        candidate_limit = max(
+            2,
+            int(np.searchsorted(self._path_cumulative_lengths(candidate_samples), horizon_limit_m, side="right")),
+        )
+        count = min(count, stored_limit, candidate_limit)
         stored_local = self._centerline_to_vehicle_frame(
             centerline=stored_samples[:count],
             frame_id=self.odom_frame,

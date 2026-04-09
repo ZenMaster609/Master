@@ -3,6 +3,7 @@ from __future__ import annotations
 import ast
 import importlib.util
 import pathlib
+import sys
 
 import pytest
 import yaml
@@ -13,6 +14,7 @@ FULL_LAUNCH = REPO_ROOT / 'sim_car' / 'launch' / 'full_sim_launch.launch.py'
 SIM_CAR_SHARE = REPO_ROOT / 'sim_car'
 TRACKED_CONE_PLANNER_BASE = SIM_CAR_SHARE / 'sim_car' / 'planning' / 'tracked_cone_planner_base.py'
 SHARED_CONTROLLER_CONFIG = SIM_CAR_SHARE / 'sim_car' / 'planning' / 'controller_config.py'
+TRACKED_CONE_PLANNER_CONTRACT = SIM_CAR_SHARE / 'sim_car' / 'planning' / 'tracked_cone_planner_contract.py'
 TRACKS = {
     'acceleration': 'acceleration.world',
     'skidpad': 'skidpad.world',
@@ -22,11 +24,25 @@ MIGRATED_PLANNERS = ('midpoint', 'single_boundary', 'corridor')
 CONFIGURED_PLANNERS = MIGRATED_PLANNERS + ('linetest',)
 CONTROLLERS = ('stanley', 'pure_pursuit')
 
+if str(SIM_CAR_SHARE) not in sys.path:
+    sys.path.insert(0, str(SIM_CAR_SHARE))
+
 spec = importlib.util.spec_from_file_location('full_sim_launch', FULL_LAUNCH)
 assert spec is not None
 assert spec.loader is not None
 full_sim_launch = importlib.util.module_from_spec(spec)
+sys.modules[spec.name] = full_sim_launch
 spec.loader.exec_module(full_sim_launch)
+
+contract_spec = importlib.util.spec_from_file_location(
+    'tracked_cone_planner_contract',
+    TRACKED_CONE_PLANNER_CONTRACT,
+)
+assert contract_spec is not None
+assert contract_spec.loader is not None
+tracked_cone_planner_contract = importlib.util.module_from_spec(contract_spec)
+sys.modules[contract_spec.name] = tracked_cone_planner_contract
+contract_spec.loader.exec_module(tracked_cone_planner_contract)
 
 
 def _flatten(data, prefix: str = '') -> dict[str, object]:
@@ -49,27 +65,57 @@ def _planner_node_contract(planner: str) -> tuple[set[str], set[str]]:
                     read_parameters.add(node.args[0].value)
         return read_parameters
 
+    def _merge_declared_defaults(module: ast.AST, planner_name: str) -> dict[str, object]:
+        defaults = (
+            dict(tracked_cone_planner_contract.COMMON_MIGRATED_TRACKED_CONE_PLANNER_DEFAULTS)
+            if planner_name in MIGRATED_PLANNERS
+            else {}
+        )
+        found_defaults_assignment = False
+
+        for node in ast.walk(module):
+            if not isinstance(node, ast.FunctionDef) or node.name != '_declare_parameters':
+                continue
+            for stmt in node.body:
+                if isinstance(stmt, ast.Assign):
+                    for target in stmt.targets:
+                        if not isinstance(target, ast.Name) or target.id != 'defaults':
+                            continue
+                        if isinstance(stmt.value, ast.Dict):
+                            defaults.update(ast.literal_eval(stmt.value))
+                            found_defaults_assignment = True
+                            break
+                        if planner_name not in MIGRATED_PLANNERS:
+                            defaults.update(ast.literal_eval(stmt.value))
+                            found_defaults_assignment = True
+                            break
+                    if found_defaults_assignment and planner_name not in MIGRATED_PLANNERS:
+                        break
+                if (
+                    planner_name in MIGRATED_PLANNERS
+                    and isinstance(stmt, ast.Expr)
+                    and isinstance(stmt.value, ast.Call)
+                    and isinstance(stmt.value.func, ast.Attribute)
+                    and isinstance(stmt.value.func.value, ast.Name)
+                    and stmt.value.func.value.id == 'defaults'
+                    and stmt.value.func.attr == 'update'
+                    and stmt.value.args
+                ):
+                    defaults.update(ast.literal_eval(stmt.value.args[0]))
+                    found_defaults_assignment = True
+            break
+
+        assert found_defaults_assignment, planner_name
+        return defaults
+
     planner_path = SIM_CAR_SHARE / 'sim_car' / 'planning' / f'{planner}_planner_node.py'
     module = ast.parse(planner_path.read_text(encoding='utf-8'))
 
-    declared_defaults: dict[str, object] | None = None
+    declared_defaults = _merge_declared_defaults(module, planner)
     read_parameters = _parameter_reads(module)
-
-    for node in ast.walk(module):
-        if isinstance(node, ast.FunctionDef) and node.name == '_declare_parameters':
-            for stmt in node.body:
-                if not isinstance(stmt, ast.Assign):
-                    continue
-                for target in stmt.targets:
-                    if isinstance(target, ast.Name) and target.id == 'defaults':
-                        declared_defaults = ast.literal_eval(stmt.value)
-                        break
-                if declared_defaults is not None:
-                    break
-
-    assert declared_defaults is not None, planner
     if planner in MIGRATED_PLANNERS:
         read_parameters |= _parameter_reads(ast.parse(TRACKED_CONE_PLANNER_BASE.read_text(encoding='utf-8')))
+        read_parameters |= _parameter_reads(ast.parse(TRACKED_CONE_PLANNER_CONTRACT.read_text(encoding='utf-8')))
     if planner in CONFIGURED_PLANNERS:
         read_parameters |= _parameter_reads(ast.parse(SHARED_CONTROLLER_CONFIG.read_text(encoding='utf-8')))
     return set(declared_defaults), read_parameters

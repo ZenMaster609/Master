@@ -21,6 +21,10 @@ from visualization_msgs.msg import Marker, MarkerArray
 from sim_car.cones.tracking.pose import convert_odom_child_pose_to_base_frame
 from sim_car.planning.controller_config import build_steering_controller
 from sim_car.planning.planner_runtime_types import PlannerIdentity
+from sim_car.planning.tracked_cone_planner_contract import (
+    log_tracked_cone_controller_mode,
+    normalize_tracked_cone_controller_type,
+)
 
 _OPERATOR_STATE_CODES = {
     'waiting': 0,
@@ -173,17 +177,13 @@ class LineTestPlannerNode(Node):
         self.log_throttle_s = max(0.1, float(self.get_parameter('runtime.log_throttle_s').value))
 
         self.controller_type = (
-            str(self.get_parameter('control.controller_type').value).strip().lower() or 'stanley'
-        )
-        if self.controller_type not in {'stanley', 'pure_pursuit', 'none'}:
-            raise ValueError(
-                "Unsupported control.controller_type '%s'. Supported values: stanley, pure_pursuit, none"
-                % self.controller_type
+            normalize_tracked_cone_controller_type(
+                self.get_parameter('control.controller_type').value
             )
+        )
         self._controller = self._build_steering_controller() if self.controller_type != 'none' else None
         self.stop_if_no_path = bool(self.get_parameter('control.stop_if_no_path').value)
-        if self.controller_type == 'none':
-            self.get_logger().info("control.controller_type 'none'; controller output is disabled")
+        log_tracked_cone_controller_mode(self, controller_type=self.controller_type)
 
         self.speed_min_mps = max(0.0, float(self.get_parameter('speed_control.speed_min_mps').value))
         self.speed_max_mps = max(self.speed_min_mps, float(self.get_parameter('speed_control.speed_max_mps').value))

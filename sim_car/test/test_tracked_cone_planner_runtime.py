@@ -2,19 +2,31 @@ from __future__ import annotations
 
 import pathlib
 import sys
+from types import SimpleNamespace
 
 import numpy as np
+import pytest
 from builtin_interfaces.msg import Time as TimeMsg
-from vehicle_plotter_msgs.msg import ConeDetection, ConeDetectionArray
 
 TEST_DIR = pathlib.Path(__file__).resolve().parent
 PACKAGE_ROOT = TEST_DIR.parent
 if str(PACKAGE_ROOT) not in sys.path:
     sys.path.insert(0, str(PACKAGE_ROOT))
 
-from sim_car.planning.tracked_cone_planner_runtime import TrackedConePlannerRuntime
-from sim_car.planning.triangulation_planner_core import CoreResult
-from sim_car.planning.planner_runtime_types import PlannerIdentity
+try:
+    from vehicle_plotter_msgs.msg import ConeDetection, ConeDetectionArray
+    from sim_car.controllers.pure_pursuit_controller import PurePursuitController
+    from sim_car.planning.planner_runtime_types import PlannerIdentity
+    from sim_car.planning.tracked_cone_planner_contract import (
+        MIGRATED_TRACKED_CONE_COMPATIBILITY_DEFAULTS,
+        build_tracked_cone_controller,
+        emit_migrated_planner_compatibility_warnings,
+        normalize_tracked_cone_controller_type,
+    )
+    from sim_car.planning.tracked_cone_planner_runtime import TrackedConePlannerRuntime
+    from sim_car.planning.triangulation_planner_core import CoreResult
+except ImportError as exc:  # pragma: no cover - depends on generated ROS interfaces
+    pytest.skip(f"ROS planner runtime imports unavailable: {exc}", allow_module_level=True)
 
 
 class _FakePublisher:
@@ -52,6 +64,18 @@ class _FakeLogger:
 
     def warn(self, msg: str) -> None:
         self.warn_messages.append(msg)
+
+
+class _ContractTestNode:
+    def __init__(self, params: dict[str, object]) -> None:
+        self._params = params
+        self._fake_logger = _FakeLogger()
+
+    def get_parameter(self, name: str) -> SimpleNamespace:
+        return SimpleNamespace(value=self._params[name])
+
+    def get_logger(self) -> _FakeLogger:
+        return self._fake_logger
 
 
 def _make_node() -> TrackedConePlannerRuntime:
@@ -550,3 +574,88 @@ def test_log_operator_state_transition_only_logs_on_change():
     assert len(node._fake_logger.info_messages) == 2
     assert 'planner state none -> held | reason=near_field_continuity' in node._fake_logger.info_messages[0]
     assert 'planner state held -> fresh | reason=none' in node._fake_logger.info_messages[1]
+
+
+def test_shared_tracked_cone_contract_builds_active_pure_pursuit_controller():
+    node = _ContractTestNode(
+        {
+            'stanley.k_gain': 1.2,
+            'stanley.softening_speed_mps': 0.0,
+            'stanley.heading_gain': 1.6,
+            'stanley.lookahead_idx_offset': 0,
+            'stanley.steering_limit_rad': 0.52,
+            'stanley.steering_lowpass_alpha': 1.0,
+            'stanley.steering_rate_limit_rad_s': 10.0,
+            'stanley.use_yaw_rate_damping': True,
+            'stanley.yaw_rate_damping_gain': 0.0,
+            'stanley.wheelbase_m': 1.65,
+            'stanley.cross_track_deadband_m': 0.0,
+            'pure_pursuit.lookahead_m': 2.0,
+            'pure_pursuit.min_lookahead_m': 1.0,
+            'pure_pursuit.max_lookahead_m': 5.0,
+            'pure_pursuit.lookahead_gain': 0.5,
+            'pure_pursuit.steering_limit_rad': 0.52,
+            'pure_pursuit.steering_lowpass_alpha': 1.0,
+            'pure_pursuit.steering_rate_limit_rad_s': 0.0,
+            'pure_pursuit.wheelbase_m': 1.65,
+        }
+    )
+
+    controller = build_tracked_cone_controller(
+        node=node,
+        controller_type='PURE_PURSUIT',
+        publish_rate_hz=20.0,
+    )
+    output = controller.compute(
+        control_path=np.array([[2.0, 1.0], [12.0, 1.0]], dtype=np.float64),
+        speed_mps=3.0,
+        yaw_rate_rps=0.0,
+    )
+
+    assert isinstance(controller, PurePursuitController)
+    assert np.isfinite(output.steering_rad)
+    assert output.steering_rad > 0.0
+    assert normalize_tracked_cone_controller_type('PURE_PURSUIT') == 'pure_pursuit'
+
+
+def test_shared_tracked_cone_contract_supports_controller_none():
+    node = _ContractTestNode({})
+
+    controller = build_tracked_cone_controller(
+        node=node,
+        controller_type='none',
+        publish_rate_hz=20.0,
+    )
+
+    assert controller is None
+
+
+def test_shared_tracked_cone_contract_rejects_invalid_controller_type():
+    with pytest.raises(ValueError, match='Unsupported control.controller_type'):
+        normalize_tracked_cone_controller_type('not_a_controller')
+
+
+def test_compatibility_only_temporal_alpha_warns_when_overridden():
+    node = _ContractTestNode({})
+
+    emit_migrated_planner_compatibility_warnings(
+        node,
+        planner_label='midpoint planner',
+        temporal_alpha=0.6,
+    )
+
+    assert len(node._fake_logger.warn_messages) == 1
+    assert "compatibility-only" in node._fake_logger.warn_messages[0]
+    assert "midline memory now owns path stability" in node._fake_logger.warn_messages[0]
+
+
+def test_compatibility_only_temporal_alpha_default_does_not_warn():
+    node = _ContractTestNode({})
+
+    emit_migrated_planner_compatibility_warnings(
+        node,
+        planner_label='midpoint planner',
+        temporal_alpha=float(MIGRATED_TRACKED_CONE_COMPATIBILITY_DEFAULTS['centerline.temporal_alpha']),
+    )
+
+    assert node._fake_logger.warn_messages == []
