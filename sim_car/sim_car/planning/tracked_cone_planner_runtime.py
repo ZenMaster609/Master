@@ -23,7 +23,10 @@ from tf2_ros import Buffer, TransformException, TransformListener
 from vehicle_plotter_msgs.msg import ConeDetectionArray
 from visualization_msgs.msg import Marker, MarkerArray
 
-from sim_car.cones.tracking.pose import convert_odom_child_pose_to_base_frame
+from sim_car.cones.tracking.pose import (
+    convert_odom_child_pose_to_base_frame,
+    project_planar_pose_constant_twist,
+)
 from sim_car.cones.tracking.fusion import normalize_color, resolve_boundary_colors_for_planning
 from sim_car.planning.triangulation_planner_core import (
     CoreConfig,
@@ -230,6 +233,7 @@ class TrackedConePlannerRuntime(Node):
             'runtime.publish_rate_hz': 180.0,
             'runtime.log_throttle_s': 1.0,
             'control.controller_type': 'stanley',
+            'control.odom_lag_compensation_ms': 0.0,
             'control.stop_if_no_path': True,
             'stanley.k_gain': 1.2,
             'stanley.softening_speed_mps': 0.0,
@@ -331,6 +335,10 @@ class TrackedConePlannerRuntime(Node):
                 self.get_parameter('control.controller_type').value
             )
         )
+        self.odom_lag_compensation_s = min(
+            max(0.0, float(self.get_parameter('control.odom_lag_compensation_ms').value)),
+            150.0,
+        ) / 1000.0
         self._controller = build_tracked_cone_controller(
             node=self,
             controller_type=self.controller_type,
@@ -1000,7 +1008,7 @@ class TrackedConePlannerRuntime(Node):
             ty = float(tf_msg.transform.translation.y)
             q = tf_msg.transform.rotation
             yaw = self._yaw_from_quat(float(q.x), float(q.y), float(q.z), float(q.w))
-            return tx, ty, yaw
+            return self._compensate_vehicle_pose(frame_id, (tx, ty, yaw))
 
         if not self._is_alias(frame_id, self.odom_frame):
             return None
@@ -1016,11 +1024,28 @@ class TrackedConePlannerRuntime(Node):
         ty = float(pose.position.y)
         q = pose.orientation
         yaw = self._yaw_from_quat(float(q.x), float(q.y), float(q.z), float(q.w))
-        return self._convert_odom_child_pose_to_base_frame(
+        base_pose = self._convert_odom_child_pose_to_base_frame(
             child_frame=str(odom.child_frame_id).strip(),
             tx=tx,
             ty=ty,
             yaw=yaw,
+        )
+        return self._compensate_vehicle_pose(frame_id, base_pose)
+
+    def _compensate_vehicle_pose(
+        self,
+        frame_id: str,
+        pose: Optional[tuple[float, float, float]],
+    ) -> Optional[tuple[float, float, float]]:
+        if pose is None:
+            return None
+        if self._is_alias(frame_id, self.base_frame):
+            return pose
+        return project_planar_pose_constant_twist(
+            pose,
+            speed_mps=self._latest_speed_mps,
+            yaw_rate_rps=self._latest_yaw_rate_rps,
+            delay_s=float(getattr(self, 'odom_lag_compensation_s', 0.0)),
         )
 
     def _convert_odom_child_pose_to_base_frame(

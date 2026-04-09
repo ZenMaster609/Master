@@ -260,6 +260,12 @@ def generate_launch_description():
         description='Optional fixed delay applied to planner/controller odometry feed (ms)'
     )
 
+    planner_odom_lag_compensation_ms_arg = DeclareLaunchArgument(
+        'planner_odom_lag_compensation_ms',
+        default_value='0.0',
+        description='Optional forward pose compensation applied inside planner/controller path transform (ms)'
+    )
+
     sensors_render_engine_arg = DeclareLaunchArgument(
         'sensors_render_engine',
         default_value='ogre2',
@@ -581,6 +587,7 @@ def generate_launch_description():
         'perception_rate_hz',
         'planner_rate_hz',
         'planner_odom_delay_ms',
+        'planner_odom_lag_compensation_ms',
         'sensors_render_engine',
         'track',
         'world',
@@ -1180,6 +1187,10 @@ def generate_launch_description():
                 ),
                 'topics.tracked_cones_topic': planner_input_topic,
                 'topics.odom_topic': planner_odom_topic,
+                'control.odom_lag_compensation_ms': ParameterValue(
+                    LaunchConfiguration('planner_odom_lag_compensation_ms'),
+                    value_type=float,
+                ),
                 'runtime.publish_rate_hz': ParameterValue(
                     LaunchConfiguration('planner_rate_hz'),
                     value_type=float,
@@ -1212,6 +1223,10 @@ def generate_launch_description():
                 ),
                 'topics.tracked_cones_topic': planner_input_topic,
                 'topics.odom_topic': planner_odom_topic,
+                'control.odom_lag_compensation_ms': ParameterValue(
+                    LaunchConfiguration('planner_odom_lag_compensation_ms'),
+                    value_type=float,
+                ),
                 'runtime.publish_rate_hz': ParameterValue(
                     LaunchConfiguration('planner_rate_hz'),
                     value_type=float,
@@ -1244,6 +1259,10 @@ def generate_launch_description():
                 ),
                 'topics.tracked_cones_topic': planner_input_topic,
                 'topics.odom_topic': planner_odom_topic,
+                'control.odom_lag_compensation_ms': ParameterValue(
+                    LaunchConfiguration('planner_odom_lag_compensation_ms'),
+                    value_type=float,
+                ),
                 'runtime.publish_rate_hz': ParameterValue(
                     LaunchConfiguration('planner_rate_hz'),
                     value_type=float,
@@ -1273,6 +1292,10 @@ def generate_launch_description():
                     value_type=bool,
                 ),
                 'topics.odom_topic': planner_odom_topic,
+                'control.odom_lag_compensation_ms': ParameterValue(
+                    LaunchConfiguration('planner_odom_lag_compensation_ms'),
+                    value_type=float,
+                ),
                 'runtime.publish_rate_hz': ParameterValue(
                     LaunchConfiguration('planner_rate_hz'),
                     value_type=float,
@@ -1367,6 +1390,7 @@ def generate_launch_description():
         perception_rate_arg,
         planner_rate_arg,
         planner_odom_delay_ms_arg,
+        planner_odom_lag_compensation_ms_arg,
         sensors_render_engine_arg,
         track_arg,
         world_arg,

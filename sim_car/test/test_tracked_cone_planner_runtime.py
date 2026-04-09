@@ -3,10 +3,12 @@ from __future__ import annotations
 import pathlib
 import sys
 from types import SimpleNamespace
+import math
 
 import numpy as np
 import pytest
 from builtin_interfaces.msg import Time as TimeMsg
+from nav_msgs.msg import Odometry
 
 TEST_DIR = pathlib.Path(__file__).resolve().parent
 PACKAGE_ROOT = TEST_DIR.parent
@@ -132,10 +134,26 @@ def _make_node() -> TrackedConePlannerRuntime:
     node._last_valid_time_sec = -1.0
     node._last_throttled_log_sec = {}
     node.log_throttle_s = 0.0
+    node._latest_odom_msg = None
+    node._latest_speed_mps = 0.0
+    node._latest_yaw_rate_rps = 0.0
+    node.odom_lag_compensation_s = 0.0
+    node._configured_wheelbase_m = lambda: 1.65
     node._fake_logger = _FakeLogger()
     node.get_clock = lambda: _FakeClock(TimeMsg(sec=123, nanosec=456))
     node.get_logger = lambda: node._fake_logger
     return node
+
+
+def _odom_msg(*, x: float, y: float, yaw: float, child_frame_id: str = 'front_axle') -> Odometry:
+    msg = Odometry()
+    msg.header.frame_id = 'odom'
+    msg.child_frame_id = child_frame_id
+    msg.pose.pose.position.x = float(x)
+    msg.pose.pose.position.y = float(y)
+    msg.pose.pose.orientation.z = math.sin(0.5 * yaw)
+    msg.pose.pose.orientation.w = math.cos(0.5 * yaw)
+    return msg
 
 
 def _sample_result() -> CoreResult:
@@ -152,6 +170,20 @@ def _sample_result() -> CoreResult:
         used_fallback=False,
         status='ok',
     )
+
+
+def test_resolve_vehicle_pose_applies_odom_lag_compensation_to_odom_fallback():
+    node = _make_node()
+    node._lookup_transform_with_alias = lambda *args, **kwargs: (None, None, None)
+    node._latest_odom_msg = _odom_msg(x=1.0, y=2.0, yaw=0.0)
+    node._latest_speed_mps = 2.0
+    node._latest_yaw_rate_rps = 0.0
+    node.odom_lag_compensation_s = 0.04
+
+    pose = node._resolve_vehicle_pose('odom', TimeMsg(sec=1, nanosec=0))
+
+    assert pose is not None
+    assert pose == pytest.approx((1.08, 2.0, 0.0), abs=1e-12)
 
 
 def _cone_msg(points: list[tuple[float, float]], *, color: str, boundary_color: str = '') -> ConeDetectionArray:

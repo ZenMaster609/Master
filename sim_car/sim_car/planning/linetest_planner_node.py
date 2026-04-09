@@ -18,7 +18,10 @@ from rclpy.node import Node
 from rclpy.qos import qos_profile_sensor_data
 from visualization_msgs.msg import Marker, MarkerArray
 
-from sim_car.cones.tracking.pose import convert_odom_child_pose_to_base_frame
+from sim_car.cones.tracking.pose import (
+    convert_odom_child_pose_to_base_frame,
+    project_planar_pose_constant_twist,
+)
 from sim_car.planning.controller_config import build_steering_controller
 from sim_car.planning.planner_runtime_types import PlannerIdentity
 from sim_car.planning.tracked_cone_planner_contract import (
@@ -123,6 +126,7 @@ class LineTestPlannerNode(Node):
             'runtime.publish_rate_hz': 60.0,
             'runtime.log_throttle_s': 1.0,
             'control.controller_type': 'stanley',
+            'control.odom_lag_compensation_ms': 0.0,
             'control.stop_if_no_path': True,
             'stanley.k_gain': 1.2,
             'stanley.softening_speed_mps': 0.0,
@@ -181,6 +185,10 @@ class LineTestPlannerNode(Node):
                 self.get_parameter('control.controller_type').value
             )
         )
+        self.odom_lag_compensation_s = min(
+            max(0.0, float(self.get_parameter('control.odom_lag_compensation_ms').value)),
+            150.0,
+        ) / 1000.0
         self._controller = self._build_steering_controller() if self.controller_type != 'none' else None
         self.stop_if_no_path = bool(self.get_parameter('control.stop_if_no_path').value)
         log_tracked_cone_controller_mode(self, controller_type=self.controller_type)
@@ -361,11 +369,19 @@ class LineTestPlannerNode(Node):
         q = pose.orientation
         yaw = self._yaw_from_quat(float(q.x), float(q.y), float(q.z), float(q.w))
         child_frame = str(odom.child_frame_id).strip()
-        return self._convert_odom_child_pose_to_base_frame(
+        base_pose = self._convert_odom_child_pose_to_base_frame(
             child_frame=child_frame,
             tx=tx,
             ty=ty,
             yaw=yaw,
+        )
+        if base_pose is None:
+            return None
+        return project_planar_pose_constant_twist(
+            base_pose,
+            speed_mps=self._latest_speed_mps,
+            yaw_rate_rps=self._latest_yaw_rate_rps,
+            delay_s=float(getattr(self, 'odom_lag_compensation_s', 0.0)),
         )
 
     def _convert_odom_child_pose_to_base_frame(

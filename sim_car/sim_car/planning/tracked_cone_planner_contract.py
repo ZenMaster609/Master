@@ -22,6 +22,7 @@ COMMON_MIGRATED_TRACKED_CONE_PLANNER_DEFAULTS: dict[str, object] = {
     'centerline.path_resolution_m': 0.5,
     'centerline.temporal_alpha': 0.25,
     'control.controller_type': 'stanley',
+    'control.odom_lag_compensation_ms': 0.0,
     'control.stop_if_no_path': True,
     'debug.enable_markers': True,
     'debug.publish_points_topic': False,
@@ -162,6 +163,7 @@ class MigratedTrackedConePlannerCommonConfig:
     publish_rate_hz: float
     log_throttle_s: float
     controller_type: str
+    odom_lag_compensation_s: float
     _controller: Any
     stop_if_no_path: bool
     speed_min_mps: float
@@ -330,6 +332,13 @@ def read_migrated_tracked_cone_planner_common_config(
         publish_rate_hz=publish_rate_hz,
         log_throttle_s=max(0.1, float(node.get_parameter('runtime.log_throttle_s').value)),
         controller_type=controller_type,
+        odom_lag_compensation_s=(
+            min(
+                max(0.0, float(node.get_parameter('control.odom_lag_compensation_ms').value)),
+                150.0,
+            )
+            / 1000.0
+        ),
         _controller=build_tracked_cone_controller(
             node=node,
             controller_type=controller_type,

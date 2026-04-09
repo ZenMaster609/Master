@@ -54,10 +54,14 @@ def test_planner_odom_delay_is_opt_in_for_closed_loop_stability() -> None:
     content = FULL_LAUNCH.read_text(encoding='utf-8')
 
     assert "'planner_odom_delay_ms',\n        default_value='0.0'" in content
+    assert "'planner_odom_lag_compensation_ms',\n        default_value='0.0'" in content
     assert "def _planner_odom_delay_enabled_expr():" in content
     assert "planner_odom_topic = PythonExpression([" in content
     assert "'/sim/odom_delayed' if " in content
     assert " else '/sim/odom'" in content
+    assert "'control.odom_lag_compensation_ms': ParameterValue(" in content
+    assert "LaunchConfiguration('planner_odom_lag_compensation_ms')" in content
+    assert content.count("'control.odom_lag_compensation_ms': ParameterValue(") == 4
     assert content.count("condition=IfCondition(_planner_odom_delay_enabled_expr())") == 2
 
 
