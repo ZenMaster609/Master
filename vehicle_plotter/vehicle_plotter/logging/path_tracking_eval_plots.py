@@ -412,12 +412,12 @@ def generate_path_tracking_cte_plot(
             planner_vs_gt[valid_planner_vs_gt],
             color="#2ca02c",
             linewidth=1.8,
-            label="Planner ref vs GT",
+            label="Planner ref vs GT midline",
         )
     if np.any(valid_planner):
         ax.plot(t[valid_planner], cte_planner[valid_planner], color="#d62728", linewidth=1.8, label="Front axle vs Planner")
     if np.any(valid_gt):
-        ax.plot(t[valid_gt], cte_gt[valid_gt], color="#1f77b4", linewidth=1.8, label="Front axle vs GT")
+        ax.plot(t[valid_gt], cte_gt[valid_gt], color="#1f77b4", linewidth=1.8, label="Front axle vs GT midline")
     ax.axhline(0.0, color="#7f7f7f", linewidth=1.0, alpha=0.6)
     ax.set_title(title)
     ax.set_xlabel("Time (s)")
