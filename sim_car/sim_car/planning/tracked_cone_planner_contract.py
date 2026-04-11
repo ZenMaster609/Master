@@ -15,8 +15,8 @@ SUPPORTED_TRACKED_CONE_CONTROLLER_TYPES = frozenset({'stanley', 'pure_pursuit', 
 
 COMMON_MIGRATED_TRACKED_CONE_PLANNER_DEFAULTS: dict[str, object] = {
     'boundary_chain.max_heading_change_rad': 0.95,
-    'boundary_chain.max_step_m': 5.5,
-    'boundary_chain.min_forward_progress_m': 0.2,
+    'boundary_chain.max_step_m': 10.5,
+    'boundary_chain.min_forward_progress_m': 0.0002,
     'boundary_chain.min_step_m': 0.8,
     'centerline.max_path_length_m': 30.0,
     'centerline.path_resolution_m': 0.5,

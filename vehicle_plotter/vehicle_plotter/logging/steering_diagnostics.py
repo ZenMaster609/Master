@@ -26,7 +26,16 @@ CONE_AUDIT_DIAG_KEYS = [
     "cone_audit_live_count",
     "cone_audit_used_left_chain_count",
     "cone_audit_used_right_chain_count",
-    "cone_audit_passed_filters_not_in_chain_count",
+    "cone_audit_chain_step_too_close_count",
+    "cone_audit_chain_step_too_far_count",
+    "cone_audit_chain_no_forward_progress_count",
+    "cone_audit_chain_radial_regression_count",
+    "cone_audit_chain_forward_projection_count",
+    "cone_audit_chain_heading_change_count",
+    "cone_audit_chain_shadowed_count",
+    "cone_audit_chain_not_best_next_step_count",
+    "cone_audit_chain_no_forward_seed_count",
+    "cone_audit_chain_unreached_count",
     "cone_audit_rejected_geometry_range_count",
     "cone_audit_rejected_geometry_behind_count",
     "cone_audit_rejected_geometry_horizon_count",
@@ -35,6 +44,20 @@ CONE_AUDIT_DIAG_KEYS = [
     "cone_audit_rejected_tentative_count",
     "cone_audit_rejected_color_count",
     "cone_audit_rejected_nonfinite_count",
+]
+CORRIDOR_PAIR_AUDIT_DIAG_KEYS = [
+    "corridor_pair_audit_total_count",
+    "corridor_pair_audit_rejected_count",
+    "corridor_pair_audit_pair_valid_count",
+    "corridor_pair_audit_pair_width_too_narrow_count",
+    "corridor_pair_audit_pair_width_too_wide_count",
+    "corridor_pair_audit_pair_left_behind_count",
+    "corridor_pair_audit_pair_right_behind_count",
+    "corridor_pair_audit_pair_left_beyond_horizon_count",
+    "corridor_pair_audit_pair_right_beyond_horizon_count",
+    "corridor_pair_audit_pair_not_in_longest_valid_slice_count",
+    "corridor_pair_audit_pair_nonfinite_count",
+    "corridor_pair_audit_pair_rejected_unknown_count",
 ]
 
 
@@ -129,6 +152,8 @@ PLANNER_DIAG_DEFAULTS: dict[str, float] = {
 for _key in corridor_analysis_sample_metric_keys():
     PLANNER_DIAG_DEFAULTS[_key] = float("nan")
 for _key in CONE_AUDIT_DIAG_KEYS:
+    PLANNER_DIAG_DEFAULTS[_key] = float("nan")
+for _key in CORRIDOR_PAIR_AUDIT_DIAG_KEYS:
     PLANNER_DIAG_DEFAULTS[_key] = float("nan")
 
 

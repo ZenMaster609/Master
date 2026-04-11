@@ -78,6 +78,9 @@ def _make_node() -> CorridorPlannerNode:
     node.show_raw_midpoint_chain = True
     node.show_raw_prevalidation_centerline = True
     node.show_lookahead_point = False
+    node.show_corridor_pair_audit = True
+    node.corridor_pair_audit_show_labels = True
+    node.corridor_pair_audit_max_labels = 80
     node.enable_cone_audit_markers = True
     node.cone_audit_show_labels = True
     node.cone_audit_max_labels = 80
@@ -162,10 +165,16 @@ def _cone(
 def _sample_result() -> CorridorPlannerResult:
     left = np.array([[2.0, 1.8], [4.0, 1.8], [6.0, 1.8]], dtype=np.float64)
     right = np.array([[2.0, -1.8], [4.0, -1.8], [6.0, -1.8]], dtype=np.float64)
+    raw_left = np.array([[1.8, 1.7], [4.1, 1.9], [6.3, 1.8]], dtype=np.float64)
+    raw_right = np.array([[1.9, -1.7], [4.2, -1.9], [6.4, -1.8]], dtype=np.float64)
     anchors = np.array([[2.0, 0.0], [4.0, 0.0], [6.0, 0.0]], dtype=np.float64)
     rungs = np.empty((3, 2, 2), dtype=np.float64)
     rungs[:, 0, :] = left
     rungs[:, 1, :] = right
+    rejected_wide = np.array([[[8.0, 2.0], [8.0, -4.8]]], dtype=np.float64)
+    audit_segments = np.concatenate((rungs, rejected_wide), axis=0)
+    audit_anchors = np.array([[2.0, 0.0], [4.0, 0.0], [6.0, 0.0], [8.0, -1.4]], dtype=np.float64)
+    audit_widths = np.array([3.6, 3.6, 3.6, 6.8], dtype=np.float64)
     return CorridorPlannerResult(
         filtered_points=np.vstack((left, right)),
         filtered_colors=["blue", "blue", "blue", "yellow", "yellow", "yellow"],
@@ -182,6 +191,17 @@ def _sample_result() -> CorridorPlannerResult:
         status="ok",
         planner_mode="corridor",
         pair_segments=rungs,
+        raw_left_chain_points=raw_left,
+        raw_right_chain_points=raw_right,
+        corridor_pair_audit_segments=audit_segments,
+        corridor_pair_audit_anchors_local=audit_anchors,
+        corridor_pair_audit_widths_m=audit_widths,
+        corridor_pair_audit_reasons=[
+            "pair_valid",
+            "pair_valid",
+            "pair_valid",
+            "pair_width_too_wide",
+        ],
         accepted_pair_count=3,
         left_chain_length=3,
         right_chain_length=3,
@@ -208,6 +228,7 @@ def test_cone_audit_classifies_all_rejection_and_usage_buckets():
     result = _sample_result()
     result.used_left_track_ids = np.asarray([1], dtype=np.int64)
     result.used_right_track_ids = np.asarray([2], dtype=np.int64)
+    result.chain_rejection_reasons_by_track_id = {3: "chain_step_too_far"}
 
     msg = ConeDetectionArray()
     msg.header.frame_id = "odom"
@@ -279,7 +300,7 @@ def test_cone_audit_classifies_all_rejection_and_usage_buckets():
 
     assert reasons[1] == "used_left_chain"
     assert reasons[2] == "used_right_chain"
-    assert reasons[3] == "passed_filters_not_in_chain"
+    assert reasons[3] == "chain_step_too_far"
     assert reasons[4] == "rejected_geometry_behind"
     assert reasons[5] == "rejected_geometry_horizon"
     assert reasons[6] == "rejected_geometry_lateral"
@@ -293,7 +314,7 @@ def test_cone_audit_classifies_all_rejection_and_usage_buckets():
     assert counts["cone_audit_received_count"] == len(cones)
     assert counts["cone_audit_used_left_count"] == 1
     assert counts["cone_audit_used_right_count"] == 1
-    assert counts["cone_audit_passed_filters_not_in_chain_count"] == 1
+    assert counts["cone_audit_chain_step_too_far_count"] == 1
 
 
 def test_cone_audit_markers_include_namespaces_labels_and_stale_halo():
@@ -330,21 +351,39 @@ def test_cone_audit_markers_include_namespaces_labels_and_stale_halo():
         last_seen_age_sec=0.7,
         memory_only=True,
     )
+    chain_rejected = SimpleNamespace(
+        track_id=3,
+        reason="chain_heading_change",
+        point_xy=np.asarray([3.0, 1.5], dtype=np.float64),
+        local_x_m=3.0,
+        local_y_m=1.5,
+        raw_color="blue",
+        resolved_color="blue",
+        track_state=MSG_TRACK_STATE_CONFIRMED,
+        confidence=0.9,
+        track_confidence=0.9,
+        color_confidence=0.8,
+        missed_count=0,
+        last_seen_age_sec=0.1,
+        memory_only=False,
+    )
 
     markers = node._build_cone_audit_markers(
         frame_id="odom",
         stamp=TimeMsg(sec=2, nanosec=0),
-        entries=[used, stale_rejected],
+        entries=[used, stale_rejected, chain_rejected],
     )
     by_ns = _marker_map(markers)
 
     assert "cone_audit_used_left_chain" in by_ns
+    assert "cone_audit_chain_rejected" in by_ns
     assert "cone_audit_rejected_geometry" in by_ns
     assert "cone_audit_stale_halo" in by_ns
     assert "cone_audit_labels" in by_ns
     label_text = "\n".join(marker.text for marker in markers.markers if marker.ns == "cone_audit_labels")
     assert "id=1" in label_text
     assert "used_left_chain" in label_text
+    assert "chain_heading_change" in label_text
     assert "rejected_geometry_lateral" in label_text
 
 
@@ -429,6 +468,21 @@ def test_build_markers_include_corridor_anchor_and_rung_namespaces():
     assert "corridor_center_anchors" in by_ns
     assert "corridor_rungs" in by_ns
     assert "centerline" in by_ns
+    assert "raw_chain_left" in by_ns
+    assert "raw_chain_left_points" in by_ns
+    assert "raw_chain_right" in by_ns
+    assert "raw_chain_right_points" in by_ns
+    assert "corridor_pair_audit_pair_width_too_wide" in by_ns
+    assert "corridor_pair_audit_labels" in by_ns
+    assert np.allclose(_marker_xy(by_ns["raw_chain_left_points"]), result.raw_left_chain_points)
+    assert np.allclose(_marker_xy(by_ns["raw_chain_right_points"]), result.raw_right_chain_points)
+    label_text = "\n".join(
+        marker.text
+        for marker in markers.markers
+        if marker.ns == "corridor_pair_audit_labels"
+    )
+    assert "pair_width_too_wide" in label_text
+    assert "w=6.80m" in label_text
 
 
 def test_build_markers_show_remembered_cones_instead_of_filtered_subset():

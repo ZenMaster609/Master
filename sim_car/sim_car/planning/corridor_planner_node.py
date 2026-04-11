@@ -65,7 +65,16 @@ _VALIDATED_JUMP_ACCEPT_HEADING_DELTA_RAD = 0.30
 _CONE_AUDIT_REASONS = (
     "used_left_chain",
     "used_right_chain",
-    "passed_filters_not_in_chain",
+    "chain_step_too_close",
+    "chain_step_too_far",
+    "chain_no_forward_progress",
+    "chain_radial_regression",
+    "chain_forward_projection",
+    "chain_heading_change",
+    "chain_shadowed",
+    "chain_not_best_next_step",
+    "chain_no_forward_seed",
+    "chain_unreached",
     "rejected_geometry_range",
     "rejected_geometry_behind",
     "rejected_geometry_horizon",
@@ -74,6 +83,18 @@ _CONE_AUDIT_REASONS = (
     "rejected_tentative",
     "rejected_color",
     "rejected_nonfinite",
+)
+_CORRIDOR_PAIR_AUDIT_REASONS = (
+    "pair_valid",
+    "pair_width_too_narrow",
+    "pair_width_too_wide",
+    "pair_left_behind",
+    "pair_right_behind",
+    "pair_left_beyond_horizon",
+    "pair_right_beyond_horizon",
+    "pair_not_in_longest_valid_slice",
+    "pair_nonfinite",
+    "pair_rejected_unknown",
 )
 
 
@@ -200,12 +221,14 @@ class CorridorPlannerNode(TrackedConePlannerBase):
     def _declare_parameters(self) -> None:
         defaults = dict(COMMON_MIGRATED_TRACKED_CONE_PLANNER_DEFAULTS)
         defaults.update({
-            "filtering.planning_horizon_m": 25.0,
-            "filtering.max_lateral_range_m": 8.0,
+            "filtering.planning_horizon_m": 20.0,
+            "filtering.max_lateral_range_m": 14.0,
             "boundary_chain.min_chain_length": 3,
+            'boundary_chain.max_heading_change_rad': 2.35,
+
             "width_estimation.min_trustworthy_pairs": 3,
             "corridor.min_corridor_width_m": 2.2,
-            "corridor.max_corridor_width_m": 5.4,
+            "corridor.max_corridor_width_m": 7.4,
             "corridor.boundary_resample_dx": 0.5,
             "corridor.min_required_corridor_samples": 5,
             "corridor.path_fit_smoothing_window": 5,
@@ -221,6 +244,9 @@ class CorridorPlannerNode(TrackedConePlannerBase):
             "debug.cone_audit_viz_topic": "/corridor_planner/cone_audit_viz",
             "debug.cone_audit_show_labels": True,
             "debug.cone_audit_max_labels": 80,
+            "debug.show_corridor_pair_audit": False,
+            "debug.corridor_pair_audit_show_labels": True,
+            "debug.corridor_pair_audit_max_labels": 80,
             "diagnostics.topic": "/corridor_planner/diagnostics",
         })
         for name, value in defaults.items():
@@ -253,6 +279,16 @@ class CorridorPlannerNode(TrackedConePlannerBase):
         self.cone_audit_max_labels = max(
             0,
             int(self.get_parameter("debug.cone_audit_max_labels").value),
+        )
+        self.show_corridor_pair_audit = bool(
+            self.get_parameter("debug.show_corridor_pair_audit").value
+        )
+        self.corridor_pair_audit_show_labels = bool(
+            self.get_parameter("debug.corridor_pair_audit_show_labels").value
+        )
+        self.corridor_pair_audit_max_labels = max(
+            0,
+            int(self.get_parameter("debug.corridor_pair_audit_max_labels").value),
         )
 
         self._core_config = CorridorPlannerConfig(
@@ -937,6 +973,7 @@ class CorridorPlannerNode(TrackedConePlannerBase):
                 "held_path_flag": self._active_held_path_flag,
                 "raw_candidate_point_count": int(raw_centerline.shape[0]),
                 **self._active_cone_audit_counts,
+                **self._corridor_pair_audit_counts(result),
                 **corridor_analysis_metrics,
             },
         )
@@ -1022,6 +1059,7 @@ class CorridorPlannerNode(TrackedConePlannerBase):
                 planner_confidence=planner_confidence,
                 used_left=used_left,
                 used_right=used_right,
+                chain_rejection_reasons_by_track_id=result.chain_rejection_reasons_by_track_id,
             )
             entries.append(
                 _ConeAuditEntry(
@@ -1053,6 +1091,7 @@ class CorridorPlannerNode(TrackedConePlannerBase):
         planner_confidence: float,
         used_left: set[int],
         used_right: set[int],
+        chain_rejection_reasons_by_track_id: dict[int, str],
     ) -> str:
         if not np.all(np.isfinite(local_xy)):
             return "rejected_nonfinite"
@@ -1080,7 +1119,8 @@ class CorridorPlannerNode(TrackedConePlannerBase):
             return "used_left_chain"
         if int(track_id) in used_right:
             return "used_right_chain"
-        return "passed_filters_not_in_chain"
+        chain_reason = chain_rejection_reasons_by_track_id.get(int(track_id), "")
+        return str(chain_reason) if chain_reason else "chain_unreached"
 
     @staticmethod
     def _audit_points_to_vehicle_frame(
@@ -1153,6 +1193,22 @@ class CorridorPlannerNode(TrackedConePlannerBase):
                 counts["cone_audit_stale_count"] += 1
             else:
                 counts["cone_audit_live_count"] += 1
+        return counts
+
+    @staticmethod
+    def _corridor_pair_audit_counts(result: CorridorPlannerResult) -> dict[str, int]:
+        counts = {
+            "corridor_pair_audit_total_count": 0,
+            "corridor_pair_audit_rejected_count": 0,
+        }
+        for reason in _CORRIDOR_PAIR_AUDIT_REASONS:
+            counts[f"corridor_pair_audit_{reason}_count"] = 0
+        for reason in result.corridor_pair_audit_reasons:
+            key = f"corridor_pair_audit_{reason}_count"
+            counts[key] = counts.get(key, 0) + 1
+            counts["corridor_pair_audit_total_count"] += 1
+            if reason != "pair_valid":
+                counts["corridor_pair_audit_rejected_count"] += 1
         return counts
 
     def _publish_cone_audit_markers(
@@ -1258,8 +1314,8 @@ class CorridorPlannerNode(TrackedConePlannerBase):
     def _cone_audit_marker_namespace(reason: str) -> str:
         if reason in {"used_left_chain", "used_right_chain"}:
             return f"cone_audit_{reason}"
-        if reason == "passed_filters_not_in_chain":
-            return "cone_audit_passed_unused"
+        if reason.startswith("chain_"):
+            return "cone_audit_chain_rejected"
         if reason.startswith("rejected_geometry"):
             return "cone_audit_rejected_geometry"
         if reason in {"rejected_confidence", "rejected_tentative"}:
@@ -1272,7 +1328,7 @@ class CorridorPlannerNode(TrackedConePlannerBase):
     def _cone_audit_marker_scale(reason: str) -> float:
         if reason in {"used_left_chain", "used_right_chain"}:
             return 0.32
-        if reason == "passed_filters_not_in_chain":
+        if reason.startswith("chain_"):
             return 0.22
         return 0.25
 
@@ -1282,8 +1338,8 @@ class CorridorPlannerNode(TrackedConePlannerBase):
             return 0.2, 0.55, 1.0, 0.95
         if entry.reason == "used_right_chain":
             return 1.0, 0.9, 0.2, 0.95
-        if entry.reason == "passed_filters_not_in_chain":
-            return 0.82, 0.82, 0.82, 0.75
+        if entry.reason.startswith("chain_"):
+            return 0.92, 0.92, 0.92, 0.82
         if entry.reason.startswith("rejected_geometry"):
             return 1.0, 0.05, 0.05, 0.9
         if entry.reason in {"rejected_confidence", "rejected_tentative"}:
@@ -2722,6 +2778,8 @@ class CorridorPlannerNode(TrackedConePlannerBase):
 
         left_boundary = np.array(result.left_boundary, copy=True)
         right_boundary = np.array(result.right_boundary, copy=True)
+        raw_left_chain = np.asarray(result.raw_left_chain_points, dtype=np.float64)
+        raw_right_chain = np.asarray(result.raw_right_chain_points, dtype=np.float64)
         if left_boundary.shape[0] > 0:
             self._last_viz_left_boundary = np.array(left_boundary, copy=True)
         elif self._last_viz_left_boundary is not None:
@@ -2763,6 +2821,32 @@ class CorridorPlannerNode(TrackedConePlannerBase):
                     frame_id=frame_id,
                     stamp=now,
                     marker_id=marker_id,
+                    ns="raw_chain_left",
+                    points=raw_left_chain,
+                    color=(0.05, 0.25, 1.0, 0.95),
+                    width=0.06,
+                    z_offset=0.22,
+                )
+            )
+            marker_id += 1
+            raw_left_points_marker = self._make_points_marker(
+                frame_id=frame_id,
+                stamp=now,
+                marker_id=marker_id,
+                ns="raw_chain_left_points",
+                points=raw_left_chain,
+                color=(0.05, 0.25, 1.0, 1.0),
+                scale=0.34,
+            )
+            for point in raw_left_points_marker.points:
+                point.z = 0.23
+            arr.markers.append(raw_left_points_marker)
+            marker_id += 1
+            arr.markers.append(
+                self._make_line_strip_marker(
+                    frame_id=frame_id,
+                    stamp=now,
+                    marker_id=marker_id,
                     ns="boundary_right",
                     points=right_boundary,
                     color=(1.0, 0.9, 0.2, 0.95),
@@ -2784,6 +2868,32 @@ class CorridorPlannerNode(TrackedConePlannerBase):
                 point.z = 0.15
             arr.markers.append(right_points_marker)
             marker_id += 1
+            arr.markers.append(
+                self._make_line_strip_marker(
+                    frame_id=frame_id,
+                    stamp=now,
+                    marker_id=marker_id,
+                    ns="raw_chain_right",
+                    points=raw_right_chain,
+                    color=(1.0, 0.82, 0.0, 0.95),
+                    width=0.06,
+                    z_offset=0.24,
+                )
+            )
+            marker_id += 1
+            raw_right_points_marker = self._make_points_marker(
+                frame_id=frame_id,
+                stamp=now,
+                marker_id=marker_id,
+                ns="raw_chain_right_points",
+                points=raw_right_chain,
+                color=(1.0, 0.82, 0.0, 1.0),
+                scale=0.34,
+            )
+            for point in raw_right_points_marker.points:
+                point.z = 0.25
+            arr.markers.append(raw_right_points_marker)
+            marker_id += 1
 
         if self.show_pair_lines:
             arr.markers.append(
@@ -2798,6 +2908,15 @@ class CorridorPlannerNode(TrackedConePlannerBase):
                 )
             )
             marker_id += 1
+
+        if self.show_corridor_pair_audit:
+            marker_id = self._append_corridor_pair_audit_markers(
+                arr=arr,
+                marker_id=marker_id,
+                frame_id=frame_id,
+                stamp=now,
+                result=result,
+            )
 
         if self.show_raw_midpoint_chain:
             arr.markers.append(
@@ -2874,6 +2993,100 @@ class CorridorPlannerNode(TrackedConePlannerBase):
             operator_state=operator_state,
         )
         return arr
+
+    def _append_corridor_pair_audit_markers(
+        self,
+        *,
+        arr: MarkerArray,
+        marker_id: int,
+        frame_id: str,
+        stamp,
+        result: CorridorPlannerResult,
+    ) -> int:
+        segments = np.asarray(result.corridor_pair_audit_segments, dtype=np.float64)
+        reasons = list(result.corridor_pair_audit_reasons)
+        widths = np.asarray(result.corridor_pair_audit_widths_m, dtype=np.float64)
+        anchors_local = np.asarray(result.corridor_pair_audit_anchors_local, dtype=np.float64)
+        count = min(len(reasons), segments.shape[0], widths.size, anchors_local.shape[0])
+        if count <= 0:
+            return marker_id
+
+        for reason in _CORRIDOR_PAIR_AUDIT_REASONS:
+            if reason == "pair_valid":
+                continue
+            reason_indices = [
+                idx
+                for idx in range(count)
+                if reasons[idx] == reason and np.all(np.isfinite(segments[idx]))
+            ]
+            if not reason_indices:
+                continue
+            arr.markers.append(
+                self._make_pair_segment_marker(
+                    frame_id=frame_id,
+                    stamp=stamp,
+                    marker_id=marker_id,
+                    ns=f"corridor_pair_audit_{reason}",
+                    pair_segments=segments[reason_indices],
+                    color=self._corridor_pair_audit_rgba(reason),
+                    width=0.05,
+                )
+            )
+            marker_id += 1
+
+        if not self.corridor_pair_audit_show_labels:
+            return marker_id
+
+        label_count = 0
+        for idx in range(count):
+            reason = reasons[idx]
+            if reason == "pair_valid" or not np.all(np.isfinite(segments[idx])):
+                continue
+            midpoint = 0.5 * (segments[idx, 0, :] + segments[idx, 1, :])
+            if not np.all(np.isfinite(midpoint)):
+                continue
+            label = Marker()
+            label.header.frame_id = frame_id
+            label.header.stamp = stamp
+            label.ns = "corridor_pair_audit_labels"
+            label.id = marker_id
+            marker_id += 1
+            label.type = Marker.TEXT_VIEW_FACING
+            label.action = Marker.ADD
+            label.pose.position.x = float(midpoint[0])
+            label.pose.position.y = float(midpoint[1])
+            label.pose.position.z = 0.85
+            label.pose.orientation.w = 1.0
+            label.scale.z = 0.14
+            label.color.r = 1.0
+            label.color.g = 1.0
+            label.color.b = 1.0
+            label.color.a = 0.95
+            label.text = (
+                f"pair[{idx}] {reason}\n"
+                f"w={float(widths[idx]):.2f}m "
+                f"local=({float(anchors_local[idx, 0]):.1f},"
+                f"{float(anchors_local[idx, 1]):.1f})"
+            )
+            arr.markers.append(label)
+            label_count += 1
+            if label_count >= self.corridor_pair_audit_max_labels:
+                break
+        return marker_id
+
+    @staticmethod
+    def _corridor_pair_audit_rgba(reason: str) -> tuple[float, float, float, float]:
+        if reason == "pair_width_too_narrow":
+            return 1.0, 0.05, 0.05, 0.9
+        if reason == "pair_width_too_wide":
+            return 1.0, 0.45, 0.05, 0.9
+        if reason in {"pair_left_beyond_horizon", "pair_right_beyond_horizon"}:
+            return 0.0, 0.85, 1.0, 0.9
+        if reason in {"pair_left_behind", "pair_right_behind"}:
+            return 1.0, 0.0, 0.85, 0.9
+        if reason == "pair_not_in_longest_valid_slice":
+            return 0.85, 0.85, 0.85, 0.75
+        return 0.65, 0.2, 1.0, 0.9
 
     def _make_pair_segment_marker(
         self,

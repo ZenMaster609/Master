@@ -1322,6 +1322,14 @@ def generate_launch_description():
                     LaunchConfiguration('corridor_debug'),
                     value_type=bool,
                 ),
+                'debug.show_corridor_pair_audit': ParameterValue(
+                    LaunchConfiguration('corridor_debug'),
+                    value_type=bool,
+                ),
+                'debug.corridor_pair_audit_show_labels': ParameterValue(
+                    LaunchConfiguration('corridor_debug'),
+                    value_type=bool,
+                ),
                 'debug.show_raw_cones': ParameterValue(
                     LaunchConfiguration('corridor_debug'),
                     value_type=bool,
