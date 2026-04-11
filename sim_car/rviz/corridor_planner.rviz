@@ -107,6 +107,27 @@ Visualization Manager:
       Queue Size: 100
       Value: true
     - Class: rviz_default_plugins/MarkerArray
+      Name: Corridor Cone Audit
+      Enabled: true
+      Topic:
+        Value: /corridor_planner/cone_audit_viz
+        Depth: 10
+        Durability Policy: Volatile
+        History Policy: Keep Last
+        Reliability Policy: Reliable
+      Namespaces:
+        cone_audit_labels: true
+        cone_audit_passed_unused: true
+        cone_audit_rejected_color: true
+        cone_audit_rejected_confidence: true
+        cone_audit_rejected_geometry: true
+        cone_audit_rejected_other: true
+        cone_audit_stale_halo: true
+        cone_audit_used_left_chain: true
+        cone_audit_used_right_chain: true
+      Queue Size: 100
+      Value: true
+    - Class: rviz_default_plugins/MarkerArray
       Name: Skidpad Router
       Enabled: true
       Topic:

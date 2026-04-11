@@ -73,6 +73,9 @@ def test_parse_planner_diag_with_keys():
                 _KV('hold_remaining_s', '1.2'),
                 _KV('control_path_point_count', '4'),
                 _KV('zero_cmd_sent_flag', '1'),
+                _KV('cone_audit_received_count', '11'),
+                _KV('cone_audit_used_left_count', '3'),
+                _KV('cone_audit_rejected_geometry_lateral_count', '2'),
             ],
         )
     ])
@@ -86,6 +89,9 @@ def test_parse_planner_diag_with_keys():
     assert abs(out['hold_remaining_s'] - 1.2) < 1e-9
     assert abs(out['control_path_point_count'] - 4.0) < 1e-9
     assert abs(out['zero_cmd_sent_flag'] - 1.0) < 1e-9
+    assert abs(out['cone_audit_received_count'] - 11.0) < 1e-9
+    assert abs(out['cone_audit_used_left_count'] - 3.0) < 1e-9
+    assert abs(out['cone_audit_rejected_geometry_lateral_count'] - 2.0) < 1e-9
 
 
 def test_parse_planner_diag_text_extracts_and_clears_string_fields():

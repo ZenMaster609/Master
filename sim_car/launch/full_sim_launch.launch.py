@@ -459,6 +459,12 @@ def generate_launch_description():
         description='Enable filtered lidar PointCloud2 debug display in the launched RViz session'
     )
 
+    corridor_debug_arg = DeclareLaunchArgument(
+        'corridor_debug',
+        default_value='false',
+        description='Enable corridor planner cone-audit markers and cone-memory debug aids'
+    )
+
     perception_queue_size_arg = DeclareLaunchArgument(
         'perception_queue_size',
         default_value='8',
@@ -636,6 +642,7 @@ def generate_launch_description():
         'rviz_config',
         'rviz_raw_pointcloud_debug',
         'rviz_filtered_pointcloud_debug',
+        'corridor_debug',
         'perception_queue_size',
         'cuda',
         'stereo',
@@ -1110,6 +1117,22 @@ def generate_launch_description():
                     LaunchConfiguration('perception_rate_hz'),
                     value_type=float,
                 ),
+                'enable_id_text': ParameterValue(
+                    LaunchConfiguration('corridor_debug'),
+                    value_type=bool,
+                ),
+                'enable_tentative_viz': ParameterValue(
+                    LaunchConfiguration('corridor_debug'),
+                    value_type=bool,
+                ),
+                'enable_raw_debug_viz': ParameterValue(
+                    LaunchConfiguration('corridor_debug'),
+                    value_type=bool,
+                ),
+                'believed_track_viz_show_cones': ParameterValue(
+                    LaunchConfiguration('corridor_debug'),
+                    value_type=bool,
+                ),
                 **_cone_memory_pipeline_parameters(),
             },
         ],
@@ -1295,6 +1318,14 @@ def generate_launch_description():
                     LaunchConfiguration('thesis_controller_diagnostics'),
                     value_type=bool,
                 ),
+                'debug.enable_cone_audit_markers': ParameterValue(
+                    LaunchConfiguration('corridor_debug'),
+                    value_type=bool,
+                ),
+                'debug.show_raw_cones': ParameterValue(
+                    LaunchConfiguration('corridor_debug'),
+                    value_type=bool,
+                ),
             },
         ],
         condition=_planner_selected_condition('corridor'),
@@ -1442,6 +1473,7 @@ def generate_launch_description():
         rviz_config_arg,
         rviz_raw_pointcloud_debug_arg,
         rviz_filtered_pointcloud_debug_arg,
+        corridor_debug_arg,
         perception_queue_size_arg,
         cuda_arg,
         stereo_arg,

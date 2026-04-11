@@ -95,6 +95,12 @@ class CorridorPlannerResult:
     pair_segments: np.ndarray = field(
         default_factory=lambda: np.empty((0, 2, 2), dtype=np.float64)
     )
+    used_left_track_ids: np.ndarray = field(
+        default_factory=lambda: np.empty((0,), dtype=np.int64)
+    )
+    used_right_track_ids: np.ndarray = field(
+        default_factory=lambda: np.empty((0,), dtype=np.int64)
+    )
     accepted_pair_count: int = 0
     left_chain_length: int = 0
     right_chain_length: int = 0
@@ -193,6 +199,7 @@ def compute_corridor_centerline(
             ),
             left_chain=left_chain,
             right_chain=right_chain,
+            filtered_track_ids=filtered_track_ids,
             planner_mode="none",
             filtered_track_width_m=expected_width,
         )
@@ -229,6 +236,7 @@ def compute_corridor_centerline(
             ),
             left_chain=left_chain,
             right_chain=right_chain,
+            filtered_track_ids=filtered_track_ids,
             planner_mode="none",
             filtered_track_width_m=expected_width,
         )
@@ -360,6 +368,14 @@ def compute_corridor_centerline(
         active_boundary_side="",
         raw_offset_path=np.empty((0, 2), dtype=np.float64),
         pair_segments=corridor_rungs,
+        used_left_track_ids=np.asarray(
+            filtered_track_ids[left_chain.filtered_indices],
+            dtype=np.int64,
+        ),
+        used_right_track_ids=np.asarray(
+            filtered_track_ids[right_chain.filtered_indices],
+            dtype=np.int64,
+        ),
         accepted_pair_count=corridor_sample_count,
         left_chain_length=int(left_chain.filtered_indices.size),
         right_chain_length=int(right_chain.filtered_indices.size),
@@ -1424,13 +1440,28 @@ def _result_with_metadata(
     result: CorridorPlannerResult,
     left_chain: _BoundaryChain,
     right_chain: _BoundaryChain,
+    filtered_track_ids: Optional[np.ndarray] = None,
     planner_mode: str,
     filtered_track_width_m: float,
 ) -> CorridorPlannerResult:
+    track_ids = (
+        np.asarray(filtered_track_ids, dtype=np.int64)
+        if filtered_track_ids is not None
+        else None
+    )
     result.left_chain_length = int(left_chain.filtered_indices.size)
     result.right_chain_length = int(right_chain.filtered_indices.size)
     result.left_boundary = left_chain.global_points
     result.right_boundary = right_chain.global_points
+    if track_ids is not None and track_ids.size > 0:
+        result.used_left_track_ids = np.asarray(
+            track_ids[left_chain.filtered_indices],
+            dtype=np.int64,
+        )
+        result.used_right_track_ids = np.asarray(
+            track_ids[right_chain.filtered_indices],
+            dtype=np.int64,
+        )
     result.planner_mode = planner_mode
     result.filtered_track_width_m = float(filtered_track_width_m)
     return result

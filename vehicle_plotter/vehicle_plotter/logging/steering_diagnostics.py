@@ -18,6 +18,24 @@ CORRIDOR_ANALYSIS_SAMPLE_PREFIXES = (
 )
 CORRIDOR_ANALYSIS_SAMPLE_COUNT = 8
 CORRIDOR_ANALYSIS_SAMPLE_SPACING_M = 1.0
+CONE_AUDIT_DIAG_KEYS = [
+    "cone_audit_received_count",
+    "cone_audit_used_left_count",
+    "cone_audit_used_right_count",
+    "cone_audit_stale_count",
+    "cone_audit_live_count",
+    "cone_audit_used_left_chain_count",
+    "cone_audit_used_right_chain_count",
+    "cone_audit_passed_filters_not_in_chain_count",
+    "cone_audit_rejected_geometry_range_count",
+    "cone_audit_rejected_geometry_behind_count",
+    "cone_audit_rejected_geometry_horizon_count",
+    "cone_audit_rejected_geometry_lateral_count",
+    "cone_audit_rejected_confidence_count",
+    "cone_audit_rejected_tentative_count",
+    "cone_audit_rejected_color_count",
+    "cone_audit_rejected_nonfinite_count",
+]
 
 
 def corridor_analysis_sample_metric_keys() -> list[str]:
@@ -109,6 +127,8 @@ PLANNER_DIAG_DEFAULTS: dict[str, float] = {
     "kinematic_yaw_rate_ref_rps": float("nan"),
 }
 for _key in corridor_analysis_sample_metric_keys():
+    PLANNER_DIAG_DEFAULTS[_key] = float("nan")
+for _key in CONE_AUDIT_DIAG_KEYS:
     PLANNER_DIAG_DEFAULTS[_key] = float("nan")
 
 

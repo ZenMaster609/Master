@@ -69,6 +69,7 @@ from ..logging.path_tracking_eval_plots import (
     generate_path_tracking_overlay_plot,
 )
 from ..logging.steering_diagnostics import (
+    CONE_AUDIT_DIAG_KEYS,
     PLANNER_DIAG_DEFAULTS,
     PLANNER_DIAG_TEXT_DEFAULTS,
     analyze_csv,
@@ -1025,6 +1026,7 @@ class LoggerNode(Node):
                 'planner_control_path_point_count',
                 'planner_zero_cmd_sent_flag',
             ]
+            fieldnames.extend(f'planner_{key}' for key in CONE_AUDIT_DIAG_KEYS)
             self._diag_csv_writer = csv.DictWriter(self._diag_file_handle, fieldnames=fieldnames)
             self._diag_csv_writer.writeheader()
             self.get_logger().info(f'Controller diagnostics CSV: {diag_path}')
@@ -1237,6 +1239,8 @@ class LoggerNode(Node):
             'planner_control_path_point_count': planner_control_path_point_count,
             'planner_zero_cmd_sent_flag': planner_zero_cmd_sent_flag,
         }
+        for key in CONE_AUDIT_DIAG_KEYS:
+            row[f'planner_{key}'] = float(self._diag_planner_metrics.get(key, float('nan')))
         if self._diag_csv_writer is not None:
             self._diag_csv_writer.writerow(row)
         if self._thesis_diag_csv_writer is not None:
