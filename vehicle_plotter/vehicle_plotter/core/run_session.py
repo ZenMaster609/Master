@@ -47,6 +47,17 @@ def get_run_prefix(adapter_type: str) -> str:
     return 'sim'
 
 
+def sanitize_run_id_prefix(prefix: str) -> str:
+    """Normalize a user-provided run id prefix for filesystem paths."""
+    safe_chars = []
+    for char in str(prefix).strip():
+        if char.isalnum() or char in {'_', '-'}:
+            safe_chars.append(char)
+        else:
+            safe_chars.append('_')
+    return '_'.join(part for part in ''.join(safe_chars).split('_') if part)
+
+
 def get_default_base_path() -> Path:
     """Get the default base path for multidata storage."""
     # Try to find the Master folder (repo root)
@@ -87,7 +98,7 @@ class RunSession:
             plots/          # PNG exports from plotter
             configs/        # Run config snapshot (YAMLs + launch parameters)
 
-    Where <prefix> is 'sim' for simulation.
+    Where <prefix> is 'sim' for simulation unless run_id_prefix is provided.
 
     Attributes:
         run_id: Unique session identifier (format: <prefix>_YYYY-MM-DD_HH-MM-SS)
@@ -106,21 +117,26 @@ class RunSession:
     start_time: datetime = field(default_factory=datetime.now)
 
     @classmethod
-    def create_new(cls, base_path: Optional[Path] = None, adapter_type: str = "gazebo") -> 'RunSession':
+    def create_new(
+        cls,
+        base_path: Optional[Path] = None,
+        adapter_type: str = "gazebo",
+        run_id_prefix: str = "",
+    ) -> 'RunSession':
         """
         Create a new run session with a fresh run_id.
 
-        The run_id format is: <prefix>_YYYY-MM-DD_HH-MM-SS
-        where <prefix> is 'sim' for simulation.
+        The run_id format is: <prefix>_YYYY-MM-DD_HH-MM-SS.
 
         Args:
             base_path: Optional base path. Uses default if not specified.
             adapter_type: Sensor adapter type
+            run_id_prefix: Optional prefix override before the timestamp.
 
         Returns:
             New RunSession instance with generated run_id
         """
-        prefix = get_run_prefix(adapter_type)
+        prefix = sanitize_run_id_prefix(run_id_prefix) or get_run_prefix(adapter_type)
         timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
         run_id = f"{prefix}_{timestamp}"
         base = Path(base_path) if base_path else get_default_base_path()

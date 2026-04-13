@@ -16,13 +16,19 @@ from nav_msgs.msg import Odometry, Path
 from rclpy.executors import ExternalShutdownException
 from rclpy.node import Node
 from rclpy.qos import qos_profile_sensor_data
+from std_msgs.msg import Float32
 from visualization_msgs.msg import Marker, MarkerArray
 
-from sim_car.controllers.factory import create_steering_controller
-from sim_car.controllers.pure_pursuit_controller import PurePursuitConfig
-from sim_car.controllers.stanley_controller import StanleyConfig
-from sim_car.cones.tracking.pose import convert_odom_child_pose_to_base_frame
+from sim_car.cones.tracking.pose import (
+    convert_odom_child_pose_to_base_frame,
+    project_planar_pose_constant_twist,
+)
+from sim_car.planning.controller_config import build_steering_controller
 from sim_car.planning.planner_runtime_types import PlannerIdentity
+from sim_car.planning.tracked_cone_planner_contract import (
+    log_tracked_cone_controller_mode,
+    normalize_tracked_cone_controller_type,
+)
 
 _OPERATOR_STATE_CODES = {
     'waiting': 0,
@@ -80,6 +86,7 @@ class LineTestPlannerNode(Node):
         self._last_throttled_log_sec: dict[str, float] = {}
 
         self._cmd_pub = self.create_publisher(AckermannDriveStamped, self.cmd_topic, 10)
+        self._brake_pub = self.create_publisher(Float32, self.brake_cmd_topic, 10)
         self._path_pub = self.create_publisher(Path, self.centerline_topic, 10)
         self._viz_pub = self.create_publisher(MarkerArray, self.viz_topic, 10)
         self._points_pub = self.create_publisher(PoseArray, self.points_topic, 10)
@@ -114,6 +121,7 @@ class LineTestPlannerNode(Node):
             'frames.odom_frame': 'odom',
             'frames.base_frame': 'front_axle',
             'topics.cmd_topic': '/cmd',
+            'topics.brake_cmd_topic': '/sim/brake_cmd',
             'topics.centerline_topic': '/planned_centerline',
             'topics.viz_topic': '/planner_viz',
             'topics.points_topic': '/planned_centerline_points',
@@ -121,6 +129,7 @@ class LineTestPlannerNode(Node):
             'runtime.publish_rate_hz': 60.0,
             'runtime.log_throttle_s': 1.0,
             'control.controller_type': 'stanley',
+            'control.odom_lag_compensation_ms': 0.0,
             'control.stop_if_no_path': True,
             'stanley.k_gain': 1.2,
             'stanley.softening_speed_mps': 0.0,
@@ -145,6 +154,8 @@ class LineTestPlannerNode(Node):
             'speed_control.speed_max_mps': 4.0,
             'speed_control.curvature_speed_gain': 4.0,
             'speed_control.lowpass_speed_alpha': 0.15,
+            'parking.brake_activation_distance_m': 1.0,
+            'parking.brake_command': 1.0,
             'diagnostics.topic': '/linetest_planner/diagnostics',
             'diagnostics.publish_control_debug': True,
             'diagnostics.publish_thesis_context': False,
@@ -166,6 +177,7 @@ class LineTestPlannerNode(Node):
         self.base_frame = str(self.get_parameter('frames.base_frame').value).strip() or 'front_axle'
 
         self.cmd_topic = str(self.get_parameter('topics.cmd_topic').value)
+        self.brake_cmd_topic = str(self.get_parameter('topics.brake_cmd_topic').value)
         self.centerline_topic = str(self.get_parameter('topics.centerline_topic').value)
         self.viz_topic = str(self.get_parameter('topics.viz_topic').value)
         self.points_topic = str(self.get_parameter('topics.points_topic').value)
@@ -175,17 +187,17 @@ class LineTestPlannerNode(Node):
         self.log_throttle_s = max(0.1, float(self.get_parameter('runtime.log_throttle_s').value))
 
         self.controller_type = (
-            str(self.get_parameter('control.controller_type').value).strip().lower() or 'stanley'
-        )
-        if self.controller_type not in {'stanley', 'pure_pursuit', 'none'}:
-            raise ValueError(
-                "Unsupported control.controller_type '%s'. Supported values: stanley, pure_pursuit, none"
-                % self.controller_type
+            normalize_tracked_cone_controller_type(
+                self.get_parameter('control.controller_type').value
             )
+        )
+        self.odom_lag_compensation_s = min(
+            max(0.0, float(self.get_parameter('control.odom_lag_compensation_ms').value)),
+            150.0,
+        ) / 1000.0
         self._controller = self._build_steering_controller() if self.controller_type != 'none' else None
         self.stop_if_no_path = bool(self.get_parameter('control.stop_if_no_path').value)
-        if self.controller_type == 'none':
-            self.get_logger().info("control.controller_type 'none'; controller output is disabled")
+        log_tracked_cone_controller_mode(self, controller_type=self.controller_type)
 
         self.speed_min_mps = max(0.0, float(self.get_parameter('speed_control.speed_min_mps').value))
         self.speed_max_mps = max(self.speed_min_mps, float(self.get_parameter('speed_control.speed_max_mps').value))
@@ -193,6 +205,11 @@ class LineTestPlannerNode(Node):
         self.lowpass_speed_alpha = float(
             np.clip(float(self.get_parameter('speed_control.lowpass_speed_alpha').value), 0.0, 1.0)
         )
+        self.brake_activation_distance_m = max(
+            0.0,
+            float(self.get_parameter('parking.brake_activation_distance_m').value),
+        )
+        self.brake_command = float(np.clip(float(self.get_parameter('parking.brake_command').value), 0.0, 1.0))
 
         self.diagnostics_topic = (
             str(self.get_parameter('diagnostics.topic').value).strip()
@@ -226,60 +243,9 @@ class LineTestPlannerNode(Node):
         )
 
     def _build_steering_controller(self):
-        stanley_config = StanleyConfig(
-            k_gain=max(0.0, float(self.get_parameter('stanley.k_gain').value)),
-            softening_speed_mps=max(0.0, float(self.get_parameter('stanley.softening_speed_mps').value)),
-            heading_gain=float(self.get_parameter('stanley.heading_gain').value),
-            lookahead_idx_offset=max(0, int(self.get_parameter('stanley.lookahead_idx_offset').value)),
-            steering_limit_rad=max(0.01, float(self.get_parameter('stanley.steering_limit_rad').value)),
-            steering_lowpass_alpha=float(
-                np.clip(float(self.get_parameter('stanley.steering_lowpass_alpha').value), 0.0, 1.0)
-            ),
-            steering_rate_limit_rad_s=max(
-                0.0,
-                float(self.get_parameter('stanley.steering_rate_limit_rad_s').value),
-            ),
-            use_yaw_rate_damping=bool(self.get_parameter('stanley.use_yaw_rate_damping').value),
-            yaw_rate_damping_gain=max(
-                0.0,
-                float(self.get_parameter('stanley.yaw_rate_damping_gain').value),
-            ),
-            wheelbase_m=max(0.1, float(self.get_parameter('stanley.wheelbase_m').value)),
-            cross_track_deadband_m=max(
-                0.0,
-                float(self.get_parameter('stanley.cross_track_deadband_m').value),
-            ),
-        )
-        pure_pursuit_config = PurePursuitConfig(
-            lookahead_m=max(0.0, float(self.get_parameter('pure_pursuit.lookahead_m').value)),
-            min_lookahead_m=max(0.01, float(self.get_parameter('pure_pursuit.min_lookahead_m').value)),
-            max_lookahead_m=max(0.01, float(self.get_parameter('pure_pursuit.max_lookahead_m').value)),
-            lookahead_gain=max(0.0, float(self.get_parameter('pure_pursuit.lookahead_gain').value)),
-            steering_limit_rad=max(0.01, float(self.get_parameter('pure_pursuit.steering_limit_rad').value)),
-            steering_lowpass_alpha=float(
-                np.clip(float(self.get_parameter('pure_pursuit.steering_lowpass_alpha').value), 0.0, 1.0)
-            ),
-            steering_rate_limit_rad_s=max(
-                0.0,
-                float(self.get_parameter('pure_pursuit.steering_rate_limit_rad_s').value),
-            ),
-            wheelbase_m=max(0.1, float(self.get_parameter('pure_pursuit.wheelbase_m').value)),
-        )
-        if pure_pursuit_config.max_lookahead_m < pure_pursuit_config.min_lookahead_m:
-            pure_pursuit_config = PurePursuitConfig(
-                lookahead_m=pure_pursuit_config.lookahead_m,
-                min_lookahead_m=pure_pursuit_config.min_lookahead_m,
-                max_lookahead_m=pure_pursuit_config.min_lookahead_m,
-                lookahead_gain=pure_pursuit_config.lookahead_gain,
-                steering_limit_rad=pure_pursuit_config.steering_limit_rad,
-                steering_lowpass_alpha=pure_pursuit_config.steering_lowpass_alpha,
-                steering_rate_limit_rad_s=pure_pursuit_config.steering_rate_limit_rad_s,
-                wheelbase_m=pure_pursuit_config.wheelbase_m,
-            )
-        return create_steering_controller(
+        return build_steering_controller(
+            node=self,
             controller_type=self.controller_type,
-            stanley_config=stanley_config,
-            pure_pursuit_config=pure_pursuit_config,
             publish_rate_hz=self.publish_rate_hz,
         )
 
@@ -317,6 +283,7 @@ class LineTestPlannerNode(Node):
                 zero_cmd_sent_flag = int(self._apply_no_path_behavior())
         else:
             vehicle_x, vehicle_y, vehicle_yaw = vehicle_pose
+            line_remaining_m = self._line_remaining_distance_m(vehicle_x, vehicle_y)
             control_world = self._build_forward_control_path(vehicle_x, vehicle_y)
             control_path = self._centerline_to_vehicle_frame(
                 centerline=control_world,
@@ -330,7 +297,7 @@ class LineTestPlannerNode(Node):
             elif control_path.shape[0] == 0:
                 operator_state = 'stopped'
                 operator_reason = 'no_control_path'
-                zero_cmd_sent_flag = int(self._apply_no_path_behavior())
+                zero_cmd_sent_flag = int(self._apply_no_path_behavior(brake=True))
             else:
                 try:
                     controller_output = self._controller.compute(
@@ -364,7 +331,11 @@ class LineTestPlannerNode(Node):
                     )
                     self._last_speed_cmd = cmd_speed
                     self._last_steering_cmd = cmd_steering
+                    if self._linetest_brake_cmd(line_remaining_m) > 0.0:
+                        cmd_speed = 0.0
+                        self._last_speed_cmd = 0.0
                     self._publish_cmd(cmd_speed, cmd_steering)
+                    self._publish_brake_cmd(self._linetest_brake_cmd(line_remaining_m))
 
         status_text = self._build_status_text(
             operator_state=operator_state,
@@ -414,11 +385,19 @@ class LineTestPlannerNode(Node):
         q = pose.orientation
         yaw = self._yaw_from_quat(float(q.x), float(q.y), float(q.z), float(q.w))
         child_frame = str(odom.child_frame_id).strip()
-        return self._convert_odom_child_pose_to_base_frame(
+        base_pose = self._convert_odom_child_pose_to_base_frame(
             child_frame=child_frame,
             tx=tx,
             ty=ty,
             yaw=yaw,
+        )
+        if base_pose is None:
+            return None
+        return project_planar_pose_constant_twist(
+            base_pose,
+            speed_mps=self._latest_speed_mps,
+            yaw_rate_rps=self._latest_yaw_rate_rps,
+            delay_s=float(getattr(self, 'odom_lag_compensation_s', 0.0)),
         )
 
     def _convert_odom_child_pose_to_base_frame(
@@ -804,9 +783,10 @@ class LineTestPlannerNode(Node):
         alpha = self.lowpass_speed_alpha
         return float((alpha * v_des) + ((1.0 - alpha) * float(self._last_speed_cmd)))
 
-    def _apply_no_path_behavior(self) -> bool:
+    def _apply_no_path_behavior(self, *, brake: bool = False) -> bool:
         if self.stop_if_no_path:
             self._publish_cmd(0.0, 0.0)
+            self._publish_brake_cmd(self.brake_command if brake else 0.0)
             self._last_speed_cmd = 0.0
             self._last_steering_cmd = 0.0
             return True
@@ -820,6 +800,23 @@ class LineTestPlannerNode(Node):
         msg.drive.speed = float(speed_mps)
         msg.drive.steering_angle = float(steering_rad)
         self._cmd_pub.publish(msg)
+
+    def _line_remaining_distance_m(self, vehicle_x: float, vehicle_y: float) -> float:
+        if self._line_length_m <= 1e-9:
+            return 0.0
+        vehicle_xy = np.array([vehicle_x, vehicle_y], dtype=np.float64)
+        station_m = float(np.dot(vehicle_xy - self._line_start_xy, self._line_direction_xy))
+        return max(0.0, self._line_length_m - station_m)
+
+    def _linetest_brake_cmd(self, line_remaining_m: float) -> float:
+        if float(line_remaining_m) <= float(self.brake_activation_distance_m):
+            return float(self.brake_command)
+        return 0.0
+
+    def _publish_brake_cmd(self, command: float) -> None:
+        msg = Float32()
+        msg.data = float(np.clip(float(command), 0.0, 1.0))
+        self._brake_pub.publish(msg)
 
     def _throttled_warn(self, key: str, message: str) -> None:
         now_sec = time.monotonic()

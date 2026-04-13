@@ -12,12 +12,23 @@ that path. Per-node toggles are kept for compatibility, but are no longer
 needed for normal use.
 """
 
+from dataclasses import dataclass
 from launch import LaunchDescription
+import sys
 import tempfile
 from pathlib import Path
 
-from launch.actions import DeclareLaunchArgument, IncludeLaunchDescription, OpaqueFunction, SetLaunchConfiguration
+from launch.actions import (
+    DeclareLaunchArgument,
+    EmitEvent,
+    IncludeLaunchDescription,
+    OpaqueFunction,
+    RegisterEventHandler,
+    SetLaunchConfiguration,
+)
 from launch.conditions import IfCondition
+from launch.event_handlers import OnProcessExit
+from launch.events import Shutdown
 from launch.launch_description_sources import PythonLaunchDescriptionSource
 from launch.substitutions import EnvironmentVariable, LaunchConfiguration, PathJoinSubstitution, PythonExpression
 from launch_ros.actions import Node
@@ -26,16 +37,208 @@ from launch_ros.substitutions import FindPackageShare
 from ament_index_python.packages import get_package_share_directory
 import yaml
 
+try:
+    from sim_car.planning.planner_registry import (
+        CONFIGURED_PLANNERS,
+        MIGRATED_PLANNERS,
+        SUPPORTED_CONTROLLERS,
+        SUPPORTED_PLANNERS,
+        get_planner_spec,
+        planner_allowed_for_track,
+    )
+except ModuleNotFoundError:
+    source_package_root = Path(__file__).resolve().parents[1]
+    if str(source_package_root) not in sys.path:
+        sys.path.insert(0, str(source_package_root))
+    from sim_car.planning.planner_registry import (
+        CONFIGURED_PLANNERS,
+        MIGRATED_PLANNERS,
+        SUPPORTED_CONTROLLERS,
+        SUPPORTED_PLANNERS,
+        get_planner_spec,
+        planner_allowed_for_track,
+    )
+
 
 SUPPORTED_TRACKS = {
     'acceleration': 'acceleration.world',
     'skidpad': 'skidpad.world',
     'smalltrack': 'small_track.world',
 }
-MIGRATED_PLANNERS = {'midpoint', 'single_boundary', 'corridor'}
-CONFIGURED_PLANNERS = MIGRATED_PLANNERS | {'linetest'}
-SUPPORTED_PLANNERS = CONFIGURED_PLANNERS | {'none'}
-SUPPORTED_CONTROLLERS = {'stanley', 'pure_pursuit', 'none'}
+RUN_ID_TRACK_ABBREVIATIONS = {
+    'smalltrack': 'small',
+    'acceleration': 'acc',
+    'skidpad': 'skid',
+}
+RUN_ID_PLANNER_ABBREVIATIONS = {
+    'midpoint': 'mid',
+    'single_boundary': 'SB',
+    'corridor': 'cor',
+    'linetest': 'line',
+    'none': 'none',
+}
+RUN_ID_CONTROLLER_ABBREVIATIONS = {
+    'pure_pursuit': 'pp',
+    'stanley': 'stan',
+    'none': 'none',
+}
+RUN_ID_LIDAR_PIPELINE_ABBREVIATIONS = {
+    'scan2d': '2d',
+    'pointcloud3d': '3d',
+}
+
+POINTCLOUD3D_LIDAR_PARAMS = {
+    'max_detection_range_m': 25.0,
+    'thinning_start_range_m': 12.0,
+    'thinning_keep_ratio_at_max_range': 1.0,
+    'ground_base_cutoff_m': 0.035,
+    'ground_range_bias_m': 0.01,
+    'ground_range_slope_m_per_m': 0.004,
+    'downsample_stride': 1,
+}
+LEGACY_CONE_MEMORY_CONFIRM_HITS = 3
+POINTCLOUD3D_CONE_MEMORY_CONFIRM_HITS = 1
+LEGACY_PLANNER_MIN_CONFIDENCE = 0.3
+POINTCLOUD3D_PLANNER_MIN_CONFIDENCE = 0.15
+
+
+@dataclass(frozen=True)
+class LaunchSelection:
+    track: str
+    planner: str
+    controller: str
+    world: str
+    planner_config: str
+    controller_config: str
+    spawn_config: str
+    spawn_x: str
+    spawn_y: str
+    spawn_yaw: str
+    path_tracking_autostop_laps: str
+    speed_control: dict[str, float]
+    planner_limits: dict[str, float]
+    planner_diagnostics_topic: str
+    planner_default_rviz_profile: str
+
+    def controller_overlay_parameters(self) -> dict:
+        if self.controller != 'none':
+            return {}
+        return {
+            '/**': {
+                'ros__parameters': {
+                    'control': {
+                        'controller_type': 'none',
+                    },
+                },
+            },
+        }
+
+    def speed_control_overlay_parameters(self) -> dict:
+        return {
+            '/**': {
+                'ros__parameters': {
+                    'speed_control': self.speed_control,
+                },
+            },
+        }
+
+    def planner_overlay_parameters(self) -> dict:
+        if not self.planner_limits:
+            return {}
+        return {
+            '/**': {
+                'ros__parameters': self.planner_limits,
+            },
+        }
+
+
+def _lidar_pipeline_match_expr(pipeline: str):
+    return PythonExpression([
+        "'",
+        LaunchConfiguration('lidar_pipeline'),
+        f"'.lower() == '{pipeline}'",
+    ])
+
+
+def _lidar_pipeline_enabled_condition(pipeline: str):
+    return IfCondition(PythonExpression([
+        "(('",
+        LaunchConfiguration('lidar_enabled'),
+        "'.lower() == 'true') or ('",
+        LaunchConfiguration('cone_memory_enabled'),
+        "'.lower() == 'true')) and (",
+        _lidar_pipeline_match_expr(pipeline),
+        ")",
+    ]))
+
+
+def _planner_selected_condition(planner_name: str):
+    return IfCondition(PythonExpression([
+        "'",
+        LaunchConfiguration('planner'),
+        f"'.lower() == '{planner_name}'",
+    ]))
+
+
+def _planner_odom_delay_enabled_expr():
+    return PythonExpression([
+        "float('",
+        LaunchConfiguration('planner_odom_delay_ms'),
+        "') > 0.0",
+    ])
+
+
+def _pointcloud3d_lidar_parameters(topic_prefix):
+    parameters = {
+        'pointcloud_topic': PythonExpression(["'", topic_prefix, "' + '/lidar/points'"]),
+        'filtered_pointcloud_topic': PythonExpression(["'", topic_prefix, "' + '/lidar/points_filtered'"]),
+        'cone_detections_topic': PythonExpression(["'", topic_prefix, "' + '/lidar/perception/cones_3d'"]),
+        'lidar_frame': 'lidar_os1_link',
+        'cone_detections_frame': 'base_footprint',
+    }
+    parameters.update(POINTCLOUD3D_LIDAR_PARAMS)
+    return parameters
+
+
+def _cone_memory_pipeline_parameters():
+    return {
+        'min_seen_count': ParameterValue(
+            PythonExpression([
+                f"{POINTCLOUD3D_CONE_MEMORY_CONFIRM_HITS} if ",
+                _lidar_pipeline_match_expr('pointcloud3d'),
+                f' else {LEGACY_CONE_MEMORY_CONFIRM_HITS}',
+            ]),
+            value_type=int,
+        ),
+        'confirm_hits': ParameterValue(
+            PythonExpression([
+                f"{POINTCLOUD3D_CONE_MEMORY_CONFIRM_HITS} if ",
+                _lidar_pipeline_match_expr('pointcloud3d'),
+                f' else {LEGACY_CONE_MEMORY_CONFIRM_HITS}',
+            ]),
+            value_type=int,
+        ),
+    }
+
+
+def _planner_pipeline_parameters():
+    return {
+        'filtering.min_confidence': ParameterValue(
+            PythonExpression([
+                f"{POINTCLOUD3D_PLANNER_MIN_CONFIDENCE} if ",
+                _lidar_pipeline_match_expr('pointcloud3d'),
+                f' else {LEGACY_PLANNER_MIN_CONFIDENCE}',
+            ]),
+            value_type=float,
+        ),
+    }
+
+
+def _pointcloud3d_debug_topics(topic_prefix) -> dict[str, str]:
+    return {
+        'raw_pointcloud_topic': f'{topic_prefix}/lidar/points',
+        'filtered_pointcloud_topic': f'{topic_prefix}/lidar/points_filtered',
+    }
 
 
 def generate_launch_description():
@@ -70,6 +273,18 @@ def generate_launch_description():
         'planner_rate_hz',
         default_value='60.0',
         description='Planner/controller/odom target rate in Hz'
+    )
+
+    planner_odom_delay_ms_arg = DeclareLaunchArgument(
+        'planner_odom_delay_ms',
+        default_value='0.0',
+        description='Optional fixed delay applied to planner/controller odometry feed (ms)'
+    )
+
+    planner_odom_lag_compensation_ms_arg = DeclareLaunchArgument(
+        'planner_odom_lag_compensation_ms',
+        default_value='0.0',
+        description='Optional forward pose compensation applied inside planner/controller path transform (ms)'
     )
 
     sensors_render_engine_arg = DeclareLaunchArgument(
@@ -232,6 +447,24 @@ def generate_launch_description():
         description='Explicit path to RViz display config file (overrides rviz_profile when set)'
     )
 
+    rviz_raw_pointcloud_debug_arg = DeclareLaunchArgument(
+        'rviz_raw_pointcloud_debug',
+        default_value='false',
+        description='Enable raw lidar PointCloud2 debug display in the launched RViz session'
+    )
+
+    rviz_filtered_pointcloud_debug_arg = DeclareLaunchArgument(
+        'rviz_filtered_pointcloud_debug',
+        default_value='true',
+        description='Enable filtered lidar PointCloud2 debug display in the launched RViz session'
+    )
+
+    corridor_debug_arg = DeclareLaunchArgument(
+        'corridor_debug',
+        default_value='false',
+        description='Enable corridor planner cone-audit markers and cone-memory debug aids'
+    )
+
     perception_queue_size_arg = DeclareLaunchArgument(
         'perception_queue_size',
         default_value='8',
@@ -254,6 +487,12 @@ def generate_launch_description():
         'lidar_enabled',
         default_value='true',
         description='Enable LiDAR cone detection/evaluation node'
+    )
+
+    lidar_pipeline_arg = DeclareLaunchArgument(
+        'lidar_pipeline',
+        default_value='pointcloud3d',
+        description="LiDAR perception path: 'pointcloud3d' or 'scan2d'"
     )
 
     cone_memory_enabled_arg = DeclareLaunchArgument(
@@ -374,6 +613,8 @@ def generate_launch_description():
         'camera_rate_hz',
         'perception_rate_hz',
         'planner_rate_hz',
+        'planner_odom_delay_ms',
+        'planner_odom_lag_compensation_ms',
         'sensors_render_engine',
         'track',
         'world',
@@ -399,10 +640,14 @@ def generate_launch_description():
         'use_rviz',
         'rviz_profile',
         'rviz_config',
+        'rviz_raw_pointcloud_debug',
+        'rviz_filtered_pointcloud_debug',
+        'corridor_debug',
         'perception_queue_size',
         'cuda',
         'stereo',
         'lidar_enabled',
+        'lidar_pipeline',
         'cone_memory_enabled',
         'camera_range_m',
         'prefer_lidar_if_camera_missing_far',
@@ -435,8 +680,10 @@ def generate_launch_description():
     resolved_planner_config = LaunchConfiguration('resolved_planner_config')
     resolved_controller_config = LaunchConfiguration('resolved_controller_config')
     resolved_speed_control_config = LaunchConfiguration('resolved_speed_control_config')
+    resolved_planner_diagnostics_topic = LaunchConfiguration('resolved_planner_diagnostics_topic')
     resolved_path_tracking_autostop_laps = LaunchConfiguration('resolved_path_tracking_autostop_laps')
     resolved_shutdown_on_logger_exit = LaunchConfiguration('resolved_shutdown_on_logger_exit')
+    resolved_run_id_prefix = LaunchConfiguration('resolved_run_id_prefix')
     launch_args_validation = OpaqueFunction(function=_validate_planner_and_controller_args)
     track_selection_setup = OpaqueFunction(function=_configure_track_selection)
     measurement_config_setup = OpaqueFunction(function=_configure_measurement_config)
@@ -456,6 +703,12 @@ def generate_launch_description():
         "'.lower() == 'true') or ('",
         LaunchConfiguration('measure'),
         "'.lower() == 'true')) else '/sim'"
+    ])
+    delayed_planner_odom_topic = '/sim/odom_delayed'
+    planner_odom_topic = PythonExpression([
+        "'/sim/odom_delayed' if ",
+        _planner_odom_delay_enabled_expr(),
+        " else '/sim/odom'",
     ])
     camera_source_name = PythonExpression([
         "'stereo' if '",
@@ -484,6 +737,7 @@ def generate_launch_description():
             'perception_rate_hz': LaunchConfiguration('perception_rate_hz'),
             'planner_rate_hz': LaunchConfiguration('planner_rate_hz'),
             'physics_model': LaunchConfiguration('physics_model'),
+            'lidar_pipeline': LaunchConfiguration('lidar_pipeline'),
             'sensors_render_engine': LaunchConfiguration('sensors_render_engine'),
             'topic_prefix': topic_prefix,
             'spawn_x': resolved_spawn_x,
@@ -516,12 +770,33 @@ def generate_launch_description():
         }],
     )
 
+    odom_delay_node = Node(
+        package='sim_car',
+        executable='odom_delay_node',
+        name='odom_delay_node',
+        output='screen',
+        parameters=[{
+            'use_sim_time': ParameterValue(
+                LaunchConfiguration('use_sim_time'),
+                value_type=bool,
+            ),
+            'input_topic': '/sim/odom',
+            'output_topic': delayed_planner_odom_topic,
+            'delay_ms': ParameterValue(
+                LaunchConfiguration('planner_odom_delay_ms'),
+                value_type=float,
+            ),
+            'flush_rate_hz': 200.0,
+        }],
+        condition=IfCondition(_planner_odom_delay_enabled_expr()),
+    )
+
     plotter_launch = IncludeLaunchDescription(
         PythonLaunchDescriptionSource(
             PathJoinSubstitution([vehicle_plotter_share, 'launch', 'plotter.launch.py'])
         ),
         launch_arguments={
-            'enable_log': 'true',
+            'enable_log': 'false',
             'enable_state_logging': PythonExpression([
                 "'true' if ('",
                 LaunchConfiguration('sensor_pipeline'),
@@ -531,6 +806,33 @@ def generate_launch_description():
             ]),
             'use_sim_time': LaunchConfiguration('use_sim_time'),
             'enable_rosbag': LaunchConfiguration('rosbagging'),
+            'run_id_prefix': resolved_run_id_prefix,
+        }.items(),
+    )
+
+    logger_node = Node(
+        package='vehicle_plotter',
+        executable='logger_node',
+        name='logger',
+        output='screen',
+        parameters=[{
+            'format': 'parquet',
+            'flush_interval_sec': 5.0,
+            'buffer_size': 1000,
+            'adapter': 'gazebo',
+            'enable_logging': True,
+            'state_topic': '/vehicle_plotter/state',
+            'enable_state_logging': ParameterValue(
+                PythonExpression([
+                    "'true' if ('",
+                    LaunchConfiguration('sensor_pipeline'),
+                    "'.lower() == 'true' or '",
+                    LaunchConfiguration('logging'),
+                    "'.lower() == 'true') else 'false'"
+                ]),
+                value_type=bool,
+            ),
+            'auto_plot_on_shutdown': True,
             'camera_cone_eval_topic': PythonExpression([
                 "'",
                 topic_prefix,
@@ -543,36 +845,47 @@ def generate_launch_description():
                 LaunchConfiguration('lidar_enabled'),
                 "'.lower() == 'true' else ''"
             ]),
-            'controller_diagnostics_enabled': LaunchConfiguration('controller_diagnostics'),
-            'controller_diagnostics_rate_hz': '50.0',
+            'controller_diagnostics_enabled': ParameterValue(
+                LaunchConfiguration('controller_diagnostics'),
+                value_type=bool,
+            ),
+            'controller_diagnostics_rate_hz': 50.0,
             'controller_diagnostics_cmd_topic': '/cmd',
             'controller_diagnostics_steering_topic': '/sim/steering_angle',
             'controller_diagnostics_joint_states_topic': '/sim/joint_states',
             'controller_diagnostics_odom_topic': '/sim/odom',
             'controller_diagnostics_path_topic': '/planned_centerline',
-            'controller_diagnostics_planner_diag_topic': PythonExpression([
-                "'/midpoint_planner/diagnostics' if '",
-                LaunchConfiguration('planner'),
-                "'.lower() == 'midpoint' else "
-                "'/single_boundary_planner/diagnostics' if '",
-                LaunchConfiguration('planner'),
-                "'.lower() == 'single_boundary' else "
-                "'/corridor_planner/diagnostics' if '",
-                LaunchConfiguration('planner'),
-                "'.lower() == 'corridor' else "
-                "'/linetest_planner/diagnostics' if '",
-                LaunchConfiguration('planner'),
-                "'.lower() == 'linetest' else '/midpoint_planner/diagnostics'",
-            ]),
-            'thesis_controller_diagnostics_enabled': LaunchConfiguration('thesis_controller_diagnostics'),
-            'path_tracking_eval_enabled': LaunchConfiguration('path_tracking_eval'),
+            'controller_diagnostics_planner_diag_topic': resolved_planner_diagnostics_topic,
+            'thesis_controller_diagnostics_enabled': ParameterValue(
+                LaunchConfiguration('thesis_controller_diagnostics'),
+                value_type=bool,
+            ),
+            'path_tracking_eval_enabled': ParameterValue(
+                LaunchConfiguration('path_tracking_eval'),
+                value_type=bool,
+            ),
             'path_tracking_eval_gt_track_topic': '/ground_truth/track',
             'path_tracking_eval_odom_topic': '/sim/odom',
             'path_tracking_eval_planner_path_topic': '/planned_centerline',
             'path_tracking_eval_track_name': LaunchConfiguration('track'),
-            'path_tracking_eval_autostop_laps': resolved_path_tracking_autostop_laps,
-            'shutdown_on_logger_exit': resolved_shutdown_on_logger_exit,
-        }.items(),
+            'path_tracking_eval_autostop_laps': ParameterValue(
+                resolved_path_tracking_autostop_laps,
+                value_type=int,
+            ),
+            'use_sim_time': False,
+        }],
+    )
+
+    shutdown_on_logger_exit = RegisterEventHandler(
+        OnProcessExit(
+            target_action=logger_node,
+            on_exit=[
+                EmitEvent(
+                    event=Shutdown(reason='logger autostop reached lap target'),
+                    condition=IfCondition(resolved_shutdown_on_logger_exit),
+                ),
+            ],
+        )
     )
 
     steering_gui_node = Node(
@@ -726,13 +1039,7 @@ def generate_launch_description():
         executable='lidar_node',
         name='lidar_node',
         output='screen',
-        condition=IfCondition(PythonExpression([
-            "'",
-            LaunchConfiguration('lidar_enabled'),
-            "'.lower() == 'true' or '",
-            LaunchConfiguration('cone_memory_enabled'),
-            "'.lower() == 'true'",
-        ])),
+        condition=_lidar_pipeline_enabled_condition('scan2d'),
         parameters=[{
             'use_sim_time': ParameterValue(
                 LaunchConfiguration('use_sim_time'),
@@ -740,7 +1047,23 @@ def generate_launch_description():
             ),
             'scan_topic': PythonExpression(["'", topic_prefix, "' + '/lidar'"]),
             'cone_detections_topic': PythonExpression(["'", topic_prefix, "' + '/lidar/perception/cones_3d'"]),
+            'lidar_frame': 'lidar_scan_link',
             'cone_detections_frame': 'front_axle',
+        }],
+    )
+
+    pointcloud_lidar_node = Node(
+        package='sim_car',
+        executable='pointcloud_lidar_node',
+        name='pointcloud_lidar_node',
+        output='screen',
+        condition=_lidar_pipeline_enabled_condition('pointcloud3d'),
+        parameters=[{
+            'use_sim_time': ParameterValue(
+                LaunchConfiguration('use_sim_time'),
+                value_type=bool,
+            ),
+            **_pointcloud3d_lidar_parameters(topic_prefix),
         }],
     )
 
@@ -794,6 +1117,23 @@ def generate_launch_description():
                     LaunchConfiguration('perception_rate_hz'),
                     value_type=float,
                 ),
+                'enable_id_text': ParameterValue(
+                    LaunchConfiguration('corridor_debug'),
+                    value_type=bool,
+                ),
+                'enable_tentative_viz': ParameterValue(
+                    LaunchConfiguration('corridor_debug'),
+                    value_type=bool,
+                ),
+                'enable_raw_debug_viz': ParameterValue(
+                    LaunchConfiguration('corridor_debug'),
+                    value_type=bool,
+                ),
+                'believed_track_viz_show_cones': ParameterValue(
+                    LaunchConfiguration('corridor_debug'),
+                    value_type=bool,
+                ),
+                **_cone_memory_pipeline_parameters(),
             },
         ],
     )
@@ -837,10 +1177,19 @@ def generate_launch_description():
                 ),
                 'topics.input_topic': router_input_topic,
                 'topics.output_topic': '/tracked_cones/skidpad_routed',
-                'topics.odom_topic': '/sim/odom',
+                'topics.odom_topic': planner_odom_topic,
                 'topics.cmd_topic': '/cmd',
                 'topics.viz_topic': router_viz_topic,
                 'routing.event_mode': LaunchConfiguration('track'),
+                'routing.shutdown_on_route_complete': False,
+                'routing.shutdown_on_parking_complete': ParameterValue(
+                    PythonExpression([
+                        "'",
+                        LaunchConfiguration('track'),
+                        "'.lower() in ('skidpad', 'acceleration')",
+                    ]),
+                    value_type=bool,
+                ),
             },
         ],
         condition=IfCondition(PythonExpression([
@@ -852,9 +1201,25 @@ def generate_launch_description():
         ])),
     )
 
+    shutdown_on_skidpad_router_exit = RegisterEventHandler(
+        OnProcessExit(
+            target_action=skidpad_router_node,
+            on_exit=[
+                EmitEvent(
+                    event=Shutdown(reason='skidpad/acceleration router mission target reached'),
+                    condition=IfCondition(PythonExpression([
+                        "'",
+                        LaunchConfiguration('track'),
+                        "'.lower() in ('skidpad', 'acceleration')",
+                    ])),
+                ),
+            ],
+        )
+    )
+
     midpoint_planner_node = Node(
         package='sim_car',
-        executable='midpoint_planner_node',
+        executable=get_planner_spec('midpoint').executable,
         name='midpoint_planner_node',
         output='screen',
         parameters=[
@@ -867,11 +1232,16 @@ def generate_launch_description():
                     value_type=bool,
                 ),
                 'topics.tracked_cones_topic': planner_input_topic,
-                'topics.odom_topic': '/sim/odom',
+                'topics.odom_topic': planner_odom_topic,
+                'control.odom_lag_compensation_ms': ParameterValue(
+                    LaunchConfiguration('planner_odom_lag_compensation_ms'),
+                    value_type=float,
+                ),
                 'runtime.publish_rate_hz': ParameterValue(
                     LaunchConfiguration('planner_rate_hz'),
                     value_type=float,
                 ),
+                **_planner_pipeline_parameters(),
                 'lap_tracking.gt_track_topic': '/ground_truth/track',
                 'lap_tracking.target_laps': resolved_path_tracking_autostop_laps,
                 'diagnostics.publish_thesis_context': ParameterValue(
@@ -880,16 +1250,12 @@ def generate_launch_description():
                 ),
             },
         ],
-        condition=IfCondition(PythonExpression([
-            "'",
-            LaunchConfiguration('planner'),
-            "'.lower() == 'midpoint'"
-        ])),
+        condition=_planner_selected_condition('midpoint'),
     )
 
     single_boundary_planner_node = Node(
         package='sim_car',
-        executable='single_boundary_planner_node',
+        executable=get_planner_spec('single_boundary').executable,
         name='single_boundary_planner_node',
         output='screen',
         parameters=[
@@ -902,11 +1268,16 @@ def generate_launch_description():
                     value_type=bool,
                 ),
                 'topics.tracked_cones_topic': planner_input_topic,
-                'topics.odom_topic': '/sim/odom',
+                'topics.odom_topic': planner_odom_topic,
+                'control.odom_lag_compensation_ms': ParameterValue(
+                    LaunchConfiguration('planner_odom_lag_compensation_ms'),
+                    value_type=float,
+                ),
                 'runtime.publish_rate_hz': ParameterValue(
                     LaunchConfiguration('planner_rate_hz'),
                     value_type=float,
                 ),
+                **_planner_pipeline_parameters(),
                 'lap_tracking.gt_track_topic': '/ground_truth/track',
                 'lap_tracking.target_laps': resolved_path_tracking_autostop_laps,
                 'diagnostics.publish_thesis_context': ParameterValue(
@@ -915,16 +1286,12 @@ def generate_launch_description():
                 ),
             },
         ],
-        condition=IfCondition(PythonExpression([
-            "'",
-            LaunchConfiguration('planner'),
-            "'.lower() == 'single_boundary'"
-        ])),
+        condition=_planner_selected_condition('single_boundary'),
     )
 
     corridor_planner_node = Node(
         package='sim_car',
-        executable='corridor_planner_node',
+        executable=get_planner_spec('corridor').executable,
         name='corridor_planner_node',
         output='screen',
         parameters=[
@@ -937,27 +1304,44 @@ def generate_launch_description():
                     value_type=bool,
                 ),
                 'topics.tracked_cones_topic': planner_input_topic,
-                'topics.odom_topic': '/sim/odom',
+                'topics.odom_topic': planner_odom_topic,
+                'control.odom_lag_compensation_ms': ParameterValue(
+                    LaunchConfiguration('planner_odom_lag_compensation_ms'),
+                    value_type=float,
+                ),
                 'runtime.publish_rate_hz': ParameterValue(
                     LaunchConfiguration('planner_rate_hz'),
                     value_type=float,
                 ),
+                **_planner_pipeline_parameters(),
                 'diagnostics.publish_thesis_context': ParameterValue(
                     LaunchConfiguration('thesis_controller_diagnostics'),
                     value_type=bool,
                 ),
+                'debug.enable_cone_audit_markers': ParameterValue(
+                    LaunchConfiguration('corridor_debug'),
+                    value_type=bool,
+                ),
+                'debug.show_corridor_pair_audit': ParameterValue(
+                    LaunchConfiguration('corridor_debug'),
+                    value_type=bool,
+                ),
+                'debug.corridor_pair_audit_show_labels': ParameterValue(
+                    LaunchConfiguration('corridor_debug'),
+                    value_type=bool,
+                ),
+                'debug.show_raw_cones': ParameterValue(
+                    LaunchConfiguration('corridor_debug'),
+                    value_type=bool,
+                ),
             },
         ],
-        condition=IfCondition(PythonExpression([
-            "'",
-            LaunchConfiguration('planner'),
-            "'.lower() == 'corridor'"
-        ])),
+        condition=_planner_selected_condition('corridor'),
     )
 
     linetest_planner_node = Node(
         package='sim_car',
-        executable='linetest_planner_node',
+        executable=get_planner_spec('linetest').executable,
         name='linetest_planner_node',
         output='screen',
         parameters=[
@@ -969,7 +1353,11 @@ def generate_launch_description():
                     LaunchConfiguration('use_sim_time'),
                     value_type=bool,
                 ),
-                'topics.odom_topic': '/sim/odom',
+                'topics.odom_topic': planner_odom_topic,
+                'control.odom_lag_compensation_ms': ParameterValue(
+                    LaunchConfiguration('planner_odom_lag_compensation_ms'),
+                    value_type=float,
+                ),
                 'runtime.publish_rate_hz': ParameterValue(
                     LaunchConfiguration('planner_rate_hz'),
                     value_type=float,
@@ -980,11 +1368,7 @@ def generate_launch_description():
                 ),
             },
         ],
-        condition=IfCondition(PythonExpression([
-            "'",
-            LaunchConfiguration('planner'),
-            "'.lower() == 'linetest'"
-        ])),
+        condition=_planner_selected_condition('linetest'),
     )
 
     camera_debug_viewer_node = Node(
@@ -994,6 +1378,37 @@ def generate_launch_description():
         output='screen',
         arguments=[PythonExpression(["'", topic_prefix, "' + '/stereo/camera_debug'"])],
         condition=IfCondition(camera_debug_enabled_expr),
+    )
+
+    odom_tf_broadcaster_node = Node(
+        package='sim_car',
+        executable='odom_tf_broadcaster_node',
+        name='odom_tf_broadcaster_node',
+        output='screen',
+        parameters=[{
+                'use_sim_time': ParameterValue(
+                    LaunchConfiguration('use_sim_time'),
+                    value_type=bool,
+                ),
+                'odom_topic': planner_odom_topic,
+                'default_frame_id': 'odom',
+                'default_child_frame_id': 'base_footprint',
+            }],
+        condition=IfCondition(_planner_odom_delay_enabled_expr()),
+    )
+
+    pointcloud_sensor_frame_tf_node = Node(
+        package='tf2_ros',
+        executable='static_transform_publisher',
+        name='pointcloud_lidar_sensor_frame_tf',
+        output='screen',
+        arguments=[
+            '0', '0', '0',
+            '0', '0', '0',
+            'lidar_os1_link',
+            'sim_car/base_footprint/front_lidar',
+        ],
+        condition=IfCondition(_lidar_pipeline_match_expr('pointcloud3d')),
     )
 
     rviz_node = Node(
@@ -1036,6 +1451,8 @@ def generate_launch_description():
         camera_rate_arg,
         perception_rate_arg,
         planner_rate_arg,
+        planner_odom_delay_ms_arg,
+        planner_odom_lag_compensation_ms_arg,
         sensors_render_engine_arg,
         track_arg,
         world_arg,
@@ -1062,10 +1479,14 @@ def generate_launch_description():
         use_rviz_arg,
         rviz_profile_arg,
         rviz_config_arg,
+        rviz_raw_pointcloud_debug_arg,
+        rviz_filtered_pointcloud_debug_arg,
+        corridor_debug_arg,
         perception_queue_size_arg,
         cuda_arg,
         stereo_arg,
         lidar_enabled_arg,
+        lidar_pipeline_arg,
         cone_memory_enabled_arg,
         camera_range_arg,
         prefer_lidar_if_camera_missing_far_arg,
@@ -1091,19 +1512,26 @@ def generate_launch_description():
         gazebo_launch,
         sim_nodes_launch,
         measurement_node,
+        odom_delay_node,
         plotter_launch,
+        logger_node,
+        shutdown_on_logger_exit,
         steering_bridge_node,
         perception_node,
         camera_cone_evaluator_node,
         lidar_node,
+        pointcloud_lidar_node,
         lidar_cone_evaluator_node,
         cone_memory_node,
         skidpad_router_node,
+        shutdown_on_skidpad_router_exit,
         midpoint_planner_node,
         single_boundary_planner_node,
         corridor_planner_node,
         linetest_planner_node,
         camera_debug_viewer_node,
+        odom_tf_broadcaster_node,
+        pointcloud_sensor_frame_tf_node,
         rviz_node,
         steering_gui_node,
         run_artifacts_node,
@@ -1142,6 +1570,7 @@ def _resolve_track_bundle(sim_car_share: Path, track: str, planner: str, control
     normalized_track = str(track).strip().lower() or 'smalltrack'
     normalized_planner = str(planner).strip().lower()
     normalized_controller = str(controller).strip().lower() or 'stanley'
+    planner_spec = get_planner_spec(normalized_planner)
 
     if normalized_track not in SUPPORTED_TRACKS:
         raise RuntimeError(
@@ -1153,8 +1582,12 @@ def _resolve_track_bundle(sim_car_share: Path, track: str, planner: str, control
             "Unsupported launch argument planner='%s'. Supported values: midpoint, single_boundary, corridor, linetest, none"
             % planner
         )
-    if normalized_planner == 'linetest' and normalized_track != 'acceleration':
-        raise RuntimeError("planner='linetest' is only supported with track='acceleration'")
+    if not planner_allowed_for_track(planner_name=normalized_planner, track_name=normalized_track):
+        allowed_tracks = sorted(planner_spec.allowed_tracks or ())
+        allowed_text = ', '.join(allowed_tracks)
+        raise RuntimeError(
+            "planner='%s' is only supported with track='%s'" % (normalized_planner, allowed_text)
+        )
     if normalized_controller not in SUPPORTED_CONTROLLERS:
         raise RuntimeError(
             "Unsupported launch argument controller='%s'. Supported values: stanley, pure_pursuit, none"
@@ -1166,6 +1599,7 @@ def _resolve_track_bundle(sim_car_share: Path, track: str, planner: str, control
         'track': normalized_track,
         'planner': normalized_planner,
         'controller': normalized_controller,
+        'planner_spec': planner_spec,
         'world': str(sim_car_share / 'worlds' / SUPPORTED_TRACKS[normalized_track]),
         'spawn_config': str(config_dir / 'spawn.yaml'),
         'planner_config': '',
@@ -1254,6 +1688,26 @@ def _load_yaml_file(config_path: str) -> dict:
     return config
 
 
+def _abbreviated_run_id_prefix(track: str, planner: str, controller: str, lidar_pipeline: str) -> str:
+    normalized_track = str(track).strip().lower() or 'smalltrack'
+    normalized_planner = str(planner).strip().lower() or 'midpoint'
+    normalized_controller = str(controller).strip().lower() or 'stanley'
+    normalized_lidar_pipeline = str(lidar_pipeline).strip().lower() or 'pointcloud3d'
+
+    if normalized_lidar_pipeline not in RUN_ID_LIDAR_PIPELINE_ABBREVIATIONS:
+        raise RuntimeError(
+            "Unsupported launch argument lidar_pipeline='%s'. Supported values: pointcloud3d, scan2d"
+            % lidar_pipeline
+        )
+
+    return '_'.join([
+        RUN_ID_TRACK_ABBREVIATIONS.get(normalized_track, normalized_track),
+        RUN_ID_PLANNER_ABBREVIATIONS.get(normalized_planner, normalized_planner),
+        RUN_ID_CONTROLLER_ABBREVIATIONS.get(normalized_controller, normalized_controller),
+        RUN_ID_LIDAR_PIPELINE_ABBREVIATIONS[normalized_lidar_pipeline],
+    ])
+
+
 def _resolve_launch_selection(
     sim_car_share: Path,
     *,
@@ -1264,42 +1718,44 @@ def _resolve_launch_selection(
     spawn_y_override: str = '',
     spawn_yaw_override: str = '',
     controller_override: str = '',
-) -> dict[str, str]:
+) -> LaunchSelection:
     normalized_controller = str(controller_override).strip().lower() or 'stanley'
     bundle = _resolve_track_bundle(sim_car_share, track, planner, normalized_controller)
     spawn_defaults = _load_spawn_defaults(bundle['spawn_config'])
     lap_tracking_defaults = _load_lap_tracking_defaults(bundle['spawn_config'])
     speed_control_defaults = _load_speed_control_defaults(bundle['spawn_config'])
     planner_limit_overrides = _load_planner_limit_overrides(bundle['spawn_config'])
+    selection = LaunchSelection(
+        track=bundle['track'],
+        planner=bundle['planner'],
+        controller=bundle['controller'],
+        world=str(world_override).strip() or bundle['world'],
+        planner_config=bundle['planner_config'],
+        controller_config=bundle['controller_config'],
+        spawn_config=bundle['spawn_config'],
+        spawn_x=str(spawn_x_override).strip() or spawn_defaults['spawn_x'],
+        spawn_y=str(spawn_y_override).strip() or spawn_defaults['spawn_y'],
+        spawn_yaw=str(spawn_yaw_override).strip() or spawn_defaults['spawn_yaw'],
+        path_tracking_autostop_laps=lap_tracking_defaults['autostop_laps'],
+        speed_control=speed_control_defaults,
+        planner_limits=planner_limit_overrides,
+        planner_diagnostics_topic=bundle['planner_spec'].diagnostics_topic,
+        planner_default_rviz_profile=bundle['planner_spec'].default_rviz_profile,
+    )
 
-    selection = {
-        'track': bundle['track'],
-        'planner': bundle['planner'],
-        'controller': bundle['controller'],
-        'world': str(world_override).strip() or bundle['world'],
-        'planner_config': bundle['planner_config'],
-        'controller_config': bundle['controller_config'],
-        'spawn_config': bundle['spawn_config'],
-        'spawn_x': str(spawn_x_override).strip() or spawn_defaults['spawn_x'],
-        'spawn_y': str(spawn_y_override).strip() or spawn_defaults['spawn_y'],
-        'spawn_yaw': str(spawn_yaw_override).strip() or spawn_defaults['spawn_yaw'],
-        'path_tracking_autostop_laps': lap_tracking_defaults['autostop_laps'],
-        'speed_control': speed_control_defaults,
-        'planner_limits': planner_limit_overrides,
-    }
-
-    if selection['planner'] == 'linetest' and not Path(selection['planner_config']).exists():
-        raise RuntimeError(f"Planner config does not exist: {selection['planner_config']}")
-    if selection['controller'] in {'stanley', 'pure_pursuit'} and not Path(selection['controller_config']).exists():
-        raise RuntimeError(f"Controller config does not exist: {selection['controller_config']}")
-    if not Path(selection['spawn_config']).exists():
-        raise RuntimeError(f"Spawn config does not exist: {selection['spawn_config']}")
+    if selection.planner == 'linetest' and not Path(selection.planner_config).exists():
+        raise RuntimeError(f'Planner config does not exist: {selection.planner_config}')
+    if selection.controller in {'stanley', 'pure_pursuit'} and not Path(selection.controller_config).exists():
+        raise RuntimeError(f'Controller config does not exist: {selection.controller_config}')
+    if not Path(selection.spawn_config).exists():
+        raise RuntimeError(f'Spawn config does not exist: {selection.spawn_config}')
 
     return selection
 
 
 def _configure_track_selection(context, *_args, **_kwargs):
     sim_car_share = Path(get_package_share_directory('sim_car'))
+    lidar_pipeline = LaunchConfiguration('lidar_pipeline').perform(context)
     selection = _resolve_launch_selection(
         sim_car_share,
         track=LaunchConfiguration('track').perform(context),
@@ -1310,59 +1766,51 @@ def _configure_track_selection(context, *_args, **_kwargs):
         spawn_yaw_override=LaunchConfiguration('spawn_yaw').perform(context),
         controller_override=LaunchConfiguration('controller').perform(context),
     )
+    run_id_prefix = _abbreviated_run_id_prefix(
+        selection.track,
+        selection.planner,
+        selection.controller,
+        lidar_pipeline,
+    )
 
-    planner_config_path = selection['planner_config'] if selection['planner'] == 'linetest' else _write_parameter_overlay({})
+    planner_config_path = selection.planner_config if selection.planner == 'linetest' else _write_parameter_overlay({})
 
-    if selection['planner'] in CONFIGURED_PLANNERS:
-        if selection['controller'] == 'none':
-            controller_config_path = _write_parameter_overlay({
-                '/**': {
-                    'ros__parameters': {
-                        'control': {
-                            'controller_type': 'none',
-                        },
-                    },
-                },
-            })
+    if selection.planner in CONFIGURED_PLANNERS:
+        if selection.controller == 'none':
+            controller_config_path = _write_parameter_overlay(selection.controller_overlay_parameters())
         else:
-            controller_config_path = selection['controller_config']
-        speed_control_config_path = _write_parameter_overlay({
-            '/**': {
-                'ros__parameters': {
-                    'speed_control': selection['speed_control'],
-                },
-            },
-        })
-        planner_config_path = _write_parameter_overlay({
-            '/**': {
-                'ros__parameters': selection['planner_limits'],
-            },
-        }) if selection['planner_limits'] else planner_config_path
+            controller_config_path = selection.controller_config
+        speed_control_config_path = _write_parameter_overlay(selection.speed_control_overlay_parameters())
+        planner_overlay_parameters = selection.planner_overlay_parameters()
+        if planner_overlay_parameters:
+            planner_config_path = _write_parameter_overlay(planner_overlay_parameters)
     else:
         controller_config_path = _write_parameter_overlay({})
         speed_control_config_path = _write_parameter_overlay({})
 
     return [
-        SetLaunchConfiguration('resolved_world', selection['world']),
-        SetLaunchConfiguration('resolved_spawn_x', selection['spawn_x']),
-        SetLaunchConfiguration('resolved_spawn_y', selection['spawn_y']),
-        SetLaunchConfiguration('resolved_spawn_yaw', selection['spawn_yaw']),
+        SetLaunchConfiguration('resolved_world', selection.world),
+        SetLaunchConfiguration('resolved_spawn_x', selection.spawn_x),
+        SetLaunchConfiguration('resolved_spawn_y', selection.spawn_y),
+        SetLaunchConfiguration('resolved_spawn_yaw', selection.spawn_yaw),
         SetLaunchConfiguration('resolved_planner_config', planner_config_path),
         SetLaunchConfiguration('resolved_controller_config', controller_config_path),
         SetLaunchConfiguration('resolved_speed_control_config', speed_control_config_path),
+        SetLaunchConfiguration('resolved_planner_diagnostics_topic', selection.planner_diagnostics_topic),
         SetLaunchConfiguration(
             'resolved_path_tracking_autostop_laps',
-            selection['path_tracking_autostop_laps'],
+            selection.path_tracking_autostop_laps,
         ),
         SetLaunchConfiguration(
             'resolved_shutdown_on_logger_exit',
             'true'
             if (
-                selection['track'] == 'smalltrack'
-                and int(selection['path_tracking_autostop_laps']) > 0
+                selection.track == 'smalltrack'
+                and int(selection.path_tracking_autostop_laps) > 0
             )
             else 'false',
         ),
+        SetLaunchConfiguration('resolved_run_id_prefix', run_id_prefix),
     ]
 
 
@@ -1376,7 +1824,7 @@ def _configure_measurement_config(context, *_args, **_kwargs):
 def _configure_rviz_config(context, *_args, **_kwargs):
     explicit_config = LaunchConfiguration('rviz_config').perform(context).strip()
     if explicit_config:
-        resolved_config = explicit_config
+        base_config = explicit_config
     else:
         sim_car_share = get_package_share_directory('sim_car')
         rviz_profile = LaunchConfiguration('rviz_profile').perform(context).strip().lower()
@@ -1392,12 +1840,144 @@ def _configure_rviz_config(context, *_args, **_kwargs):
             'none': 'driving_clean.rviz',
         }
         if rviz_profile in {'planner', 'auto'}:
-            resolved_filename = profile_to_filename.get(planner, 'driving_clean.rviz')
+            planner_profile = get_planner_spec(planner).default_rviz_profile if planner in SUPPORTED_PLANNERS else 'clean'
+            resolved_filename = profile_to_filename.get(planner_profile, 'driving_clean.rviz')
         else:
             resolved_filename = profile_to_filename.get(rviz_profile, 'driving_clean.rviz')
-        resolved_config = str(Path(sim_car_share) / 'rviz' / resolved_filename)
+        base_config = str(Path(sim_car_share) / 'rviz' / resolved_filename)
+
+    lidar_pipeline = LaunchConfiguration('lidar_pipeline').perform(context).strip().lower()
+    measurement_enabled = _launch_config_truthy(context, 'sensor_pipeline') or _launch_config_truthy(context, 'measure')
+    topic_prefix = '/sim/raw' if measurement_enabled else '/sim'
+    pointcloud_debug_topics = _pointcloud3d_debug_topics(topic_prefix)
+    raw_pointcloud_enabled = _launch_config_truthy(context, 'rviz_raw_pointcloud_debug') and lidar_pipeline == 'pointcloud3d'
+    filtered_pointcloud_enabled = _launch_config_truthy(context, 'rviz_filtered_pointcloud_debug') and lidar_pipeline == 'pointcloud3d'
+    resolved_config = _write_rviz_config_with_pointcloud_debugs(
+        base_config,
+        raw_pointcloud_topic=pointcloud_debug_topics['raw_pointcloud_topic'],
+        raw_enabled=raw_pointcloud_enabled,
+        filtered_pointcloud_topic=pointcloud_debug_topics['filtered_pointcloud_topic'],
+        filtered_enabled=filtered_pointcloud_enabled,
+    )
 
     return [SetLaunchConfiguration('resolved_rviz_config', resolved_config)]
+
+
+def _launch_config_truthy(context, name: str) -> bool:
+    return LaunchConfiguration(name).perform(context).strip().lower() in {'true', '1', 'yes', 'on'}
+
+
+def _write_rviz_config_with_pointcloud_debugs(
+    base_config: str,
+    *,
+    raw_pointcloud_topic: str,
+    raw_enabled: bool,
+    filtered_pointcloud_topic: str,
+    filtered_enabled: bool,
+) -> str:
+    with open(base_config, 'r', encoding='utf-8') as rviz_file:
+        config = yaml.safe_load(rviz_file) or {}
+
+    viz_manager = config.setdefault('Visualization Manager', {})
+    displays = viz_manager.setdefault('Displays', [])
+    insert_idx = len(displays)
+    for idx, item in enumerate(displays):
+        if isinstance(item, dict) and item.get('Name') == 'Raw Lidar Debug':
+            insert_idx = idx + 1
+            break
+
+    _upsert_rviz_pointcloud_display(
+        displays,
+        name='Raw PointCloud Debug',
+        topic=raw_pointcloud_topic,
+        enabled=bool(raw_enabled),
+        unreliable=False,
+        insert_idx=insert_idx,
+        color='255; 255; 255',
+    )
+    _upsert_rviz_pointcloud_display(
+        displays,
+        name='Filtered PointCloud Debug',
+        topic=filtered_pointcloud_topic,
+        enabled=bool(filtered_enabled),
+        unreliable=True,
+        insert_idx=insert_idx + 1,
+        color='0; 255; 0',
+    )
+
+    with tempfile.NamedTemporaryFile(mode='w', delete=False, suffix='.rviz', encoding='utf-8') as tmp:
+        yaml.safe_dump(config, tmp, default_flow_style=False, sort_keys=False)
+        return tmp.name
+
+
+def _upsert_rviz_pointcloud_display(
+    displays: list,
+    *,
+    name: str,
+    topic: str,
+    enabled: bool,
+    unreliable: bool,
+    insert_idx: int,
+    color: str,
+) -> None:
+    topic_config = {
+        'Value': topic,
+        'Depth': 10,
+        'Durability Policy': 'Volatile',
+        'History Policy': 'Keep Last',
+        'Reliability Policy': 'Best Effort' if unreliable else 'Reliable',
+    }
+
+    display = None
+    for item in displays:
+        if isinstance(item, dict) and item.get('Name') == name:
+            display = item
+            break
+
+    if display is None:
+        display = {
+            'Alpha': 1,
+            'Autocompute Intensity Bounds': True,
+            'Autocompute Value Bounds': {
+                'Max Value': 10,
+                'Min Value': -10,
+                'Value': True,
+            },
+            'Axis': 'Z',
+            'Channel Name': 'intensity',
+            'Class': 'rviz_default_plugins/PointCloud2',
+            'Color': color,
+            'Color Transformer': 'FlatColor',
+            'Decay Time': 0,
+            'Enabled': False,
+            'Invert Rainbow': False,
+            'Max Color': '255; 255; 255',
+            'Max Intensity': 4096,
+            'Min Color': '0; 0; 0',
+            'Min Intensity': 0,
+            'Name': name,
+            'Position Transformer': 'XYZ',
+            'Queue Size': 20,
+            'Selectable': True,
+            'Size (Pixels)': 6,
+            'Size (m)': 0.06,
+            'Style': 'Flat Squares',
+            'Topic': topic_config,
+            'Use Fixed Frame': True,
+            'Use rainbow': False,
+            'Value': False,
+        }
+        displays.insert(insert_idx, display)
+
+    display['Topic'] = topic_config
+    display['Enabled'] = bool(enabled)
+    display['Value'] = bool(enabled)
+    display['Color Transformer'] = 'FlatColor'
+    display['Color'] = color
+    display['Use rainbow'] = False
+    display['Queue Size'] = 20
+    display['Size (Pixels)'] = 6
+    display['Size (m)'] = 0.06
 
 
 def _validate_planner_and_controller_args(context, *_args, **_kwargs):
@@ -1405,6 +1985,7 @@ def _validate_planner_and_controller_args(context, *_args, **_kwargs):
     track = LaunchConfiguration('track').perform(context).strip().lower()
     planner = LaunchConfiguration('planner').perform(context).strip().lower()
     controller = LaunchConfiguration('controller').perform(context).strip().lower() or 'stanley'
+    lidar_pipeline = LaunchConfiguration('lidar_pipeline').perform(context).strip().lower() or 'pointcloud3d'
 
     supported_bridges = {'ackermann'}
 
@@ -1423,12 +2004,20 @@ def _validate_planner_and_controller_args(context, *_args, **_kwargs):
             "Unsupported launch argument planner='%s'. Supported values: midpoint, single_boundary, corridor, linetest, none"
             % planner
         )
-    if planner == 'linetest' and track != 'acceleration':
-        raise RuntimeError("planner='linetest' is only supported with track='acceleration'")
+    if not planner_allowed_for_track(planner_name=planner, track_name=track):
+        planner_spec = get_planner_spec(planner)
+        allowed_tracks = sorted(planner_spec.allowed_tracks or ())
+        allowed_text = ', '.join(allowed_tracks)
+        raise RuntimeError("planner='%s' is only supported with track='%s'" % (planner, allowed_text))
     if controller not in SUPPORTED_CONTROLLERS:
         raise RuntimeError(
             "Unsupported launch argument controller='%s'. Supported values: stanley, pure_pursuit, none"
             % controller
+        )
+    if lidar_pipeline not in RUN_ID_LIDAR_PIPELINE_ABBREVIATIONS:
+        raise RuntimeError(
+            "Unsupported launch argument lidar_pipeline='%s'. Supported values: pointcloud3d, scan2d"
+            % lidar_pipeline
         )
     return []
 

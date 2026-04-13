@@ -16,6 +16,14 @@ from dataclasses import dataclass, field
 from typing import List, Tuple, Optional
 import numpy as np
 
+from .matplotlib_fonts import (
+    DEFAULT_TITLE_FONTSIZE,
+    LEGEND_FONTSIZE,
+    SUPTITLE_FONTSIZE,
+    apply_axis_label_fontsize,
+    apply_tick_label_fontsize,
+)
+
 # Defer matplotlib import to avoid issues with headless mode
 # Import happens inside create_plot methods
 
@@ -23,7 +31,7 @@ import numpy as np
 def _add_legend_if_labeled(ax) -> None:
     handles, _ = ax.get_legend_handles_labels()
     if handles:
-        ax.legend()
+        ax.legend(fontsize=LEGEND_FONTSIZE)
 
 
 @dataclass
@@ -102,7 +110,9 @@ class XYPlotDefinition(PlotDefinition):
 
         ax.set_xlabel(self.x_label)
         ax.set_ylabel(self.y_label)
-        ax.set_title(self.title_template.format(source=source_label))
+        ax.set_title(self.title_template.format(source=source_label), fontsize=DEFAULT_TITLE_FONTSIZE)
+        apply_axis_label_fontsize(ax)
+        apply_tick_label_fontsize(ax)
         ax.grid(True, alpha=0.3)
 
         if self.equal_aspect:
@@ -136,7 +146,9 @@ class TimeSeriesPlotDefinition(PlotDefinition):
 
         ax.set_xlabel('Time (s)')
         ax.set_ylabel(self.y_label)
-        ax.set_title(self.title_template.format(source=source_label))
+        ax.set_title(self.title_template.format(source=source_label), fontsize=DEFAULT_TITLE_FONTSIZE)
+        apply_axis_label_fontsize(ax)
+        apply_tick_label_fontsize(ax)
         _add_legend_if_labeled(ax)
         ax.grid(True, alpha=0.3)
 
@@ -175,14 +187,16 @@ class MultiPanelPlotDefinition(PlotDefinition):
                 ax.plot(t, df[col].values, color=color, linewidth=1.5)
             ax.set_xlabel('Time (s)')
             ax.set_ylabel(self.y_label)
-            ax.set_title(title)
+            ax.set_title(title, fontsize=DEFAULT_TITLE_FONTSIZE)
+            apply_axis_label_fontsize(ax)
+            apply_tick_label_fontsize(ax)
             ax.grid(True, alpha=0.3)
 
         # Hide unused subplots
         for i in range(n, len(axes)):
             axes[i].set_visible(False)
 
-        fig.suptitle(self.title_template.format(source=source_label), fontsize=14, y=1.02)
+        fig.suptitle(self.title_template.format(source=source_label), fontsize=SUPTITLE_FONTSIZE, y=1.02)
         fig.tight_layout()
 
         return fig, axes[0]
@@ -195,19 +209,6 @@ def get_all_plot_definitions() -> List[PlotDefinition]:
     To add a new plot, simply add a new PlotDefinition instance to this list.
     """
     return [
-        # Position from INS (fused solution)
-        XYPlotDefinition(
-            name="INS Position",
-            filename="position_ins",
-            title_template="INS Position Trajectory ({source})",
-            required_columns=['ins_x', 'ins_y'],
-            x_column='ins_x',
-            y_column='ins_y',
-            x_label='X (m)',
-            y_label='Y (m)',
-            color='#1f77b4',  # Blue
-        ),
-
         # Position from Dead Reckoning (IMU integration only)
         XYPlotDefinition(
             name="Dead Reckoning Position",

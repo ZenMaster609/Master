@@ -1,0 +1,62 @@
+cone_memory_node:
+  ros__parameters:
+    odom_frame: "odom"
+    base_frame: "front_axle"
+    tf_timeout_s: 0.03
+    odom_pose_sync_tolerance_sec: 0.15
+    base_pose_latest_fallback_tolerance_sec: 0.10
+    wheelbase_m: 1.65
+
+    max_range_m: 25.0
+    behind_drop_m: 8.0
+    ttl_sec: 3.0
+    tentative_ttl_sec: 1.0
+    stale_after_sec: 0.6
+    confirmed_prune_after_sec: 3.0
+    unknown_drop_frames: 15
+    gate_radius_m: 0.5
+    spawn_radius_m: 0.85
+    dedup_radius_m: 0.85
+    track_merge_radius_m: 0.85
+    track_merge_longitudinal_tolerance_m: 2.50
+    track_merge_lateral_tolerance_m: 0.55
+    min_seen_count: 3
+    confirm_hits: 3
+    alpha_lidar: 0.25
+    alpha_camera: 0.15
+    track_confidence_gain: 0.25
+    track_confidence_decay: 0.10
+    color_decay: 0.05
+    color_switch_margin: 0.20
+    publish_stale_tracks: true
+    stale_planner_ttl_sec: 1.5
+
+    camera_range_m: 10.0
+    prefer_lidar_if_camera_missing_far: true
+    allow_camera_fallback_near: false
+
+    publish_rate_hz: 60.0
+    enable_id_text: false
+    enable_tentative_viz: false
+    enable_raw_debug_viz: false
+
+    enable_global_track_memory: true
+    global_merge_radius_m: 0.6
+    global_min_hits_for_track: 2
+    global_max_cones: 2000
+    believed_track_viz_min_hits: 3
+    believed_track_viz_min_confidence: 0.45
+    believed_track_viz_max_gap_m: 6.0
+    believed_track_viz_show_center: false
+    believed_track_viz_show_cones: false
+
+    save_track_plot_on_shutdown: true
+    track_plot_data_filename: "cone_memory_track_data.csv"
+
+    lidar_cones_topic: "/sim/lidar/perception/cones_3d"
+    camera_cones_topic: "/sim/stereo/perception/cones_3d"
+    tracked_cones_topic: "/tracked_cones"
+    viz_topic: "/local_cone_map_viz"
+    believed_track_viz_topic: "/cone_memory/believed_track_viz"
+    run_session_topic: "/run_session"
+    odom_topic: "/sim/odom"

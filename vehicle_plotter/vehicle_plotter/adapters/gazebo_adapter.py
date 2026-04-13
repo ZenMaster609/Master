@@ -51,12 +51,11 @@ class GazeboAdapter(SensorAdapterInterface):
         'encoder_angle_accum': '/sim/wheel_encoder/angle_accum',  # From wheel_encoder_node
         'suspension': '/sim/suspension',                # From suspension_sensor_node
         'steering_angle': '/sim/steering_angle',        # From steering_sensor_node
-        # Virtual sensors from virtual_sensors_node
+        # Virtual sensors from split sim_car sensor nodes
         'water_pressure': '/sim/cooling/water_pressure',
         'water_flow': '/sim/cooling/water_flow',
         'water_temp_in': '/sim/cooling/water_temp_in',
         'water_temp_out': '/sim/cooling/water_temp_out',
-        'water_temp_radiator': '/sim/cooling/water_temp_radiator',
         'brake_temp_fr': '/sim/brakes/temp_fr',
         'brake_temp_rl': '/sim/brakes/temp_rl',
         'pitot_pressure': '/sim/pitot/dynamic_pressure',
@@ -76,7 +75,6 @@ class GazeboAdapter(SensorAdapterInterface):
         'water_flow': 10.0,
         'water_temp_in': 10.0,
         'water_temp_out': 10.0,
-        'water_temp_radiator': 10.0,
         'brake_temp_fr': 10.0,
         'brake_temp_rl': 10.0,
         'pitot_pressure': 10.0,
@@ -119,7 +117,6 @@ class GazeboAdapter(SensorAdapterInterface):
         self._last_water_flow: Optional[Float32] = None
         self._last_water_temp_in: Optional[Float32] = None
         self._last_water_temp_out: Optional[Float32] = None
-        self._last_water_temp_radiator: Optional[Float32] = None
         self._last_brake_temp_fr: Optional[Float32] = None
         self._last_brake_temp_rl: Optional[Float32] = None
         self._last_pitot_pressure: Optional[Float32] = None
@@ -260,12 +257,6 @@ class GazeboAdapter(SensorAdapterInterface):
             self._water_temp_out_callback,
             SENSOR_QOS,
         )
-        self._water_temp_radiator_sub = self.node.create_subscription(
-            Float32,
-            self.topics['water_temp_radiator'],
-            self._water_temp_radiator_callback,
-            SENSOR_QOS,
-        )
 
         # Virtual sensors - Brakes
         self._brake_temp_fr_sub = self.node.create_subscription(
@@ -377,10 +368,6 @@ class GazeboAdapter(SensorAdapterInterface):
     def _water_temp_out_callback(self, msg: Float32) -> None:
         """Water temp out callback."""
         self._last_water_temp_out = msg
-
-    def _water_temp_radiator_callback(self, msg: Float32) -> None:
-        """Water temp radiator callback."""
-        self._last_water_temp_radiator = msg
 
     def _brake_temp_fr_callback(self, msg: Float32) -> None:
         """Brake temp FR callback."""
@@ -536,8 +523,6 @@ class GazeboAdapter(SensorAdapterInterface):
             state.water_temp_in = self._last_water_temp_in.data
         if self._last_water_temp_out is not None:
             state.water_temp_out = self._last_water_temp_out.data
-        if self._last_water_temp_radiator is not None:
-            state.water_temp_radiator = self._last_water_temp_radiator.data
 
         # Brake temperatures
         if self._last_brake_temp_fr is not None:
@@ -566,7 +551,6 @@ class GazeboAdapter(SensorAdapterInterface):
             'water_flow': self._last_water_flow,
             'water_temp_in': self._last_water_temp_in,
             'water_temp_out': self._last_water_temp_out,
-            'water_temp_radiator': self._last_water_temp_radiator,
             'brake_temp_fr': self._last_brake_temp_fr,
             'brake_temp_rl': self._last_brake_temp_rl,
             'pitot_pressure': self._last_pitot_pressure,

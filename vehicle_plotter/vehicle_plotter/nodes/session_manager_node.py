@@ -28,6 +28,7 @@ class SessionManagerNode(Node):
     Parameters:
         base_path (str): Base path for multidata storage
         broadcast_rate_hz (float): How often to publish session info
+        run_id_prefix (str): Optional run id prefix before the timestamp
     """
 
     def __init__(self):
@@ -36,10 +37,12 @@ class SessionManagerNode(Node):
         # Declare parameters
         self.declare_parameter('base_path', '')
         self.declare_parameter('broadcast_rate_hz', 1.0)
+        self.declare_parameter('run_id_prefix', '')
 
         # Get parameters
         base_path_str = self.get_parameter('base_path').value
         broadcast_rate = self.get_parameter('broadcast_rate_hz').value
+        run_id_prefix = self.get_parameter('run_id_prefix').value
 
         # Parse base path
         if base_path_str:
@@ -48,7 +51,7 @@ class SessionManagerNode(Node):
             base_path = None
 
         # Create session
-        self._run_session = RunSession.create_new(base_path)
+        self._run_session = RunSession.create_new(base_path, run_id_prefix=str(run_id_prefix))
         self._run_session.ensure_directories()
         self._run_session.save_session_info()
 

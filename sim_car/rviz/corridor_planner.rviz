@@ -99,11 +99,46 @@ Visualization Manager:
         boundary_right_points: true
         centerline: false
         corridor_center_anchors: true
+        corridor_pair_audit_labels: true
+        corridor_pair_audit_pair_left_behind: true
+        corridor_pair_audit_pair_left_beyond_horizon: true
+        corridor_pair_audit_pair_nonfinite: true
+        corridor_pair_audit_pair_not_in_longest_valid_slice: true
+        corridor_pair_audit_pair_rejected_unknown: true
+        corridor_pair_audit_pair_right_behind: true
+        corridor_pair_audit_pair_right_beyond_horizon: true
+        corridor_pair_audit_pair_width_too_narrow: true
+        corridor_pair_audit_pair_width_too_wide: true
         corridor_rungs: true
         lookahead: true
+        raw_chain_left: true
+        raw_chain_left_points: true
+        raw_chain_right: true
+        raw_chain_right_points: true
         raw_prevalidation_centerline: true
         remembered_cones: false
         status: true
+      Queue Size: 100
+      Value: true
+    - Class: rviz_default_plugins/MarkerArray
+      Name: Corridor Cone Audit
+      Enabled: true
+      Topic:
+        Value: /corridor_planner/cone_audit_viz
+        Depth: 10
+        Durability Policy: Volatile
+        History Policy: Keep Last
+        Reliability Policy: Reliable
+      Namespaces:
+        cone_audit_labels: true
+        cone_audit_chain_rejected: true
+        cone_audit_rejected_color: true
+        cone_audit_rejected_confidence: true
+        cone_audit_rejected_geometry: true
+        cone_audit_rejected_other: true
+        cone_audit_stale_halo: true
+        cone_audit_used_left_chain: true
+        cone_audit_used_right_chain: true
       Queue Size: 100
       Value: true
     - Class: rviz_default_plugins/MarkerArray

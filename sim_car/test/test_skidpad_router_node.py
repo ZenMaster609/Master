@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import pathlib
+import signal
 import sys
 
 import numpy as np
@@ -33,6 +34,18 @@ class _PublisherRecorder:
         self.messages.append(msg)
 
 
+class _FakeLogger:
+    def __init__(self) -> None:
+        self.info_messages: list[str] = []
+        self.warn_messages: list[str] = []
+
+    def info(self, msg: str) -> None:
+        self.info_messages.append(msg)
+
+    def warn(self, msg: str) -> None:
+        self.warn_messages.append(msg)
+
+
 def _make_node(*, test_park_only: bool = False, route_laps: int = 1) -> SkidpadRouterNode:
     node = object.__new__(SkidpadRouterNode)
     node._state_machine = SkidpadStateMachine(
@@ -49,6 +62,11 @@ def _make_node(*, test_park_only: bool = False, route_laps: int = 1) -> SkidpadR
     node._parking_mode_active = False
     node._acceleration_parking_latched = False
     node.event_mode = "skidpad"
+    node.shutdown_on_route_complete = False
+    node.shutdown_on_parking_complete = False
+    node._route_complete_shutdown_requested = False
+    node._parking_complete_shutdown_requested = False
+    node._acceleration_parked_since_sec = None
     node.odom_frame = "odom"
     node.acceleration_activation_distance_m = 10.0
     node.acceleration_stop_row_cluster_depth_m = 0.75
@@ -57,12 +75,20 @@ def _make_node(*, test_park_only: bool = False, route_laps: int = 1) -> SkidpadR
     node.acceleration_stop_row_min_points_per_side = 1
     node.stop_line_pair_max_distance_m = 1.0
     node.stop_margin_m = 1.0
+    node.target_margin_m = 3.5
+    node.stop_approach_speed_gain = 1.5
+    node.brake_activation_margin_m = 1.0
+    node.brake_command = 1.0
     node._stop_override_active = False
     node._stop_line_forward_distance_m = float("nan")
     node._stop_line_marker_points_odom = None
     node._diag_pub = _PublisherRecorder()
     node._viz_pub = _PublisherRecorder()
+    node._cmd_pub = _PublisherRecorder()
+    node._brake_pub = _PublisherRecorder()
     node.get_name = lambda: "skidpad_router_node"
+    node._fake_logger = _FakeLogger()
+    node.get_logger = lambda: node._fake_logger
     node._latest_snapshot = SkidpadRouterSnapshot(
         stage_name=node._state_machine.stage_name(),
         active_branch=node._state_machine.active_branch(),
@@ -427,6 +453,7 @@ def test_acceleration_stop_target_marker_appears_before_detected_stop_line() -> 
     node.event_mode = "acceleration"
     node._parking_mode_active = True
     node.stop_margin_m = 4.0
+    node.target_margin_m = 3.5
     node._stop_line_forward_distance_m = 50.0
     node._stop_line_marker_points_odom = ((50.0, 1.5), (50.0, -1.5))
 
@@ -435,12 +462,40 @@ def test_acceleration_stop_target_marker_appears_before_detected_stop_line() -> 
 
     assert target_marker.action == target_marker.ADD
     assert [(round(point.x, 2), round(point.y, 2)) for point in target_marker.points] == [
-        (46.0, 1.5),
-        (46.0, -1.5),
+        (46.5, 1.5),
+        (46.5, -1.5),
     ]
     assert center_marker.action == center_marker.ADD
-    assert round(center_marker.pose.position.x, 2) == 46.0
+    assert round(center_marker.pose.position.x, 2) == 46.5
     assert round(center_marker.pose.position.y, 2) == 0.0
+
+
+def test_parking_override_slows_to_target_margin_before_full_stop() -> None:
+    node = _make_node()
+    node.event_mode = "acceleration"
+    node._parking_mode_active = True
+    node._stop_override_active = True
+    node._latest_speed_mps = 4.0
+    node.target_margin_m = 3.5
+    node.stop_approach_speed_gain = 1.5
+    node.brake_activation_margin_m = 1.0
+    node._stop_line_forward_distance_m = 5.0
+    node._stop_line_marker_points_odom = ((5.0, 1.5), (5.0, -1.5))
+
+    node._publish_parking_override_cmd(TimeMsg(sec=1, nanosec=0))
+
+    assert len(node._cmd_pub.messages) == 1
+    assert node._cmd_pub.messages[0].drive.speed == pytest.approx(2.25)
+    assert len(node._brake_pub.messages) == 1
+    assert node._brake_pub.messages[0].data == pytest.approx(0.0)
+
+    node._stop_line_forward_distance_m = 3.5
+    node._publish_parking_override_cmd(TimeMsg(sec=2, nanosec=0))
+
+    assert len(node._cmd_pub.messages) == 2
+    assert node._cmd_pub.messages[1].drive.speed == pytest.approx(0.0)
+    assert len(node._brake_pub.messages) == 2
+    assert node._brake_pub.messages[1].data == pytest.approx(1.0)
 
 
 def test_acceleration_parking_status_marker_switches_from_searching_to_found() -> None:
@@ -516,6 +571,219 @@ def test_publish_diagnostics_includes_route_progress_values() -> None:
     assert values["total_route_passes"] == "2"
     assert values["completed_route_passes"] == "0"
     assert values["completed_laps"] == "1"
+
+
+def test_route_complete_shutdown_requests_rclpy_shutdown_once(monkeypatch) -> None:
+    shutdown_calls: list[bool] = []
+    signal_calls: list[tuple[int, int]] = []
+    timer_started: list[float] = []
+
+    class _FakeTimer:
+        def __init__(self, delay_s, callback) -> None:
+            self.delay_s = float(delay_s)
+            self.callback = callback
+            self.daemon = False
+
+        def start(self) -> None:
+            timer_started.append(self.delay_s)
+            if self.delay_s == 0.0:
+                self.callback()
+
+    monkeypatch.setattr("sim_car.planning.skidpad_router_node.rclpy.ok", lambda: True)
+    monkeypatch.setattr(
+        "sim_car.planning.skidpad_router_node.rclpy.shutdown",
+        lambda: shutdown_calls.append(True),
+    )
+    monkeypatch.setattr(
+        "sim_car.planning.skidpad_router_node.os.getpgrp",
+        lambda: 12345,
+    )
+    monkeypatch.setattr(
+        "sim_car.planning.skidpad_router_node.os.getppid",
+        lambda: 23456,
+    )
+    monkeypatch.setattr(
+        "sim_car.planning.skidpad_router_node.os.kill",
+        lambda pid, sig: signal_calls.append((pid, sig)),
+    )
+    monkeypatch.setattr(
+        "sim_car.planning.skidpad_router_node.os.killpg",
+        lambda pgid, sig: signal_calls.append((pgid, sig)),
+    )
+    monkeypatch.setattr("sim_car.planning.skidpad_router_node.threading.Timer", _FakeTimer)
+    node = _make_node(route_laps=1)
+    node.shutdown_on_route_complete = True
+    node._latest_snapshot = SkidpadRouterSnapshot(
+        stage_name="straight",
+        active_branch="straight",
+        completed_laps=4,
+        route_index=4,
+        current_route_pass=1,
+        total_route_passes=1,
+        completed_route_passes=1,
+        in_crossroads=True,
+        lap_angle_accum_rad=0.0,
+        lap_armed=False,
+        parked=False,
+        just_completed_lap=True,
+        just_entered_crossroads=True,
+    )
+
+    node._maybe_shutdown_after_route_complete()
+    node._maybe_shutdown_after_route_complete()
+
+    assert shutdown_calls == [True]
+    assert signal_calls == [(23456, signal.SIGINT)]
+    assert timer_started == [0.0, 2.0]
+    assert node._route_complete_shutdown_requested
+    assert "skidpad route target reached" in node._fake_logger.info_messages[0]
+
+
+def test_acceleration_parking_complete_shutdown_requests_rclpy_shutdown_once(monkeypatch) -> None:
+    shutdown_calls: list[bool] = []
+    signal_calls: list[tuple[int, int]] = []
+    timer_started: list[float] = []
+
+    class _FakeTimer:
+        def __init__(self, delay_s, callback) -> None:
+            self.delay_s = float(delay_s)
+            self.callback = callback
+            self.daemon = False
+
+        def start(self) -> None:
+            timer_started.append(self.delay_s)
+            if self.delay_s == 0.0:
+                self.callback()
+
+    monkeypatch.setattr("sim_car.planning.skidpad_router_node.rclpy.ok", lambda: True)
+    monkeypatch.setattr(
+        "sim_car.planning.skidpad_router_node.rclpy.shutdown",
+        lambda: shutdown_calls.append(True),
+    )
+    monkeypatch.setattr(
+        "sim_car.planning.skidpad_router_node.os.getpgrp",
+        lambda: 12345,
+    )
+    monkeypatch.setattr(
+        "sim_car.planning.skidpad_router_node.os.getppid",
+        lambda: 23456,
+    )
+    monkeypatch.setattr(
+        "sim_car.planning.skidpad_router_node.os.kill",
+        lambda pid, sig: signal_calls.append((pid, sig)),
+    )
+    monkeypatch.setattr(
+        "sim_car.planning.skidpad_router_node.os.killpg",
+        lambda pgid, sig: signal_calls.append((pgid, sig)),
+    )
+    monkeypatch.setattr("sim_car.planning.skidpad_router_node.threading.Timer", _FakeTimer)
+    node = _make_node()
+    node.event_mode = "acceleration"
+    node.shutdown_on_parking_complete = True
+    node._parking_mode_active = True
+    node._stop_override_active = True
+    node._stop_line_marker_points_odom = ((1.0, 1.5), (1.0, -1.5))
+    node._stop_line_forward_distance_m = node.target_margin_m
+    node._latest_speed_mps = 0.0
+
+    node._maybe_shutdown_after_parking_complete(stamp=TimeMsg(sec=10, nanosec=0))
+    node._maybe_shutdown_after_parking_complete(stamp=TimeMsg(sec=10, nanosec=500_000_000))
+    node._maybe_shutdown_after_parking_complete(stamp=TimeMsg(sec=11, nanosec=0))
+    node._maybe_shutdown_after_parking_complete(stamp=TimeMsg(sec=12, nanosec=0))
+
+    assert shutdown_calls == [True]
+    assert signal_calls == [(23456, signal.SIGINT)]
+    assert timer_started == [0.0, 2.0]
+    assert node._parking_complete_shutdown_requested
+    assert "acceleration parking target reached" in node._fake_logger.info_messages[0]
+
+
+def test_skidpad_parking_complete_shutdown_waits_for_parked_state(monkeypatch) -> None:
+    shutdown_calls: list[bool] = []
+    signal_calls: list[tuple[int, int]] = []
+    timer_started: list[float] = []
+
+    class _FakeTimer:
+        def __init__(self, delay_s, callback) -> None:
+            self.delay_s = float(delay_s)
+            self.callback = callback
+            self.daemon = False
+
+        def start(self) -> None:
+            timer_started.append(self.delay_s)
+            if self.delay_s == 0.0:
+                self.callback()
+
+    monkeypatch.setattr("sim_car.planning.skidpad_router_node.rclpy.ok", lambda: True)
+    monkeypatch.setattr(
+        "sim_car.planning.skidpad_router_node.rclpy.shutdown",
+        lambda: shutdown_calls.append(True),
+    )
+    monkeypatch.setattr(
+        "sim_car.planning.skidpad_router_node.os.getpgrp",
+        lambda: 12345,
+    )
+    monkeypatch.setattr(
+        "sim_car.planning.skidpad_router_node.os.getppid",
+        lambda: 23456,
+    )
+    monkeypatch.setattr(
+        "sim_car.planning.skidpad_router_node.os.kill",
+        lambda pid, sig: signal_calls.append((pid, sig)),
+    )
+    monkeypatch.setattr(
+        "sim_car.planning.skidpad_router_node.os.killpg",
+        lambda pgid, sig: signal_calls.append((pgid, sig)),
+    )
+    monkeypatch.setattr("sim_car.planning.skidpad_router_node.threading.Timer", _FakeTimer)
+    node = _make_node(route_laps=1)
+    node.shutdown_on_parking_complete = True
+    node._latest_snapshot = SkidpadRouterSnapshot(
+        stage_name="straight",
+        active_branch="straight",
+        completed_laps=4,
+        route_index=4,
+        current_route_pass=1,
+        total_route_passes=1,
+        completed_route_passes=1,
+        in_crossroads=True,
+        lap_angle_accum_rad=0.0,
+        lap_armed=False,
+        parked=False,
+        just_completed_lap=True,
+        just_entered_crossroads=True,
+    )
+
+    node._maybe_shutdown_after_parking_complete(stamp=TimeMsg(sec=10, nanosec=0))
+
+    assert shutdown_calls == []
+    assert signal_calls == []
+    assert timer_started == []
+
+    node._latest_snapshot = SkidpadRouterSnapshot(
+        stage_name="parked",
+        active_branch="straight",
+        completed_laps=4,
+        route_index=4,
+        current_route_pass=1,
+        total_route_passes=1,
+        completed_route_passes=1,
+        in_crossroads=False,
+        lap_angle_accum_rad=0.0,
+        lap_armed=False,
+        parked=True,
+        just_completed_lap=False,
+        just_entered_crossroads=False,
+    )
+
+    node._maybe_shutdown_after_parking_complete(stamp=TimeMsg(sec=11, nanosec=0))
+    node._maybe_shutdown_after_parking_complete(stamp=TimeMsg(sec=12, nanosec=0))
+
+    assert shutdown_calls == [True]
+    assert signal_calls == [(23456, signal.SIGINT)]
+    assert timer_started == [0.0, 2.0]
+    assert node._parking_complete_shutdown_requested
+    assert "skidpad parking target reached" in node._fake_logger.info_messages[0]
 
 
 def _enter_skidpad_approach(node: SkidpadRouterNode) -> float:

@@ -16,6 +16,7 @@ if str(PACKAGE_ROOT) not in sys.path:
     sys.path.insert(0, str(PACKAGE_ROOT))
 
 try:
+    from sim_car.controllers.base import ControllerOutput  # noqa: E402
     from sim_car.controllers.pure_pursuit_controller import PurePursuitController  # noqa: E402
     from sim_car.planning.linetest_planner_node import LineTestPlannerNode  # noqa: E402
     from sim_car.planning.planner_runtime_types import PlannerIdentity  # noqa: E402
@@ -60,6 +61,30 @@ class _FakeLogger:
         self.warn_messages.append(msg)
 
 
+class _CapturingController:
+    def __init__(self) -> None:
+        self.control_paths: list[np.ndarray] = []
+
+    def compute(
+        self,
+        *,
+        control_path: np.ndarray,
+        speed_mps: float,
+        yaw_rate_rps: float,
+    ) -> ControllerOutput:
+        del speed_mps
+        del yaw_rate_rps
+        captured = np.asarray(control_path, dtype=np.float64)
+        self.control_paths.append(np.array(captured, copy=True))
+        target = captured[min(1, captured.shape[0] - 1)]
+        return ControllerOutput(
+            steering_rad=0.0,
+            kappa=0.0,
+            lookahead_m=float(np.hypot(target[0], target[1])),
+            target_point_base=np.asarray(target, dtype=np.float64),
+        )
+
+
 def _make_node() -> LineTestPlannerNode:
     node = object.__new__(LineTestPlannerNode)
     node._planner_identity = PlannerIdentity(
@@ -69,6 +94,7 @@ def _make_node() -> LineTestPlannerNode:
         diagnostics_topic='/linetest_planner/diagnostics',
     )
     node._cmd_pub = _FakePublisher()
+    node._brake_pub = _FakePublisher()
     node._path_pub = _FakePublisher()
     node._points_pub = _FakePublisher()
     node._viz_pub = _FakePublisher()
@@ -85,16 +111,20 @@ def _make_node() -> LineTestPlannerNode:
     node.base_frame = 'front_axle'
     node.planning_frame = 'odom'
     node.cmd_topic = '/cmd'
+    node.brake_cmd_topic = '/sim/brake_cmd'
     node.centerline_topic = '/planned_centerline'
     node.viz_topic = '/planner_viz'
     node.points_topic = '/planned_centerline_points'
     node.odom_topic = '/sim/odom'
     node.publish_rate_hz = 60.0
     node.log_throttle_s = 0.0
+    node.odom_lag_compensation_s = 0.0
     node.speed_min_mps = 1.0
     node.speed_max_mps = 4.17
     node.curvature_speed_gain = 4.0
     node.lowpass_speed_alpha = 0.15
+    node.brake_activation_distance_m = 1.0
+    node.brake_command = 1.0
     node.line_start_x_m = -38.5
     node.line_start_y_m = 0.0
     node.line_end_x_m = 50.0
@@ -122,7 +152,16 @@ def _make_node() -> LineTestPlannerNode:
     return node
 
 
-def _odom_msg(*, x: float, y: float, yaw: float, child_frame_id: str = 'front_axle') -> Odometry:
+def _odom_msg(
+    *,
+    x: float,
+    y: float,
+    yaw: float,
+    child_frame_id: str = 'front_axle',
+    vx: float = 0.0,
+    vy: float = 0.0,
+    yaw_rate: float = 0.0,
+) -> Odometry:
     msg = Odometry()
     msg.header.frame_id = 'odom'
     msg.child_frame_id = child_frame_id
@@ -130,6 +169,9 @@ def _odom_msg(*, x: float, y: float, yaw: float, child_frame_id: str = 'front_ax
     msg.pose.pose.position.y = float(y)
     msg.pose.pose.orientation.z = math.sin(0.5 * yaw)
     msg.pose.pose.orientation.w = math.cos(0.5 * yaw)
+    msg.twist.twist.linear.x = float(vx)
+    msg.twist.twist.linear.y = float(vy)
+    msg.twist.twist.angular.z = float(yaw_rate)
     return msg
 
 
@@ -217,6 +259,38 @@ def test_resolve_vehicle_pose_converts_body_center_odom_to_front_axle():
     assert abs(pose[0] - (-37.675)) < 1e-9
     assert abs(pose[1]) < 1e-9
     assert abs(pose[2]) < 1e-9
+
+
+@pytest.mark.parametrize('controller_type', ['stanley', 'pure_pursuit'])
+def test_odom_lag_compensation_shifts_linetest_control_path_for_both_controllers(controller_type: str):
+    node = _make_node()
+    node.controller_type = controller_type
+    node._controller = _CapturingController()
+    node._latest_odom_msg = _odom_msg(x=-38.5, y=0.0, yaw=0.0)
+    node._latest_speed_mps = 2.0
+    node._latest_yaw_rate_rps = 0.0
+    node.odom_lag_compensation_s = 0.04
+
+    node._on_timer()
+
+    captured_path = node._controller.control_paths[-1]
+    assert captured_path.shape[0] >= 2
+    assert captured_path[0, 0] == pytest.approx(0.0, abs=1e-9)
+    assert captured_path[1, 0] == pytest.approx(0.42, abs=1e-9)
+
+
+def test_linetest_brakes_near_configured_line_end() -> None:
+    node = _make_node()
+    node.controller_type = 'stanley'
+    node._controller = _CapturingController()
+    node._latest_odom_msg = _odom_msg(x=49.2, y=0.0, yaw=0.0, vx=4.0)
+    node._latest_speed_mps = 4.0
+    node._latest_yaw_rate_rps = 0.0
+
+    node._on_timer()
+
+    assert node._cmd_pub.messages[-1].drive.speed == pytest.approx(0.0)
+    assert node._brake_pub.messages[-1].data == pytest.approx(1.0)
 
 
 def test_publish_diagnostics_uses_linetest_identity_and_expected_keys():

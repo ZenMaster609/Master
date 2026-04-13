@@ -1,120 +1,150 @@
 # Perception
 
-`sim_car` uses a single camera-perception node to detect cones and estimate their distance. The same downstream topic contract is used in both camera modes, so cone memory, planner, and evaluator nodes do not need mode-specific logic.
+`sim_car` uses one camera perception node for both monocular and stereo cone detection. The active camera mode changes the ranging method, not the downstream contract: both modes publish `vehicle_plotter_msgs/ConeDetectionArray` and feed the cone evaluator, cone memory, and planners through the same shape of data.
 
-## Shared architecture
+The current launch default is monocular camera perception. Stereo is opt-in with `stereo:=true`.
 
-Runtime flow:
+## Runtime Flow
 
-`stereo cameras -> perception_node -> ConeDetectionArray -> cone_evaluator_node -> cone_memory_node / planner`
+Typical camera flow:
 
-Shared responsibilities:
+`camera images -> perception_node -> /sim/stereo/perception/cones_3d -> cone_evaluator_node -> cone_memory_node -> planner`
 
-- YOLO predicts cone bounding boxes and class labels from the left camera image.
-- The perception node converts each detection into a 3D cone position in the configured output frame.
-- The node publishes `vehicle_plotter_msgs/ConeDetectionArray` on `/.../stereo/perception/cones_3d`.
-- `cone_evaluator_node` compares those detections against simulation ground truth and publishes cone RMSE samples for plotting/logging.
+When `measure:=true` or `sensor_pipeline:=true`, the launch file switches perception inputs and outputs under `/sim/raw/...`:
 
-The camera mode is selected only by `stereo:=true/false` in [`full_sim_launch.launch.py`](/home/aleks/ros2_ws/src/Master/sim_car/launch/full_sim_launch.launch.py).
+`/sim/raw/stereo/... -> perception_node -> /sim/raw/stereo/perception/cones_3d`
 
-## Stereo
+When measurement is not enabled, perception uses `/sim/...` directly:
 
-Stereo mode uses both camera streams:
+`/sim/stereo/... -> perception_node -> /sim/stereo/perception/cones_3d`
 
-1. The node time-pairs the left and right frames.
-2. The stereo pipeline rectifies both images using the stereo calibration file.
-3. Disparity is computed from the rectified pair.
-4. Depth is recovered from disparity using focal length and baseline.
-5. YOLO runs on the rectified left image.
-6. For each cone bbox, the node samples the lower-central region of the depth map and uses the median valid depth as the cone axis depth.
-7. The 2D bbox center and estimated axis depth are reconstructed into a 3D cone point and transformed into the output frame.
+The launch file handles this with a shared `topic_prefix`, so the perception node itself does not need separate raw/measured modes.
 
-Why this structure is useful:
+## YOLO Detection
 
-- YOLO handles semantic detection and cone class.
-- Stereo provides direct geometric distance estimates.
-- The lower-central bbox crop is more stable than using the full box, because it biases the depth sample toward the cone body/base instead of background pixels around the edges.
+YOLO provides the semantic cone detections. By default, `full_sim_launch.launch.py` enables YOLO and points at:
 
-## Monocular
+`sim_car/yolo/weights/best.pt`
 
-Monocular mode uses only the left camera stream:
+The model path can be changed with `yolo_model_path:=...`. A `.pt` model uses the Ultralytics/Torch path injected through `yolo_ultralytics_pythonpath`; an `.onnx` model can use the OpenCV DNN path. The launch also injects the custom OpenCV and cuDNN library paths used by the reference environment.
 
-1. YOLO runs on the left image.
-2. The bbox height is converted to depth with a pinhole-camera model:
+YOLO outputs bounding boxes, confidence scores, and class labels. The perception node then attaches a depth estimate to each detection and reconstructs a 3D cone position.
+
+## Monocular Mode
+
+Monocular mode uses only the left camera image. It is selected by default:
+
+```bash
+cd ~/ros2_ws && ros2 launch sim_car full_sim_launch.launch.py stereo:=false
+```
+
+Processing steps:
+
+1. Decode the left image.
+2. Run YOLO on the left image.
+3. Estimate cone axis depth from bounding-box height with a pinhole model.
+4. Reconstruct the cone point from the bbox center, camera intrinsics, and estimated depth.
+5. Transform or publish the point in the configured output frame.
+
+The depth equation is:
 
 `Z = fy * H / (h - delta)`
 
 Where:
 
-- `fy` is the vertical focal length in pixels
-- `H` is the assumed real cone height
-- `h` is the detected bbox height in pixels
-- `delta` is `monocular_bbox_height_offset_px`
+- `fy` is the vertical focal length in pixels.
+- `H` is the assumed real cone height.
+- `h` is the detected bounding-box height in pixels.
+- `delta` is `monocular_bbox_height_offset_px`.
 
-Cone height assumptions:
+The active cone height depends on the class:
 
-- standard cones use `monocular_cone_height_m`
-- big orange cones use `monocular_big_cone_height_m`
+- `monocular_cone_height_m` for standard cones.
+- `monocular_big_cone_height_m` for big orange cones.
 
-`monocular_bbox_height_offset_px` is treated as an empirical correction term. It compensates for systematic bbox-height bias from the detector and image geometry. In the current codebase it is a manually maintained runtime parameter, not a separate fitting subsystem.
+`monocular_bbox_height_offset_px` is a manual empirical correction. It is exposed as a launch argument and defaults to the value set in `full_sim_launch.launch.py`.
 
-Why this structure is useful:
+## Stereo Mode
 
-- It gives a simple, explainable distance estimate when stereo is disabled.
-- It keeps the mono pipeline cheap and easy to describe in a thesis.
-- It shares the same downstream output interface as stereo mode.
-
-## Output and downstream use
-
-Both modes publish:
-
-- cone class (`blue`, `yellow`, `orange`, `big_orange`, `unknown`)
-- confidence
-- 3D position in the configured output frame
-
-That output is consumed by:
-
-- `cone_evaluator_node` for RMSE/classification logging
-- `cone_memory_node` for camera/lidar fusion into `/tracked_cones`
-- the active tracked-cone planner (`midpoint`, `single_boundary`, or `corridor`) either through `/tracked_cones` or directly from the camera cone topic when cone memory is disabled
-
-This common interface is intentional: only the distance-estimation method changes between stereo and monocular modes.
-
-## Design rationale
-
-The camera perception stack is deliberately split into two separable parts:
-
-- semantic detection: YOLO finds cones and predicts their class
-- geometric ranging: stereo disparity or monocular bbox-height geometry estimates distance
-
-That separation is useful for explanation and maintenance:
-
-- it makes it clear which part is responsible for classification errors versus range errors
-- it lets mono and stereo share the same detector and downstream integration
-- it keeps the planner and fusion stack independent of the camera ranging method
-
-## Minimal commands
-
-Build:
-
-```bash
-cd ~/ros2_ws && colcon build --symlink-install --packages-select sim_car vehicle_plotter
-```
-
-Source:
-
-```bash
-cd ~/ros2_ws && source install/setup.bash
-```
-
-Launch stereo:
+Stereo mode is enabled with:
 
 ```bash
 cd ~/ros2_ws && ros2 launch sim_car full_sim_launch.launch.py stereo:=true
 ```
 
-Launch monocular:
+Processing steps:
+
+1. Buffer left and right images.
+2. Pair frames within `max_time_diff_sec`.
+3. Rectify both images from `stereo_calibration.yaml`.
+4. Compute disparity with CUDA StereoBM when available, otherwise CPU StereoSGBM.
+5. Convert valid disparity to depth with focal length and baseline.
+6. Run YOLO on the rectified left image.
+7. Sample median depth from the lower-central part of each bbox.
+8. Reconstruct and transform each cone point.
+
+The lower-central bbox crop intentionally avoids much of the background around the cone and biases the range sample toward the cone body/base.
+
+## Output Contract
+
+Both camera modes publish one `ConeDetectionArray`. Each cone includes:
+
+- normalized class label: `blue`, `yellow`, `orange`, `big_orange`, or `unknown`
+- confidence
+- 3D position
+- output frame in the array header
+
+In the full sim launch, camera detections are configured to publish in `front_axle`.
+
+The node deduplicates nearby reconstructed cones using `cone_dedup_radius_m`, which prevents repeated YOLO boxes from becoming repeated planner inputs.
+
+## Cone Evaluation
+
+`cone_evaluator_node` compares predicted cones against `/ground_truth/cones`. The camera evaluator source name is:
+
+- `monocular` when `stereo:=false`
+- `stereo` when `stereo:=true`
+
+The evaluator publishes range-error samples under the selected eval prefix. The logger later writes source-specific CSVs such as:
+
+- `cone_range_rmse_samples_mono.csv`
+- `cone_range_rmse_samples_stereo.csv`
+- `cone_range_rmse_samples_lidar.csv`
+
+## Cone Memory And Planner Use
+
+`cone_memory_node` fuses camera and LiDAR cone detections into `/tracked_cones` when `cone_memory_enabled:=true`. The camera contributes class/color information and, depending on the configured range split, can also contribute position.
+
+Important fusion parameters:
+
+- `camera_range_m`: far-band distance where camera position can override LiDAR.
+- `prefer_lidar_if_camera_missing_far`: use LiDAR position in the far band if camera position is missing.
+- `allow_camera_fallback_near`: allow camera position in the near band when LiDAR position is missing.
+
+If cone memory is disabled, normal track planners can use the camera cone topic directly. On skidpad and acceleration, the planner input still goes through the skidpad router when the selected planner supports tracked cones.
+
+## Useful Commands
+
+Build the relevant packages:
+
+```bash
+cd ~/ros2_ws && colcon build --symlink-install --packages-select sim_car vehicle_plotter vehicle_plotter_msgs
+```
+
+Source the workspace:
+
+```bash
+cd ~/ros2_ws && source install/setup.bash
+```
+
+Run the default monocular pipeline:
 
 ```bash
 cd ~/ros2_ws && ros2 launch sim_car full_sim_launch.launch.py stereo:=false
+```
+
+Run stereo:
+
+```bash
+cd ~/ros2_ws && ros2 launch sim_car full_sim_launch.launch.py stereo:=true
 ```

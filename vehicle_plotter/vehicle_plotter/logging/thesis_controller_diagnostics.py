@@ -11,6 +11,7 @@ from typing import Any
 import numpy as np
 
 from .steering_diagnostics import (
+    CONE_AUDIT_DIAG_KEYS,
     corridor_analysis_sample_metric_keys,
     heading_error,
     nearest_point_on_polyline,
@@ -71,6 +72,7 @@ THESIS_DIAG_FIELDNAMES = [
     'planner_midline_update_mode',
     'planner_mode',
 ]
+THESIS_DIAG_FIELDNAMES.extend(f'planner_{key}' for key in CONE_AUDIT_DIAG_KEYS)
 THESIS_DIAG_FIELDNAMES.extend(corridor_analysis_sample_metric_keys())
 
 
@@ -241,6 +243,8 @@ def build_thesis_sample_row(
     }
     for key in corridor_analysis_sample_metric_keys():
         row[key] = float(planner_metrics.get(key, float('nan')))
+    for key in CONE_AUDIT_DIAG_KEYS:
+        row[f'planner_{key}'] = float(planner_metrics.get(key, float('nan')))
     return row
 
 

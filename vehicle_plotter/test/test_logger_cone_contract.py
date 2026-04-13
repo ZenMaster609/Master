@@ -43,6 +43,19 @@ def test_logger_and_plotter_launch_expose_path_tracking_eval():
     assert '"path_tracking_eval_track_name"' in launch_content
 
 
+def test_logger_autostop_forces_process_exit_after_cleanup():
+    logger_content = LOGGER_NODE.read_text(encoding='utf-8')
+
+    assert 'Smalltrack lap target reached' in logger_content
+    assert 'self.shutdown()' in logger_content
+    assert 'self._request_process_exit(parent_delay_s=0.1, force_delay_s=5.0)' in logger_content
+    assert 'os.kill(parent_pid, signal.SIGINT)' in logger_content
+    assert 'os.killpg(process_group_id, signal.SIGINT)' in logger_content
+    assert 'threading.Timer(max(0.0, float(parent_delay_s)), _signal_parent_launch)' in logger_content
+    assert 'threading.Timer(max(0.0, float(force_delay_s)), _force_exit_process_group)' in logger_content
+    assert 'os._exit(0)' in logger_content
+
+
 def test_plotter_launch_contains_state_plotter_node_and_no_aux_live_plot_nodes():
     launch_content = PLOTTER_LAUNCH.read_text(encoding='utf-8')
 

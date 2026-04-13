@@ -24,13 +24,9 @@ from pathlib import Path
 from typing import Dict, List, Optional, Any
 
 import pandas as pd
-import numpy as np
 
 from .plot_definitions import (
     PlotDefinition,
-    XYPlotDefinition,
-    TimeSeriesPlotDefinition,
-    MultiPanelPlotDefinition,
     get_all_plot_definitions,
 )
 
@@ -214,94 +210,13 @@ class OfflinePlotter:
                 print(f"Error generating {plot_def.name}: {e}")
                 continue
 
-        # Combined overview plot (single PNG with subplots)
-        combined_path = self._generate_combined_plot(plot_defs, output_dir)
-        if combined_path is not None:
-            generated_files.append(combined_path)
+        combined_path = output_dir / "all_plots.png"
+        if combined_path.exists():
+            combined_path.unlink()
+        for stale_position_ins in output_dir.glob("position_ins.*"):
+            stale_position_ins.unlink()
 
         return generated_files
-
-    def _generate_combined_plot(
-        self,
-        plot_defs: List[PlotDefinition],
-        output_dir: Path,
-    ) -> Optional[Path]:
-        """Generate a single PNG containing all plots as subplots."""
-        import matplotlib.pyplot as plt
-        import math
-
-        if self.data is None:
-            return None
-
-        valid_defs = [p for p in plot_defs if p.has_required_data(self.data)]
-        if not valid_defs:
-            return None
-
-        n = len(valid_defs)
-        ncols = 2 if n <= 6 else 3
-        nrows = math.ceil(n / ncols)
-        fig, axes = plt.subplots(nrows, ncols, figsize=(6 * ncols, 4 * nrows))
-        axes = np.atleast_1d(axes).flatten()
-
-        source_label = self.get_source_label()
-
-        for i, plot_def in enumerate(valid_defs):
-            ax = axes[i]
-            try:
-                if isinstance(plot_def, XYPlotDefinition):
-                    x_data = self.data[plot_def.x_column].values
-                    y_data = self.data[plot_def.y_column].values
-                    ax.plot(x_data, y_data, color=plot_def.color, linewidth=plot_def.line_width)
-                    if len(x_data) > 0:
-                        ax.scatter([x_data[0]], [y_data[0]], color='green', s=30, zorder=5)
-                        ax.scatter([x_data[-1]], [y_data[-1]], color='red', s=30, zorder=5)
-                    ax.set_xlabel(plot_def.x_label)
-                    ax.set_ylabel(plot_def.y_label)
-                    if plot_def.equal_aspect:
-                        ax.set_aspect('equal')
-                elif isinstance(plot_def, TimeSeriesPlotDefinition):
-                    t = self.data[plot_def.time_column].values
-                    if len(t) > 0:
-                        t = t - t[0]
-                    for col, label, color in plot_def.series:
-                        if col in self.data.columns and not self.data[col].isna().all():
-                            ax.plot(t, self.data[col].values, label=label, color=color, linewidth=1.2)
-                    ax.set_xlabel('Time (s)')
-                    ax.set_ylabel(plot_def.y_label)
-                    ax.legend(fontsize='small')
-                elif isinstance(plot_def, MultiPanelPlotDefinition):
-                    t = self.data[plot_def.time_column].values
-                    if len(t) > 0:
-                        t = t - t[0]
-                    for col, title, color in plot_def.subplots:
-                        if col in self.data.columns and not self.data[col].isna().all():
-                            ax.plot(t, self.data[col].values, label=title, color=color, linewidth=1.2)
-                    ax.set_xlabel('Time (s)')
-                    ax.set_ylabel(plot_def.y_label)
-                    ax.legend(fontsize='small')
-                else:
-                    ax.text(0.5, 0.5, f"Unsupported plot: {plot_def.name}",
-                            ha='center', va='center', transform=ax.transAxes)
-                ax.set_title(plot_def.title_template.format(source=source_label), fontsize=10)
-                ax.grid(True, alpha=0.3)
-            except Exception as e:
-                ax.text(0.5, 0.5, f"Error: {plot_def.name}\n{e}",
-                        ha='center', va='center', transform=ax.transAxes)
-                ax.set_axis_off()
-
-        # Hide unused axes
-        for i in range(n, len(axes)):
-            axes[i].set_visible(False)
-
-        fig.suptitle(f"All Plots ({source_label})", fontsize=14, y=1.02)
-        fig.tight_layout()
-
-        output_dir.mkdir(parents=True, exist_ok=True)
-        combined_path = output_dir / "all_plots.png"
-        fig.savefig(combined_path, dpi=self.dpi, bbox_inches='tight')
-        plt.close(fig)
-        print(f"Generated: {combined_path}")
-        return combined_path
 
     def get_data_summary(self) -> Dict[str, Any]:
         """Get summary statistics about the loaded data."""

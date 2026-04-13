@@ -139,6 +139,7 @@ def _make_node() -> MidpointPlannerNode:
     node._active_reject_width_range_count = 0
     node._active_reject_progress_count = 0
     node._active_reject_orientation_count = 0
+    node.lap_tracking_target_laps = 0
     node._is_alias = lambda frame_a, frame_b: frame_a == frame_b
     node.get_clock = lambda: _FakeClock(TimeMsg(sec=1, nanosec=0))
     return node
@@ -356,6 +357,16 @@ def test_build_markers_show_remembered_cones_instead_of_filtered_subset():
         _marker_xy(by_ns["remembered_cones"]),
         np.array([[1.0, 1.0], [2.0, -2.0]], dtype=np.float64),
     )
+
+
+def test_lap_status_text_uses_configured_target_laps():
+    node = _make_node()
+
+    assert node._lap_status_text() == "LAPS: 0/off"
+
+    node.lap_tracking_target_laps = 1
+
+    assert node._lap_status_text() == "LAPS: 0/1"
 
 
 def test_convert_cones_to_frame_resolves_orange_with_and_without_boundary_hints():

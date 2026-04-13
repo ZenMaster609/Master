@@ -239,20 +239,6 @@ signals:
     saturation_min: -40.0
     saturation_max: 150.0
 
-  water_temp_radiator:
-    enabled: false
-    input_topic: /sim/raw/cooling/water_temp_radiator
-    output_topic: /sim/cooling/water_temp_radiator
-    msg_type: std_msgs/msg/Float32
-    rate_hz: 10.0
-    latency_ms: 0.0
-    dropout_prob: 0.0
-    noise_std: 0.0
-    bias_init: 0.0
-    bias_rw_std: 0.0
-    saturation_min: -40.0
-    saturation_max: 150.0
-
   brake_temp_fr:
     enabled: true
     input_topic: /sim/raw/brakes/temp_fr

@@ -31,6 +31,11 @@ from sim_car.planning.triangulation_planner_core import (
     tracked_cones_frame_delta_p95,
 )
 from sim_car.planning.planner_runtime_types import PlannerIdentity
+from sim_car.planning.tracked_cone_planner_contract import (
+    COMMON_MIGRATED_TRACKED_CONE_PLANNER_DEFAULTS,
+    apply_common_config_to_node,
+    read_migrated_tracked_cone_planner_common_config,
+)
 from sim_car.planning.corridor_planner_core import (
     CorridorPlannerConfig,
     CorridorPlannerPrior,
@@ -57,6 +62,58 @@ _VALIDATED_JUMP_ACCEPT_HORIZON_M = 3.0
 _VALIDATED_JUMP_ACCEPT_LATERAL_MAX_M = 0.45
 _VALIDATED_JUMP_ACCEPT_LATERAL_MEAN_M = 0.25
 _VALIDATED_JUMP_ACCEPT_HEADING_DELTA_RAD = 0.30
+_CONE_AUDIT_REASONS = (
+    "used_left_chain",
+    "used_right_chain",
+    "chain_step_too_close",
+    "chain_step_too_far",
+    "chain_no_forward_progress",
+    "chain_radial_regression",
+    "chain_forward_projection",
+    "chain_heading_change",
+    "chain_shadowed",
+    "chain_not_best_next_step",
+    "chain_no_forward_seed",
+    "chain_unreached",
+    "rejected_geometry_range",
+    "rejected_geometry_behind",
+    "rejected_geometry_horizon",
+    "rejected_geometry_lateral",
+    "rejected_confidence",
+    "rejected_tentative",
+    "rejected_color",
+    "rejected_nonfinite",
+)
+_CORRIDOR_PAIR_AUDIT_REASONS = (
+    "pair_valid",
+    "pair_width_too_narrow",
+    "pair_width_too_wide",
+    "pair_left_behind",
+    "pair_right_behind",
+    "pair_left_beyond_horizon",
+    "pair_right_beyond_horizon",
+    "pair_not_in_longest_valid_slice",
+    "pair_nonfinite",
+    "pair_rejected_unknown",
+)
+
+
+@dataclass
+class _ConeAuditEntry:
+    track_id: int
+    reason: str
+    point_xy: np.ndarray
+    local_x_m: float
+    local_y_m: float
+    raw_color: str
+    resolved_color: str
+    track_state: int
+    confidence: float
+    track_confidence: float
+    color_confidence: float
+    missed_count: int
+    last_seen_age_sec: float
+    memory_only: bool
 
 
 @dataclass
@@ -129,10 +186,12 @@ class CorridorPlannerNode(TrackedConePlannerBase):
         self._active_unknown_pair_count = 0
         self._active_filtered_track_width_m = self._filtered_track_width_m
         self._active_held_path_flag = 0
+        self._active_cone_audit_counts = self._empty_cone_audit_counts()
 
         self._cmd_pub = self.create_publisher(AckermannDriveStamped, self.cmd_topic, 10)
         self._path_pub = self.create_publisher(Path, self.centerline_topic, 10)
         self._viz_pub = self.create_publisher(MarkerArray, self.viz_topic, 10)
+        self._cone_audit_viz_pub = self.create_publisher(MarkerArray, self.cone_audit_viz_topic, 10)
         self._points_pub = self.create_publisher(PoseArray, self.points_topic, 10)
         self._diag_pub = self.create_publisher(DiagnosticArray, self.diagnostics_topic, 10)
 
@@ -160,300 +219,77 @@ class CorridorPlannerNode(TrackedConePlannerBase):
         )
 
     def _declare_parameters(self) -> None:
-        defaults = {
-            "frames.planning_frame": "odom",
-            "frames.odom_frame": "odom",
-            "frames.base_frame": "front_axle",
-            "frames.tf_timeout_s": 0.03,
-            "topics.tracked_cones_topic": "/tracked_cones",
-            "topics.cmd_topic": "/cmd",
-            "topics.centerline_topic": "/planned_centerline",
-            "topics.viz_topic": "/planner_viz",
-            "topics.points_topic": "/planned_centerline_points",
-            "topics.odom_topic": "/sim/odom",
-            "filtering.max_cone_range_m": 25.0,
-            "filtering.planning_horizon_m": 25.0,
-            "filtering.max_lateral_range_m": 8.0,
-            "filtering.behind_drop_m": 5.0,
-            "filtering.min_confidence": 0.3,
-            "filtering.min_required_cones": 4,
-            "filtering.infer_unknown_by_side": True,
-            "filtering.infer_orange_by_side": True,
-            "filtering.orange_min_lateral_m": 0.9,
-            "filtering.orange_neighbor_radius_m": 3.5,
-            "filtering.orange_neighbor_margin_m": 0.75,
-            "boundary_chain.min_step_m": 0.8,
-            "boundary_chain.max_step_m": 5.5,
-            "boundary_chain.max_heading_change_rad": 0.95,
-            "boundary_chain.min_forward_progress_m": 0.2,
+        defaults = dict(COMMON_MIGRATED_TRACKED_CONE_PLANNER_DEFAULTS)
+        defaults.update({
+            "filtering.planning_horizon_m": 20.0,
+            "filtering.max_lateral_range_m": 14.0,
             "boundary_chain.min_chain_length": 3,
-            "width_estimation.initial_width_m": 3.6,
-            "width_estimation.min_width_m": 2.4,
-            "width_estimation.max_width_m": 4.8,
-            "width_estimation.alpha": 0.18,
-            "width_estimation.max_delta_per_update_m": 0.2,
+            'boundary_chain.max_heading_change_rad': 2.35,
+
             "width_estimation.min_trustworthy_pairs": 3,
             "corridor.min_corridor_width_m": 2.2,
-            "corridor.max_corridor_width_m": 5.4,
+            "corridor.max_corridor_width_m": 7.4,
             "corridor.boundary_resample_dx": 0.5,
             "corridor.min_required_corridor_samples": 5,
             "corridor.path_fit_smoothing_window": 5,
             "corridor.membership_margin_m": 0.15,
-            "centerline.path_resolution_m": 0.5,
-            "centerline.max_path_length_m": 30.0,
-            "centerline.temporal_alpha": 0.25,
-            "midline_memory.horizon_m": 30.0,
-            "midline_memory.station_spacing_m": 0.5,
-            "midline_memory.near_distance_m": 4.0,
-            "midline_memory.mid_distance_m": 12.0,
-            "midline_memory.control_handoff_distance_m": 1.5,
-            "midline_memory.near_alpha": 0.06,
-            "midline_memory.mid_alpha": 0.18,
-            "midline_memory.far_alpha": 0.35,
-            "midline_memory.near_max_lateral_shift_m": 0.10,
-            "midline_memory.mid_max_lateral_shift_m": 0.20,
-            "midline_memory.far_max_lateral_shift_m": 0.40,
-            "midline_memory.hold_last_valid_duration_s": 2.5,
-            "midline_memory.min_buffer_confidence": 0.20,
             "midline_memory.pair_memory_retention_s": 12.0,
-            "runtime.publish_rate_hz": 180.0,
-            "runtime.log_throttle_s": 1.0,
-            "control.controller_type": "stanley",
-            "control.stop_if_no_path": True,
-            "stanley.k_gain": 1.2,
-            "stanley.softening_speed_mps": 0.0,
-            "stanley.heading_gain": 1.6,
-            "stanley.lookahead_idx_offset": 0,
-            "stanley.steering_limit_rad": 0.52,
-            "stanley.steering_lowpass_alpha": 1.0,
-            "stanley.steering_rate_limit_rad_s": 10.0,
-            "stanley.use_yaw_rate_damping": True,
-            "stanley.yaw_rate_damping_gain": 0.0,
-            "stanley.wheelbase_m": 1.65,
-            "stanley.cross_track_deadband_m": 0.0,
-            "pure_pursuit.lookahead_m": 3.0,
-            "pure_pursuit.min_lookahead_m": 1.5,
-            "pure_pursuit.max_lookahead_m": 8.0,
-            "pure_pursuit.lookahead_gain": 0.0,
-            "pure_pursuit.steering_limit_rad": 0.52,
-            "pure_pursuit.steering_lowpass_alpha": 1.0,
-            "pure_pursuit.steering_rate_limit_rad_s": 10.0,
-            "pure_pursuit.wheelbase_m": 1.65,
-            "speed_control.speed_min_mps": 1.0,
-            "speed_control.speed_max_mps": 4.0,
-            "speed_control.curvature_speed_gain": 4.0,
-            "speed_control.lowpass_speed_alpha": 0.15,
+            "lap_tracking.target_laps": 0,
             "validation.min_path_points": 4,
             "validation.min_forward_extent_m": 2.0,
-            "validation.jump_check_horizon_m": 8.0,
-            "validation.max_near_field_lateral_jump_m": 0.6,
             "validation.max_heading_delta_rad": 0.75,
             "validation.max_initial_heading_error_rad": 1.0,
             "validation.max_curvature": 0.45,
-            "validation.hold_last_valid_s": 2.5,
-            "validation.hold_exit_clean_frames": 2,
-            "validation.candidate_jump_reject_threshold_m": 1.0,
-            "validation.candidate_jump_recover_frames": 3,
-            "validation.candidate_min_points": 4,
-            "validation.candidate_min_extent_m": 2.0,
+            "debug.enable_cone_audit_markers": False,
+            "debug.cone_audit_viz_topic": "/corridor_planner/cone_audit_viz",
+            "debug.cone_audit_show_labels": True,
+            "debug.cone_audit_max_labels": 80,
+            "debug.show_corridor_pair_audit": False,
+            "debug.corridor_pair_audit_show_labels": True,
+            "debug.corridor_pair_audit_max_labels": 80,
             "diagnostics.topic": "/corridor_planner/diagnostics",
-            "diagnostics.centerline_jump_horizon_m": 8.0,
-            "diagnostics.edge_quantization_m": 0.05,
-            "diagnostics.jump_warn_threshold_m": 0.8,
-            "diagnostics.edge_churn_warn_threshold": 0.4,
-            "diagnostics.publish_control_debug": True,
-            "diagnostics.publish_thesis_context": False,
-            "debug.enable_markers": True,
-            "debug.show_raw_cones": True,
-            "debug.show_boundary_chains": True,
-            "debug.show_pair_lines": True,
-            "debug.show_raw_midpoint_chain": True,
-            "debug.show_raw_prevalidation_centerline": True,
-            "debug.publish_points_topic": False,
-            "debug.show_lookahead_point": True,
-        }
+        })
         for name, value in defaults.items():
             self.declare_parameter(name, value)
 
     def _read_parameters(self) -> None:
-        self.planning_frame = str(self.get_parameter("frames.planning_frame").value).strip() or "odom"
-        self.odom_frame = str(self.get_parameter("frames.odom_frame").value).strip() or "odom"
-        self.base_frame = str(self.get_parameter("frames.base_frame").value).strip() or "front_axle"
-        self.tf_timeout_s = max(0.0, float(self.get_parameter("frames.tf_timeout_s").value))
-
-        self.tracked_cones_topic = str(self.get_parameter("topics.tracked_cones_topic").value)
-        self.cmd_topic = str(self.get_parameter("topics.cmd_topic").value)
-        self.centerline_topic = str(self.get_parameter("topics.centerline_topic").value)
-        self.viz_topic = str(self.get_parameter("topics.viz_topic").value)
-        self.points_topic = str(self.get_parameter("topics.points_topic").value)
-        self.odom_topic = str(self.get_parameter("topics.odom_topic").value)
-        self.infer_unknown_by_side = bool(self.get_parameter("filtering.infer_unknown_by_side").value)
-        self.infer_orange_by_side = bool(self.get_parameter("filtering.infer_orange_by_side").value)
-        self.orange_min_lateral_m = float(self.get_parameter("filtering.orange_min_lateral_m").value)
-        self.orange_neighbor_radius_m = float(
-            self.get_parameter("filtering.orange_neighbor_radius_m").value
+        common = read_migrated_tracked_cone_planner_common_config(
+            self,
+            planner_label='corridor planner',
+            diagnostics_topic_fallback=self._planner_identity.diagnostics_topic,
         )
-        self.orange_neighbor_margin_m = float(
-            self.get_parameter("filtering.orange_neighbor_margin_m").value
-        )
-
-        self.centerline_path_resolution_m = max(
-            0.05,
-            float(self.get_parameter("centerline.path_resolution_m").value),
-        )
-        self.temporal_alpha = float(
-            np.clip(float(self.get_parameter("centerline.temporal_alpha").value), 0.0, 1.0)
-        )
-        # The hybrid planner now owns temporal stability through the persistent
-        # midline buffer. Keep the legacy parameter readable for compatibility,
-        # but do not stack a second whole-path smoother on top of it.
-        self.enable_temporal_smoothing = False
-        self.smoothing_alpha = self.temporal_alpha
-        self.enable_near_field_freeze = False
-        self.freeze_near_field_m = 0.0
-        self.freeze_blend_length_m = 0.0
-        self.enable_committed_near_field = False
-        self.commit_plan_horizon_m = 0.0
-        self.commit_stable_frames = 1
-        self.commit_update_max_churn_ratio = 1.0
-        self.midline_horizon_m = max(1.0, float(self.get_parameter("midline_memory.horizon_m").value))
-        self.midline_station_spacing_m = max(
-            0.05,
-            float(self.get_parameter("midline_memory.station_spacing_m").value),
-        )
-        self.midline_near_distance_m = max(
-            0.0,
-            float(self.get_parameter("midline_memory.near_distance_m").value),
-        )
-        self.midline_mid_distance_m = max(
-            self.midline_near_distance_m,
-            float(self.get_parameter("midline_memory.mid_distance_m").value),
-        )
-        self.midline_control_handoff_distance_m = max(
-            self.midline_station_spacing_m,
-            float(self.get_parameter("midline_memory.control_handoff_distance_m").value),
-        )
-        self.midline_near_alpha = float(
-            np.clip(float(self.get_parameter("midline_memory.near_alpha").value), 0.0, 1.0)
-        )
-        self.midline_mid_alpha = float(
-            np.clip(float(self.get_parameter("midline_memory.mid_alpha").value), 0.0, 1.0)
-        )
-        self.midline_far_alpha = float(
-            np.clip(float(self.get_parameter("midline_memory.far_alpha").value), 0.0, 1.0)
-        )
-        self.midline_near_max_shift_m = max(
-            0.0,
-            float(self.get_parameter("midline_memory.near_max_lateral_shift_m").value),
-        )
-        self.midline_mid_max_shift_m = max(
-            self.midline_near_max_shift_m,
-            float(self.get_parameter("midline_memory.mid_max_lateral_shift_m").value),
-        )
-        self.midline_far_max_shift_m = max(
-            self.midline_mid_max_shift_m,
-            float(self.get_parameter("midline_memory.far_max_lateral_shift_m").value),
-        )
-        self.midline_min_buffer_confidence = float(
-            np.clip(float(self.get_parameter("midline_memory.min_buffer_confidence").value), 0.0, 1.0)
-        )
-        self.midline_hold_last_valid_duration_s = max(
-            0.0,
-            float(self.get_parameter("midline_memory.hold_last_valid_duration_s").value),
-        )
+        apply_common_config_to_node(self, common)
         self.pair_memory_retention_s = max(
             self.midline_hold_last_valid_duration_s,
             float(self.get_parameter("midline_memory.pair_memory_retention_s").value),
         )
-
-        self.publish_rate_hz = max(1.0, float(self.get_parameter("runtime.publish_rate_hz").value))
-        self.log_throttle_s = max(0.1, float(self.get_parameter("runtime.log_throttle_s").value))
-
-        self.controller_type = (
-            str(self.get_parameter("control.controller_type").value).strip().lower() or "stanley"
+        self.lap_tracking_target_laps = max(
+            0,
+            int(self.get_parameter("lap_tracking.target_laps").value),
         )
-        if self.controller_type not in {"stanley", "pure_pursuit", "none"}:
-            raise ValueError(
-                "Unsupported control.controller_type '%s'. Supported values: stanley, pure_pursuit, none"
-                % self.controller_type
-            )
-        self._controller = self._build_steering_controller() if self.controller_type != "none" else None
-        self.stop_if_no_path = bool(self.get_parameter("control.stop_if_no_path").value)
-        if self.controller_type == "none":
-            self.get_logger().info("control.controller_type 'none'; controller output is disabled")
-
-        self.speed_min_mps = max(0.0, float(self.get_parameter("speed_control.speed_min_mps").value))
-        self.speed_max_mps = max(self.speed_min_mps, float(self.get_parameter("speed_control.speed_max_mps").value))
-        self.curvature_speed_gain = max(0.0, float(self.get_parameter("speed_control.curvature_speed_gain").value))
-        self.lowpass_speed_alpha = float(
-            np.clip(float(self.get_parameter("speed_control.lowpass_speed_alpha").value), 0.0, 1.0)
+        self.enable_cone_audit_markers = bool(
+            self.get_parameter("debug.enable_cone_audit_markers").value
         )
-        self.hold_last_valid_s = max(
-            self.midline_hold_last_valid_duration_s,
-            float(self.get_parameter("validation.hold_last_valid_s").value),
+        self.cone_audit_viz_topic = str(
+            self.get_parameter("debug.cone_audit_viz_topic").value
+        ).strip() or "/corridor_planner/cone_audit_viz"
+        self.cone_audit_show_labels = bool(
+            self.get_parameter("debug.cone_audit_show_labels").value
         )
-        self.hold_exit_clean_frames = max(
-            1,
-            int(self.get_parameter("validation.hold_exit_clean_frames").value),
+        self.cone_audit_max_labels = max(
+            0,
+            int(self.get_parameter("debug.cone_audit_max_labels").value),
         )
-        self.candidate_jump_reject_threshold_m = max(
-            0.0,
-            float(self.get_parameter("validation.candidate_jump_reject_threshold_m").value),
+        self.show_corridor_pair_audit = bool(
+            self.get_parameter("debug.show_corridor_pair_audit").value
         )
-        self.candidate_jump_recover_frames = max(
-            1,
-            int(self.get_parameter("validation.candidate_jump_recover_frames").value),
+        self.corridor_pair_audit_show_labels = bool(
+            self.get_parameter("debug.corridor_pair_audit_show_labels").value
         )
-        self.candidate_min_points = max(
-            2,
-            int(self.get_parameter("validation.candidate_min_points").value),
+        self.corridor_pair_audit_max_labels = max(
+            0,
+            int(self.get_parameter("debug.corridor_pair_audit_max_labels").value),
         )
-        self.candidate_min_extent_m = max(
-            0.5,
-            float(self.get_parameter("validation.candidate_min_extent_m").value),
-        )
-        self.diagnostics_topic = (
-            str(self.get_parameter("diagnostics.topic").value).strip()
-            or self._planner_identity.diagnostics_topic
-        )
-        self.centerline_jump_horizon_m = max(
-            0.5,
-            float(self.get_parameter("diagnostics.centerline_jump_horizon_m").value),
-        )
-        self.edge_quantization_m = max(
-            1e-6,
-            float(self.get_parameter("diagnostics.edge_quantization_m").value),
-        )
-        self.jump_warn_threshold_m = max(
-            0.0,
-            float(self.get_parameter("diagnostics.jump_warn_threshold_m").value),
-        )
-        self.edge_churn_warn_threshold = max(
-            0.0,
-            float(self.get_parameter("diagnostics.edge_churn_warn_threshold").value),
-        )
-        self.publish_control_debug = bool(
-            self.get_parameter("diagnostics.publish_control_debug").value
-        )
-        self.publish_thesis_context = bool(
-            self.get_parameter("diagnostics.publish_thesis_context").value
-        )
-
-        self.enable_debug_markers = bool(self.get_parameter("debug.enable_markers").value)
-        self.show_raw_cones = bool(self.get_parameter("debug.show_raw_cones").value)
-        self.show_boundary_chains = bool(self.get_parameter("debug.show_boundary_chains").value)
-        self.show_pair_lines = bool(self.get_parameter("debug.show_pair_lines").value)
-        self.show_raw_midpoint_chain = bool(
-            self.get_parameter("debug.show_raw_midpoint_chain").value
-        )
-        self.show_raw_prevalidation_centerline = bool(
-            self.get_parameter("debug.show_raw_prevalidation_centerline").value
-        )
-        self.publish_points_topic = bool(self.get_parameter("debug.publish_points_topic").value)
-        self.show_lookahead_point = bool(self.get_parameter("debug.show_lookahead_point").value)
-        self.show_triangulation_edges = False
-        self.show_candidate_edges = False
-        self.show_selected_edges = False
 
         self._core_config = CorridorPlannerConfig(
             max_cone_range_m=float(self.get_parameter("filtering.max_cone_range_m").value),
@@ -665,6 +501,20 @@ class CorridorPlannerNode(TrackedConePlannerBase):
                 self._core_config,
             )
         result.filtered_track_width_m = float(self._filtered_track_width_m)
+        cone_audit_entries = self._build_cone_audit_entries(
+            msg=cones_msg,
+            planning_frame=planning_frame,
+            result=result,
+            vehicle_xy=(vehicle_x, vehicle_y),
+            vehicle_yaw=vehicle_yaw,
+            now_sec=now_sec,
+        )
+        self._active_cone_audit_counts = self._cone_audit_counts(cone_audit_entries)
+        self._publish_cone_audit_markers(
+            frame_id=target_frame,
+            stamp=self.get_clock().now().to_msg(),
+            entries=cone_audit_entries,
+        )
 
         remembered_pair_entries = self._active_pair_memory_entries(
             vehicle_x=vehicle_x,
@@ -1122,6 +972,8 @@ class CorridorPlannerNode(TrackedConePlannerBase):
                 "filtered_track_width_m": self._filtered_track_width_m,
                 "held_path_flag": self._active_held_path_flag,
                 "raw_candidate_point_count": int(raw_centerline.shape[0]),
+                **self._active_cone_audit_counts,
+                **self._corridor_pair_audit_counts(result),
                 **corridor_analysis_metrics,
             },
         )
@@ -1147,6 +999,372 @@ class CorridorPlannerNode(TrackedConePlannerBase):
             seed_midpoint_distance_m=float(result.seed_midpoint_distance_m),
             near_field_lateral_max_m=float(result.near_field_lateral_max_m),
             near_field_midpoint_kink_max_rad=float(result.near_field_kink_max_rad),
+        )
+
+    def _build_cone_audit_entries(
+        self,
+        *,
+        msg: ConeDetectionArray,
+        planning_frame,
+        result: CorridorPlannerResult,
+        vehicle_xy: tuple[float, float],
+        vehicle_yaw: float,
+        now_sec: float,
+    ) -> list[_ConeAuditEntry]:
+        points = np.asarray(planning_frame.points_xy, dtype=np.float64)
+        if points.ndim != 2 or points.shape[1] != 2:
+            points = np.empty((0, 2), dtype=np.float64)
+        local_points = self._audit_points_to_vehicle_frame(points, vehicle_xy, vehicle_yaw)
+        used_left = {int(track_id) for track_id in np.asarray(result.used_left_track_ids, dtype=np.int64)}
+        used_right = {int(track_id) for track_id in np.asarray(result.used_right_track_ids, dtype=np.int64)}
+        entries: list[_ConeAuditEntry] = []
+        for idx, cone in enumerate(msg.cones):
+            point_xy = points[idx] if idx < points.shape[0] else np.asarray([float("nan"), float("nan")])
+            local_xy = (
+                local_points[idx]
+                if idx < local_points.shape[0]
+                else np.asarray([float("nan"), float("nan")], dtype=np.float64)
+            )
+            track_id = self._audit_array_int(planning_frame.track_ids, idx, idx)
+            track_state = self._audit_array_int(planning_frame.track_states, idx, MSG_TRACK_STATE_CONFIRMED)
+            confidence = self._audit_array_float(
+                planning_frame.raw_confidences,
+                idx,
+                float(getattr(cone, "confidence", 0.0)),
+            )
+            planner_confidence = self._audit_array_float(planning_frame.planner_confidences, idx, confidence)
+            track_confidence = self._audit_array_float(
+                planning_frame.track_confidences,
+                idx,
+                float(getattr(cone, "track_confidence", confidence)),
+            )
+            raw_color = (
+                planning_frame.raw_colors[idx]
+                if idx < len(planning_frame.raw_colors)
+                else normalize_color(getattr(cone, "color", ""))
+            )
+            resolved_color = (
+                planning_frame.colors[idx]
+                if idx < len(planning_frame.colors)
+                else normalize_color(getattr(cone, "boundary_color", ""))
+            )
+            missed_count = int(getattr(cone, "missed_count", 0))
+            age_sec = self._stamp_age_sec(getattr(cone, "last_seen", None), now_sec)
+            memory_only = bool(track_state == MSG_TRACK_STATE_STALE or missed_count > 0)
+            reason = self._classify_cone_audit_reason(
+                track_id=track_id,
+                local_xy=local_xy,
+                resolved_color=resolved_color,
+                track_state=track_state,
+                planner_confidence=planner_confidence,
+                used_left=used_left,
+                used_right=used_right,
+                chain_rejection_reasons_by_track_id=result.chain_rejection_reasons_by_track_id,
+            )
+            entries.append(
+                _ConeAuditEntry(
+                    track_id=int(track_id),
+                    reason=reason,
+                    point_xy=np.asarray(point_xy, dtype=np.float64),
+                    local_x_m=float(local_xy[0]),
+                    local_y_m=float(local_xy[1]),
+                    raw_color=str(raw_color),
+                    resolved_color=str(resolved_color),
+                    track_state=int(track_state),
+                    confidence=float(confidence),
+                    track_confidence=float(track_confidence),
+                    color_confidence=float(getattr(cone, "color_confidence", float("nan"))),
+                    missed_count=missed_count,
+                    last_seen_age_sec=float(age_sec),
+                    memory_only=memory_only,
+                )
+            )
+        return entries
+
+    def _classify_cone_audit_reason(
+        self,
+        *,
+        track_id: int,
+        local_xy: np.ndarray,
+        resolved_color: str,
+        track_state: int,
+        planner_confidence: float,
+        used_left: set[int],
+        used_right: set[int],
+        chain_rejection_reasons_by_track_id: dict[int, str],
+    ) -> str:
+        if not np.all(np.isfinite(local_xy)):
+            return "rejected_nonfinite"
+        if int(track_state) == MSG_TRACK_STATE_TENTATIVE:
+            return "rejected_tentative"
+        x_m = float(local_xy[0])
+        y_m = float(local_xy[1])
+        distance_m = float(math.hypot(x_m, y_m))
+        if x_m < -float(self._core_config.behind_drop_m):
+            return "rejected_geometry_behind"
+        if x_m > float(self._core_config.planning_horizon_m):
+            return "rejected_geometry_horizon"
+        if abs(y_m) > float(self._core_config.max_lateral_range_m):
+            return "rejected_geometry_lateral"
+        if distance_m > float(self._core_config.max_cone_range_m):
+            return "rejected_geometry_range"
+        if (
+            not math.isfinite(float(planner_confidence))
+            or planner_confidence < float(self._core_config.min_confidence)
+        ):
+            return "rejected_confidence"
+        if normalize_color(resolved_color) not in {"blue", "yellow"}:
+            return "rejected_color"
+        if int(track_id) in used_left:
+            return "used_left_chain"
+        if int(track_id) in used_right:
+            return "used_right_chain"
+        chain_reason = chain_rejection_reasons_by_track_id.get(int(track_id), "")
+        return str(chain_reason) if chain_reason else "chain_unreached"
+
+    @staticmethod
+    def _audit_points_to_vehicle_frame(
+        points_xy: np.ndarray,
+        vehicle_xy: tuple[float, float],
+        vehicle_yaw: float,
+    ) -> np.ndarray:
+        points = np.asarray(points_xy, dtype=np.float64)
+        if points.ndim != 2 or points.shape[1] != 2 or points.shape[0] == 0:
+            return np.empty((0, 2), dtype=np.float64)
+        shifted = points - np.asarray(vehicle_xy, dtype=np.float64).reshape(1, 2)
+        cos_yaw = math.cos(float(vehicle_yaw))
+        sin_yaw = math.sin(float(vehicle_yaw))
+        return np.column_stack(
+            (
+                (cos_yaw * shifted[:, 0]) + (sin_yaw * shifted[:, 1]),
+                (-sin_yaw * shifted[:, 0]) + (cos_yaw * shifted[:, 1]),
+            )
+        ).astype(np.float64)
+
+    @staticmethod
+    def _audit_array_int(values: np.ndarray, idx: int, default: int) -> int:
+        arr = np.asarray(values, dtype=np.int64)
+        if idx < 0 or idx >= arr.size:
+            return int(default)
+        return int(arr[idx])
+
+    @staticmethod
+    def _audit_array_float(values: np.ndarray, idx: int, default: float) -> float:
+        arr = np.asarray(values, dtype=np.float64)
+        if idx < 0 or idx >= arr.size:
+            return float(default)
+        return float(arr[idx])
+
+    @staticmethod
+    def _stamp_age_sec(stamp, now_sec: float) -> float:
+        if stamp is None:
+            return float("nan")
+        stamp_sec = float(getattr(stamp, "sec", 0)) + (float(getattr(stamp, "nanosec", 0)) * 1e-9)
+        if stamp_sec <= 0.0:
+            return float("nan")
+        return max(0.0, float(now_sec) - stamp_sec)
+
+    @staticmethod
+    def _empty_cone_audit_counts() -> dict[str, int]:
+        counts = {
+            "cone_audit_received_count": 0,
+            "cone_audit_used_left_count": 0,
+            "cone_audit_used_right_count": 0,
+            "cone_audit_stale_count": 0,
+            "cone_audit_live_count": 0,
+        }
+        for reason in _CONE_AUDIT_REASONS:
+            counts[f"cone_audit_{reason}_count"] = 0
+        return counts
+
+    def _cone_audit_counts(self, entries: list[_ConeAuditEntry]) -> dict[str, int]:
+        counts = self._empty_cone_audit_counts()
+        counts["cone_audit_received_count"] = int(len(entries))
+        for entry in entries:
+            counts[f"cone_audit_{entry.reason}_count"] = counts.get(
+                f"cone_audit_{entry.reason}_count",
+                0,
+            ) + 1
+            if entry.reason == "used_left_chain":
+                counts["cone_audit_used_left_count"] += 1
+            elif entry.reason == "used_right_chain":
+                counts["cone_audit_used_right_count"] += 1
+            if entry.memory_only:
+                counts["cone_audit_stale_count"] += 1
+            else:
+                counts["cone_audit_live_count"] += 1
+        return counts
+
+    @staticmethod
+    def _corridor_pair_audit_counts(result: CorridorPlannerResult) -> dict[str, int]:
+        counts = {
+            "corridor_pair_audit_total_count": 0,
+            "corridor_pair_audit_rejected_count": 0,
+        }
+        for reason in _CORRIDOR_PAIR_AUDIT_REASONS:
+            counts[f"corridor_pair_audit_{reason}_count"] = 0
+        for reason in result.corridor_pair_audit_reasons:
+            key = f"corridor_pair_audit_{reason}_count"
+            counts[key] = counts.get(key, 0) + 1
+            counts["corridor_pair_audit_total_count"] += 1
+            if reason != "pair_valid":
+                counts["corridor_pair_audit_rejected_count"] += 1
+        return counts
+
+    def _publish_cone_audit_markers(
+        self,
+        *,
+        frame_id: str,
+        stamp,
+        entries: list[_ConeAuditEntry],
+    ) -> None:
+        if not self.enable_cone_audit_markers:
+            return
+        markers = self._build_cone_audit_markers(frame_id=frame_id, stamp=stamp, entries=entries)
+        self._cone_audit_viz_pub.publish(markers)
+
+    def _build_cone_audit_markers(
+        self,
+        *,
+        frame_id: str,
+        stamp,
+        entries: list[_ConeAuditEntry],
+    ) -> MarkerArray:
+        arr = MarkerArray()
+        clear = Marker()
+        clear.header.frame_id = frame_id
+        clear.header.stamp = stamp
+        clear.action = Marker.DELETEALL
+        arr.markers.append(clear)
+
+        marker_id = 1
+        label_count = 0
+        for entry in entries:
+            if not np.all(np.isfinite(entry.point_xy)):
+                continue
+            main = Marker()
+            main.header.frame_id = frame_id
+            main.header.stamp = stamp
+            main.ns = self._cone_audit_marker_namespace(entry.reason)
+            main.id = marker_id
+            marker_id += 1
+            main.type = Marker.CUBE if entry.reason.startswith("rejected_geometry") else Marker.SPHERE
+            main.action = Marker.ADD
+            main.pose.position.x = float(entry.point_xy[0])
+            main.pose.position.y = float(entry.point_xy[1])
+            main.pose.position.z = 0.18
+            main.pose.orientation.w = 1.0
+            scale = self._cone_audit_marker_scale(entry.reason)
+            main.scale.x = scale
+            main.scale.y = scale
+            main.scale.z = scale
+            r, g, b, a = self._cone_audit_marker_rgba(entry)
+            main.color.r = r
+            main.color.g = g
+            main.color.b = b
+            main.color.a = a
+            arr.markers.append(main)
+
+            if entry.memory_only:
+                halo = Marker()
+                halo.header.frame_id = frame_id
+                halo.header.stamp = stamp
+                halo.ns = "cone_audit_stale_halo"
+                halo.id = marker_id
+                marker_id += 1
+                halo.type = Marker.CYLINDER
+                halo.action = Marker.ADD
+                halo.pose.position.x = float(entry.point_xy[0])
+                halo.pose.position.y = float(entry.point_xy[1])
+                halo.pose.position.z = 0.03
+                halo.pose.orientation.w = 1.0
+                halo.scale.x = 0.55
+                halo.scale.y = 0.55
+                halo.scale.z = 0.03
+                halo.color.r = 0.1
+                halo.color.g = 0.95
+                halo.color.b = 1.0
+                halo.color.a = 0.55
+                arr.markers.append(halo)
+
+            if self.cone_audit_show_labels and label_count < self.cone_audit_max_labels:
+                label = Marker()
+                label.header.frame_id = frame_id
+                label.header.stamp = stamp
+                label.ns = "cone_audit_labels"
+                label.id = marker_id
+                marker_id += 1
+                label.type = Marker.TEXT_VIEW_FACING
+                label.action = Marker.ADD
+                label.pose.position.x = float(entry.point_xy[0])
+                label.pose.position.y = float(entry.point_xy[1])
+                label.pose.position.z = 0.75
+                label.pose.orientation.w = 1.0
+                label.scale.z = 0.16
+                label.color.r = 1.0
+                label.color.g = 1.0
+                label.color.b = 1.0
+                label.color.a = 0.95
+                label.text = self._cone_audit_label(entry)
+                arr.markers.append(label)
+                label_count += 1
+        return arr
+
+    @staticmethod
+    def _cone_audit_marker_namespace(reason: str) -> str:
+        if reason in {"used_left_chain", "used_right_chain"}:
+            return f"cone_audit_{reason}"
+        if reason.startswith("chain_"):
+            return "cone_audit_chain_rejected"
+        if reason.startswith("rejected_geometry"):
+            return "cone_audit_rejected_geometry"
+        if reason in {"rejected_confidence", "rejected_tentative"}:
+            return "cone_audit_rejected_confidence"
+        if reason == "rejected_color":
+            return "cone_audit_rejected_color"
+        return "cone_audit_rejected_other"
+
+    @staticmethod
+    def _cone_audit_marker_scale(reason: str) -> float:
+        if reason in {"used_left_chain", "used_right_chain"}:
+            return 0.32
+        if reason.startswith("chain_"):
+            return 0.22
+        return 0.25
+
+    @staticmethod
+    def _cone_audit_marker_rgba(entry: _ConeAuditEntry) -> tuple[float, float, float, float]:
+        if entry.reason == "used_left_chain":
+            return 0.2, 0.55, 1.0, 0.95
+        if entry.reason == "used_right_chain":
+            return 1.0, 0.9, 0.2, 0.95
+        if entry.reason.startswith("chain_"):
+            return 0.92, 0.92, 0.92, 0.82
+        if entry.reason.startswith("rejected_geometry"):
+            return 1.0, 0.05, 0.05, 0.9
+        if entry.reason in {"rejected_confidence", "rejected_tentative"}:
+            return 1.0, 0.0, 0.85, 0.9
+        if entry.reason == "rejected_color":
+            return 1.0, 0.45, 0.05, 0.9
+        return 0.95, 0.95, 0.95, 0.65
+
+    @staticmethod
+    def _cone_audit_state_label(track_state: int) -> str:
+        if int(track_state) == MSG_TRACK_STATE_TENTATIVE:
+            return "tentative"
+        if int(track_state) == MSG_TRACK_STATE_STALE:
+            return "stale"
+        return "confirmed"
+
+    def _cone_audit_label(self, entry: _ConeAuditEntry) -> str:
+        age_text = "nan" if not math.isfinite(entry.last_seen_age_sec) else f"{entry.last_seen_age_sec:.2f}s"
+        suffix = " memory" if entry.memory_only else ""
+        return (
+            f"id={entry.track_id} {self._cone_audit_state_label(entry.track_state)}{suffix}\n"
+            f"raw={entry.raw_color} side={entry.resolved_color} "
+            f"conf={entry.track_confidence:.2f}/{entry.confidence:.2f}\n"
+            f"local=({entry.local_x_m:.1f},{entry.local_y_m:.1f}) age={age_text}\n"
+            f"{entry.reason}"
         )
 
     def _active_pair_memory_entries(
@@ -1651,17 +1869,19 @@ class CorridorPlannerNode(TrackedConePlannerBase):
         if count < 2:
             return empty
 
-        sample_limit = max(
+        # Use the actual sampled arc length rather than the configured station
+        # spacing so the near-field acceptance gate remains correct even if the
+        # sampled paths are irregular or test doubles bypass the resampler.
+        horizon_limit_m = max(0.25, float(horizon_m))
+        stored_limit = max(
             2,
-            int(
-                math.floor(
-                    max(0.25, float(horizon_m))
-                    / max(0.05, float(self.midline_station_spacing_m))
-                )
-            )
-            + 1,
+            int(np.searchsorted(self._path_cumulative_lengths(stored_samples), horizon_limit_m, side="right")),
         )
-        count = min(count, sample_limit)
+        candidate_limit = max(
+            2,
+            int(np.searchsorted(self._path_cumulative_lengths(candidate_samples), horizon_limit_m, side="right")),
+        )
+        count = min(count, stored_limit, candidate_limit)
         stored_local = self._centerline_to_vehicle_frame(
             centerline=stored_samples[:count],
             frame_id=self.odom_frame,
@@ -2432,6 +2652,12 @@ class CorridorPlannerNode(TrackedConePlannerBase):
         self._active_unknown_pair_count = 0
         self._active_filtered_track_width_m = float(self._filtered_track_width_m)
         self._active_held_path_flag = 0
+        self._active_cone_audit_counts = self._empty_cone_audit_counts()
+        self._publish_cone_audit_markers(
+            frame_id=frame_id,
+            stamp=self.get_clock().now().to_msg(),
+            entries=[],
+        )
         super()._publish_empty_cycle(
             frame_id=frame_id,
             status=status,
@@ -2500,9 +2726,14 @@ class CorridorPlannerNode(TrackedConePlannerBase):
                 f"STATE: {operator_state.upper()}",
                 f"MODE: {self._active_planner_mode.upper()}",
                 f"REASON: {self._operator_reason_label(operator_reason)}",
-                "LAPS: 0/off",
+                self._lap_status_text(),
             ]
         )
+
+    def _lap_status_text(self) -> str:
+        if self.lap_tracking_target_laps > 0:
+            return f"LAPS: 0/{int(self.lap_tracking_target_laps)}"
+        return "LAPS: 0/off"
 
     def _build_markers(
         self,
@@ -2547,6 +2778,8 @@ class CorridorPlannerNode(TrackedConePlannerBase):
 
         left_boundary = np.array(result.left_boundary, copy=True)
         right_boundary = np.array(result.right_boundary, copy=True)
+        raw_left_chain = np.asarray(result.raw_left_chain_points, dtype=np.float64)
+        raw_right_chain = np.asarray(result.raw_right_chain_points, dtype=np.float64)
         if left_boundary.shape[0] > 0:
             self._last_viz_left_boundary = np.array(left_boundary, copy=True)
         elif self._last_viz_left_boundary is not None:
@@ -2588,6 +2821,32 @@ class CorridorPlannerNode(TrackedConePlannerBase):
                     frame_id=frame_id,
                     stamp=now,
                     marker_id=marker_id,
+                    ns="raw_chain_left",
+                    points=raw_left_chain,
+                    color=(0.05, 0.25, 1.0, 0.95),
+                    width=0.06,
+                    z_offset=0.22,
+                )
+            )
+            marker_id += 1
+            raw_left_points_marker = self._make_points_marker(
+                frame_id=frame_id,
+                stamp=now,
+                marker_id=marker_id,
+                ns="raw_chain_left_points",
+                points=raw_left_chain,
+                color=(0.05, 0.25, 1.0, 1.0),
+                scale=0.34,
+            )
+            for point in raw_left_points_marker.points:
+                point.z = 0.23
+            arr.markers.append(raw_left_points_marker)
+            marker_id += 1
+            arr.markers.append(
+                self._make_line_strip_marker(
+                    frame_id=frame_id,
+                    stamp=now,
+                    marker_id=marker_id,
                     ns="boundary_right",
                     points=right_boundary,
                     color=(1.0, 0.9, 0.2, 0.95),
@@ -2609,6 +2868,32 @@ class CorridorPlannerNode(TrackedConePlannerBase):
                 point.z = 0.15
             arr.markers.append(right_points_marker)
             marker_id += 1
+            arr.markers.append(
+                self._make_line_strip_marker(
+                    frame_id=frame_id,
+                    stamp=now,
+                    marker_id=marker_id,
+                    ns="raw_chain_right",
+                    points=raw_right_chain,
+                    color=(1.0, 0.82, 0.0, 0.95),
+                    width=0.06,
+                    z_offset=0.24,
+                )
+            )
+            marker_id += 1
+            raw_right_points_marker = self._make_points_marker(
+                frame_id=frame_id,
+                stamp=now,
+                marker_id=marker_id,
+                ns="raw_chain_right_points",
+                points=raw_right_chain,
+                color=(1.0, 0.82, 0.0, 1.0),
+                scale=0.34,
+            )
+            for point in raw_right_points_marker.points:
+                point.z = 0.25
+            arr.markers.append(raw_right_points_marker)
+            marker_id += 1
 
         if self.show_pair_lines:
             arr.markers.append(
@@ -2623,6 +2908,15 @@ class CorridorPlannerNode(TrackedConePlannerBase):
                 )
             )
             marker_id += 1
+
+        if self.show_corridor_pair_audit:
+            marker_id = self._append_corridor_pair_audit_markers(
+                arr=arr,
+                marker_id=marker_id,
+                frame_id=frame_id,
+                stamp=now,
+                result=result,
+            )
 
         if self.show_raw_midpoint_chain:
             arr.markers.append(
@@ -2699,6 +2993,100 @@ class CorridorPlannerNode(TrackedConePlannerBase):
             operator_state=operator_state,
         )
         return arr
+
+    def _append_corridor_pair_audit_markers(
+        self,
+        *,
+        arr: MarkerArray,
+        marker_id: int,
+        frame_id: str,
+        stamp,
+        result: CorridorPlannerResult,
+    ) -> int:
+        segments = np.asarray(result.corridor_pair_audit_segments, dtype=np.float64)
+        reasons = list(result.corridor_pair_audit_reasons)
+        widths = np.asarray(result.corridor_pair_audit_widths_m, dtype=np.float64)
+        anchors_local = np.asarray(result.corridor_pair_audit_anchors_local, dtype=np.float64)
+        count = min(len(reasons), segments.shape[0], widths.size, anchors_local.shape[0])
+        if count <= 0:
+            return marker_id
+
+        for reason in _CORRIDOR_PAIR_AUDIT_REASONS:
+            if reason == "pair_valid":
+                continue
+            reason_indices = [
+                idx
+                for idx in range(count)
+                if reasons[idx] == reason and np.all(np.isfinite(segments[idx]))
+            ]
+            if not reason_indices:
+                continue
+            arr.markers.append(
+                self._make_pair_segment_marker(
+                    frame_id=frame_id,
+                    stamp=stamp,
+                    marker_id=marker_id,
+                    ns=f"corridor_pair_audit_{reason}",
+                    pair_segments=segments[reason_indices],
+                    color=self._corridor_pair_audit_rgba(reason),
+                    width=0.05,
+                )
+            )
+            marker_id += 1
+
+        if not self.corridor_pair_audit_show_labels:
+            return marker_id
+
+        label_count = 0
+        for idx in range(count):
+            reason = reasons[idx]
+            if reason == "pair_valid" or not np.all(np.isfinite(segments[idx])):
+                continue
+            midpoint = 0.5 * (segments[idx, 0, :] + segments[idx, 1, :])
+            if not np.all(np.isfinite(midpoint)):
+                continue
+            label = Marker()
+            label.header.frame_id = frame_id
+            label.header.stamp = stamp
+            label.ns = "corridor_pair_audit_labels"
+            label.id = marker_id
+            marker_id += 1
+            label.type = Marker.TEXT_VIEW_FACING
+            label.action = Marker.ADD
+            label.pose.position.x = float(midpoint[0])
+            label.pose.position.y = float(midpoint[1])
+            label.pose.position.z = 0.85
+            label.pose.orientation.w = 1.0
+            label.scale.z = 0.14
+            label.color.r = 1.0
+            label.color.g = 1.0
+            label.color.b = 1.0
+            label.color.a = 0.95
+            label.text = (
+                f"pair[{idx}] {reason}\n"
+                f"w={float(widths[idx]):.2f}m "
+                f"local=({float(anchors_local[idx, 0]):.1f},"
+                f"{float(anchors_local[idx, 1]):.1f})"
+            )
+            arr.markers.append(label)
+            label_count += 1
+            if label_count >= self.corridor_pair_audit_max_labels:
+                break
+        return marker_id
+
+    @staticmethod
+    def _corridor_pair_audit_rgba(reason: str) -> tuple[float, float, float, float]:
+        if reason == "pair_width_too_narrow":
+            return 1.0, 0.05, 0.05, 0.9
+        if reason == "pair_width_too_wide":
+            return 1.0, 0.45, 0.05, 0.9
+        if reason in {"pair_left_beyond_horizon", "pair_right_beyond_horizon"}:
+            return 0.0, 0.85, 1.0, 0.9
+        if reason in {"pair_left_behind", "pair_right_behind"}:
+            return 1.0, 0.0, 0.85, 0.9
+        if reason == "pair_not_in_longest_valid_slice":
+            return 0.85, 0.85, 0.85, 0.75
+        return 0.65, 0.2, 1.0, 0.9
 
     def _make_pair_segment_marker(
         self,

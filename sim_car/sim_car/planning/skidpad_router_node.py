@@ -5,6 +5,9 @@ from __future__ import annotations
 
 from copy import deepcopy
 import math
+import os
+import signal
+import threading
 from typing import Optional
 
 import numpy as np
@@ -16,6 +19,7 @@ from nav_msgs.msg import Odometry
 from rclpy.executors import ExternalShutdownException
 from rclpy.node import Node
 from rclpy.qos import qos_profile_sensor_data
+from std_msgs.msg import Float32
 from vehicle_plotter_msgs.msg import ConeDetection, ConeDetectionArray
 from visualization_msgs.msg import Marker, MarkerArray
 
@@ -50,6 +54,9 @@ class SkidpadRouterNode(Node):
         self._parking_boundary_override_count = 0
         self._acceleration_parking_latched = False
         self._stop_override_active = False
+        self._route_complete_shutdown_requested = False
+        self._parking_complete_shutdown_requested = False
+        self._acceleration_parked_since_sec: Optional[float] = None
         self._stop_line_forward_distance_m: float = float("nan")
         self._stop_line_marker_points_odom: Optional[tuple[tuple[float, float], tuple[float, float]]] = None
 
@@ -57,6 +64,7 @@ class SkidpadRouterNode(Node):
         self._diag_pub = self.create_publisher(DiagnosticArray, self.diagnostics_topic, 10)
         self._viz_pub = self.create_publisher(MarkerArray, self.viz_topic, 10)
         self._cmd_pub = self.create_publisher(AckermannDriveStamped, self.cmd_topic, 10)
+        self._brake_pub = self.create_publisher(Float32, self.brake_cmd_topic, 10)
         self._stop_override_timer = None
         if self.stop_override_publish_period_s > 0.0:
             self._stop_override_timer = self.create_timer(
@@ -90,6 +98,7 @@ class SkidpadRouterNode(Node):
             "topics.output_topic": "/tracked_cones/skidpad_routed",
             "topics.odom_topic": "/sim/odom",
             "topics.cmd_topic": "/cmd",
+            "topics.brake_cmd_topic": "/sim/brake_cmd",
             "topics.diagnostics_topic": "/skidpad_router/diagnostics",
             "topics.viz_topic": "/skidpad_router/markers",
             "routing.event_mode": "skidpad",
@@ -106,6 +115,8 @@ class SkidpadRouterNode(Node):
             "routing.left_lobe_max_x_m": 1.0,
             "routing.straight_corridor_half_width_m": 2.0,
             "routing.straight_min_y_m": -1.0,
+            "routing.shutdown_on_route_complete": False,
+            "routing.shutdown_on_parking_complete": False,
             "parking.corridor_half_width_m": 2.0,
             "parking.start_y_m": 8.5,
             "parking.parked_speed_threshold_mps": 0.5,
@@ -117,8 +128,12 @@ class SkidpadRouterNode(Node):
             "parking.acceleration_stop_row_min_lateral_span_m": 2.0,
             "parking.acceleration_stop_row_min_points_per_side": 1,
             "parking.stop_margin_m": 1.0,
+            "parking.target_margin_m": 3.5,
             "parking.stop_line_pair_max_distance_m": 1.0,
-            "parking.stop_override_publish_rate_hz": 50.0,
+            "parking.stop_override_publish_rate_hz": 120.0,
+            "parking.stop_approach_speed_gain": 1.5,
+            "parking.brake_activation_margin_m": 1.0,
+            "parking.brake_command": 1.0,
             "synthetic.pair_half_width_m": 1.6375,
             "synthetic.pair_y_m": [3.5, 5.5, 7.5],
         }
@@ -136,11 +151,14 @@ class SkidpadRouterNode(Node):
         self.output_topic = str(self.get_parameter("topics.output_topic").value).strip() or "/tracked_cones/skidpad_routed"
         self.odom_topic = str(self.get_parameter("topics.odom_topic").value).strip() or "/sim/odom"
         self.cmd_topic = str(self.get_parameter("topics.cmd_topic").value).strip() or "/cmd"
+        self.brake_cmd_topic = str(self.get_parameter("topics.brake_cmd_topic").value).strip() or "/sim/brake_cmd"
         self.diagnostics_topic = (
             str(self.get_parameter("topics.diagnostics_topic").value).strip() or "/skidpad_router/diagnostics"
         )
         self.viz_topic = str(self.get_parameter("topics.viz_topic").value).strip() or "/skidpad_router/markers"
         self.event_mode = str(self.get_parameter("routing.event_mode").value).strip().lower() or "skidpad"
+        self.shutdown_on_route_complete = bool(self.get_parameter("routing.shutdown_on_route_complete").value)
+        self.shutdown_on_parking_complete = bool(self.get_parameter("routing.shutdown_on_parking_complete").value)
         self.acceleration_activation_distance_m = float(
             self.get_parameter("parking.acceleration_activation_distance_m").value
         )
@@ -157,9 +175,13 @@ class SkidpadRouterNode(Node):
             self.get_parameter("parking.acceleration_stop_row_min_points_per_side").value
         )
         self.stop_margin_m = float(self.get_parameter("parking.stop_margin_m").value)
+        self.target_margin_m = float(self.get_parameter("parking.target_margin_m").value)
         self.stop_line_pair_max_distance_m = float(self.get_parameter("parking.stop_line_pair_max_distance_m").value)
         stop_override_rate_hz = float(self.get_parameter("parking.stop_override_publish_rate_hz").value)
         self.stop_override_publish_period_s = 0.0 if stop_override_rate_hz <= 0.0 else (1.0 / stop_override_rate_hz)
+        self.stop_approach_speed_gain = float(self.get_parameter("parking.stop_approach_speed_gain").value)
+        self.brake_activation_margin_m = float(self.get_parameter("parking.brake_activation_margin_m").value)
+        self.brake_command = float(np.clip(float(self.get_parameter("parking.brake_command").value), 0.0, 1.0))
 
         self._state_machine = SkidpadStateMachine(
             config_from_parameters(
@@ -229,9 +251,11 @@ class SkidpadRouterNode(Node):
         )
         self._update_latched_stop_line_distance_from_pose()
         if self._stop_override_active:
-            self._publish_stop_cmd(msg.header.stamp)
+            self._publish_parking_override_cmd(msg.header.stamp)
         self._publish_diagnostics(msg.header.stamp)
         self._publish_markers(msg.header.stamp)
+        self._maybe_shutdown_after_route_complete()
+        self._maybe_shutdown_after_parking_complete(stamp=msg.header.stamp)
 
     def _cones_cb(self, msg: ConeDetectionArray) -> None:
         if self._latest_pose_xy is None:
@@ -274,7 +298,7 @@ class SkidpadRouterNode(Node):
 
         self._update_stop_override_from_routed_cones(routed_cones=routed_msg.cones)
         if self._stop_override_active:
-            self._publish_stop_cmd(msg.header.stamp)
+            self._publish_parking_override_cmd(msg.header.stamp)
         self._cones_pub.publish(routed_msg)
         stamp = self._latest_odom_stamp if self._latest_odom_stamp is not None else msg.header.stamp
         self._publish_diagnostics(stamp)
@@ -453,6 +477,8 @@ class SkidpadRouterNode(Node):
     def _clear_stop_line_state(self) -> None:
         self._stop_line_forward_distance_m = float("nan")
         self._stop_line_marker_points_odom = None
+        if self._stop_override_active:
+            self._publish_brake_cmd(0.0)
         self._stop_override_active = False
 
     def _update_latched_stop_line_distance_from_pose(self) -> None:
@@ -471,7 +497,8 @@ class SkidpadRouterNode(Node):
             return
 
         self._stop_line_forward_distance_m = float(midpoint_vehicle[0, 0])
-        if float(self._stop_line_forward_distance_m) <= max(0.0, float(self.stop_margin_m)):
+        activation_distance_m = max(0.0, float(self.stop_margin_m), float(self.target_margin_m))
+        if float(self._stop_line_forward_distance_m) <= activation_distance_m:
             self._stop_override_active = True
 
     def _mask_points_on_latched_stop_line(self, orange_points_odom: np.ndarray) -> np.ndarray:
@@ -623,14 +650,39 @@ class SkidpadRouterNode(Node):
         stamp = self._latest_odom_stamp
         if stamp is None:
             stamp = self.get_clock().now().to_msg()
-        self._publish_stop_cmd(stamp)
+        self._publish_parking_override_cmd(stamp)
 
-    def _publish_stop_cmd(self, stamp) -> None:
+    def _publish_parking_override_cmd(self, stamp) -> None:
         msg = AckermannDriveStamped()
         msg.header.stamp = stamp
-        msg.drive.speed = 0.0
+        msg.drive.speed = self._parking_override_speed_mps()
         msg.drive.steering_angle = 0.0
         self._cmd_pub.publish(msg)
+        self._publish_brake_cmd(self._parking_override_brake_cmd())
+
+    def _parking_override_speed_mps(self) -> float:
+        target_forward_m = self._target_forward_distance_m()
+        if not np.isfinite(target_forward_m) or target_forward_m <= 0.0:
+            return 0.0
+
+        speed_gain = max(0.0, float(self.stop_approach_speed_gain))
+        if speed_gain <= 0.0:
+            return 0.0
+
+        return float(max(0.0, min(float(self._latest_speed_mps), speed_gain * target_forward_m)))
+
+    def _parking_override_brake_cmd(self) -> float:
+        target_forward_m = self._target_forward_distance_m()
+        if not np.isfinite(target_forward_m):
+            return 0.0
+        if target_forward_m <= max(0.0, float(self.brake_activation_margin_m)):
+            return float(self.brake_command)
+        return 0.0
+
+    def _publish_brake_cmd(self, command: float) -> None:
+        msg = Float32()
+        msg.data = float(np.clip(float(command), 0.0, 1.0))
+        self._brake_pub.publish(msg)
 
     def _build_synthetic_cones(self, *, existing_xy: np.ndarray, stamp) -> list[ConeDetection]:
         cones: list[ConeDetection] = []
@@ -943,7 +995,7 @@ class SkidpadRouterNode(Node):
             return None
 
         left_point_xy, right_point_xy = self._stop_line_marker_points_odom
-        stop_offset_m = max(0.0, float(self.stop_margin_m))
+        stop_offset_m = max(0.0, float(self.target_margin_m))
         backward_dx = stop_offset_m * math.cos(self._latest_yaw_rad)
         backward_dy = stop_offset_m * math.sin(self._latest_yaw_rad)
         return (
@@ -965,7 +1017,7 @@ class SkidpadRouterNode(Node):
     def _target_forward_distance_m(self) -> float:
         if not np.isfinite(self._stop_line_forward_distance_m):
             return float("nan")
-        return float(self._stop_line_forward_distance_m) - max(0.0, float(self.stop_margin_m))
+        return float(self._stop_line_forward_distance_m) - max(0.0, float(self.target_margin_m))
 
     def _format_distance(self, distance_m: float) -> str:
         return f"{distance_m:.2f}" if np.isfinite(distance_m) else "nan"
@@ -996,6 +1048,119 @@ class SkidpadRouterNode(Node):
             KeyValue(key="target_forward_distance_m", value=f"{self._target_forward_distance_m():.6f}"),
             KeyValue(key="vehicle_speed_mps", value=f"{self._latest_speed_mps:.6f}"),
         ]
+
+    def _maybe_shutdown_after_route_complete(self) -> None:
+        if self._route_complete_shutdown_requested:
+            return
+        if not self.shutdown_on_route_complete or self.event_mode != "skidpad":
+            return
+        snapshot = self._latest_snapshot
+        if snapshot.total_route_passes <= 0:
+            return
+        if snapshot.completed_route_passes < snapshot.total_route_passes:
+            return
+
+        self._route_complete_shutdown_requested = True
+        self.get_logger().info(
+            "skidpad route target reached: "
+            f"{snapshot.completed_route_passes}/{snapshot.total_route_passes} route_laps. "
+            "Exiting router so the top-level launch can shut down the run."
+        )
+        self._request_process_exit(parent_delay_s=0.0, force_delay_s=2.0)
+        if rclpy.ok():
+            rclpy.shutdown()
+
+    def _maybe_shutdown_after_parking_complete(self, *, stamp) -> None:
+        if self._parking_complete_shutdown_requested:
+            return
+        if not self.shutdown_on_parking_complete or self.event_mode not in {"skidpad", "acceleration"}:
+            self._acceleration_parked_since_sec = None
+            return
+        if self.event_mode == "skidpad":
+            snapshot = self._latest_snapshot
+            if not snapshot.parked:
+                return
+            self._parking_complete_shutdown_requested = True
+            self.get_logger().info(
+                "skidpad parking target reached: "
+                f"stage={snapshot.stage_name} route={snapshot.completed_route_passes}/{snapshot.total_route_passes}. "
+                "Exiting router so the top-level launch can shut down the run."
+            )
+            self._request_process_exit(parent_delay_s=0.0, force_delay_s=2.0)
+            if rclpy.ok():
+                rclpy.shutdown()
+            return
+
+        if not self._parking_mode_active or self._stop_line_marker_points_odom is None or not self._stop_override_active:
+            self._acceleration_parked_since_sec = None
+            return
+        target_forward_m = self._target_forward_distance_m()
+        if not np.isfinite(target_forward_m) or target_forward_m > 0.0:
+            self._acceleration_parked_since_sec = None
+            return
+
+        speed_threshold_mps = float(self._state_machine.config.parked_speed_threshold_mps)
+        if float(self._latest_speed_mps) > speed_threshold_mps:
+            self._acceleration_parked_since_sec = None
+            return
+
+        now_sec = float(getattr(stamp, "sec", 0)) + (float(getattr(stamp, "nanosec", 0)) * 1e-9)
+        if now_sec <= 0.0:
+            now_sec = float(self.get_clock().now().nanoseconds) * 1e-9
+        if self._acceleration_parked_since_sec is None:
+            self._acceleration_parked_since_sec = now_sec
+            return
+
+        hold_time_s = float(self._state_machine.config.parked_hold_time_s)
+        if (now_sec - self._acceleration_parked_since_sec) < hold_time_s:
+            return
+
+        self._parking_complete_shutdown_requested = True
+        self.get_logger().info(
+            "acceleration parking target reached: "
+            f"speed={self._latest_speed_mps:.3f}m/s target_forward={target_forward_m:.3f}m. "
+            "Exiting router so the top-level launch can shut down the run."
+        )
+        self._request_process_exit(parent_delay_s=0.0, force_delay_s=2.0)
+        if rclpy.ok():
+            rclpy.shutdown()
+
+    def _request_process_exit(self, *, parent_delay_s: float = 0.0, force_delay_s: float = 2.0) -> None:
+        # Route completion should stop the full launched sim, not only this router node.
+        parent_pid = os.getppid()
+        process_group_id = os.getpgrp()
+
+        def _signal_parent_launch() -> None:
+            try:
+                if parent_pid > 1:
+                    os.kill(parent_pid, signal.SIGINT)
+            except Exception as exc:
+                self.get_logger().warn(f"Failed to interrupt parent launch process for route-complete exit: {exc}")
+
+        def _force_exit_process_group() -> None:
+            try:
+                if parent_pid > 1:
+                    os.kill(parent_pid, signal.SIGINT)
+            except Exception:
+                pass
+            try:
+                os.killpg(process_group_id, signal.SIGINT)
+            except Exception:
+                pass
+            os._exit(0)
+
+        try:
+            parent_timer = threading.Timer(max(0.0, float(parent_delay_s)), _signal_parent_launch)
+            parent_timer.daemon = True
+            parent_timer.start()
+            force_timer = threading.Timer(max(0.0, float(force_delay_s)), _force_exit_process_group)
+            force_timer.daemon = True
+            force_timer.start()
+        except Exception as exc:
+            self.get_logger().warn(f"Failed to schedule launch shutdown for route-complete exit: {exc}")
+            if parent_pid > 1:
+                os.kill(parent_pid, signal.SIGINT)
+            os.killpg(process_group_id, signal.SIGINT)
 
     def _build_status_text(self, snapshot: SkidpadRouterSnapshot) -> str:
         stop_line_latched = int(self._stop_line_marker_points_odom is not None)

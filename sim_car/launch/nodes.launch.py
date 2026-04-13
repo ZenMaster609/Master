@@ -44,7 +44,6 @@ def _build_sensor_nodes(context):
         'water_flow': _get_signal_rate(sensor_config, '/sim/cooling/water_flow', 50.0),
         'water_temp_in': _get_signal_rate(sensor_config, '/sim/cooling/water_temp_in', 50.0),
         'water_temp_out': _get_signal_rate(sensor_config, '/sim/cooling/water_temp_out', 50.0),
-        'water_temp_radiator': _get_signal_rate(sensor_config, '/sim/cooling/water_temp_radiator', 50.0),
         'brake_temp_fr': _get_signal_rate(sensor_config, '/sim/brakes/temp_fr', 50.0),
         'brake_temp_rl': _get_signal_rate(sensor_config, '/sim/brakes/temp_rl', 50.0),
         'pitot_dynamic_pressure': _get_signal_rate(sensor_config, '/sim/pitot/dynamic_pressure', 50.0),
@@ -82,10 +81,6 @@ def _build_sensor_nodes(context):
     water_temp_out_enabled = _any_signal_enabled(
         sensor_config,
         topics=['/sim/raw/cooling/water_temp_out', '/sim/cooling/water_temp_out'],
-    )
-    water_temp_radiator_enabled = _any_signal_enabled(
-        sensor_config,
-        topics=['/sim/raw/cooling/water_temp_radiator', '/sim/cooling/water_temp_radiator'],
     )
     brake_temp_fr_enabled = _any_signal_enabled(
         sensor_config,
@@ -219,21 +214,6 @@ def _build_sensor_nodes(context):
             }],
         )
 
-    water_temp_radiator_node = None
-    if water_temp_radiator_enabled:
-        water_temp_radiator_node = Node(
-            package='sim_car',
-            executable='water_temp_radiator_node',
-            name='water_temp_radiator_node',
-            output='screen',
-            parameters=[{
-                'publish_rate': virtual_rates['water_temp_radiator'],
-                'ambient_temp': 25.0,
-                'noise_temp': 0.3,       # Celsius
-                'topic_prefix': topic_prefix,
-            }],
-        )
-
     brake_temp_fr_node = None
     if brake_temp_fr_enabled:
         brake_temp_fr_node = Node(
@@ -287,7 +267,6 @@ def _build_sensor_nodes(context):
         water_flow_node,
         water_temp_in_node,
         water_temp_out_node,
-        water_temp_radiator_node,
         brake_temp_fr_node,
         brake_temp_rl_node,
         pitot_dynamic_pressure_node,

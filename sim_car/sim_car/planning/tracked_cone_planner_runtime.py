@@ -23,10 +23,11 @@ from tf2_ros import Buffer, TransformException, TransformListener
 from vehicle_plotter_msgs.msg import ConeDetectionArray
 from visualization_msgs.msg import Marker, MarkerArray
 
-from sim_car.cones.tracking.pose import convert_odom_child_pose_to_base_frame
+from sim_car.cones.tracking.pose import (
+    convert_odom_child_pose_to_base_frame,
+    project_planar_pose_constant_twist,
+)
 from sim_car.cones.tracking.fusion import normalize_color, resolve_boundary_colors_for_planning
-from sim_car.controllers.factory import create_steering_controller
-from sim_car.controllers.stanley_controller import StanleyConfig
 from sim_car.planning.triangulation_planner_core import (
     CoreConfig,
     CorePrior,
@@ -37,6 +38,11 @@ from sim_car.planning.triangulation_planner_core import (
     edge_churn_ratio,
     selected_edge_keys,
     tracked_cones_frame_delta_p95,
+)
+from sim_car.planning.tracked_cone_planner_contract import (
+    build_tracked_cone_controller,
+    log_tracked_cone_controller_mode,
+    normalize_tracked_cone_controller_type,
 )
 from sim_car.planning.path_stability import (
     extract_forward_path_from_pose,
@@ -227,6 +233,7 @@ class TrackedConePlannerRuntime(Node):
             'runtime.publish_rate_hz': 180.0,
             'runtime.log_throttle_s': 1.0,
             'control.controller_type': 'stanley',
+            'control.odom_lag_compensation_ms': 0.0,
             'control.stop_if_no_path': True,
             'stanley.k_gain': 1.2,
             'stanley.softening_speed_mps': 0.0,
@@ -324,53 +331,21 @@ class TrackedConePlannerRuntime(Node):
         self.log_throttle_s = max(0.1, float(self.get_parameter('runtime.log_throttle_s').value))
 
         self.controller_type = (
-            str(self.get_parameter('control.controller_type').value).strip().lower() or 'stanley'
-        )
-        if self.controller_type not in {'stanley', 'pure_pursuit', 'none'}:
-            raise ValueError(
-                "Unsupported control.controller_type '%s'. Supported values: stanley, pure_pursuit, none"
-                % self.controller_type
+            normalize_tracked_cone_controller_type(
+                self.get_parameter('control.controller_type').value
             )
-        stanley_config = StanleyConfig(
-            k_gain=max(0.0, float(self.get_parameter('stanley.k_gain').value)),
-            softening_speed_mps=max(0.0, float(self.get_parameter('stanley.softening_speed_mps').value)),
-            heading_gain=float(self.get_parameter('stanley.heading_gain').value),
-            lookahead_idx_offset=max(0, int(self.get_parameter('stanley.lookahead_idx_offset').value)),
-            steering_limit_rad=max(0.01, float(self.get_parameter('stanley.steering_limit_rad').value)),
-            steering_lowpass_alpha=float(
-                np.clip(float(self.get_parameter('stanley.steering_lowpass_alpha').value), 0.0, 1.0)
-            ),
-            steering_rate_limit_rad_s=max(
-                0.0,
-                float(self.get_parameter('stanley.steering_rate_limit_rad_s').value),
-            ),
-            use_yaw_rate_damping=bool(self.get_parameter('stanley.use_yaw_rate_damping').value),
-            yaw_rate_damping_gain=max(
-                0.0,
-                float(self.get_parameter('stanley.yaw_rate_damping_gain').value),
-            ),
-            wheelbase_m=max(0.1, float(self.get_parameter('stanley.wheelbase_m').value)),
-            cross_track_deadband_m=max(
-                0.0,
-                float(self.get_parameter('stanley.cross_track_deadband_m').value),
-            ),
         )
-        self._controller = (
-            create_steering_controller(
-                controller_type=self.controller_type,
-                stanley_config=stanley_config,
-                publish_rate_hz=self.publish_rate_hz,
-            )
-            if self.controller_type == 'stanley'
-            else None
+        self.odom_lag_compensation_s = min(
+            max(0.0, float(self.get_parameter('control.odom_lag_compensation_ms').value)),
+            150.0,
+        ) / 1000.0
+        self._controller = build_tracked_cone_controller(
+            node=self,
+            controller_type=self.controller_type,
+            publish_rate_hz=self.publish_rate_hz,
         )
         self.stop_if_no_path = bool(self.get_parameter('control.stop_if_no_path').value)
-        if self.controller_type == 'pure_pursuit':
-            self.get_logger().warn(
-                "control.controller_type 'pure_pursuit' is a placeholder; controller output is disabled"
-            )
-        elif self.controller_type == 'none':
-            self.get_logger().info("control.controller_type 'none'; controller output is disabled")
+        log_tracked_cone_controller_mode(self, controller_type=self.controller_type)
 
         self.speed_min_mps = max(0.0, float(self.get_parameter('speed_control.speed_min_mps').value))
         self.speed_max_mps = max(self.speed_min_mps, float(self.get_parameter('speed_control.speed_max_mps').value))
@@ -1033,7 +1008,7 @@ class TrackedConePlannerRuntime(Node):
             ty = float(tf_msg.transform.translation.y)
             q = tf_msg.transform.rotation
             yaw = self._yaw_from_quat(float(q.x), float(q.y), float(q.z), float(q.w))
-            return tx, ty, yaw
+            return self._compensate_vehicle_pose(frame_id, (tx, ty, yaw))
 
         if not self._is_alias(frame_id, self.odom_frame):
             return None
@@ -1049,11 +1024,28 @@ class TrackedConePlannerRuntime(Node):
         ty = float(pose.position.y)
         q = pose.orientation
         yaw = self._yaw_from_quat(float(q.x), float(q.y), float(q.z), float(q.w))
-        return self._convert_odom_child_pose_to_base_frame(
+        base_pose = self._convert_odom_child_pose_to_base_frame(
             child_frame=str(odom.child_frame_id).strip(),
             tx=tx,
             ty=ty,
             yaw=yaw,
+        )
+        return self._compensate_vehicle_pose(frame_id, base_pose)
+
+    def _compensate_vehicle_pose(
+        self,
+        frame_id: str,
+        pose: Optional[tuple[float, float, float]],
+    ) -> Optional[tuple[float, float, float]]:
+        if pose is None:
+            return None
+        if self._is_alias(frame_id, self.base_frame):
+            return pose
+        return project_planar_pose_constant_twist(
+            pose,
+            speed_mps=self._latest_speed_mps,
+            yaw_rate_rps=self._latest_yaw_rate_rps,
+            delay_s=float(getattr(self, 'odom_lag_compensation_s', 0.0)),
         )
 
     def _convert_odom_child_pose_to_base_frame(

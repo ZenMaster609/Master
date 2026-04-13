@@ -1,0 +1,296 @@
+seed: 12345
+signals:
+  imu:
+    enabled: false
+    input_topic: /sim/raw/imu
+    output_topic: /sim/imu
+    msg_type: sensor_msgs/msg/Imu
+    rate_hz: 50.0
+    latency_ms: 0.0
+    dropout_prob: 0.0
+    noise_std:
+      angular_velocity: 0.0
+      linear_acceleration: 0.0
+    bias_init:
+      angular_velocity: 0.0
+      linear_acceleration: 0.0
+    bias_rw_std:
+      angular_velocity: 0.0
+      linear_acceleration: 0.0
+    saturation_min:
+      angular_velocity: -20.0
+      linear_acceleration: -50.0
+    saturation_max:
+      angular_velocity: 20.0
+      linear_acceleration: 50.0
+
+  imu_velocity:
+    enabled: false
+    plot_only: true
+    output_topic: /sim/imu
+
+  imu_yaw:
+    enabled: false
+    plot_only: true
+    output_topic: /sim/imu
+
+  navsat:
+    enabled: false
+    input_topic: /sim/raw/navsat
+    output_topic: /sim/navsat
+    msg_type: sensor_msgs/msg/NavSatFix
+    rate_hz: 5.0
+    latency_ms: 0.0
+    dropout_prob: 0.0
+    noise_std:
+      latitude: 0.0
+      longitude: 0.0
+      altitude: 0.0
+    bias_init:
+      latitude: 0.0
+      longitude: 0.0
+      altitude: 0.0
+    bias_rw_std:
+      latitude: 0.0
+      longitude: 0.0
+      altitude: 0.0
+    saturation_min:
+      latitude: -90.0
+      longitude: -180.0
+      altitude: -1000.0
+    saturation_max:
+      latitude: 90.0
+      longitude: 180.0
+      altitude: 10000.0
+
+  gnss_position:
+    enabled: false
+    plot_only: true
+    output_topic: /sim/navsat
+
+  odom:
+    enabled: true
+    input_topic: /sim/raw/odom
+    output_topic: /sim/odom
+    msg_type: nav_msgs/msg/Odometry
+    rate_hz: 50.0
+    latency_ms: 0.0
+    dropout_prob: 0.0
+    noise_std: 0.0
+    bias_init: 0.0
+    bias_rw_std: 0.0
+    saturation_min: null
+    saturation_max: null
+    apply_orientation: false
+
+  realistic_position:
+    enabled: true
+    plot_only: true
+    output_topic: /sim/odom
+
+  realistic_velocity:
+    enabled: true
+    plot_only: true
+    output_topic: /sim/odom
+
+  realistic_yaw:
+    enabled: true
+    plot_only: true
+    output_topic: /sim/odom
+
+  raw_position:
+    enabled: false
+    plot_only: true
+    output_topic: /sim/raw/odom
+
+  raw_velocity:
+    enabled: false
+    plot_only: true
+    output_topic: /sim/raw/odom
+
+  raw_yaw:
+    enabled: false
+    plot_only: true
+    output_topic: /sim/raw/odom
+
+  wheel_encoder_rpm:
+    enabled: true
+    input_topic: /sim/raw/wheel_encoder/rpm
+    output_topic: /sim/wheel_encoder/rpm
+    msg_type: std_msgs/msg/Float32MultiArray
+    rate_hz: 50.0
+    latency_ms: 8.0
+    dropout_prob: 0.0
+    noise_std: 1.5
+    bias_init: 0.0
+    bias_rw_std: 0.0
+    saturation_min: -5000.0
+    saturation_max: 5000.0
+
+  wheel_encoder_angle_accum:
+    enabled: false
+    input_topic: /sim/raw/wheel_encoder/angle_accum
+    output_topic: /sim/wheel_encoder/angle_accum
+    msg_type: std_msgs/msg/Float32MultiArray
+    rate_hz: 50.0
+    latency_ms: 0.0
+    dropout_prob: 0.0
+    noise_std: 0.0
+    bias_init: 0.0
+    bias_rw_std: 0.0
+    saturation_min: null
+    saturation_max: null
+
+  wheel_encoder_speed_mm_s:
+    enabled: true
+    input_topic: /sim/raw/wheel_encoder/speed_mm_s
+    output_topic: /sim/wheel_encoder/speed_mm_s
+    msg_type: std_msgs/msg/Float32MultiArray
+    rate_hz: 50.0
+    latency_ms: 8.0
+    dropout_prob: 0.0
+    noise_std: 12.0
+    bias_init: 0.0
+    bias_rw_std: 0.0
+    saturation_min: null
+    saturation_max: null
+
+  suspension:
+    enabled: true
+    input_topic: /sim/raw/suspension
+    output_topic: /sim/suspension
+    msg_type: std_msgs/msg/Float32MultiArray
+    rate_hz: 50.0
+    latency_ms: 12.0
+    dropout_prob: 0.0
+    noise_std: 0.6
+    bias_init: 0.0
+    bias_rw_std: 0.0
+    saturation_min: -50.0
+    saturation_max: 50.0
+
+  steering_angle:
+    enabled: true
+    input_topic: /sim/raw/steering_angle
+    output_topic: /sim/steering_angle
+    msg_type: std_msgs/msg/Float32
+    rate_hz: 50.0
+    latency_ms: 6.0
+    dropout_prob: 0.0
+    noise_std: 0.15
+    bias_init: 0.0
+    bias_rw_std: 0.0
+    saturation_min: -30.0
+    saturation_max: 30.0
+
+  water_pressure:
+    enabled: true
+    input_topic: /sim/raw/cooling/water_pressure
+    output_topic: /sim/cooling/water_pressure
+    msg_type: std_msgs/msg/Float32
+    rate_hz: 10.0
+    latency_ms: 25.0
+    dropout_prob: 0.0
+    noise_std: 0.03
+    bias_init: 0.0
+    bias_rw_std: 0.0
+    saturation_min: 0.0
+    saturation_max: 10.0
+
+  water_flow:
+    enabled: true
+    input_topic: /sim/raw/cooling/water_flow
+    output_topic: /sim/cooling/water_flow
+    msg_type: std_msgs/msg/Float32
+    rate_hz: 10.0
+    latency_ms: 25.0
+    dropout_prob: 0.0
+    noise_std: 0.2
+    bias_init: 0.0
+    bias_rw_std: 0.0
+    saturation_min: 0.0
+    saturation_max: 50.0
+
+  water_temp_in:
+    enabled: true
+    input_topic: /sim/raw/cooling/water_temp_in
+    output_topic: /sim/cooling/water_temp_in
+    msg_type: std_msgs/msg/Float32
+    rate_hz: 10.0
+    latency_ms: 30.0
+    dropout_prob: 0.0
+    noise_std: 0.15
+    bias_init: 0.0
+    bias_rw_std: 0.0
+    saturation_min: -40.0
+    saturation_max: 150.0
+
+  water_temp_out:
+    enabled: true
+    input_topic: /sim/raw/cooling/water_temp_out
+    output_topic: /sim/cooling/water_temp_out
+    msg_type: std_msgs/msg/Float32
+    rate_hz: 10.0
+    latency_ms: 30.0
+    dropout_prob: 0.0
+    noise_std: 0.15
+    bias_init: 0.0
+    bias_rw_std: 0.0
+    saturation_min: -40.0
+    saturation_max: 150.0
+
+  water_temp_radiator:
+    enabled: false
+    input_topic: /sim/raw/cooling/water_temp_radiator
+    output_topic: /sim/cooling/water_temp_radiator
+    msg_type: std_msgs/msg/Float32
+    rate_hz: 10.0
+    latency_ms: 0.0
+    dropout_prob: 0.0
+    noise_std: 0.0
+    bias_init: 0.0
+    bias_rw_std: 0.0
+    saturation_min: -40.0
+    saturation_max: 150.0
+
+  brake_temp_fr:
+    enabled: true
+    input_topic: /sim/raw/brakes/temp_fr
+    output_topic: /sim/brakes/temp_fr
+    msg_type: std_msgs/msg/Float32
+    rate_hz: 10.0
+    latency_ms: 35.0
+    dropout_prob: 0.0
+    noise_std: 0.8
+    bias_init: 0.0
+    bias_rw_std: 0.0
+    saturation_min: -40.0
+    saturation_max: 800.0
+
+  brake_temp_rl:
+    enabled: true
+    input_topic: /sim/raw/brakes/temp_rl
+    output_topic: /sim/brakes/temp_rl
+    msg_type: std_msgs/msg/Float32
+    rate_hz: 10.0
+    latency_ms: 35.0
+    dropout_prob: 0.0
+    noise_std: 0.8
+    bias_init: 0.0
+    bias_rw_std: 0.0
+    saturation_min: -40.0
+    saturation_max: 800.0
+
+  pitot_dynamic_pressure:
+    enabled: true
+    input_topic: /sim/raw/pitot/dynamic_pressure
+    output_topic: /sim/pitot/dynamic_pressure
+    msg_type: std_msgs/msg/Float32
+    rate_hz: 10.0
+    latency_ms: 15.0
+    dropout_prob: 0.0
+    noise_std: 4.0
+    bias_init: 0.0
+    bias_rw_std: 0.0
+    saturation_min: 0.0
+    saturation_max: 5000.0

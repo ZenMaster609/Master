@@ -16,6 +16,8 @@ if str(PACKAGE_ROOT) not in sys.path:
 try:
     from vehicle_plotter_msgs.msg import ConeDetection, ConeDetectionArray  # noqa: E402
     from sim_car.planning.corridor_planner_core import CorridorPlannerResult  # noqa: E402
+    from sim_car.planning.corridor_planner_node import MSG_TRACK_STATE_CONFIRMED  # noqa: E402
+    from sim_car.planning.corridor_planner_node import MSG_TRACK_STATE_STALE  # noqa: E402
     from sim_car.planning.corridor_planner_node import MSG_TRACK_STATE_TENTATIVE  # noqa: E402
     from sim_car.planning.corridor_planner_node import CorridorPlannerNode  # noqa: E402
     from sim_car.planning.planner_runtime_types import PlannerIdentity  # noqa: E402
@@ -76,6 +78,12 @@ def _make_node() -> CorridorPlannerNode:
     node.show_raw_midpoint_chain = True
     node.show_raw_prevalidation_centerline = True
     node.show_lookahead_point = False
+    node.show_corridor_pair_audit = True
+    node.corridor_pair_audit_show_labels = True
+    node.corridor_pair_audit_max_labels = 80
+    node.enable_cone_audit_markers = True
+    node.cone_audit_show_labels = True
+    node.cone_audit_max_labels = 80
     node._current_pair_segments_for_viz = None
     node._pair_memory = []
     node._candidate_jump_reject_streak = 0
@@ -113,24 +121,60 @@ def _make_node() -> CorridorPlannerNode:
     node.odom_frame = "odom"
     node.base_frame = "front_axle"
     node._core_config = SimpleNamespace(
+        max_cone_range_m=25.0,
+        planning_horizon_m=25.0,
+        max_lateral_range_m=8.0,
+        behind_drop_m=5.0,
+        min_confidence=0.3,
         path_resolution_m=0.5,
         max_path_length_m=20.0,
         min_forward_extent_m=2.0,
         min_required_corridor_samples=3,
     )
+    node.lap_tracking_target_laps = 0
     node._filtered_track_width_m = 3.6
     node._is_alias = lambda frame_a, frame_b: frame_a == frame_b
     node.get_clock = lambda: _FakeClock(TimeMsg(sec=1, nanosec=0))
     return node
 
 
+def _cone(
+    *,
+    track_id: int,
+    color: str = "blue",
+    boundary_color: str = "blue",
+    confidence: float = 0.9,
+    track_confidence: float = 0.9,
+    track_state: int = MSG_TRACK_STATE_CONFIRMED,
+    missed_count: int = 0,
+    last_seen_sec: int = 1,
+) -> ConeDetection:
+    cone = ConeDetection()
+    cone.color = color
+    cone.boundary_color = boundary_color
+    cone.confidence = confidence
+    cone.track_id = track_id
+    cone.track_state = track_state
+    cone.track_confidence = track_confidence
+    cone.color_confidence = 0.8
+    cone.missed_count = missed_count
+    cone.last_seen = TimeMsg(sec=last_seen_sec, nanosec=0)
+    return cone
+
+
 def _sample_result() -> CorridorPlannerResult:
     left = np.array([[2.0, 1.8], [4.0, 1.8], [6.0, 1.8]], dtype=np.float64)
     right = np.array([[2.0, -1.8], [4.0, -1.8], [6.0, -1.8]], dtype=np.float64)
+    raw_left = np.array([[1.8, 1.7], [4.1, 1.9], [6.3, 1.8]], dtype=np.float64)
+    raw_right = np.array([[1.9, -1.7], [4.2, -1.9], [6.4, -1.8]], dtype=np.float64)
     anchors = np.array([[2.0, 0.0], [4.0, 0.0], [6.0, 0.0]], dtype=np.float64)
     rungs = np.empty((3, 2, 2), dtype=np.float64)
     rungs[:, 0, :] = left
     rungs[:, 1, :] = right
+    rejected_wide = np.array([[[8.0, 2.0], [8.0, -4.8]]], dtype=np.float64)
+    audit_segments = np.concatenate((rungs, rejected_wide), axis=0)
+    audit_anchors = np.array([[2.0, 0.0], [4.0, 0.0], [6.0, 0.0], [8.0, -1.4]], dtype=np.float64)
+    audit_widths = np.array([3.6, 3.6, 3.6, 6.8], dtype=np.float64)
     return CorridorPlannerResult(
         filtered_points=np.vstack((left, right)),
         filtered_colors=["blue", "blue", "blue", "yellow", "yellow", "yellow"],
@@ -147,6 +191,17 @@ def _sample_result() -> CorridorPlannerResult:
         status="ok",
         planner_mode="corridor",
         pair_segments=rungs,
+        raw_left_chain_points=raw_left,
+        raw_right_chain_points=raw_right,
+        corridor_pair_audit_segments=audit_segments,
+        corridor_pair_audit_anchors_local=audit_anchors,
+        corridor_pair_audit_widths_m=audit_widths,
+        corridor_pair_audit_reasons=[
+            "pair_valid",
+            "pair_valid",
+            "pair_valid",
+            "pair_width_too_wide",
+        ],
         accepted_pair_count=3,
         left_chain_length=3,
         right_chain_length=3,
@@ -166,6 +221,170 @@ def _marker_map(marker_array) -> dict[str, object]:
 
 def _marker_xy(marker) -> np.ndarray:
     return np.asarray([[point.x, point.y] for point in marker.points], dtype=np.float64)
+
+
+def test_cone_audit_classifies_all_rejection_and_usage_buckets():
+    node = _make_node()
+    result = _sample_result()
+    result.used_left_track_ids = np.asarray([1], dtype=np.int64)
+    result.used_right_track_ids = np.asarray([2], dtype=np.int64)
+    result.chain_rejection_reasons_by_track_id = {3: "chain_step_too_far"}
+
+    msg = ConeDetectionArray()
+    msg.header.frame_id = "odom"
+    msg.header.stamp = TimeMsg(sec=2, nanosec=0)
+    cones = [
+        _cone(track_id=1, color="blue", boundary_color="blue"),
+        _cone(track_id=2, color="yellow", boundary_color="yellow"),
+        _cone(track_id=3, color="blue", boundary_color="blue"),
+        _cone(track_id=4, color="blue", boundary_color="blue"),
+        _cone(track_id=5, color="blue", boundary_color="blue"),
+        _cone(track_id=6, color="blue", boundary_color="blue"),
+        _cone(track_id=7, color="blue", boundary_color="blue", track_confidence=0.1),
+        _cone(
+            track_id=8,
+            color="blue",
+            boundary_color="blue",
+            track_state=MSG_TRACK_STATE_TENTATIVE,
+        ),
+        _cone(track_id=9, color="unknown", boundary_color="", track_confidence=0.9),
+        _cone(track_id=10, color="blue", boundary_color="blue"),
+        _cone(track_id=11, color="blue", boundary_color="blue"),
+    ]
+    msg.cones.extend(cones)
+    points = np.asarray(
+        [
+            [2.0, 1.8],
+            [2.0, -1.8],
+            [3.0, 1.8],
+            [-6.0, 0.0],
+            [26.0, 0.0],
+            [5.0, 9.0],
+            [4.0, 1.8],
+            [5.0, 1.8],
+            [6.0, 0.0],
+            [float("nan"), 0.0],
+            [24.0, 8.0],
+        ],
+        dtype=np.float64,
+    )
+    colors = [
+        "blue",
+        "yellow",
+        "blue",
+        "blue",
+        "blue",
+        "blue",
+        "blue",
+        "blue",
+        "unknown",
+        "blue",
+        "blue",
+    ]
+    planning_frame = node._tracked_cone_planning_frame(
+        msg=msg,
+        points_xy=points,
+        colors=colors,
+        confidences=np.full((len(cones),), 0.9, dtype=np.float64),
+    )
+
+    entries = node._build_cone_audit_entries(
+        msg=msg,
+        planning_frame=planning_frame,
+        result=result,
+        vehicle_xy=(0.0, 0.0),
+        vehicle_yaw=0.0,
+        now_sec=2.0,
+    )
+    reasons = {entry.track_id: entry.reason for entry in entries}
+
+    assert reasons[1] == "used_left_chain"
+    assert reasons[2] == "used_right_chain"
+    assert reasons[3] == "chain_step_too_far"
+    assert reasons[4] == "rejected_geometry_behind"
+    assert reasons[5] == "rejected_geometry_horizon"
+    assert reasons[6] == "rejected_geometry_lateral"
+    assert reasons[7] == "rejected_confidence"
+    assert reasons[8] == "rejected_tentative"
+    assert reasons[9] == "rejected_color"
+    assert reasons[10] == "rejected_nonfinite"
+    assert reasons[11] == "rejected_geometry_range"
+
+    counts = node._cone_audit_counts(entries)
+    assert counts["cone_audit_received_count"] == len(cones)
+    assert counts["cone_audit_used_left_count"] == 1
+    assert counts["cone_audit_used_right_count"] == 1
+    assert counts["cone_audit_chain_step_too_far_count"] == 1
+
+
+def test_cone_audit_markers_include_namespaces_labels_and_stale_halo():
+    node = _make_node()
+    used = SimpleNamespace(
+        track_id=1,
+        reason="used_left_chain",
+        point_xy=np.asarray([1.0, 1.0], dtype=np.float64),
+        local_x_m=1.0,
+        local_y_m=1.0,
+        raw_color="blue",
+        resolved_color="blue",
+        track_state=MSG_TRACK_STATE_CONFIRMED,
+        confidence=0.9,
+        track_confidence=0.9,
+        color_confidence=0.8,
+        missed_count=0,
+        last_seen_age_sec=0.1,
+        memory_only=False,
+    )
+    stale_rejected = SimpleNamespace(
+        track_id=2,
+        reason="rejected_geometry_lateral",
+        point_xy=np.asarray([1.0, 9.0], dtype=np.float64),
+        local_x_m=1.0,
+        local_y_m=9.0,
+        raw_color="yellow",
+        resolved_color="yellow",
+        track_state=MSG_TRACK_STATE_STALE,
+        confidence=0.9,
+        track_confidence=0.9,
+        color_confidence=0.8,
+        missed_count=2,
+        last_seen_age_sec=0.7,
+        memory_only=True,
+    )
+    chain_rejected = SimpleNamespace(
+        track_id=3,
+        reason="chain_heading_change",
+        point_xy=np.asarray([3.0, 1.5], dtype=np.float64),
+        local_x_m=3.0,
+        local_y_m=1.5,
+        raw_color="blue",
+        resolved_color="blue",
+        track_state=MSG_TRACK_STATE_CONFIRMED,
+        confidence=0.9,
+        track_confidence=0.9,
+        color_confidence=0.8,
+        missed_count=0,
+        last_seen_age_sec=0.1,
+        memory_only=False,
+    )
+
+    markers = node._build_cone_audit_markers(
+        frame_id="odom",
+        stamp=TimeMsg(sec=2, nanosec=0),
+        entries=[used, stale_rejected, chain_rejected],
+    )
+    by_ns = _marker_map(markers)
+
+    assert "cone_audit_used_left_chain" in by_ns
+    assert "cone_audit_chain_rejected" in by_ns
+    assert "cone_audit_rejected_geometry" in by_ns
+    assert "cone_audit_stale_halo" in by_ns
+    assert "cone_audit_labels" in by_ns
+    label_text = "\n".join(marker.text for marker in markers.markers if marker.ns == "cone_audit_labels")
+    assert "id=1" in label_text
+    assert "used_left_chain" in label_text
+    assert "chain_heading_change" in label_text
+    assert "rejected_geometry_lateral" in label_text
 
 
 def test_publish_diagnostics_uses_corridor_identity():
@@ -249,6 +468,21 @@ def test_build_markers_include_corridor_anchor_and_rung_namespaces():
     assert "corridor_center_anchors" in by_ns
     assert "corridor_rungs" in by_ns
     assert "centerline" in by_ns
+    assert "raw_chain_left" in by_ns
+    assert "raw_chain_left_points" in by_ns
+    assert "raw_chain_right" in by_ns
+    assert "raw_chain_right_points" in by_ns
+    assert "corridor_pair_audit_pair_width_too_wide" in by_ns
+    assert "corridor_pair_audit_labels" in by_ns
+    assert np.allclose(_marker_xy(by_ns["raw_chain_left_points"]), result.raw_left_chain_points)
+    assert np.allclose(_marker_xy(by_ns["raw_chain_right_points"]), result.raw_right_chain_points)
+    label_text = "\n".join(
+        marker.text
+        for marker in markers.markers
+        if marker.ns == "corridor_pair_audit_labels"
+    )
+    assert "pair_width_too_wide" in label_text
+    assert "w=6.80m" in label_text
 
 
 def test_build_markers_show_remembered_cones_instead_of_filtered_subset():
@@ -278,6 +512,16 @@ def test_build_markers_show_remembered_cones_instead_of_filtered_subset():
         _marker_xy(by_ns["remembered_cones"]),
         np.array([[1.0, 1.0], [2.0, -2.0]], dtype=np.float64),
     )
+
+
+def test_lap_status_text_uses_configured_target_laps():
+    node = _make_node()
+
+    assert node._lap_status_text() == "LAPS: 0/off"
+
+    node.lap_tracking_target_laps = 1
+
+    assert node._lap_status_text() == "LAPS: 0/1"
 
 
 def test_held_centerline_returns_last_valid_path_within_timeout():

@@ -95,6 +95,29 @@ class CorridorPlannerResult:
     pair_segments: np.ndarray = field(
         default_factory=lambda: np.empty((0, 2, 2), dtype=np.float64)
     )
+    raw_left_chain_points: np.ndarray = field(
+        default_factory=lambda: np.empty((0, 2), dtype=np.float64)
+    )
+    raw_right_chain_points: np.ndarray = field(
+        default_factory=lambda: np.empty((0, 2), dtype=np.float64)
+    )
+    corridor_pair_audit_segments: np.ndarray = field(
+        default_factory=lambda: np.empty((0, 2, 2), dtype=np.float64)
+    )
+    corridor_pair_audit_anchors_local: np.ndarray = field(
+        default_factory=lambda: np.empty((0, 2), dtype=np.float64)
+    )
+    corridor_pair_audit_widths_m: np.ndarray = field(
+        default_factory=lambda: np.empty((0,), dtype=np.float64)
+    )
+    corridor_pair_audit_reasons: list[str] = field(default_factory=list)
+    used_left_track_ids: np.ndarray = field(
+        default_factory=lambda: np.empty((0,), dtype=np.int64)
+    )
+    used_right_track_ids: np.ndarray = field(
+        default_factory=lambda: np.empty((0,), dtype=np.int64)
+    )
+    chain_rejection_reasons_by_track_id: dict[int, str] = field(default_factory=dict)
     accepted_pair_count: int = 0
     left_chain_length: int = 0
     right_chain_length: int = 0
@@ -112,6 +135,7 @@ class _BoundaryChain:
     tangents_local: np.ndarray
     mean_heading_change_rad: float
     forward_extent_m: float
+    rejected_reasons_by_filtered_index: dict[int, str] = field(default_factory=dict)
 
 
 def compute_corridor_centerline(
@@ -193,6 +217,7 @@ def compute_corridor_centerline(
             ),
             left_chain=left_chain,
             right_chain=right_chain,
+            filtered_track_ids=filtered_track_ids,
             planner_mode="none",
             filtered_track_width_m=expected_width,
         )
@@ -229,6 +254,7 @@ def compute_corridor_centerline(
             ),
             left_chain=left_chain,
             right_chain=right_chain,
+            filtered_track_ids=filtered_track_ids,
             planner_mode="none",
             filtered_track_width_m=expected_width,
         )
@@ -360,6 +386,31 @@ def compute_corridor_centerline(
         active_boundary_side="",
         raw_offset_path=np.empty((0, 2), dtype=np.float64),
         pair_segments=corridor_rungs,
+        raw_left_chain_points=left_chain.global_points,
+        raw_right_chain_points=right_chain.global_points,
+        corridor_pair_audit_segments=np.asarray(
+            corridor["audit_rungs_global"],
+            dtype=np.float64,
+        ),
+        corridor_pair_audit_anchors_local=np.asarray(
+            corridor["audit_anchors_local"],
+            dtype=np.float64,
+        ),
+        corridor_pair_audit_widths_m=np.asarray(corridor["audit_widths_m"], dtype=np.float64),
+        corridor_pair_audit_reasons=list(corridor["audit_reasons"]),
+        used_left_track_ids=np.asarray(
+            filtered_track_ids[left_chain.filtered_indices],
+            dtype=np.int64,
+        ),
+        used_right_track_ids=np.asarray(
+            filtered_track_ids[right_chain.filtered_indices],
+            dtype=np.int64,
+        ),
+        chain_rejection_reasons_by_track_id=_chain_rejection_reasons_by_track_id(
+            filtered_track_ids=filtered_track_ids,
+            left_chain=left_chain,
+            right_chain=right_chain,
+        ),
         accepted_pair_count=corridor_sample_count,
         left_chain_length=int(left_chain.filtered_indices.size),
         right_chain_length=int(right_chain.filtered_indices.size),
@@ -457,12 +508,17 @@ def _build_boundary_chain(
             tangents_local=np.empty((0, 2), dtype=np.float64),
             mean_heading_change_rad=float("inf"),
             forward_extent_m=0.0,
+            rejected_reasons_by_filtered_index={
+                int(filtered_idx): "chain_no_forward_seed"
+                for filtered_idx in side_indices
+            },
         )
 
     chain_positions = [seed_pos]
     remaining = [idx for idx in range(side_indices.size) if idx != seed_pos]
     heading = np.asarray([1.0, 0.0], dtype=np.float64)
     heading_changes: list[float] = []
+    rejection_reasons_by_side_pos: dict[int, str] = {}
 
     while remaining:
         current_local = side_local[chain_positions[-1]]
@@ -471,6 +527,7 @@ def _build_boundary_chain(
         best_score: Optional[tuple[float, float, float, float, int]] = None
         best_heading = heading
         best_heading_change = 0.0
+        iteration_reasons: dict[int, str] = {}
         for candidate_pos in remaining:
             candidate_local = side_local[candidate_pos]
             candidate_range = float(np.hypot(candidate_local[0], candidate_local[1]))
@@ -479,7 +536,11 @@ def _build_boundary_chain(
             delta = candidate_local - current_local
             distance = float(np.hypot(delta[0], delta[1]))
             min_step_m = min(float(config.min_step_m), 0.35)
-            if distance < min_step_m or distance > float(config.max_step_m):
+            if distance < min_step_m:
+                iteration_reasons[candidate_pos] = "chain_step_too_close"
+                continue
+            if distance > float(config.max_step_m):
+                iteration_reasons[candidate_pos] = "chain_step_too_far"
                 continue
             step_heading = delta / distance
             forward = float(np.dot(delta, heading))
@@ -495,6 +556,7 @@ def _build_boundary_chain(
                 and forward >= turn_forward_min
             )
             if not progresses_from_vehicle and not turn_continuation:
+                iteration_reasons[candidate_pos] = "chain_no_forward_progress"
                 continue
             tight_turn_step = radial_progress < min_radial_progress
             max_negative_radial_progress = min_radial_progress
@@ -504,17 +566,20 @@ def _build_boundary_chain(
                     0.30,
                 )
             if radial_progress < -max_negative_radial_progress:
+                iteration_reasons[candidate_pos] = "chain_radial_regression"
                 continue
             forward_min = float(config.min_forward_progress_m)
             if turn_continuation and not progresses_from_vehicle:
                 forward_min = turn_forward_min
             if forward < forward_min:
+                iteration_reasons[candidate_pos] = "chain_forward_projection"
                 continue
             heading_change = abs(_angle_between(heading, step_heading))
             max_heading_change = float(config.max_heading_change_rad)
             if tight_turn_step and float(current_local[1]) * float(candidate_local[1]) >= 0.0:
                 max_heading_change = max(max_heading_change, 1.35)
             if heading_change > max_heading_change:
+                iteration_reasons[candidate_pos] = "chain_heading_change"
                 continue
             if _candidate_is_shadowed(
                 current_local=current_local,
@@ -522,7 +587,9 @@ def _build_boundary_chain(
                 side_local=side_local,
                 remaining=remaining,
             ):
+                iteration_reasons[candidate_pos] = "chain_shadowed"
                 continue
+            iteration_reasons[candidate_pos] = "chain_not_best_next_step"
             score = (
                 distance,
                 heading_change,
@@ -537,18 +604,33 @@ def _build_boundary_chain(
                 best_heading_change = heading_change
 
         if best_pos is None:
+            rejection_reasons_by_side_pos.update(iteration_reasons)
             break
+        rejection_reasons_by_side_pos.update(
+            {
+                pos: reason
+                for pos, reason in iteration_reasons.items()
+                if pos != best_pos
+            }
+        )
         chain_positions.append(best_pos)
         remaining.remove(best_pos)
         heading = best_heading
         heading_changes.append(best_heading_change)
 
+    selected_positions = {int(pos) for pos in chain_positions}
+    rejected_reasons_by_filtered_index = {
+        int(side_indices[pos]): rejection_reasons_by_side_pos.get(pos, "chain_unreached")
+        for pos in range(side_indices.size)
+        if pos not in selected_positions
+    }
     return _make_boundary_chain_from_positions(
         filtered_points=filtered_points,
         filtered_local=filtered_local,
         side_indices=side_indices,
         chain_positions=np.asarray(chain_positions, dtype=np.int64),
         heading_changes=heading_changes,
+        rejected_reasons_by_filtered_index=rejected_reasons_by_filtered_index,
     )
 
 
@@ -559,6 +641,7 @@ def _make_boundary_chain_from_positions(
     side_indices: np.ndarray,
     chain_positions: np.ndarray,
     heading_changes: list[float],
+    rejected_reasons_by_filtered_index: Optional[dict[int, str]] = None,
 ) -> _BoundaryChain:
     if chain_positions.size == 0:
         return _BoundaryChain(
@@ -568,6 +651,7 @@ def _make_boundary_chain_from_positions(
             tangents_local=np.empty((0, 2), dtype=np.float64),
             mean_heading_change_rad=float("inf"),
             forward_extent_m=0.0,
+            rejected_reasons_by_filtered_index=dict(rejected_reasons_by_filtered_index or {}),
         )
     filtered_indices = side_indices[chain_positions]
     global_points = filtered_points[filtered_indices]
@@ -586,6 +670,7 @@ def _make_boundary_chain_from_positions(
         tangents_local=tangents_local,
         mean_heading_change_rad=mean_heading_change,
         forward_extent_m=forward_extent,
+        rejected_reasons_by_filtered_index=dict(rejected_reasons_by_filtered_index or {}),
     )
 
 
@@ -650,6 +735,14 @@ def _build_corridor(
     rungs_global = np.empty((anchors_local.shape[0], 2, 2), dtype=np.float64)
     rungs_global[:, 0, :] = left_global
     rungs_global[:, 1, :] = right_global
+    audit_left_local = np.asarray(chosen["audit_left_local"], dtype=np.float64)
+    audit_right_local = np.asarray(chosen["audit_right_local"], dtype=np.float64)
+    audit_anchors_local = np.asarray(chosen["audit_anchors_local"], dtype=np.float64)
+    audit_left_global = _from_vehicle_frame(audit_left_local, vehicle_xy, vehicle_yaw)
+    audit_right_global = _from_vehicle_frame(audit_right_local, vehicle_xy, vehicle_yaw)
+    audit_rungs_global = np.empty((audit_anchors_local.shape[0], 2, 2), dtype=np.float64)
+    audit_rungs_global[:, 0, :] = audit_left_global
+    audit_rungs_global[:, 1, :] = audit_right_global
 
     return {
         "x_local": anchors_local[:, 0].copy(),
@@ -660,6 +753,10 @@ def _build_corridor(
         "anchors_global": anchors_global,
         "centerline_global": centerline_global,
         "rungs_global": rungs_global,
+        "audit_anchors_local": audit_anchors_local,
+        "audit_widths_m": np.asarray(chosen["audit_widths_m"], dtype=np.float64),
+        "audit_reasons": list(chosen["audit_reasons"]),
+        "audit_rungs_global": audit_rungs_global,
     }
 
 
@@ -674,16 +771,24 @@ def _build_corridor_candidate(
         return None
 
     widths = np.hypot(left_local[:, 0] - right_local[:, 0], left_local[:, 1] - right_local[:, 1])
-    valid_mask = _corridor_valid_mask(
+    raw_valid_mask = _corridor_valid_mask(
         left_local=left_local,
         right_local=right_local,
         widths=widths,
         config=config,
     )
-    valid_mask = _fill_small_invalid_gaps(valid_mask, max_gap=1)
+    valid_mask = _fill_small_invalid_gaps(raw_valid_mask, max_gap=1)
     valid_slice = _longest_valid_slice(valid_mask)
     if valid_slice is None:
         return None
+    audit_reasons = _corridor_pair_audit_reasons(
+        left_local=left_local,
+        right_local=right_local,
+        widths=widths,
+        raw_valid_mask=raw_valid_mask,
+        accepted_slice=valid_slice,
+        config=config,
+    )
 
     left_valid = np.asarray(left_local[valid_slice], dtype=np.float64)
     right_valid = np.asarray(right_local[valid_slice], dtype=np.float64)
@@ -734,6 +839,15 @@ def _build_corridor_candidate(
         "prior_lateral_mean_m": float(prior_alignment["lateral_mean_m"]),
         "prior_lateral_max_m": float(prior_alignment["lateral_max_m"]),
         "prior_heading_delta_rad": float(prior_alignment["heading_delta_rad"]),
+        "audit_left_local": np.asarray(left_local, dtype=np.float64),
+        "audit_right_local": np.asarray(right_local, dtype=np.float64),
+        "audit_anchors_local": 0.5
+        * (
+            np.asarray(left_local, dtype=np.float64)
+            + np.asarray(right_local, dtype=np.float64)
+        ),
+        "audit_widths_m": np.asarray(widths, dtype=np.float64),
+        "audit_reasons": audit_reasons,
     }
 
 
@@ -781,6 +895,50 @@ def _corridor_valid_mask(
     valid_mask &= left_local[:, 0] <= float(config.planning_horizon_m)
     valid_mask &= right_local[:, 0] <= float(config.planning_horizon_m)
     return valid_mask
+
+
+def _corridor_pair_audit_reasons(
+    *,
+    left_local: np.ndarray,
+    right_local: np.ndarray,
+    widths: np.ndarray,
+    raw_valid_mask: np.ndarray,
+    accepted_slice: slice,
+    config: CorridorPlannerConfig,
+) -> list[str]:
+    accepted = np.zeros((len(widths),), dtype=bool)
+    accepted[accepted_slice] = True
+    reasons: list[str] = []
+    for idx in range(len(widths)):
+        if bool(accepted[idx]):
+            reasons.append("pair_valid")
+            continue
+        left = np.asarray(left_local[idx], dtype=np.float64)
+        right = np.asarray(right_local[idx], dtype=np.float64)
+        width = float(widths[idx])
+        if (
+            not math.isfinite(width)
+            or not np.all(np.isfinite(left))
+            or not np.all(np.isfinite(right))
+        ):
+            reasons.append("pair_nonfinite")
+        elif width < float(config.min_corridor_width_m):
+            reasons.append("pair_width_too_narrow")
+        elif width > float(config.max_corridor_width_m):
+            reasons.append("pair_width_too_wide")
+        elif float(left[0]) < -float(config.behind_drop_m):
+            reasons.append("pair_left_behind")
+        elif float(right[0]) < -float(config.behind_drop_m):
+            reasons.append("pair_right_behind")
+        elif float(left[0]) > float(config.planning_horizon_m):
+            reasons.append("pair_left_beyond_horizon")
+        elif float(right[0]) > float(config.planning_horizon_m):
+            reasons.append("pair_right_beyond_horizon")
+        elif bool(raw_valid_mask[idx]):
+            reasons.append("pair_not_in_longest_valid_slice")
+        else:
+            reasons.append("pair_rejected_unknown")
+    return reasons
 
 
 def _fill_small_invalid_gaps(valid_mask: np.ndarray, max_gap: int) -> np.ndarray:
@@ -1424,16 +1582,57 @@ def _result_with_metadata(
     result: CorridorPlannerResult,
     left_chain: _BoundaryChain,
     right_chain: _BoundaryChain,
+    filtered_track_ids: Optional[np.ndarray] = None,
     planner_mode: str,
     filtered_track_width_m: float,
 ) -> CorridorPlannerResult:
+    track_ids = (
+        np.asarray(filtered_track_ids, dtype=np.int64)
+        if filtered_track_ids is not None
+        else None
+    )
     result.left_chain_length = int(left_chain.filtered_indices.size)
     result.right_chain_length = int(right_chain.filtered_indices.size)
     result.left_boundary = left_chain.global_points
     result.right_boundary = right_chain.global_points
+    result.raw_left_chain_points = left_chain.global_points
+    result.raw_right_chain_points = right_chain.global_points
+    if track_ids is not None and track_ids.size > 0:
+        result.used_left_track_ids = np.asarray(
+            track_ids[left_chain.filtered_indices],
+            dtype=np.int64,
+        )
+        result.used_right_track_ids = np.asarray(
+            track_ids[right_chain.filtered_indices],
+            dtype=np.int64,
+        )
+        result.chain_rejection_reasons_by_track_id = _chain_rejection_reasons_by_track_id(
+            filtered_track_ids=track_ids,
+            left_chain=left_chain,
+            right_chain=right_chain,
+        )
     result.planner_mode = planner_mode
     result.filtered_track_width_m = float(filtered_track_width_m)
     return result
+
+
+def _chain_rejection_reasons_by_track_id(
+    *,
+    filtered_track_ids: np.ndarray,
+    left_chain: _BoundaryChain,
+    right_chain: _BoundaryChain,
+) -> dict[int, str]:
+    track_ids = np.asarray(filtered_track_ids, dtype=np.int64)
+    out: dict[int, str] = {}
+    for filtered_idx, reason in left_chain.rejected_reasons_by_filtered_index.items():
+        idx = int(filtered_idx)
+        if 0 <= idx < track_ids.size:
+            out[int(track_ids[idx])] = str(reason)
+    for filtered_idx, reason in right_chain.rejected_reasons_by_filtered_index.items():
+        idx = int(filtered_idx)
+        if 0 <= idx < track_ids.size:
+            out[int(track_ids[idx])] = str(reason)
+    return out
 
 
 def _clamp(value: float, lower: float, upper: float) -> float:
