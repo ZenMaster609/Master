@@ -1,81 +1,131 @@
 # Vehicle Plotter
 
-`vehicle_plotter` is the plotting and logging package used by the sim.
+`vehicle_plotter` owns run sessions, live virtual-sensor plotting, vehicle-state logging, rosbag control, cone RMSE artifacts, controller diagnostics, and path-tracking evaluation.
 
-## What it does
+It does not generate the sensor values. It consumes measured simulation topics and planner/controller outputs, then turns them into runtime dashboards and files under `multidata/`.
 
-- Builds the live sensor dashboard for the virtual sensor stack
-- Aggregates measured `/sim/*` topics into `vehicle_plotter/state` when sensor plotting is enabled
-- Saves one offline dashboard image on shutdown: `multidata/<run_id>/plots/virtual_sensors.png`
-- Saves per-plot CSV files under `multidata/<run_id>/logs/`
-- Runs the live cone RMSE window
-- Runs the live controller diagnostics window
-- Logs cone RMSE samples and controller diagnostics artifacts
+## Main Runtime Pieces
 
-## Main runtime pieces
+### `session_manager_node`
 
-- `plotter_node`
-  - Used for the sensor dashboard
-  - Reads measured sensor topics directly
-  - Publishes `vehicle_plotter/state`
-  - Saves `virtual_sensors.png` on shutdown
-- `cone_rmse_plot_node`
-  - Shows camera and lidar cone RMSE live
-  - Uses raw evaluator outputs
-  - Is not affected by `measurement_node`
-- `controller_diagnostics_plot_node`
-  - Shows live controller diagnostics
-- `logger_node`
-  - Writes CSV/parquet/session artifacts
-  - Writes cone RMSE sample logs
-  - Writes controller diagnostics summaries
-- `session_manager_node`
-  - Creates the `multidata/<run_id>/` session folders
+Creates a run session and publishes it on `/run_session`. Other nodes use this to agree on one run directory.
 
-## Sensor pipeline
+Default layout:
 
-The intended sim path is:
+`multidata/<run_id>/`
 
-`sensor nodes -> measurement_node -> vehicle_plotter`
+Session subdirectories:
 
-More explicitly:
+- `logs/`: parquet/CSV logs and summaries
+- `rosbags/`: rosbag recordings
+- `plots/`: generated PNG plots
+- `configs/`: copied launch/config snapshots
 
-- virtual sensor nodes publish `/sim/raw/*`
-- `measurement_node` adds noise / latency and republishes to `/sim/*`
-- `plotter_node` reads `/sim/*`
-- `plotter_node` publishes `vehicle_plotter/state`
-- `logger_node` stores artifacts for the run
+### `plotter_node`
 
-## Launch behavior
+Aggregates measured `/sim/...` topics through the Gazebo adapter, builds `VehicleState`, publishes `/vehicle_plotter/state`, and maintains live dashboard buffers.
+
+On shutdown, it can export:
+
+`plots/virtual_sensors.png`
+
+This node starts only when state logging/dashboard support is enabled by the launch include. In `full_sim_launch.launch.py`, `sensor_pipeline:=true` enables the plotter launch path.
+
+### `logger_node`
+
+Writes run artifacts. It can subscribe to `/vehicle_plotter/state` and write vehicle-state logs in parquet or CSV format. In the full sim launch, it is also started directly for diagnostics and evaluation artifacts.
+
+Current logger responsibilities include:
+
+- `vehicle_state_0000.parquet` or CSV vehicle-state chunks
+- `metadata.json`
+- cone range-RMSE sample CSVs
+- steering tracking diagnostics
+- thesis controller diagnostics
+- path tracking evaluation CSVs and summaries
+- offline plots on shutdown
+
+The logger can run without subscribing to `/vehicle_plotter/state`, which is useful when only controller/path/cone diagnostics are needed.
+
+### `rosbag_controller_node`
+
+Starts rosbag recording for the active run session when rosbagging is enabled. It waits for `/run_session` so the bag lands in the same session directory as the logs and plots.
+
+## Launch Behavior
 
 In `sim_car/launch/full_sim_launch.launch.py`:
 
-- `sensor_pipeline:=true`
-  - starts the virtual sensor nodes
-  - starts `measurement_node`
-  - starts the main sensor dashboard in `vehicle_plotter`
-- `sensor_pipeline:=false`
-  - does not start the main sensor dashboard
-  - does not publish `vehicle_plotter/state`
+- `sensor_pipeline:=true` starts raw sensor nodes, `measurement_node`, and the `vehicle_plotter` launch include.
+- `logging:=true` enables the direct full-sim logger node.
+- `rosbagging:=true` enables rosbag recording through the plotter launch include.
+- `controller_diagnostics:=true` enables steering-tracking diagnostics artifacts.
+- `thesis_controller_diagnostics:=true` enables the wider thesis-oriented controller diagnostics.
+- `path_tracking_eval:=true` enables path-vs-ground-truth evaluation. This is currently true by default in the full sim launch.
 
-The cone RMSE and controller diagnostics windows are separate from the main sensor dashboard and can run independently.
+The old standalone live cone RMSE and controller diagnostics window names are not current console scripts. Cone RMSE and controller diagnostics are now handled through evaluator output, logger subscriptions, CSV summaries, and generated plots.
 
-## Output files
+## Sensor Pipeline
 
-Typical session output:
+The intended sensor data path is:
 
-- `multidata/<run_id>/plots/virtual_sensors.png`
-- `multidata/<run_id>/logs/*.csv`
-- `multidata/<run_id>/logs/vehicle_state_0000.parquet`
-- `multidata/<run_id>/logs/cone_range_rmse_samples.csv`
-- `multidata/<run_id>/logs/cone_range_rmse_samples_lidar.csv`
+`raw sensor nodes -> measurement_node -> measured /sim topics -> plotter_node -> /vehicle_plotter/state -> logger_node`
 
-## Common commands
+`plotter_node` reads measured topics, not raw topics, when the sensor pipeline is active. This keeps the dashboard aligned with the sensor values the rest of the stack is expected to consume.
+
+## Cone RMSE Artifacts
+
+Camera and LiDAR cone evaluators publish sample streams. `logger_node` subscribes to the configured camera and LiDAR eval prefixes and writes source-specific CSV files on shutdown.
+
+Typical files:
+
+- `logs/cone_range_rmse_samples_mono.csv`
+- `logs/cone_range_rmse_samples_stereo.csv`
+- `logs/cone_range_rmse_samples_lidar.csv`
+- `plots/cone_range_rmse_mono.png`
+- `plots/cone_range_rmse_stereo.png`
+- `plots/cone_range_rmse_lidar.png`
+
+Only files for sources with samples are produced.
+
+## Controller And Path Evaluation Artifacts
+
+Controller diagnostics can write:
+
+- `logs/steering_tracking_diagnostics.csv`
+- `logs/steering_tracking_summary.json`
+- `logs/steering_tracking_summary.txt`
+- `plots/stanley_debug_plots.png`
+
+Thesis controller diagnostics can write:
+
+- `logs/thesis_controller_diagnostics.csv`
+- `logs/thesis_controller_diagnostics_summary.json`
+- `logs/thesis_controller_diagnostics_summary.txt`
+- `plots/thesis_controller_diagnostics.png`
+- corridor oscillation summaries and plot when applicable
+
+Path tracking evaluation can write:
+
+- `logs/path_tracking_eval.csv`
+- `logs/path_tracking_eval_summary.json`
+- `logs/path_tracking_eval_summary.txt`
+- `plots/path_tracking_eval_cte.png`
+- `plots/path_tracking_eval_overlay.png`
+
+## Run IDs
+
+`full_sim_launch.launch.py` builds a compact run prefix from selected track, planner, controller, and LiDAR pipeline. For example, a smalltrack midpoint pure-pursuit run with 3D LiDAR gets a prefix like:
+
+`small_mid_pp_3d`
+
+The session manager adds the timestamp to make the final `run_id`.
+
+## Useful Commands
 
 Build:
 
 ```bash
-cd ~/ros2_ws && colcon build --symlink-install --packages-select sim_car vehicle_plotter
+cd ~/ros2_ws && colcon build --symlink-install --packages-select vehicle_plotter vehicle_plotter_msgs sim_car
 ```
 
 Source:
@@ -84,23 +134,23 @@ Source:
 cd ~/ros2_ws && source install/setup.bash
 ```
 
-Launch with the full sensor pipeline:
+Launch the full sensor dashboard path:
 
 ```bash
 cd ~/ros2_ws && ros2 launch sim_car full_sim_launch.launch.py sensor_pipeline:=true
 ```
 
-## About the prefix path warnings
+Launch with logging and rosbagging:
 
-Warnings like:
+```bash
+cd ~/ros2_ws && ros2 launch sim_car full_sim_launch.launch.py logging:=true rosbagging:=true
+```
 
-- missing `install/vectornav_decoder`
-- missing `install/measurement_node`
-- missing `install/canbus_decoder`
+## Prefix Path Warnings
 
-mean the current shell still has old workspace paths in `AMENT_PREFIX_PATH` or `CMAKE_PREFIX_PATH`.
+Warnings about missing old packages in `AMENT_PREFIX_PATH` or `CMAKE_PREFIX_PATH` mean the shell has stale sourced workspace paths.
 
-The current workspace setup is clean. If you see those warnings, reset the shell environment and source the current workspace again:
+Reset and source again:
 
 ```bash
 cd ~/ros2_ws && unset AMENT_PREFIX_PATH CMAKE_PREFIX_PATH COLCON_PREFIX_PATH

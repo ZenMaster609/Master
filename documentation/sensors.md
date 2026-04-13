@@ -1,158 +1,86 @@
-# Sensors in `sim_car`
+# Sensors In `sim_car`
 
-This document explains the purpose and structure of the code in `sim_car/sim_car/sensors`.
+The `sim_car` sensor package creates a two-layer virtual sensor pipeline:
 
-The goal of this package is to create a simple virtual sensor pipeline for the simulator:
+`simulated state or simple model -> /sim/raw/... -> measurement_node -> /sim/...`
 
-`Gazebo / simulated vehicle state -> raw sensor topics -> measurement node -> measured topics`
+Raw topics are idealized sensor values. Measured topics are the same values after configurable rate limiting, latency, noise, dropout, bias, bias drift, and saturation.
 
-The raw topics represent the idealized sensor outputs produced directly from simulation or simple physical models. The measurement node then converts those raw signals into more realistic measured signals by adding effects such as latency and noise.
+## Launch Modes
 
-## Overall idea
+The full sim launch has three relevant switches:
 
-The sensor package contains two main kinds of components:
+- `sensor_nodes:=true`: start the raw virtual sensor nodes.
+- `measure:=true`: start `measurement_node` and make the stack use `/sim/raw` inputs where applicable.
+- `sensor_pipeline:=true`: enable both raw sensor nodes and measurement together, and start the vehicle plotter state dashboard.
 
-- sensor nodes that generate or derive raw sensor values on `/sim/raw/...`
-- a measurement node that republishes those signals on `/sim/...` with configurable imperfections
+In normal sensor-pipeline runs, raw nodes publish under `/sim/raw/...`, `measurement_node` republishes under `/sim/...`, and downstream logging/plotting reads the measured topics.
 
-This separation is useful because it keeps the physical meaning of the raw signals clear, while still making it possible to simulate measurement quality separately.
+## Enabled Sensors
 
-## Main groups of sensors
+Sensor enablement and measurement behavior come from:
 
-The package currently covers these groups of signals:
+`sim_car/config/sensor_config.yaml`
 
-- wheel encoder signals
+The launch file reads this config before creating raw sensor nodes. If all signals associated with a sensor are disabled, that raw sensor node is not started.
+
+The current sensor groups are:
+
+- odometry measurement pass-through from `/sim/raw/odom` to `/sim/odom`
+- wheel encoder RPM and wheel speed
 - suspension travel
 - steering angle
-- cooling system signals
-- brake temperatures
+- cooling water pressure, flow, inlet temperature, and outlet temperature
+- front-right and rear-left brake temperatures
 - pitot dynamic pressure
+- disabled placeholders for IMU and NavSat-style signals
 
-Some of these are derived almost directly from simulator topics, while others are generated from simplified physical models.
+The IMU and NavSat entries in `sensor_config.yaml` are currently configuration placeholders. They are not backed by raw sensor nodes in the current `nodes.launch.py`.
 
-## Topic structure
+## Topic Pattern
 
-The package follows a consistent topic naming pattern:
+The package uses a consistent topic convention:
 
-- `/sim/raw/...` means the raw, idealized signal
-- `/sim/...` means the measured signal after the measurement node has processed it
+- `/sim/raw/...`: idealized value from Gazebo or a simplified model.
+- `/sim/...`: measured value after `measurement_node`.
 
 Examples:
 
 - `/sim/raw/wheel_encoder/rpm` -> `/sim/wheel_encoder/rpm`
+- `/sim/raw/wheel_encoder/speed_mm_s` -> `/sim/wheel_encoder/speed_mm_s`
 - `/sim/raw/suspension` -> `/sim/suspension`
+- `/sim/raw/steering_angle` -> `/sim/steering_angle`
 - `/sim/raw/cooling/water_pressure` -> `/sim/cooling/water_pressure`
+- `/sim/raw/brakes/temp_fr` -> `/sim/brakes/temp_fr`
+- `/sim/raw/pitot/dynamic_pressure` -> `/sim/pitot/dynamic_pressure`
 
-This makes it easy to distinguish between the clean simulated value and the value that the rest of the stack should treat as a sensor measurement.
+## Raw Sensor Nodes
 
-## Two layers in the package
+Raw sensor nodes are launched by `sim_car/launch/nodes.launch.py`.
 
-### 1. Raw sensor generation
+### Wheel Encoder
 
-The raw sensor nodes publish the idealized signal. Different nodes do this in different ways:
+`wheel_encoder_node.py` reads Gazebo joint states and converts wheel rotation into:
 
-- some use Gazebo outputs directly and convert them into a more useful form
-- some use a simplified model of the physical system and publish a plausible sensor value
+- accumulated wheel angle
+- wheel RPM
+- wheel linear speed in mm/s
 
-For example:
+The wheel outputs are four-element arrays ordered front-left, front-right, rear-left, rear-right.
 
-- `wheel_encoder_node.py` reads wheel joint states and converts wheel rotation into RPM and linear wheel speed
-- `suspension_sensor_node.py` can either read suspension joint positions directly or synthesize suspension travel from vehicle dynamics
-- the cooling, brake, and pitot sensors use a small internal model to produce values that change with vehicle motion and control input
+### Suspension
 
-### 2. Measurement effects
+`suspension_sensor_node.py` publishes four suspension travel values. The current launch uses synthetic mode, which estimates suspension movement from vehicle motion rather than reading real suspension joints.
 
-`measurement_node.py` sits after the raw sensor nodes. It subscribes to configured `/sim/raw/...` topics and republishes them to `/sim/...`.
+Synthetic mode is intentionally simple. It reacts to acceleration, braking, and cornering through pitch and roll gains so the signal behaves plausibly in plots without being a detailed suspension simulation.
 
-Its job is to apply measurement effects such as:
+### Steering
 
-- latency
-- output rate limiting
-- random dropout
-- Gaussian noise
-- constant bias
-- bias random walk
-- saturation limits
+`steering_sensor_node.py` publishes steering angle on the raw steering topic. Its node-level parameters include publish rate, noise, latency, bias, and dropout, then `measurement_node` can also apply the configured measurement effects.
 
-This means the raw sensor node is responsible for the physical value, while the measurement node is responsible for the quality of that value as a sensor reading.
+### Cooling, Brake, And Pitot Sensors
 
-## Important files
-
-### `measurement_node.py`
-
-This is the central node for measurement modeling.
-
-It loads a YAML configuration and creates one processor per signal. Each processor:
-
-- subscribes to the raw topic
-- buffers incoming messages
-- delays them according to the configured latency
-- optionally drops samples
-- modifies the message fields according to the configured noise and bias model
-- republishes the result on the measured topic
-
-The design is generic enough to support both simple scalar topics and structured ROS messages such as odometry or IMU messages.
-
-### `virtual_sensors_model.py`
-
-This file contains the simplified physical model used by several virtual sensor nodes.
-
-It is not a ROS node itself. Instead, it stores internal state and updates values such as:
-
-- water temperatures
-- water pressure
-- water flow
-- brake temperatures
-- pitot pressure
-
-The model is driven mainly by:
-
-- vehicle speed
-- commanded acceleration or braking
-- ambient temperature
-
-This file provides the shared logic so that multiple nodes can use the same underlying sensor model.
-
-### `virtual_sensors_base.py`
-
-This is a helper base class for simple single-output virtual sensor nodes.
-
-It reduces duplication for nodes that:
-
-- subscribe to odometry and command topics
-- update the shared virtual sensor model
-- publish one scalar sensor output
-
-In practice, this makes the individual sensor nodes shorter and easier to maintain.
-
-### `wheel_encoder_node.py`
-
-This node derives wheel encoder signals from the wheel joint states.
-
-Its main steps are:
-
-- subscribe to raw joint states from Gazebo
-- track wheel rotation over time
-- unwrap wheel angle changes
-- compute average rotational speed
-- publish RPM and linear wheel speed
-
-It publishes one value per wheel, so the output is a four-element array for front-left, front-right, rear-left, and rear-right.
-
-### `suspension_sensor_node.py`
-
-This node publishes four suspension travel values.
-
-It supports two modes:
-
-- `joint_states`: use the suspension joint positions directly
-- `synthetic`: estimate suspension movement from longitudinal and lateral vehicle dynamics
-
-The synthetic mode is useful when the goal is not exact suspension physics, but a plausible signal that reacts to braking, acceleration, and cornering.
-
-### Single-sensor nodes
-
-The package also contains small dedicated nodes such as:
+The small virtual sensor nodes are:
 
 - `water_pressure_node.py`
 - `water_flow_node.py`
@@ -161,74 +89,73 @@ The package also contains small dedicated nodes such as:
 - `brake_temp_fr_node.py`
 - `brake_temp_rl_node.py`
 - `pitot_dynamic_pressure_node.py`
-- `steering_sensor_node.py`
 
-These nodes follow the same general pattern:
+They share model logic from `virtual_sensors_model.py` through `virtual_sensors_base.py`.
 
-- read the relevant simulator or model inputs
-- compute one physical quantity
-- publish that quantity on a raw topic
+The model is physics-inspired, not high fidelity:
 
-Splitting them into separate nodes makes the pipeline easier to inspect and launch.
+- cooling pressure and flow increase with speed and throttle-like demand
+- water temperatures change gradually through heating and cooling terms
+- brake temperatures rise during braking and cool with airflow/ambient cooling
+- pitot dynamic pressure follows vehicle speed
 
-## How the modeled sensors work
+The old combined virtual sensor node and old radiator-temperature node are no longer part of the current package.
 
-The modeled sensors are not intended to be high-fidelity physical simulations. They are simplified, physics-inspired approximations.
+## Measurement Node
 
-For example:
+`measurement_node.py` is the generic measurement-effect layer. It reads each enabled non-`plot_only` signal from `sensor_config.yaml`, subscribes to the configured input topic, and publishes to the configured output topic.
 
-- water pressure and flow increase with speed and throttle
-- water temperatures evolve gradually based on heating and cooling dynamics
-- brake temperatures rise under braking and cool down with airflow and ambient cooling
-- pitot pressure is computed from dynamic pressure, which depends on vehicle speed
+For each signal, the config can set:
 
-This is a practical compromise: the values react in a believable way without requiring a full thermal or fluid simulation.
+- `msg_type`
+- `rate_hz`
+- `latency_ms`
+- `dropout_prob`
+- `noise_std`
+- `bias_init`
+- `bias_rw_std`
+- `saturation_min`
+- `saturation_max`
+- message-field-specific noise for structured messages
 
-## How measurement effects are configured
+This lets the raw sensor node stay focused on the physical value while the YAML config controls how realistic or imperfect the measured value should be.
 
-The measurement behavior is configured in `sim_car/config/sensor_config.yaml`.
+## Plot-Only Signals
 
-For each signal, the config can define:
+Some entries in `sensor_config.yaml` are marked `plot_only: true`. These do not create measurement processors. They tell the plotting layer how to derive extra plot channels from existing messages, such as position, velocity, and yaw from odometry.
 
-- input topic
-- output topic
-- message type
-- publish rate
-- latency
-- dropout probability
-- noise standard deviation
-- bias and bias random walk
-- saturation limits
+## Practical Data Flow
 
-Because this configuration is external, the same raw sensor generation code can be reused while easily changing how realistic or noisy the measured signals should be.
+With `sensor_pipeline:=true`:
 
-## Practical data flow in the project
+1. Gazebo and raw sensor nodes publish idealized `/sim/raw/...` topics.
+2. `measurement_node` applies configured imperfections.
+3. Measured `/sim/...` topics are consumed by `vehicle_plotter`.
+4. `plotter_node` publishes `/vehicle_plotter/state`.
+5. `logger_node` writes run artifacts if logging is enabled.
 
-In the current simulation setup, the intended path is:
+This split is useful for debugging:
 
-1. Gazebo or a simple internal model produces the raw quantity.
-2. A sensor node publishes it on `/sim/raw/...`.
-3. `measurement_node` applies imperfections and republishes on `/sim/...`.
-4. `vehicle_plotter` and the rest of the stack consume the measured topics.
+- wrong raw value: inspect the raw sensor node or model
+- wrong delay/noise/dropout: inspect `sensor_config.yaml` or `measurement_node`
+- wrong dashboard/log value: inspect `vehicle_plotter` adapters and logging
 
-This keeps the architecture easy to understand:
+## Useful Commands
 
-- sensor nodes create the value
-- measurement node degrades the value
-- downstream nodes use the degraded value as the sensor reading
+Build:
 
-## Why this structure is useful
+```bash
+cd ~/ros2_ws && colcon build --symlink-install --packages-select sim_car vehicle_plotter vehicle_plotter_msgs
+```
 
-From a system-design point of view, the package separates three different concerns:
+Source:
 
-- physical signal generation
-- sensor measurement quality
-- downstream use of the signal
+```bash
+cd ~/ros2_ws && source install/setup.bash
+```
 
-That makes it easier to explain and reason about the system:
+Launch the full sensor pipeline:
 
-- if the value itself is wrong, the issue is likely in the raw sensor node or model
-- if the value is delayed or noisy, the issue is likely in the measurement configuration
-- if the signal is plotted or consumed incorrectly, the issue is downstream
-
-This separation is one of the main strengths of the current sensor package, even though the implementation has been simplified compared to the earlier, more modular version.
+```bash
+cd ~/ros2_ws && ros2 launch sim_car full_sim_launch.launch.py sensor_pipeline:=true
+```
