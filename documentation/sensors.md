@@ -125,18 +125,6 @@ It reduces duplication for nodes that:
 
 In practice, this makes the individual sensor nodes shorter and easier to maintain.
 
-### `virtual_sensors_node.py`
-
-This is an older combined node that can publish several virtual sensor signals from one process.
-
-Functionally, it groups together:
-
-- cooling signals
-- brake temperature signals
-- pitot pressure
-
-The current architecture also has separate dedicated nodes for these signals. The dedicated-node approach is easier to reason about in launch files and makes each sensor more explicit.
-
 ### `wheel_encoder_node.py`
 
 This node derives wheel encoder signals from the wheel joint states.
@@ -170,7 +158,6 @@ The package also contains small dedicated nodes such as:
 - `water_flow_node.py`
 - `water_temp_in_node.py`
 - `water_temp_out_node.py`
-- `water_temp_radiator_node.py`
 - `brake_temp_fr_node.py`
 - `brake_temp_rl_node.py`
 - `pitot_dynamic_pressure_node.py`

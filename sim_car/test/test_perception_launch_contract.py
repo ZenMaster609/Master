@@ -281,8 +281,8 @@ def test_track_bundle_loads_track_spawn_defaults():
 def test_track_bundle_loads_track_speed_control_defaults():
     expected = {
         'acceleration': {
-            'speed_min_mps': 4.17,
-            'speed_max_mps': 4.17,
+            'speed_min_mps': 6.17,
+            'speed_max_mps': 6.17,
             'curvature_speed_gain': 4.0,
             'lowpass_speed_alpha': 0.15,
         },
@@ -498,7 +498,7 @@ def test_controller_configs_match_expected_sparse_overrides():
         ('acceleration', 'stanley'): {
             'control.controller_type': 'stanley',
             'stanley.k_gain': 1.2,
-            'stanley.heading_gain': 1.6,
+            'stanley.heading_gain': 0.0,
             'stanley.lookahead_idx_offset': 4,
         },
         ('acceleration', 'pure_pursuit'): {
