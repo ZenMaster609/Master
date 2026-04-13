@@ -295,7 +295,7 @@ def get_virtual_sensor_plots() -> PlotLayoutConfig:
 def get_all_plots() -> PlotLayoutConfig:
     """Get the live sensor dashboard layout."""
     return PlotLayoutConfig(
-        rows=5,
+        rows=4,
         cols=2,
         window_title="Vehicle Plotter",
         window_size=(1650, 1350),
@@ -354,21 +354,6 @@ def get_all_plots() -> PlotLayoutConfig:
                 buffer_size=1000,
             ),
             PlotConfig(
-                name="Wheel Encoder RPM",
-                plot_type="timeseries",
-                x_axis_type=XAxisType.TIME,
-                series=[
-                    SeriesConfig(name="FL", variable="encoder_velocities[0]", color="#2ca02c"),
-                    SeriesConfig(name="FR", variable="encoder_velocities[1]", color="#d62728"),
-                    SeriesConfig(name="RL", variable="encoder_velocities[2]", color="#9467bd"),
-                    SeriesConfig(name="RR", variable="encoder_velocities[3]", color="#8c564b"),
-                ],
-                y_axis=AxisConfig(label="Wheel RPM", unit="RPM"),
-                row=2, col=0,
-                buffer_size=1000,
-                show_legend=True,
-            ),
-            PlotConfig(
                 name="Water Flow + Pressure",
                 plot_type="timeseries",
                 x_axis_type=XAxisType.TIME,
@@ -377,7 +362,7 @@ def get_all_plots() -> PlotLayoutConfig:
                     SeriesConfig(name="Water Pressure", variable="water_pressure", color="#ff7f0e"),
                 ],
                 y_axis=AxisConfig(label="Flow / Pressure", unit="L/min | bar"),
-                row=2, col=1,
+                row=2, col=0,
                 buffer_size=1000,
             ),
             PlotConfig(
@@ -389,7 +374,7 @@ def get_all_plots() -> PlotLayoutConfig:
                     SeriesConfig(name="Water Temp Out", variable="water_temp_out", color="#d62728"),
                 ],
                 y_axis=AxisConfig(label="Temperature", unit="C"),
-                row=3, col=0,
+                row=2, col=1,
                 buffer_size=1000,
                 show_legend=True,
             ),
@@ -404,20 +389,9 @@ def get_all_plots() -> PlotLayoutConfig:
                     SeriesConfig(name="RR", variable="suspension[3]", color="#8c564b", scale=1000.0),
                 ],
                 y_axis=AxisConfig(label="Suspension", unit="mm"),
-                row=3, col=1,
+                row=3, col=0,
                 buffer_size=1000,
                 show_legend=True,
-            ),
-            PlotConfig(
-                name="Steering Sensor",
-                plot_type="timeseries",
-                x_axis_type=XAxisType.TIME,
-                series=[
-                    SeriesConfig(name="Steering", variable="steering_angle", color="#17becf"),
-                ],
-                y_axis=AxisConfig(label="Angle", unit="deg"),
-                row=4, col=0,
-                buffer_size=1000,
             ),
             PlotConfig(
                 name="Brake Temps",
@@ -428,7 +402,7 @@ def get_all_plots() -> PlotLayoutConfig:
                     SeriesConfig(name="Rear Left", variable="brake_temp_rl", color="#9467bd"),
                 ],
                 y_axis=AxisConfig(label="Temperature", unit="C"),
-                row=4, col=1,
+                row=3, col=1,
                 buffer_size=1000,
                 show_legend=True,
             ),

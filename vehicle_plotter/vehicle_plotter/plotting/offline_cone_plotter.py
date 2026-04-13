@@ -12,6 +12,13 @@ matplotlib.use('Agg')
 import matplotlib.pyplot as plt
 import numpy as np
 
+from .matplotlib_fonts import (
+    CONE_STATS_FONTSIZE,
+    LEGEND_FONTSIZE,
+    SUPTITLE_FONTSIZE,
+    apply_axis_label_fontsize,
+    apply_tick_label_fontsize,
+)
 from .range_rmse_analyzer import RangeRMSEAnalyzer, RangeRMSEBinStats
 
 
@@ -155,7 +162,7 @@ class OfflineConePlotter:
             figsize=(10.0, 7.0),
             gridspec_kw={'height_ratios': [3, 1]},
         )
-        fig.suptitle(f'{title} Cone Range-Binned RMSE', fontsize=14)
+        fig.suptitle(f'{title} Cone Range-Binned RMSE', fontsize=SUPTITLE_FONTSIZE)
         ax_top_pct = ax_top.twinx()
 
         if has_data:
@@ -178,7 +185,12 @@ class OfflineConePlotter:
                 )
             handles = ax_top.get_lines() + ax_top_pct.get_lines()
             if handles:
-                ax_top.legend(handles=handles, loc='upper left', bbox_to_anchor=(0.0, 0.88))
+                ax_top.legend(
+                    handles=handles,
+                    loc='upper left',
+                    bbox_to_anchor=(0.0, 0.88),
+                    fontsize=LEGEND_FONTSIZE,
+                )
         else:
             ax_top.text(
                 0.5,
@@ -199,6 +211,10 @@ class OfflineConePlotter:
         ax_top.set_xlim(float(bin_centers[0] - 0.5), float(bin_centers[-1] + 0.5))
         ax_top.set_ylabel('RMSE (m)')
         ax_top_pct.set_ylabel('RMSE (%)')
+        apply_axis_label_fontsize(ax_top)
+        apply_axis_label_fontsize(ax_top_pct)
+        apply_tick_label_fontsize(ax_top)
+        apply_tick_label_fontsize(ax_top_pct)
         ax_top.grid(True, alpha=0.3)
 
         finite_rmse = rmse[np.isfinite(rmse)]
@@ -209,13 +225,9 @@ class OfflineConePlotter:
             max(0.1, float(np.max(finite_rmse_pct)) * 1.2) if finite_rmse_pct.size > 0 else 1.0,
         )
 
-        total_rmse_text = 'n/a' if total_rmse_pct is None else f'{float(total_rmse_pct):.2f}%'
-        sample_count = int(np.sum(counts))
-        top_lines = [
-            f'rmse_total={total_rmse_text}',
-            f'samples={sample_count}',
-        ]
         if show_classification:
+            total_rmse_text = 'n/a' if total_rmse_pct is None else f'{float(total_rmse_pct):.2f}%'
+            sample_count = int(np.sum(counts))
             correct_count = int(stats.correct_class_count)
             incorrect_count = int(stats.incorrect_class_count)
             total_classified = correct_count + incorrect_count
@@ -223,22 +235,26 @@ class OfflineConePlotter:
                 f'{(100.0 * float(correct_count) / float(total_classified)):.1f}%'
                 if total_classified > 0 else 'n/a'
             )
-            top_lines.append(f'accuracy={accuracy_text}')
-        ax_top.text(
-            0.98,
-            0.98,
-            '\n'.join(top_lines),
-            transform=ax_top.transAxes,
-            ha='right',
-            va='top',
-            fontsize=9,
-            bbox={
-                'boxstyle': 'round,pad=0.3',
-                'facecolor': 'white',
-                'edgecolor': '0.6',
-                'alpha': 0.85,
-            },
-        )
+            top_lines = [
+                f'rmse_total={total_rmse_text}',
+                f'samples={sample_count}',
+                f'accuracy={accuracy_text}',
+            ]
+            ax_top.text(
+                0.98,
+                0.98,
+                '\n'.join(top_lines),
+                transform=ax_top.transAxes,
+                ha='right',
+                va='top',
+                fontsize=CONE_STATS_FONTSIZE,
+                bbox={
+                    'boxstyle': 'round,pad=0.3',
+                    'facecolor': 'white',
+                    'edgecolor': '0.6',
+                    'alpha': 0.85,
+                },
+            )
 
         ax_bottom.bar(
             bin_centers,
@@ -250,6 +266,8 @@ class OfflineConePlotter:
         ax_bottom.set_xlim(float(bin_centers[0] - 0.5), float(bin_centers[-1] + 0.5))
         ax_bottom.set_xlabel('Ground-truth range (m)')
         ax_bottom.set_ylabel('Samples')
+        apply_axis_label_fontsize(ax_bottom)
+        apply_tick_label_fontsize(ax_bottom)
         ax_bottom.grid(True, alpha=0.3)
         ax_bottom.set_ylim(0.0, max(1.0, float(np.max(counts)) * 1.2) if counts.size > 0 else 1.0)
 

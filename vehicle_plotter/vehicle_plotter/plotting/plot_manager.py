@@ -14,10 +14,17 @@ import threading
 import csv
 
 from .plot_config import PlotConfig, PlotLayoutConfig, XAxisType, get_default_plots
+from .matplotlib_fonts import TICK_LABEL_FONTSIZE
 from .backends.base_backend import PlotBackend, DummyBackend
 from .backends.pyqtgraph_backend import PyQtGraphBackend
 from ..core.vehicle_state import VehicleState
 from ..utils.ring_buffer import RingBuffer
+
+
+STATIC_DASHBOARD_TICK_FONTSIZE = TICK_LABEL_FONTSIZE * 0.8
+STATIC_DASHBOARD_TITLE_FONTSIZE = 12.0 * 1.2
+STATIC_DASHBOARD_Y_LABEL_FONTSIZE = 10.0 * 1.3 * 1.2
+STATIC_DASHBOARD_BOTTOM_X_LABEL_FONTSIZE = 10.0 * 1.5 * 1.1
 
 
 class PlotManager:
@@ -254,8 +261,11 @@ class PlotManager:
 
                 x_data = buffers['x'].to_list()
                 if not x_data:
-                    ax.set_title(config.name)
+                    ax.set_title(config.name, fontsize=STATIC_DASHBOARD_TITLE_FONTSIZE)
                     ax.grid(config.show_grid, alpha=0.3)
+                    ax.set_xlabel(self._x_axis_label(config))
+                    ax.set_ylabel(self._y_axis_label(config))
+                    self._format_static_dashboard_axis_text(ax, config)
                     continue
 
                 for series in config.series:
@@ -279,10 +289,11 @@ class PlotManager:
                         linewidth=series.line_width,
                     )
 
-                ax.set_title(config.name)
+                ax.set_title(config.name, fontsize=STATIC_DASHBOARD_TITLE_FONTSIZE)
                 ax.grid(config.show_grid, alpha=0.3)
                 ax.set_xlabel(self._x_axis_label(config))
                 ax.set_ylabel(self._y_axis_label(config))
+                self._format_static_dashboard_axis_text(ax, config)
 
                 if config.plot_type == 'xy':
                     ax.set_aspect('equal', adjustable='datalim')
@@ -297,10 +308,23 @@ class PlotManager:
                     if handles:
                         ax.legend(loc='best', fontsize='small')
 
-        fig.suptitle(self.layout.window_title)
         fig.tight_layout()
         fig.savefig(path_obj, dpi=dpi, bbox_inches='tight')
         plt.close(fig)
+
+    def _format_static_dashboard_axis_text(self, ax, config: PlotConfig) -> None:
+        ax.tick_params(
+            axis='both',
+            which='both',
+            labelsize=STATIC_DASHBOARD_TICK_FONTSIZE,
+        )
+        ax.yaxis.label.set_size(STATIC_DASHBOARD_Y_LABEL_FONTSIZE)
+
+        is_bottom_row = config.row + config.row_span >= self.layout.rows
+        if is_bottom_row:
+            ax.xaxis.label.set_size(STATIC_DASHBOARD_BOTTOM_X_LABEL_FONTSIZE)
+        else:
+            ax.set_xlabel('')
 
     def export_data(self, output_dir: Path) -> Dict[str, Path]:
         """

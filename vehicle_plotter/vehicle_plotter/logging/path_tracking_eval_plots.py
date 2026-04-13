@@ -10,6 +10,14 @@ from typing import Optional
 import numpy as np
 
 from .path_tracking_eval import signed_cross_track_error
+from ..plotting.matplotlib_fonts import (
+    DEFAULT_TITLE_FONTSIZE,
+    LEGEND_FONTSIZE,
+    apply_axis_label_fontsize,
+    apply_tick_label_fontsize,
+)
+
+OVERLAY_LEGEND_FONTSIZE = LEGEND_FONTSIZE * 1.2
 
 
 def _safe_float(value: object) -> float:
@@ -86,6 +94,7 @@ def _relative_time(rows: list[dict[str, float | str]]) -> np.ndarray:
 def _legend_if_labeled(ax, **kwargs) -> None:
     handles, _ = ax.get_legend_handles_labels()
     if handles:
+        kwargs.setdefault("fontsize", LEGEND_FONTSIZE)
         ax.legend(**kwargs)
 
 
@@ -419,9 +428,11 @@ def generate_path_tracking_cte_plot(
     if np.any(valid_gt):
         ax.plot(t[valid_gt], cte_gt[valid_gt], color="#1f77b4", linewidth=1.8, label="Front axle vs GT midline")
     ax.axhline(0.0, color="#7f7f7f", linewidth=1.0, alpha=0.6)
-    ax.set_title(title)
+    ax.set_title(title, fontsize=DEFAULT_TITLE_FONTSIZE)
     ax.set_xlabel("Time (s)")
     ax.set_ylabel("CTE (m)")
+    apply_axis_label_fontsize(ax)
+    apply_tick_label_fontsize(ax)
     ax.grid(True, alpha=0.3)
     _legend_if_labeled(ax, loc="upper right")
 
@@ -500,12 +511,24 @@ def generate_path_tracking_overlay_plot(
         ax.plot(vehicle_x[valid_vehicle], vehicle_y[valid_vehicle], color="#1f77b4", linewidth=1.8, label="Driven trajectory")
         ax.scatter(vehicle_x[np.where(valid_vehicle)[0][0]], vehicle_y[np.where(valid_vehicle)[0][0]], color="green", s=45, zorder=5, label="Start")
         ax.scatter(vehicle_x[np.where(valid_vehicle)[0][-1]], vehicle_y[np.where(valid_vehicle)[0][-1]], color="red", s=45, zorder=5, label="End")
-    ax.set_title(title)
+    ax.set_title(title, fontsize=DEFAULT_TITLE_FONTSIZE)
     ax.set_xlabel("X (m)")
     ax.set_ylabel("Y (m)")
+    apply_axis_label_fontsize(ax)
+    apply_tick_label_fontsize(ax)
     ax.grid(True, alpha=0.3)
     ax.set_aspect("equal", adjustable="datalim")
-    _legend_if_labeled(ax, loc="upper left", bbox_to_anchor=(1.02, 1.0), borderaxespad=0.0)
+    _legend_if_labeled(
+        ax,
+        loc="lower center",
+        bbox_to_anchor=(0.5, 0.02),
+        ncol=3,
+        framealpha=0.9,
+        columnspacing=1.0,
+        handlelength=1.6,
+        borderaxespad=0.2,
+        fontsize=OVERLAY_LEGEND_FONTSIZE,
+    )
     text_lines = [
         f"Avg track width: {_format_distance_cm(track_width_m)}",
         f"Planner avg dist to GT midline: {_format_distance_with_half_width_percent(avg_distances['planner_vs_gt_avg_dist_m'], track_width_m)}",

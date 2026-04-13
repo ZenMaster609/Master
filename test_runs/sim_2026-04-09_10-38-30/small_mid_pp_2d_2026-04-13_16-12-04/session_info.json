@@ -1,0 +1,24 @@
+{
+  "run_id": "small_mid_pp_2d_2026-04-13_16-12-04",
+  "adapter_type": "gazebo",
+  "originator_hostname": "alekspc",
+  "local_hostname": "alekspc",
+  "ros_domain_id": 0,
+  "start_time": "2026-04-13T16:12:06.531395",
+  "platform": {
+    "system": "Linux",
+    "release": "6.8.0-107-generic",
+    "machine": "x86_64",
+    "python_version": "3.10.12"
+  },
+  "paths": {
+    "base_path": "/home/aleks/ros2_ws/src/Master/multidata",
+    "session_path": "/home/aleks/ros2_ws/src/Master/multidata/small_mid_pp_2d_2026-04-13_16-12-04",
+    "logs_path": "/home/aleks/ros2_ws/src/Master/multidata/small_mid_pp_2d_2026-04-13_16-12-04/logs",
+    "rosbags_path": "/home/aleks/ros2_ws/src/Master/multidata/small_mid_pp_2d_2026-04-13_16-12-04/rosbags",
+    "plots_path": "/home/aleks/ros2_ws/src/Master/multidata/small_mid_pp_2d_2026-04-13_16-12-04/plots",
+    "configs_path": "/home/aleks/ros2_ws/src/Master/multidata/small_mid_pp_2d_2026-04-13_16-12-04/configs",
+    "legacy_plot_data_path": "/home/aleks/ros2_ws/src/Master/multidata/small_mid_pp_2d_2026-04-13_16-12-04/plot_data",
+    "legacy_ground_truth_path": "/home/aleks/ros2_ws/src/Master/multidata/small_mid_pp_2d_2026-04-13_16-12-04/ground_truth"
+  }
+}
