@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import csv
+import json
 import pathlib
 import sys
 
@@ -30,6 +31,86 @@ from vehicle_plotter.logging.path_tracking_eval_plots import (  # noqa: E402
     generate_path_tracking_cte_plot,
     generate_path_tracking_overlay_plot,
 )
+from vehicle_plotter.logging.track_metrics_report import (  # noqa: E402
+    build_track_metrics_record,
+    write_track_metrics_report,
+)
+
+
+def _write_track_metrics_fixture_run(
+    base_path: pathlib.Path,
+    run_id: str,
+    *,
+    track: str = 'smalltrack',
+    planner: str = 'midpoint',
+    controller: str = 'pure_pursuit',
+    lidar_pipeline: str = 'scan2d',
+    stereo: bool = False,
+    speed_min_mps: float = 1.0,
+    speed_max_mps: float = 4.17,
+) -> pathlib.Path:
+    session_path = base_path / run_id
+    logs_path = session_path / 'logs'
+    configs_path = session_path / 'configs'
+    spawn_path = configs_path / 'sim_car_config' / track / 'spawn.yaml'
+    logs_path.mkdir(parents=True, exist_ok=True)
+    spawn_path.parent.mkdir(parents=True, exist_ok=True)
+
+    (session_path / 'session_info.json').write_text(
+        json.dumps({
+            'run_id': run_id,
+            'start_time': '2026-04-13T16:12:06.571327',
+        }),
+        encoding='utf-8',
+    )
+    (configs_path / 'launch_parameters.yaml').write_text(
+        '\n'.join([
+            f'track: {track}',
+            f'planner: {planner}',
+            f'controller: {controller}',
+            'lidar_enabled: true',
+            f'lidar_pipeline: {lidar_pipeline}',
+            f'stereo: {str(stereo).lower()}',
+            'camera_range_m: 4.0',
+            'prefer_lidar_if_camera_missing_far: true',
+            'allow_camera_fallback_near: false',
+            '',
+        ]),
+        encoding='utf-8',
+    )
+    spawn_path.write_text(
+        '\n'.join([
+            'spawn:',
+            '  spawn_x: 0.0',
+            '  spawn_y: 0.0',
+            '  spawn_yaw: 0.0',
+            '',
+            'speed_control:',
+            f'  speed_min_mps: {speed_min_mps}',
+            f'  speed_max_mps: {speed_max_mps}',
+            '  curvature_speed_gain: 4.0',
+            '  lowpass_speed_alpha: 0.15',
+            '',
+            'lap_tracking:',
+            '  auto_suspend_after_laps: 3',
+            '',
+        ]),
+        encoding='utf-8',
+    )
+    (logs_path / 'path_tracking_eval_summary.json').write_text(
+        json.dumps({
+            'sample_count': 10.0,
+            'valid_sample_count': 8.0,
+            'duration_sec': 5.0,
+            'front_axle_vs_gt_cte_rms_m': 0.22,
+            'front_axle_vs_planner_cte_rms_m': 0.11,
+            'planner_vs_gt_cte_rms_m': 0.33,
+            'status_count::ok': 8.0,
+            'status_count::waiting_for_odom': 2.0,
+        }),
+        encoding='utf-8',
+    )
+    return session_path
 
 
 def test_build_gt_midline_open_track_stays_centered():
@@ -198,6 +279,124 @@ def test_track_width_and_half_width_percentage_formatting():
     assert _format_distance_with_half_width_percent(0.0, track_width_m) == '0.00 cm (0.00%)'
     assert _format_distance_with_half_width_percent(0.75, track_width_m) == '75.00 cm (50.00%)'
     assert _format_distance_with_half_width_percent(1.5, track_width_m) == '150.00 cm (100.00%)'
+
+
+def test_track_metrics_report_writes_appends_and_replaces_run(tmp_path):
+    run1 = _write_track_metrics_fixture_run(tmp_path, 'small_mid_pp_2d_2026-04-13_16-12-04')
+    run2 = _write_track_metrics_fixture_run(
+        tmp_path,
+        'small_cor_stan_3d_2026-04-13_16-20-00',
+        planner='corridor',
+        controller='stanley',
+        lidar_pipeline='pointcloud3d',
+        stereo=True,
+        speed_max_mps=5.5,
+    )
+
+    averages1 = {
+        'planner_vs_gt_avg_dist_m': 0.30,
+        'controller_vs_gt_avg_dist_m': 0.20,
+        'controller_vs_planner_avg_dist_m': 0.10,
+    }
+    averages2 = {
+        'planner_vs_gt_avg_dist_m': 0.40,
+        'controller_vs_gt_avg_dist_m': 0.25,
+        'controller_vs_planner_avg_dist_m': 0.15,
+    }
+
+    csv_path, jsonl_path = write_track_metrics_report(
+        session_path=run1,
+        base_path=tmp_path,
+        completed_laps=2,
+        lap_target=3,
+        overlay_average_distances=averages1,
+        avg_track_width_m=3.0,
+    )
+    write_track_metrics_report(
+        session_path=run2,
+        base_path=tmp_path,
+        completed_laps=1,
+        lap_target=3,
+        overlay_average_distances=averages2,
+        avg_track_width_m=3.2,
+    )
+    write_track_metrics_report(
+        session_path=run1,
+        base_path=tmp_path,
+        completed_laps=4,
+        lap_target=3,
+        overlay_average_distances=averages1,
+        avg_track_width_m=3.0,
+    )
+
+    with csv_path.open('r', newline='', encoding='utf-8') as handle:
+        rows = list(csv.DictReader(handle))
+    assert len(rows) == 2
+    row1 = next(row for row in rows if row['run_id'] == run1.name)
+    row2 = next(row for row in rows if row['run_id'] == run2.name)
+    assert row1['completed_laps'] == '4'
+    assert row1['planner'] == 'midpoint'
+    assert row1['controller'] == 'pure_pursuit'
+    assert row1['lidar_pipeline'] == 'scan2d'
+    assert row1['camera_mode'] == 'mono'
+    assert row1['stereo'] == 'false'
+    assert row1['desired_speed_mps'] == '4.17'
+    assert row1['camera_range_m'] == '4.0'
+    assert row1['lidar_near_band_limit_m'] == '16.0'
+    assert row1['prefer_lidar_if_camera_missing_far'] == 'true'
+    assert row1['allow_camera_fallback_near'] == 'false'
+    assert row1['front_axle_vs_gt_avg_dist_m'] == '0.2'
+    assert row1['front_axle_vs_planner_avg_dist_m'] == '0.1'
+    assert row1['status_count_ok'] == '8'
+    assert row2['planner'] == 'corridor'
+    assert row2['controller'] == 'stanley'
+    assert row2['lidar_pipeline'] == 'pointcloud3d'
+    assert row2['camera_mode'] == 'stereo'
+    assert row2['desired_speed_mps'] == '5.5'
+
+    records = [
+        json.loads(line)
+        for line in jsonl_path.read_text(encoding='utf-8').splitlines()
+        if line.strip()
+    ]
+    assert len(records) == 2
+    typed_row1 = next(record for record in records if record['run_id'] == run1.name)
+    assert typed_row1['completed_laps'] == 4
+    assert typed_row1['stereo'] is False
+    assert typed_row1['lidar_enabled'] is True
+    assert typed_row1['status_counts'] == {'ok': 8, 'waiting_for_odom': 2}
+
+
+def test_track_metrics_report_tolerates_missing_optional_files(tmp_path):
+    session_path = tmp_path / 'skid_missing_2026-04-13_16-12-04'
+    configs_path = session_path / 'configs'
+    configs_path.mkdir(parents=True)
+    (configs_path / 'launch_parameters.yaml').write_text(
+        'track: skidpad\nplanner: midpoint\ncontroller: stanley\n',
+        encoding='utf-8',
+    )
+
+    csv_path, jsonl_path = write_track_metrics_report(
+        session_path=session_path,
+        base_path=tmp_path,
+        completed_laps=None,
+        lap_target=0,
+    )
+
+    with csv_path.open('r', newline='', encoding='utf-8') as handle:
+        rows = list(csv.DictReader(handle))
+    assert len(rows) == 1
+    assert rows[0]['track'] == 'skidpad'
+    assert rows[0]['speed_max_mps'] == ''
+    assert rows[0]['planner_vs_gt_avg_dist_m'] == ''
+
+    records = [
+        json.loads(line)
+        for line in jsonl_path.read_text(encoding='utf-8').splitlines()
+        if line.strip()
+    ]
+    assert records[0]['desired_speed_mps'] is None
+    assert records[0]['status_counts'] == {}
 
 
 def test_analyze_path_tracking_csv_and_plot_smoke(tmp_path):
@@ -503,3 +702,15 @@ def test_compute_path_tracking_overlay_average_distances_uses_sample_means(tmp_p
     assert abs(averages['planner_vs_gt_avg_dist_m'] - 0.3) < 1e-9
     assert abs(averages['controller_vs_gt_avg_dist_m'] - 0.2) < 1e-9
     assert abs(averages['controller_vs_planner_avg_dist_m'] - 0.1) < 1e-9
+
+    session_path = _write_track_metrics_fixture_run(tmp_path, 'small_mid_pp_2d_overlay_match')
+    record = build_track_metrics_record(
+        session_path=session_path,
+        completed_laps=1,
+        lap_target=1,
+        overlay_average_distances=averages,
+        avg_track_width_m=3.0,
+    )
+    assert abs(record['planner_vs_gt_avg_dist_m'] - averages['planner_vs_gt_avg_dist_m']) < 1e-9
+    assert abs(record['front_axle_vs_gt_avg_dist_m'] - averages['controller_vs_gt_avg_dist_m']) < 1e-9
+    assert abs(record['front_axle_vs_planner_avg_dist_m'] - averages['controller_vs_planner_avg_dist_m']) < 1e-9

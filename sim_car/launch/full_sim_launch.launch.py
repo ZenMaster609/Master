@@ -1606,7 +1606,7 @@ def _resolve_track_bundle(sim_car_share: Path, track: str, planner: str, control
         'controller_config': '',
     }
     if normalized_planner == 'linetest':
-        bundle['planner_config'] = str(sim_car_share / 'config' / 'acceleration' / 'linetest.yaml')
+        bundle['planner_config'] = str(config_dir / 'linetest.yaml')
     if normalized_controller in {'stanley', 'pure_pursuit'}:
         bundle['controller_config'] = str(config_dir / f'{normalized_controller}_controller.yaml')
     return bundle

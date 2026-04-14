@@ -11,6 +11,7 @@ import numpy as np
 import rclpy
 from ackermann_msgs.msg import AckermannDriveStamped
 from diagnostic_msgs.msg import DiagnosticArray, DiagnosticStatus, KeyValue
+from eufs_msgs.msg import ConeArrayWithCovariance
 from geometry_msgs.msg import Point, PoseArray, PoseStamped
 from nav_msgs.msg import Odometry, Path
 from rclpy.executors import ExternalShutdownException
@@ -24,6 +25,11 @@ from sim_car.cones.tracking.pose import (
     project_planar_pose_constant_twist,
 )
 from sim_car.planning.controller_config import build_steering_controller
+from sim_car.planning.ground_truth_midline import (
+    GroundTruthMidline,
+    build_forward_path_from_loop,
+    build_gt_midline_from_cones,
+)
 from sim_car.planning.planner_runtime_types import PlannerIdentity
 from sim_car.planning.tracked_cone_planner_contract import (
     log_tracked_cone_controller_mode,
@@ -44,15 +50,17 @@ _OPERATOR_REASON_CODES = {
     'controller_compute_failed': 12,
     'stop_if_no_path': 13,
     'controller_disabled': 14,
+    'missing_gt_midline': 15,
 }
 
 _OPERATOR_REASON_LABELS = {
-    'none': 'straight-line path active',
+    'none': 'path active',
     'missing_vehicle_pose': 'missing vehicle pose',
     'no_control_path': 'vehicle passed line end',
     'controller_compute_failed': 'controller compute failed',
     'stop_if_no_path': 'stop_if_no_path sent zero command',
     'controller_disabled': 'controller disabled',
+    'missing_gt_midline': 'waiting for ground-truth midline',
 }
 
 _OPERATOR_STATE_COLORS = {
@@ -84,6 +92,11 @@ class LineTestPlannerNode(Node):
         self._last_speed_cmd: Optional[float] = None
         self._last_steering_cmd: Optional[float] = None
         self._last_throttled_log_sec: dict[str, float] = {}
+        self._latest_gt_track_msg: Optional[ConeArrayWithCovariance] = None
+        self._gt_midline_source: Optional[GroundTruthMidline] = None
+        self._gt_anchor_xy: Optional[np.ndarray] = None
+        self._gt_anchor_heading_xy: Optional[np.ndarray] = None
+        self._gt_track_sub = None
 
         self._cmd_pub = self.create_publisher(AckermannDriveStamped, self.cmd_topic, 10)
         self._brake_pub = self.create_publisher(Float32, self.brake_cmd_topic, 10)
@@ -98,6 +111,13 @@ class LineTestPlannerNode(Node):
             self._odom_cb,
             qos_profile_sensor_data,
         )
+        if self.path_source == 'ground_truth_midline':
+            self._gt_track_sub = self.create_subscription(
+                ConeArrayWithCovariance,
+                self.gt_track_topic,
+                self._gt_track_cb,
+                10,
+            )
 
         loop_hz = max(1.0, float(self.publish_rate_hz))
         self.create_timer(1.0 / loop_hz, self._on_timer)
@@ -111,7 +131,8 @@ class LineTestPlannerNode(Node):
         self.get_logger().info(
             f'{self._planner_identity.node_name} ready '
             f'odom={self.odom_topic} cmd={self.cmd_topic} path={self.centerline_topic} '
-            f'controller={self.controller_type} line=({self.line_start_x_m:.2f}, {self.line_start_y_m:.2f})'
+            f'controller={self.controller_type} source={self.path_source} '
+            f'line=({self.line_start_x_m:.2f}, {self.line_start_y_m:.2f})'
             f' -> ({self.line_end_x_m:.2f}, {self.line_end_y_m:.2f})'
         )
 
@@ -126,8 +147,12 @@ class LineTestPlannerNode(Node):
             'topics.viz_topic': '/planner_viz',
             'topics.points_topic': '/planned_centerline_points',
             'topics.odom_topic': '/sim/odom',
+            'topics.gt_track_topic': '/ground_truth/track',
             'runtime.publish_rate_hz': 60.0,
             'runtime.log_throttle_s': 1.0,
+            'path.source': 'fixed_line',
+            'path.gt_midline_resolution_m': 0.5,
+            'path.gt_control_horizon_m': 30.0,
             'control.controller_type': 'stanley',
             'control.odom_lag_compensation_ms': 0.0,
             'control.stop_if_no_path': True,
@@ -182,9 +207,22 @@ class LineTestPlannerNode(Node):
         self.viz_topic = str(self.get_parameter('topics.viz_topic').value)
         self.points_topic = str(self.get_parameter('topics.points_topic').value)
         self.odom_topic = str(self.get_parameter('topics.odom_topic').value)
+        self.gt_track_topic = str(self.get_parameter('topics.gt_track_topic').value)
 
         self.publish_rate_hz = max(1.0, float(self.get_parameter('runtime.publish_rate_hz').value))
         self.log_throttle_s = max(0.1, float(self.get_parameter('runtime.log_throttle_s').value))
+
+        self.path_source = str(self.get_parameter('path.source').value).strip().lower() or 'fixed_line'
+        if self.path_source not in {'fixed_line', 'ground_truth_midline'}:
+            self.path_source = 'fixed_line'
+        self.gt_midline_resolution_m = max(
+            0.05,
+            float(self.get_parameter('path.gt_midline_resolution_m').value),
+        )
+        self.gt_control_horizon_m = max(
+            0.0,
+            float(self.get_parameter('path.gt_control_horizon_m').value),
+        )
 
         self.controller_type = (
             normalize_tracked_cone_controller_type(
@@ -261,9 +299,19 @@ class LineTestPlannerNode(Node):
             self._latest_speed_mps = float(math.hypot(vx, vy))
             self._latest_yaw_rate_rps = float(msg.twist.twist.angular.z)
 
+    def _gt_track_cb(self, msg: ConeArrayWithCovariance) -> None:
+        self._latest_gt_track_msg = msg
+        if self._gt_midline_source is None:
+            return
+        # The GT track is static for these maps. Keep the cached midline stable
+        # once built from the first valid odom pose.
+
     def _on_timer(self) -> None:
         frame_id = self.odom_frame
-        centerline = np.array(self._full_centerline, copy=True)
+        vehicle_pose = self._resolve_vehicle_pose()
+        if self.path_source == 'ground_truth_midline' and vehicle_pose is not None:
+            self._maybe_build_gt_midline(vehicle_pose)
+        centerline = self._current_centerline()
         control_path = np.empty((0, 2), dtype=np.float64)
         control_target_base: Optional[np.ndarray] = None
         control_target_world: Optional[np.ndarray] = None
@@ -274,7 +322,6 @@ class LineTestPlannerNode(Node):
         cmd_steering = 0.0
         lookahead = 0.0
         zero_cmd_sent_flag = 0
-        vehicle_pose = self._resolve_vehicle_pose()
 
         if vehicle_pose is None:
             operator_state = 'waiting'
@@ -283,16 +330,29 @@ class LineTestPlannerNode(Node):
                 zero_cmd_sent_flag = int(self._apply_no_path_behavior())
         else:
             vehicle_x, vehicle_y, vehicle_yaw = vehicle_pose
-            line_remaining_m = self._line_remaining_distance_m(vehicle_x, vehicle_y)
-            control_world = self._build_forward_control_path(vehicle_x, vehicle_y)
-            control_path = self._centerline_to_vehicle_frame(
-                centerline=control_world,
-                vehicle_x=vehicle_x,
-                vehicle_y=vehicle_y,
-                vehicle_yaw=vehicle_yaw,
-            )
+            if self.path_source == 'ground_truth_midline':
+                if centerline.shape[0] < 2:
+                    operator_state = 'waiting'
+                    operator_reason = 'missing_gt_midline'
+                    if self._controller is not None:
+                        zero_cmd_sent_flag = int(self._apply_no_path_behavior())
+                    control_world = np.empty((0, 2), dtype=np.float64)
+                else:
+                    control_world = self._build_forward_gt_control_path(vehicle_x, vehicle_y)
+            else:
+                control_world = self._build_forward_control_path(vehicle_x, vehicle_y)
 
-            if self._controller is None:
+            if operator_reason != 'missing_gt_midline':
+                control_path = self._centerline_to_vehicle_frame(
+                    centerline=control_world,
+                    vehicle_x=vehicle_x,
+                    vehicle_y=vehicle_y,
+                    vehicle_yaw=vehicle_yaw,
+                )
+
+            if operator_reason == 'missing_gt_midline':
+                pass
+            elif self._controller is None:
                 operator_reason = 'controller_disabled'
             elif control_path.shape[0] == 0:
                 operator_state = 'stopped'
@@ -331,11 +391,16 @@ class LineTestPlannerNode(Node):
                     )
                     self._last_speed_cmd = cmd_speed
                     self._last_steering_cmd = cmd_steering
-                    if self._linetest_brake_cmd(line_remaining_m) > 0.0:
+                    brake_cmd = 0.0
+                    if self.path_source == 'fixed_line':
+                        brake_cmd = self._linetest_brake_cmd(
+                            self._line_remaining_distance_m(vehicle_x, vehicle_y)
+                        )
+                    if brake_cmd > 0.0:
                         cmd_speed = 0.0
                         self._last_speed_cmd = 0.0
                     self._publish_cmd(cmd_speed, cmd_steering)
-                    self._publish_brake_cmd(self._linetest_brake_cmd(line_remaining_m))
+                    self._publish_brake_cmd(brake_cmd)
 
         status_text = self._build_status_text(
             operator_state=operator_state,
@@ -399,6 +464,78 @@ class LineTestPlannerNode(Node):
             yaw_rate_rps=self._latest_yaw_rate_rps,
             delay_s=float(getattr(self, 'odom_lag_compensation_s', 0.0)),
         )
+
+    def _maybe_build_gt_midline(self, vehicle_pose: tuple[float, float, float]) -> None:
+        if self._gt_midline_source is not None:
+            return
+        gt_msg = self._latest_gt_track_msg
+        if gt_msg is None:
+            return
+
+        vehicle_x, vehicle_y, vehicle_yaw = vehicle_pose
+        if self._gt_anchor_xy is None or self._gt_anchor_heading_xy is None:
+            self._gt_anchor_xy = np.asarray([vehicle_x, vehicle_y], dtype=np.float64)
+            self._gt_anchor_heading_xy = np.asarray(
+                [math.cos(vehicle_yaw), math.sin(vehicle_yaw)],
+                dtype=np.float64,
+            )
+
+        blue_xy = [
+            (float(cone.point.x), float(cone.point.y))
+            for cone in gt_msg.blue_cones
+        ]
+        yellow_xy = [
+            (float(cone.point.x), float(cone.point.y))
+            for cone in gt_msg.yellow_cones
+        ]
+        frame_id = str(gt_msg.header.frame_id).strip() or self.odom_frame
+        if not self._is_identity_world_frame(frame_id):
+            self._throttled_warn(
+                'unsupported_gt_frame',
+                f"linetest GT midline frame '{frame_id}' is unsupported; expected map/odom",
+            )
+            return
+
+        source = build_gt_midline_from_cones(
+            blue_xy=np.asarray(blue_xy, dtype=np.float64),
+            yellow_xy=np.asarray(yellow_xy, dtype=np.float64),
+            start_xy=self._gt_anchor_xy,
+            heading_xy=self._gt_anchor_heading_xy,
+            frame_id=self.odom_frame,
+            resolution_m=self.gt_midline_resolution_m,
+        )
+        if source.midline_xy.shape[0] < 2:
+            self._throttled_warn(
+                'empty_gt_midline',
+                'linetest GT midline has too few points; waiting for a valid ground-truth track',
+            )
+            return
+        self._gt_midline_source = source
+        self.get_logger().info(
+            f'linetest GT midline ready points={source.midline_xy.shape[0]} frame={self.odom_frame}'
+        )
+
+    def _current_centerline(self) -> np.ndarray:
+        if self.path_source == 'ground_truth_midline':
+            if self._gt_midline_source is None:
+                return np.empty((0, 2), dtype=np.float64)
+            return np.asarray(self._gt_midline_source.midline_xy, dtype=np.float64)
+        return np.array(self._full_centerline, copy=True)
+
+    def _build_forward_gt_control_path(self, vehicle_x: float, vehicle_y: float) -> np.ndarray:
+        if self._gt_midline_source is None:
+            return np.empty((0, 2), dtype=np.float64)
+        return build_forward_path_from_loop(
+            path_xy=self._gt_midline_source.midline_xy,
+            vehicle_xy=np.asarray([vehicle_x, vehicle_y], dtype=np.float64),
+            resolution_m=self.gt_midline_resolution_m,
+            horizon_m=self.gt_control_horizon_m,
+        )
+
+    @staticmethod
+    def _is_identity_world_frame(frame_id: str) -> bool:
+        normalized = str(frame_id).strip().strip('/').lower()
+        return normalized in {'', 'map', 'odom'}
 
     def _convert_odom_child_pose_to_base_frame(
         self,

@@ -294,7 +294,7 @@ def test_track_bundle_loads_track_speed_control_defaults():
         },
         'smalltrack': {
             'speed_min_mps': 1.0,
-            'speed_max_mps': 4.17,
+            'speed_max_mps': 7.0,
             'curvature_speed_gain': 4.0,
             'lowpass_speed_alpha': 0.15,
         },
@@ -341,18 +341,29 @@ def test_track_bundle_resolves_acceleration_linetest_and_default_controller_conf
     assert selection.spawn_config == str(SIM_CAR_SHARE / 'config' / 'acceleration' / 'spawn.yaml')
 
 
-def test_track_bundle_rejects_linetest_for_non_acceleration_tracks():
-    for track in ('skidpad', 'smalltrack'):
-        try:
-            full_sim_launch._resolve_launch_selection(
-                SIM_CAR_SHARE,
-                track=track,
-                planner='linetest',
-            )
-        except RuntimeError as exc:
-            assert "planner='linetest' is only supported with track='acceleration'" in str(exc)
-        else:
-            raise AssertionError(f'linetest unexpectedly allowed for track={track}')
+def test_track_bundle_resolves_smalltrack_linetest_config_path():
+    selection = full_sim_launch._resolve_launch_selection(
+        SIM_CAR_SHARE,
+        track='smalltrack',
+        planner='linetest',
+    )
+
+    assert selection.planner_config == str(SIM_CAR_SHARE / 'config' / 'smalltrack' / 'linetest.yaml')
+    assert selection.controller_config == str(SIM_CAR_SHARE / 'config' / 'smalltrack' / 'stanley_controller.yaml')
+    assert selection.spawn_config == str(SIM_CAR_SHARE / 'config' / 'smalltrack' / 'spawn.yaml')
+
+
+def test_track_bundle_rejects_linetest_for_skidpad():
+    try:
+        full_sim_launch._resolve_launch_selection(
+            SIM_CAR_SHARE,
+            track='skidpad',
+            planner='linetest',
+        )
+    except RuntimeError as exc:
+        assert "planner='linetest' is only supported with track='acceleration, smalltrack'" in str(exc)
+    else:
+        raise AssertionError('linetest unexpectedly allowed for track=skidpad')
 
 
 def test_track_bundle_overrides_world_spawn_and_controller_when_requested():
@@ -397,6 +408,7 @@ def test_track_bundle_supports_controller_none_without_controller_config_file():
     ),
     [
         ('smalltrack', 'midpoint', 'stanley', 'pointcloud3d', 'small_mid_stan_3d'),
+        ('smalltrack', 'linetest', 'stanley', 'pointcloud3d', 'small_line_stan_3d'),
         ('acceleration', 'single_boundary', 'pure_pursuit', 'scan2d', 'acc_SB_pp_2d'),
         ('skidpad', 'corridor', 'stanley', 'pointcloud3d', 'skid_cor_stan_3d'),
     ],
@@ -434,6 +446,7 @@ def test_full_launch_passes_resolved_run_id_prefix_to_plotter_launch():
     ),
     [
         ('smalltrack', 'midpoint', '', 'stanley', '/midpoint_planner/diagnostics', 'midpoint', False),
+        ('smalltrack', 'linetest', '', 'stanley', '/linetest_planner/diagnostics', 'linetest', False),
         ('skidpad', 'corridor', 'none', 'none', '/corridor_planner/diagnostics', 'corridor', True),
         ('acceleration', 'linetest', 'pure_pursuit', 'pure_pursuit', '/linetest_planner/diagnostics', 'linetest', False),
     ],
@@ -596,7 +609,7 @@ def test_planner_limit_spawn_configs_only_use_declared_and_read_parameters():
 def test_smalltrack_spawn_config_keeps_lap_tracking():
     config_path = SIM_CAR_SHARE / 'config' / 'smalltrack' / 'spawn.yaml'
     config = _load_yaml(config_path)
-    assert config['lap_tracking'] == {'auto_suspend_after_laps': 1}
+    assert config['lap_tracking'] == {'auto_suspend_after_laps': 10}
 
 
 def test_removed_legacy_configs_are_absent_and_controller_configs_exist():
@@ -612,9 +625,15 @@ def test_removed_legacy_configs_are_absent_and_controller_configs_exist():
             assert (SIM_CAR_SHARE / 'config' / track / f'{controller}_controller.yaml').exists()
 
 
-def test_linetest_config_only_uses_declared_and_read_parameters():
+@pytest.mark.parametrize(
+    'config_path',
+    [
+        SIM_CAR_SHARE / 'config' / 'acceleration' / 'linetest.yaml',
+        SIM_CAR_SHARE / 'config' / 'smalltrack' / 'linetest.yaml',
+    ],
+)
+def test_linetest_config_only_uses_declared_and_read_parameters(config_path: pathlib.Path):
     declared, read_params = _planner_node_contract('linetest')
-    config_path = SIM_CAR_SHARE / 'config' / 'acceleration' / 'linetest.yaml'
     config = _load_yaml(config_path)
     params = _flatten(config['linetest_planner_node']['ros__parameters'])
 
@@ -630,8 +649,14 @@ def test_linetest_config_stops_before_acceleration_parking_line():
     assert line['end_x_m'] == 46.5
 
 
-def test_linetest_config_no_longer_contains_controller_or_speed_control_blocks():
-    config_path = SIM_CAR_SHARE / 'config' / 'acceleration' / 'linetest.yaml'
+@pytest.mark.parametrize(
+    'config_path',
+    [
+        SIM_CAR_SHARE / 'config' / 'acceleration' / 'linetest.yaml',
+        SIM_CAR_SHARE / 'config' / 'smalltrack' / 'linetest.yaml',
+    ],
+)
+def test_linetest_config_no_longer_contains_controller_or_speed_control_blocks(config_path: pathlib.Path):
     config = _load_yaml(config_path)
     params = config['linetest_planner_node']['ros__parameters']
 

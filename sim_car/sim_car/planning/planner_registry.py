@@ -41,7 +41,7 @@ PLANNER_REGISTRY: dict[str, PlannerLaunchSpec] = {
         executable='linetest_planner_node',
         diagnostics_topic='/linetest_planner/diagnostics',
         default_rviz_profile='linetest',
-        allowed_tracks=frozenset({'acceleration'}),
+        allowed_tracks=frozenset({'acceleration', 'smalltrack'}),
     ),
     'none': PlannerLaunchSpec(
         name='none',

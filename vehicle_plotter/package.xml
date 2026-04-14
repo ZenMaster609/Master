@@ -25,6 +25,7 @@
   <exec_depend>ros2launch</exec_depend>
   <exec_depend>python3-matplotlib</exec_depend>
   <exec_depend>python3-numpy</exec_depend>
+  <exec_depend>python3-yaml</exec_depend>
 
   <!-- Test dependencies -->
   <test_depend>ament_copyright</test_depend>

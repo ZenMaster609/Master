@@ -64,7 +64,9 @@ from ..logging.path_tracking_eval import (
     write_path_tracking_summary_files,
 )
 from ..logging.path_tracking_eval_plots import (
+    _estimate_average_track_width_m,
     build_skidpad_gt_overlay_segments,
+    compute_path_tracking_overlay_average_distances,
     generate_path_tracking_cte_plot,
     generate_path_tracking_overlay_plot,
 )
@@ -93,6 +95,7 @@ from ..logging.thesis_controller_diagnostics import (
     write_thesis_summary_files,
 )
 from ..logging.thesis_controller_plots import generate_thesis_controller_plot
+from ..logging.track_metrics_report import write_track_metrics_report
 
 
 class LoggerNode(Node):
@@ -1666,6 +1669,8 @@ class LoggerNode(Node):
             np.asarray(self._path_eval_reference_trace_points, dtype=np.float64),
             min_spacing_m=0.1,
         )
+        overlay_average_distances: Dict[str, float] = {}
+        overlay_track_width_m = float('nan')
         try:
             cte_plot_path = self._run_session.plots_path / 'path_tracking_eval_cte.png'
             generated_cte = generate_path_tracking_cte_plot(csv_path, cte_plot_path)
@@ -1704,6 +1709,13 @@ class LoggerNode(Node):
                             else np.asarray(segment_xy, dtype=np.float64)
                         )
                     overlay_segments_xy = transformed_segments
+            overlay_average_distances = compute_path_tracking_overlay_average_distances(
+                csv_path,
+                gt_midline_xy=overlay_midline_xy,
+                planner_trace_xy=planner_trace_xy,
+                gt_reference_segments_xy=overlay_segments_xy,
+            )
+            overlay_track_width_m = _estimate_average_track_width_m(overlay_blue_xy, overlay_yellow_xy)
             generated_overlay = generate_path_tracking_overlay_plot(
                 csv_path,
                 overlay_path,
@@ -1726,6 +1738,27 @@ class LoggerNode(Node):
                 self._safe_log_warn('Path tracking overlay plot skipped: GT midline unavailable')
         except Exception as exc:
             self._safe_log_warn(f'Failed path tracking overlay plot generation: {exc}')
+
+        try:
+            completed_laps = (
+                self._path_eval_smalltrack_completed_laps
+                if self._path_tracking_eval_track_name == 'smalltrack'
+                else None
+            )
+            csv_report_path, jsonl_report_path = write_track_metrics_report(
+                session_path=self._run_session.session_path,
+                base_path=self._run_session.base_path,
+                run_id=self._run_session.run_id,
+                completed_laps=completed_laps,
+                lap_target=self._path_tracking_eval_autostop_laps,
+                overlay_average_distances=overlay_average_distances,
+                avg_track_width_m=overlay_track_width_m,
+            )
+            self._safe_log_info(
+                f'Updated per-track path tracking metrics: {csv_report_path}, {jsonl_report_path}'
+            )
+        except Exception as exc:
+            self._safe_log_warn(f'Failed per-track path tracking metrics report update: {exc}')
 
     def _finalize_corridor_oscillation_outputs(self) -> None:
         if self._run_session is None or not self._thesis_diag_enabled:

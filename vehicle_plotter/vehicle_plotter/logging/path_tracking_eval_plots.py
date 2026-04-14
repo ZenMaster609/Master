@@ -17,7 +17,7 @@ from ..plotting.matplotlib_fonts import (
     apply_tick_label_fontsize,
 )
 
-OVERLAY_LEGEND_FONTSIZE = LEGEND_FONTSIZE * 1.2
+OVERLAY_LEGEND_FONTSIZE = LEGEND_FONTSIZE * 0.84
 
 
 def _safe_float(value: object) -> float:

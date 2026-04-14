@@ -18,6 +18,7 @@ setup(
     install_requires=[
         'setuptools',
         'numpy',
+        'PyYAML',
     ],
     extras_require={
         'plotting': ['pyqtgraph', 'PyQt5'],
