@@ -52,18 +52,24 @@ COMMON_MIGRATED_TRACKED_CONE_PLANNER_DEFAULTS: dict[str, object] = {
     'frames.planning_frame': 'odom',
     'frames.tf_timeout_s': 0.03,
     'midline_memory.control_handoff_distance_m': 1.5,
-    'midline_memory.far_alpha': 0.35,
-    'midline_memory.far_max_lateral_shift_m': 0.4,
-    'midline_memory.hold_last_valid_duration_s': 2.5,
+    'midline_memory.far_alpha': 0.30,
+    'midline_memory.far_max_lateral_shift_m': 0.35,
+    'midline_memory.hold_last_valid_duration_s': 3.0,
     'midline_memory.horizon_m': 30.0,
-    'midline_memory.mid_alpha': 0.18,
+    'midline_memory.mid_alpha': 0.12,
     'midline_memory.mid_distance_m': 12.0,
-    'midline_memory.mid_max_lateral_shift_m': 0.2,
+    'midline_memory.mid_max_lateral_shift_m': 0.18,
     'midline_memory.min_buffer_confidence': 0.2,
-    'midline_memory.near_alpha': 0.06,
+    'midline_memory.min_estimated_extent_m': 6.0,
+    'midline_memory.near_alpha': 0.04,
     'midline_memory.near_distance_m': 4.0,
-    'midline_memory.near_max_lateral_shift_m': 0.1,
+    'midline_memory.near_max_lateral_shift_m': 0.07,
     'midline_memory.station_spacing_m': 0.5,
+    'midline_memory.max_estimation_extension_m': 4.0,
+    'midline_memory.max_estimation_join_lateral_m': 0.5,
+    'midline_memory.max_estimation_join_heading_rad': 0.45,
+    'midline_memory.allow_tangent_estimate_without_memory': True,
+    'midline_memory.max_tangent_estimation_extension_m': 2.0,
     'pure_pursuit.lookahead_gain': 0.0,
     'pure_pursuit.lookahead_m': 3.0,
     'pure_pursuit.max_lookahead_m': 8.0,
@@ -96,7 +102,7 @@ COMMON_MIGRATED_TRACKED_CONE_PLANNER_DEFAULTS: dict[str, object] = {
     'topics.tracked_cones_topic': '/tracked_cones',
     'topics.viz_topic': '/planner_viz',
     'validation.candidate_jump_recover_frames': 3,
-    'validation.candidate_jump_reject_threshold_m': 1.0,
+    'validation.candidate_jump_reject_threshold_m': 0.45,
     'validation.candidate_min_extent_m': 2.0,
     'validation.candidate_min_points': 4,
     'validation.hold_exit_clean_frames': 2,
@@ -160,6 +166,12 @@ class MigratedTrackedConePlannerCommonConfig:
     midline_far_max_shift_m: float
     midline_min_buffer_confidence: float
     midline_hold_last_valid_duration_s: float
+    midline_min_estimated_extent_m: float
+    midline_max_estimation_extension_m: float
+    midline_max_estimation_join_lateral_m: float
+    midline_max_estimation_join_heading_rad: float
+    midline_allow_tangent_estimate_without_memory: bool
+    midline_max_tangent_estimation_extension_m: float
     publish_rate_hz: float
     log_throttle_s: float
     controller_type: str
@@ -328,6 +340,29 @@ def read_migrated_tracked_cone_planner_common_config(
         midline_hold_last_valid_duration_s=max(
             0.0,
             float(node.get_parameter('midline_memory.hold_last_valid_duration_s').value),
+        ),
+        midline_min_estimated_extent_m=max(
+            0.5,
+            float(node.get_parameter('midline_memory.min_estimated_extent_m').value),
+        ),
+        midline_max_estimation_extension_m=max(
+            0.0,
+            float(node.get_parameter('midline_memory.max_estimation_extension_m').value),
+        ),
+        midline_max_estimation_join_lateral_m=max(
+            0.0,
+            float(node.get_parameter('midline_memory.max_estimation_join_lateral_m').value),
+        ),
+        midline_max_estimation_join_heading_rad=max(
+            0.0,
+            float(node.get_parameter('midline_memory.max_estimation_join_heading_rad').value),
+        ),
+        midline_allow_tangent_estimate_without_memory=bool(
+            node.get_parameter('midline_memory.allow_tangent_estimate_without_memory').value
+        ),
+        midline_max_tangent_estimation_extension_m=max(
+            0.0,
+            float(node.get_parameter('midline_memory.max_tangent_estimation_extension_m').value),
         ),
         publish_rate_hz=publish_rate_hz,
         log_throttle_s=max(0.1, float(node.get_parameter('runtime.log_throttle_s').value)),

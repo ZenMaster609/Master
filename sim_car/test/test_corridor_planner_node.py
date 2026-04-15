@@ -574,7 +574,7 @@ def test_candidate_path_rejects_soft_corridor_when_core_status_is_not_ok():
     assert reason == "candidate_extent_too_short"
 
 
-def test_remembered_corridor_geometry_can_project_candidate():
+def test_remembered_corridor_geometry_can_supply_memory_candidate():
     node = _make_node()
     result = _sample_result()
 
@@ -592,8 +592,14 @@ def test_remembered_corridor_geometry_can_project_candidate():
         vehicle_yaw=0.0,
     )
     pair_segments, midpoint_chain = node._pair_geometry_from_memory(entries)
-    candidate = node._project_corridor_memory_candidate(
-        midpoint_chain=midpoint_chain,
+    result.status = "no reliable corridor boundaries"
+    result.reject_reason = result.status
+    result.centerline = np.empty((0, 2), dtype=np.float64)
+    result.prevalidation_centerline = np.empty((0, 2), dtype=np.float64)
+    candidate, source = node._select_candidate_centerline(
+        result=result,
+        support_chain=midpoint_chain,
+        memory_midpoint_chain=midpoint_chain,
         frame_id="odom",
         vehicle_x=0.0,
         vehicle_y=0.0,
@@ -602,11 +608,13 @@ def test_remembered_corridor_geometry_can_project_candidate():
 
     assert pair_segments.shape[0] == 3
     assert midpoint_chain.shape[0] == 3
-    assert candidate.shape[0] >= 3
+    assert source == "pair_memory_projection"
+    assert np.allclose(candidate, midpoint_chain)
 
 
-def test_valid_live_corridor_candidate_blends_into_existing_buffer():
+def test_valid_live_corridor_candidate_directly_replaces_existing_buffer():
     node = _make_node()
+    node.midline_min_estimated_extent_m = 3.0
     stored_path = np.array([[0.0, 0.8], [1.0, 0.8], [2.0, 0.8], [3.0, 0.8]], dtype=np.float64)
     candidate = np.array([[0.0, 0.2], [1.0, 0.2], [2.0, 0.2], [3.0, 0.2]], dtype=np.float64)
     node._midline_buffer_path = np.array(stored_path, copy=True)
@@ -628,10 +636,9 @@ def test_valid_live_corridor_candidate_blends_into_existing_buffer():
         now_sec=11.0,
     )
 
-    assert node._last_midline_update_mode == "blend"
-    assert not np.allclose(updated, candidate)
-    assert abs(updated[1, 1] - stored_path[1, 1]) <= node.midline_near_max_shift_m + 1e-9
-    assert updated[1, 1] > candidate[1, 1]
+    assert node._last_midline_update_mode == "direct"
+    assert np.allclose(updated[:, 1], 0.2)
+    assert np.allclose(updated[[0, -1]], candidate[[0, -1]])
 
 
 def test_candidate_path_rejects_projected_corridor_jump_against_stored_midline():
@@ -652,7 +659,7 @@ def test_candidate_path_rejects_projected_corridor_jump_against_stored_midline()
     )
 
     assert ok is False
-    assert reason == "candidate_jump_rejected"
+    assert reason == "no reliable corridor boundaries"
 
 
 def test_candidate_path_accepts_validated_jump_when_near_field_stays_aligned():
@@ -679,11 +686,12 @@ def test_candidate_path_accepts_validated_jump_when_near_field_stays_aligned():
     )
 
     assert ok is True
-    assert reason == "candidate_jump_near_field_ok"
+    assert reason == "ok"
 
 
 def test_validated_near_field_jump_ok_replaces_buffer_directly():
     node = _make_node()
+    node.midline_min_estimated_extent_m = 5.0
     stored_path = np.array(
         [[0.0, 0.0], [1.0, 0.0], [2.0, 0.0], [3.0, 0.0], [4.0, 0.0], [5.0, 0.0]],
         dtype=np.float64,
@@ -713,9 +721,11 @@ def test_validated_near_field_jump_ok_replaces_buffer_directly():
     )
 
     assert node._last_midline_update_mode == "direct"
-    assert np.allclose(updated, candidate)
+    candidate_y = np.interp(updated[:, 0], candidate[:, 0], candidate[:, 1])
+    assert np.allclose(updated[:, 1], candidate_y, atol=1e-3)
 
-def test_select_candidate_centerline_recovers_live_corridor_after_near_field_reject():
+
+def test_select_candidate_centerline_does_not_recover_near_field_corridor_jump():
     node = _make_node()
     result = _sample_result()
     result.status = "near-field continuity rejected fresh path"
@@ -731,11 +741,11 @@ def test_select_candidate_centerline_recovers_live_corridor_after_near_field_rej
         vehicle_yaw=0.0,
     )
 
-    assert source == "recoverable_live_path"
-    assert np.allclose(centerline, result.prevalidation_centerline)
+    assert source == "none"
+    assert centerline.shape == (0, 2)
 
 
-def test_select_candidate_centerline_completes_recoverable_corridor_prefix():
+def test_select_candidate_centerline_returns_short_recoverable_corridor_prefix_for_memory_estimation():
     node = _make_node()
     result = _sample_result()
     result.status = "too few valid corridor samples"
@@ -754,6 +764,5 @@ def test_select_candidate_centerline_completes_recoverable_corridor_prefix():
         vehicle_yaw=0.0,
     )
 
-    assert source == "completed_live_prefix"
-    assert centerline.shape[0] >= result.prevalidation_centerline.shape[0]
-    assert np.allclose(centerline[: result.prevalidation_centerline.shape[0]], result.prevalidation_centerline)
+    assert source == "recoverable_live_path"
+    assert np.allclose(centerline, result.prevalidation_centerline)

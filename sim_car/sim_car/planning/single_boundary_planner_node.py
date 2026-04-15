@@ -312,7 +312,14 @@ class SingleBoundaryPlannerNode(TrackedConePlannerBase):
         self._midline_buffer_path: Optional[np.ndarray] = None
         self._midline_buffer_confidence: float = 0.0
         self._midline_buffer_last_update_sec: float = -1.0
+        self._midline_memory = None
         self._last_midline_update_mode: str = "hold"
+        self._last_midline_candidate_update_ok: bool = False
+        self._last_midline_candidate_update_reason: str = "ok"
+        self._last_midline_candidate_jump_m: float = float("nan")
+        self._last_midline_near_lateral_delta_max_m: float = float("nan")
+        self._last_midline_buffer_confidence: float = 0.0
+        self._midline_recovery_count: int = 0
         self._last_viz_left_boundary: Optional[np.ndarray] = None
         self._last_viz_right_boundary: Optional[np.ndarray] = None
         self._last_viz_raw_offset_path: Optional[np.ndarray] = None
@@ -759,10 +766,6 @@ class SingleBoundaryPlannerNode(TrackedConePlannerBase):
             result=result,
             candidate_source=candidate_source,
         )
-        candidate_update_ok, candidate_update_reason = self._update_candidate_jump_reject_streak(
-            candidate_update_ok=candidate_update_ok,
-            candidate_update_reason=candidate_update_reason,
-        )
         centerline = self._update_midline_buffer(
             candidate_centerline=raw_centerline,
             candidate_source=candidate_source,
@@ -774,6 +777,13 @@ class SingleBoundaryPlannerNode(TrackedConePlannerBase):
             vehicle_yaw=vehicle_yaw,
             result=result,
             now_sec=now_sec,
+            support_centerline=result.raw_offset_path,
+        )
+        candidate_update_ok = bool(
+            getattr(self, "_last_midline_candidate_update_ok", candidate_update_ok)
+        )
+        candidate_update_reason = str(
+            getattr(self, "_last_midline_candidate_update_reason", candidate_update_reason)
         )
         centerline = self._anchor_centerline_near_vehicle(
             centerline=centerline,
@@ -1095,6 +1105,24 @@ class SingleBoundaryPlannerNode(TrackedConePlannerBase):
                 "filtered_track_width_m": self._filtered_track_width_m,
                 "held_path_flag": self._active_held_path_flag,
                 "raw_candidate_point_count": int(raw_centerline.shape[0]),
+                "candidate_source": candidate_source,
+                "midline_update_mode": (
+                    "hold" if publish_mode == "held" else self._last_midline_update_mode
+                ),
+                "midline_update_reason": getattr(self, "_last_midline_candidate_update_reason", ""),
+                "midline_candidate_jump_m": getattr(self, "_last_midline_candidate_jump_m", float("nan")),
+                "midline_near_lateral_delta_max_m": getattr(
+                    self,
+                    "_last_midline_near_lateral_delta_max_m",
+                    float("nan"),
+                ),
+                "midline_buffer_confidence": getattr(
+                    self,
+                    "_last_midline_buffer_confidence",
+                    float("nan"),
+                ),
+                "midline_recovery_count": getattr(self, "_midline_recovery_count", 0),
+                **self._midline_estimation_metrics_for_diagnostics(),
             },
         )
 
@@ -1145,83 +1173,26 @@ class SingleBoundaryPlannerNode(TrackedConePlannerBase):
         vehicle_yaw: float,
         result: SingleBoundaryPlannerResult,
         now_sec: float,
+        support_centerline: Optional[np.ndarray] = None,
     ) -> np.ndarray:
-        self._last_midline_update_mode = "hold"
-        if not self._is_alias(frame_id, self.odom_frame):
-            if candidate_centerline.shape[0] > 0:
-                self._midline_buffer_path = np.array(candidate_centerline, copy=True)
-                self._midline_buffer_last_update_sec = now_sec
-                self._midline_buffer_confidence = 1.0
-                self._last_midline_update_mode = "direct"
-            return candidate_centerline
-
-        candidate_valid = (
-            bool(candidate_update_ok)
-            if candidate_update_ok is not None
-            else self._candidate_path_is_updateable(
-                candidate_centerline=candidate_centerline,
-                vehicle_x=vehicle_x,
-                vehicle_y=vehicle_y,
-                vehicle_yaw=vehicle_yaw,
-                result=result,
-                candidate_source=candidate_source,
-            )[0]
+        direct_commit = (
+            candidate_source in {"validated", "single_boundary_raw_offset"}
+            and candidate_update_ok is not False
+            and candidate_centerline.shape[0] >= 2
         )
-        stored_forward = None
-        if self._midline_buffer_path is not None and self._midline_buffer_path.shape[0] >= 2:
-            stored_forward = self._extract_forward_path_from_pose(
-                path=self._midline_buffer_path,
-                vehicle_xy=(vehicle_x, vehicle_y),
-                resolution_m=self.midline_station_spacing_m,
-            )
-
-        if candidate_valid:
-            candidate_forward = self._extract_forward_path_from_pose(
-                path=candidate_centerline,
-                vehicle_xy=(vehicle_x, vehicle_y),
-                resolution_m=self.midline_station_spacing_m,
-            )
-            if candidate_forward is None or candidate_forward.shape[0] < 2:
-                candidate_forward = np.array(candidate_centerline, copy=True)
-            candidate_samples = self._resample_midline_stations(candidate_forward)
-            if stored_forward is None or stored_forward.shape[0] < 2:
-                updated = candidate_samples
-                self._last_midline_update_mode = "direct"
-            else:
-                stored_samples = self._resample_midline_stations(stored_forward)
-                if candidate_source == "validated" and candidate_update_reason == "candidate_jump_near_field_ok":
-                    updated = candidate_samples
-                    self._last_midline_update_mode = "direct"
-                else:
-                    updated = self._blend_midline_samples(
-                        stored_samples=stored_samples,
-                        candidate_samples=candidate_samples,
-                        vehicle_x=vehicle_x,
-                        vehicle_y=vehicle_y,
-                        vehicle_yaw=vehicle_yaw,
-                    )
-                    self._last_midline_update_mode = "blend"
-            self._midline_buffer_path = np.array(updated, copy=True)
-            self._midline_buffer_last_update_sec = now_sec
-            self._midline_buffer_confidence = min(1.0, self._midline_buffer_confidence + 0.25)
-            return updated
-
-        self._midline_buffer_confidence = max(0.0, self._midline_buffer_confidence - 0.10)
-        if self._midline_buffer_path is None or self._midline_buffer_path.shape[0] < 2:
-            return np.empty((0, 2), dtype=np.float64)
-        if self._midline_buffer_last_update_sec < 0.0:
-            return np.empty((0, 2), dtype=np.float64)
-        if (now_sec - self._midline_buffer_last_update_sec) > self.midline_hold_last_valid_duration_s:
-            self._midline_buffer_path = None
-            return np.empty((0, 2), dtype=np.float64)
-        if self._midline_buffer_confidence < self.midline_min_buffer_confidence:
-            self._midline_buffer_path = None
-            return np.empty((0, 2), dtype=np.float64)
-        if stored_forward is not None and stored_forward.shape[0] >= 2:
-            self._last_midline_update_mode = "hold"
-            return self._resample_midline_stations(stored_forward)
-        self._last_midline_update_mode = "hold"
-        return np.array(self._midline_buffer_path, copy=True)
+        return self._update_midline_memory_common(
+            candidate_centerline=candidate_centerline,
+            candidate_source=candidate_source,
+            candidate_update_ok=candidate_update_ok,
+            candidate_update_reason=candidate_update_reason,
+            frame_id=frame_id,
+            vehicle_x=vehicle_x,
+            vehicle_y=vehicle_y,
+            vehicle_yaw=vehicle_yaw,
+            now_sec=now_sec,
+            support_centerline=support_centerline,
+            direct_commit=direct_commit,
+        )
 
     def _candidate_path_is_updateable(
         self,
@@ -1248,22 +1219,6 @@ class SingleBoundaryPlannerNode(TrackedConePlannerBase):
             return False, "candidate_no_local_path"
         if self._path_forward_extent_local(candidate_local) < self.candidate_min_extent_m:
             return False, "candidate_extent_too_short"
-        if self._midline_buffer_path is not None and self._midline_buffer_path.shape[0] >= 2:
-            jump = compute_centerline_jump_max(
-                candidate_centerline,
-                self._midline_buffer_path,
-                min(self.midline_horizon_m, self.centerline_jump_horizon_m),
-            )
-            if jump > self.candidate_jump_reject_threshold_m:
-                if self._should_accept_large_candidate_jump(
-                    candidate_centerline=candidate_centerline,
-                    candidate_source=candidate_source,
-                    vehicle_x=vehicle_x,
-                    vehicle_y=vehicle_y,
-                    vehicle_yaw=vehicle_yaw,
-                ):
-                    return True, "candidate_jump_near_field_ok"
-                return False, "candidate_jump_rejected"
         if candidate_source == "single_boundary_raw_offset":
             return True, "single_boundary_raw_offset_soft_accept"
         if result.status != "ok":

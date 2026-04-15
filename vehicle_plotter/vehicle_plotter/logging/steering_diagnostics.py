@@ -73,6 +73,7 @@ def corridor_analysis_sample_metric_keys() -> list[str]:
 
 PLANNER_DIAG_TEXT_DEFAULTS: dict[str, str] = {
     "candidate_source": "",
+    "midline_estimation_mode": "",
     "midline_update_mode": "",
     "publish_mode": "",
     "hold_reason": "",
@@ -109,6 +110,11 @@ PLANNER_DIAG_DEFAULTS: dict[str, float] = {
     "plan_hold_active_flag": float("nan"),
     "plan_fallback_flag": float("nan"),
     "centerline_point_count": float("nan"),
+    "midline_estimated_point_count": float("nan"),
+    "midline_estimated_extent_m": float("nan"),
+    "midline_live_prefix_extent_m": float("nan"),
+    "midline_estimation_join_lateral_m": float("nan"),
+    "midline_estimation_join_heading_rad": float("nan"),
     "selected_edge_count": float("nan"),
     "selected_chain_length": float("nan"),
     "selected_chain_median_width_m": float("nan"),
