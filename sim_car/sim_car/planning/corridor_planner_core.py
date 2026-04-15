@@ -555,41 +555,21 @@ def _build_boundary_chain(
                 continue
             step_heading = delta / distance
             forward = float(np.dot(delta, heading))
-            progresses_from_vehicle = _candidate_progresses_from_vehicle(
+            if not _candidate_progresses_from_vehicle(
                 current_local=current_local,
                 candidate_local=candidate_local,
                 min_progress_m=float(config.min_forward_progress_m),
-            )
-            turn_forward_min = max(0.05, 0.5 * float(config.min_forward_progress_m))
-            turn_continuation = (
-                float(current_local[1]) * float(candidate_local[1]) >= 0.0
-                and float(candidate_local[0]) >= float(current_local[0]) - max(0.5, float(config.min_forward_progress_m))
-                and forward >= turn_forward_min
-            )
-            if not progresses_from_vehicle and not turn_continuation:
+            ):
                 iteration_reasons[candidate_pos] = "chain_no_forward_progress"
                 continue
-            tight_turn_step = radial_progress < min_radial_progress
-            max_negative_radial_progress = min_radial_progress
-            if turn_continuation:
-                max_negative_radial_progress = max(
-                    max_negative_radial_progress,
-                    0.30,
-                )
-            if radial_progress < -max_negative_radial_progress:
+            if radial_progress < min_radial_progress:
                 iteration_reasons[candidate_pos] = "chain_radial_regression"
                 continue
-            forward_min = float(config.min_forward_progress_m)
-            if turn_continuation and not progresses_from_vehicle:
-                forward_min = turn_forward_min
-            if forward < forward_min:
+            if forward < float(config.min_forward_progress_m):
                 iteration_reasons[candidate_pos] = "chain_forward_projection"
                 continue
             heading_change = abs(_angle_between(heading, step_heading))
-            max_heading_change = float(config.max_heading_change_rad)
-            if tight_turn_step and float(current_local[1]) * float(candidate_local[1]) >= 0.0:
-                max_heading_change = max(max_heading_change, 1.35)
-            if heading_change > max_heading_change:
+            if heading_change > float(config.max_heading_change_rad):
                 iteration_reasons[candidate_pos] = "chain_heading_change"
                 continue
             if _candidate_is_shadowed(
@@ -700,37 +680,18 @@ def _build_corridor(
     if left_local is None or right_local is None:
         return None
 
-    corridor_candidates: list[dict[str, np.ndarray]] = []
-
     station_count = min(left_local.shape[0], right_local.shape[0])
-    if station_count >= 2:
-        station_candidate = _build_corridor_candidate(
-            left_local=np.asarray(left_local[:station_count], dtype=np.float64),
-            right_local=np.asarray(right_local[:station_count], dtype=np.float64),
-            config=config,
-            prior_centerline_local=prior_centerline_local,
-        )
-        if station_candidate is not None:
-            corridor_candidates.append(station_candidate)
-
-    progress_count = max(left_local.shape[0], right_local.shape[0])
-    if progress_count >= 2:
-        normalized_candidate = _build_corridor_candidate(
-            left_local=_resample_to_count(left_chain.local_points, progress_count),
-            right_local=_resample_to_count(right_chain.local_points, progress_count),
-            config=config,
-            prior_centerline_local=prior_centerline_local,
-        )
-        if normalized_candidate is not None:
-            corridor_candidates.append(normalized_candidate)
-
-    if not corridor_candidates:
+    if station_count < 2:
         return None
 
-    chosen = max(
-        corridor_candidates,
-        key=lambda candidate: _corridor_candidate_score(candidate, config),
+    chosen = _build_corridor_candidate(
+        left_local=np.asarray(left_local[:station_count], dtype=np.float64),
+        right_local=np.asarray(right_local[:station_count], dtype=np.float64),
+        config=config,
+        prior_centerline_local=prior_centerline_local,
     )
+    if chosen is None:
+        return None
 
     left_local = np.asarray(chosen["left_local"], dtype=np.float64)
     right_local = np.asarray(chosen["right_local"], dtype=np.float64)

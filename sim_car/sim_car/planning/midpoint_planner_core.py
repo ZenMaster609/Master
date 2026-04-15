@@ -975,6 +975,7 @@ def _order_pairs_into_midpoint_chain(
     ordered: list[_BoundaryPair] = [pairs[start_idx]]
     used_indices: set[int] = {start_idx}
     current_midpoint = np.asarray(local_midpoints[start_idx], dtype=np.float64)
+    current_range = float(np.hypot(current_midpoint[0], current_midpoint[1]))
 
     while len(ordered) < len(pairs):
         reference_direction, use_vehicle_progress = _midpoint_progress_reference(
@@ -992,6 +993,10 @@ def _order_pairs_into_midpoint_chain(
             delta = midpoint - current_midpoint
             distance = float(np.hypot(delta[0], delta[1]))
             if distance <= 1e-9 or distance > limit_m:
+                continue
+
+            candidate_range = float(np.hypot(midpoint[0], midpoint[1]))
+            if candidate_range < current_range - 0.20:
                 continue
 
             forward_progress_m = float(np.dot(delta, reference_direction))
@@ -1027,6 +1032,7 @@ def _order_pairs_into_midpoint_chain(
         ordered.append(pairs[best_idx])
         used_indices.add(best_idx)
         current_midpoint = np.asarray(local_midpoints[best_idx], dtype=np.float64)
+        current_range = float(np.hypot(current_midpoint[0], current_midpoint[1]))
 
     return ordered
 

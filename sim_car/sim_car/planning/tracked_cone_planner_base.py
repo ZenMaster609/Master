@@ -433,10 +433,15 @@ class TrackedConePlannerBase(TrackedConePlannerRuntime):
             return 0.0
         if path_local.shape[0] == 1:
             return max(0.0, float(path_local[0, 0]))
-        diffs = np.diff(path_local, axis=0)
-        path_length = float(np.sum(np.hypot(diffs[:, 0], diffs[:, 1])))
-        x_span = float(np.max(path_local[:, 0]) - np.min(path_local[:, 0]))
-        return max(path_length, x_span)
+        max_x_idx = int(np.argmax(path_local[:, 0]))
+        forward_segment = path_local[: max_x_idx + 1]
+        if forward_segment.shape[0] >= 2:
+            diffs = np.diff(forward_segment, axis=0)
+            path_length = float(np.sum(np.hypot(diffs[:, 0], diffs[:, 1])))
+        else:
+            path_length = 0.0
+        x_reach = max(0.0, float(path_local[max_x_idx, 0]))
+        return max(path_length, x_reach)
 
     def _resample_midline_stations(self, path: np.ndarray) -> np.ndarray:
         if path.shape[0] < 2:

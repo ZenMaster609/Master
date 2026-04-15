@@ -115,7 +115,7 @@ Visualization Manager:
         raw_chain_left_points: true
         raw_chain_right: true
         raw_chain_right_points: true
-        raw_prevalidation_centerline: true
+        raw_prevalidation_centerline: false
         remembered_cones: false
         status: true
       Queue Size: 100

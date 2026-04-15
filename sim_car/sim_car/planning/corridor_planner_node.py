@@ -1356,6 +1356,7 @@ class CorridorPlannerNode(TrackedConePlannerBase):
         ordered_indices = [seed_idx]
         remaining = {idx for idx in range(len(entries)) if idx != seed_idx}
         heading = np.asarray([1.0, 0.0], dtype=np.float64)
+        current_range = float(np.hypot(local_midpoints[seed_idx, 0], local_midpoints[seed_idx, 1]))
 
         while remaining:
             current_idx = ordered_indices[-1]
@@ -1366,6 +1367,9 @@ class CorridorPlannerNode(TrackedConePlannerBase):
                 delta = local_midpoints[candidate_idx] - current_point
                 distance = float(np.hypot(delta[0], delta[1]))
                 if distance <= 1e-6:
+                    continue
+                candidate_range = float(np.hypot(local_midpoints[candidate_idx, 0], local_midpoints[candidate_idx, 1]))
+                if candidate_range < current_range - 0.20:
                     continue
                 step_dir = delta / distance
                 heading_error = abs(math.atan2(step_dir[1], step_dir[0]) - math.atan2(heading[1], heading[0]))
@@ -1390,18 +1394,8 @@ class CorridorPlannerNode(TrackedConePlannerBase):
                 heading = delta / delta_norm
             ordered_indices.append(best_idx)
             remaining.remove(best_idx)
+            current_range = float(np.hypot(local_midpoints[best_idx, 0], local_midpoints[best_idx, 1]))
 
-        if remaining:
-            ordered_indices.extend(
-                sorted(
-                    remaining,
-                    key=lambda idx: (
-                        max(float(local_midpoints[idx, 0]), 0.0),
-                        abs(float(local_midpoints[idx, 1])),
-                        idx,
-                    ),
-                )
-            )
         return [entries[idx] for idx in ordered_indices]
 
     @staticmethod
