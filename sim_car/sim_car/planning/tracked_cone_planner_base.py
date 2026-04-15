@@ -1,9 +1,18 @@
 from __future__ import annotations
 
-from typing import Optional
+import time
+from typing import Any, Optional
 
 import numpy as np
+from ackermann_msgs.msg import AckermannDriveStamped
+from diagnostic_msgs.msg import DiagnosticArray
+from geometry_msgs.msg import Point, PoseArray
+from nav_msgs.msg import Odometry, Path
+from rclpy.duration import Duration
+from rclpy.qos import qos_profile_sensor_data
+from tf2_ros import Buffer, TransformListener
 from vehicle_plotter_msgs.msg import ConeDetection, ConeDetectionArray
+from visualization_msgs.msg import Marker, MarkerArray
 
 from sim_car.cones.tracking.fusion import normalize_color
 from sim_car.planning.controller_config import build_steering_controller
@@ -22,6 +31,101 @@ MSG_TRACK_STATE_STALE = int(getattr(ConeDetection, "TRACK_STATE_STALE", 2))
 
 class TrackedConePlannerBase(TrackedConePlannerRuntime):
     """Shared tracked-cone planner runtime used by midpoint/single-boundary planners."""
+
+    # Width of the planned centerline strip in viz markers.  Subclasses that
+    # render at a different width (e.g. SingleBoundaryPlannerNode uses 0.09)
+    # should shadow this attribute in the class body.
+    _centerline_marker_width_m: float = 0.20
+
+    # -----------------------------------------------------------------------
+    # Shared __init__ helpers — identical across all three planner nodes
+    # -----------------------------------------------------------------------
+
+    def _init_common_planner_state(self) -> None:
+        """Initialise the ~50 state attributes shared by all three planner nodes."""
+        self._tf_buffer = Buffer(cache_time=Duration(seconds=10.0))
+        self._tf_listener = TransformListener(self._tf_buffer, self)
+
+        self._latest_cones_msg = None
+        self._latest_odom_msg = None
+        self._latest_speed_mps = 0.0
+        self._latest_yaw_rate_rps = 0.0
+        self._last_throttled_log_sec: dict[str, float] = {}
+        self._previous_centerline = None
+        self._previous_raw_centerline = None
+        self._previous_tracked_points = None
+        self._previous_edge_keys: set = set()
+        self._last_valid_centerline = None
+        self._last_valid_raw_midpoint_chain = None
+        self._last_valid_pair_segments = None
+        self._last_valid_pair_track_ids = None
+        self._current_pair_segments_for_viz = None
+        self._last_valid_width_m = self._filtered_track_width_m
+        self._last_valid_time_sec = -1.0
+        self._committed_centerline = None
+        self._commit_stable_frame_count = 0
+        self._hold_mode_active = False
+        self._hold_clean_frame_count = 0
+        self._last_speed_cmd = None
+        self._last_steering_cmd = None
+        self._last_operator_state = None
+        self._last_operator_reason = None
+        self._midline_buffer_path = None
+        self._midline_buffer_confidence = 0.0
+        self._midline_buffer_last_update_sec = -1.0
+        self._midline_memory = None
+        self._last_midline_update_mode = "hold"
+        self._last_midline_candidate_update_ok = False
+        self._last_midline_candidate_update_reason = "ok"
+        self._last_midline_candidate_jump_m = float("nan")
+        self._last_midline_near_lateral_delta_max_m = float("nan")
+        self._last_midline_buffer_confidence = 0.0
+        self._midline_recovery_count = 0
+        self._last_viz_left_boundary = None
+        self._last_viz_right_boundary = None
+        self._last_viz_raw_offset_path = None
+        self._candidate_jump_reject_streak = 0
+
+        self._active_planner_mode = "waiting"
+        self._active_remembered_cone_count = 0
+        self._active_stale_cone_count = 0
+        self._active_left_chain_length = 0
+        self._active_right_chain_length = 0
+        self._active_pair_count = 0
+        self._active_unknown_pair_count = 0
+        self._active_filtered_track_width_m = self._filtered_track_width_m
+        self._active_held_path_flag = 0
+
+    def _init_common_ros_interfaces(self) -> None:
+        """Create the five standard publishers, two standard subscriptions, and the loop timer."""
+        self._cmd_pub = self.create_publisher(AckermannDriveStamped, self.cmd_topic, 10)
+        self._path_pub = self.create_publisher(Path, self.centerline_topic, 10)
+        self._viz_pub = self.create_publisher(MarkerArray, self.viz_topic, 10)
+        self._points_pub = self.create_publisher(PoseArray, self.points_topic, 10)
+        self._diag_pub = self.create_publisher(DiagnosticArray, self.diagnostics_topic, 10)
+
+        self.create_subscription(
+            ConeDetectionArray,
+            self.tracked_cones_topic,
+            self._cones_cb,
+            qos_profile_sensor_data,
+        )
+        self.create_subscription(
+            Odometry,
+            self.odom_topic,
+            self._odom_cb,
+            qos_profile_sensor_data,
+        )
+
+        loop_hz = max(1.0, float(self.publish_rate_hz))
+        self.create_timer(1.0 / loop_hz, self._on_timer)
+
+        self.get_logger().info(
+            f"{self.get_name()} ready "
+            f"cones={self.tracked_cones_topic} odom={self.odom_topic} "
+            f"cmd={self.cmd_topic} path={self.centerline_topic} viz={self.viz_topic} "
+            f"planning_frame={self.planning_frame} controller={self.controller_type}"
+        )
 
     def _build_steering_controller(self):
         return build_steering_controller(
@@ -311,3 +415,603 @@ class TrackedConePlannerBase(TrackedConePlannerRuntime):
                 getattr(self, "_last_midline_estimation_join_heading_rad", float("nan"))
             ),
         }
+
+    # -----------------------------------------------------------------------
+    # Shared geometry helpers — identical across midpoint/corridor/single_boundary
+    # -----------------------------------------------------------------------
+
+    def _midline_blend_params(self, distance_ahead: float) -> tuple[float, float]:
+        if distance_ahead <= self.midline_near_distance_m:
+            return self.midline_near_alpha, self.midline_near_max_shift_m
+        if distance_ahead <= self.midline_mid_distance_m:
+            return self.midline_mid_alpha, self.midline_mid_max_shift_m
+        return self.midline_far_alpha, self.midline_far_max_shift_m
+
+    @staticmethod
+    def _path_forward_extent_local(path_local: np.ndarray) -> float:
+        if path_local.shape[0] == 0:
+            return 0.0
+        if path_local.shape[0] == 1:
+            return max(0.0, float(path_local[0, 0]))
+        diffs = np.diff(path_local, axis=0)
+        path_length = float(np.sum(np.hypot(diffs[:, 0], diffs[:, 1])))
+        x_span = float(np.max(path_local[:, 0]) - np.min(path_local[:, 0]))
+        return max(path_length, x_span)
+
+    def _resample_midline_stations(self, path: np.ndarray) -> np.ndarray:
+        if path.shape[0] < 2:
+            return np.array(path, copy=True)
+        cumulative = self._path_cumulative_lengths(path)
+        total = min(float(cumulative[-1]), float(self.midline_horizon_m))
+        if total <= 1e-6:
+            return np.asarray(path[:1], dtype=np.float64)
+        step = max(0.05, float(self.midline_station_spacing_m))
+        samples = np.arange(0.0, total + 1e-9, step, dtype=np.float64)
+        if samples.size == 0 or samples[-1] < total:
+            samples = np.concatenate((samples, [total]))
+        return self._sample_path_at_lengths(path, cumulative, samples)
+
+    def _candidate_forward_extent_m(
+        self,
+        *,
+        centerline: np.ndarray,
+        frame_id: str,
+        vehicle_x: float,
+        vehicle_y: float,
+        vehicle_yaw: float,
+    ) -> float:
+        if centerline.shape[0] == 0:
+            return 0.0
+        local_path = self._centerline_to_vehicle_frame(
+            centerline=centerline,
+            frame_id=frame_id,
+            vehicle_x=vehicle_x,
+            vehicle_y=vehicle_y,
+            vehicle_yaw=vehicle_yaw,
+        )
+        return self._path_forward_extent_local(local_path)
+
+    def _prepare_centerline_for_current_pose(
+        self,
+        *,
+        centerline: np.ndarray,
+        frame_id: str,
+        vehicle_x: float,
+        vehicle_y: float,
+        vehicle_yaw: float,
+        preserve_live_lateral_near_vehicle: bool = False,
+    ) -> np.ndarray:
+        if centerline.shape[0] == 0:
+            return centerline
+        if not self._is_alias(frame_id, self.odom_frame):
+            return centerline
+        forward = self._extract_forward_path_from_pose(
+            path=centerline,
+            vehicle_xy=(vehicle_x, vehicle_y),
+            resolution_m=self.midline_station_spacing_m,
+        )
+        prepared = (
+            np.array(forward, copy=True)
+            if forward is not None and forward.shape[0] > 0
+            else np.array(centerline, copy=True)
+        )
+        return self._anchor_centerline_near_vehicle(
+            centerline=prepared,
+            frame_id=frame_id,
+            vehicle_x=vehicle_x,
+            vehicle_y=vehicle_y,
+            vehicle_yaw=vehicle_yaw,
+            preserve_live_lateral_near_vehicle=preserve_live_lateral_near_vehicle,
+        )
+
+    def _should_preserve_near_vehicle_lateral(
+        self, local: np.ndarray, anchor_length_m: float
+    ) -> bool:
+        """Hook for subclasses to override the near-vehicle lateral anchoring decision."""
+        return False
+
+    def _anchor_centerline_near_vehicle(
+        self,
+        *,
+        centerline: np.ndarray,
+        frame_id: str,
+        vehicle_x: float,
+        vehicle_y: float,
+        vehicle_yaw: float,
+        preserve_live_lateral_near_vehicle: bool = False,
+    ) -> np.ndarray:
+        if centerline.shape[0] == 0:
+            return centerline
+        if not self._is_alias(frame_id, self.odom_frame):
+            return centerline
+
+        local = self._centerline_to_vehicle_frame(
+            centerline=centerline,
+            frame_id=frame_id,
+            vehicle_x=vehicle_x,
+            vehicle_y=vehicle_y,
+            vehicle_yaw=vehicle_yaw,
+        )
+        if local.shape[0] == 0:
+            return centerline
+
+        keep_mask = local[:, 0] >= -0.1
+        local = local[keep_mask]
+        if local.shape[0] == 0:
+            local = np.array([[0.0, 0.0]], dtype=np.float64)
+
+        anchor_length_m = max(0.5, min(1.5, float(self.midline_near_distance_m)))
+        preserve = preserve_live_lateral_near_vehicle or self._should_preserve_near_vehicle_lateral(
+            local, anchor_length_m
+        )
+        for idx in range(local.shape[0]):
+            x_val = float(local[idx, 0])
+            if x_val <= 0.0:
+                local[idx, 1] = 0.0
+                continue
+            if not preserve and x_val < anchor_length_m:
+                local[idx, 1] *= x_val / anchor_length_m
+
+        local[0, 0] = 0.0
+        local[0, 1] = 0.0
+        if local.shape[0] == 1:
+            local = np.vstack((local, np.array([[max(0.5, anchor_length_m), 0.0]], dtype=np.float64)))
+
+        anchored = np.empty_like(local)
+        for idx in range(local.shape[0]):
+            ox, oy = self._base_point_to_odom(
+                float(local[idx, 0]),
+                float(local[idx, 1]),
+                vehicle_x,
+                vehicle_y,
+                vehicle_yaw,
+            )
+            anchored[idx, 0] = ox
+            anchored[idx, 1] = oy
+        return anchored
+
+    # -----------------------------------------------------------------------
+    # Shared visualization helpers
+    # -----------------------------------------------------------------------
+
+    def _make_pair_segment_marker(
+        self,
+        *,
+        frame_id: str,
+        stamp: Any,
+        marker_id: int,
+        ns: str,
+        pair_segments: Optional[np.ndarray],
+        color: tuple[float, float, float, float],
+        width: float,
+    ) -> Marker:
+        marker = Marker()
+        marker.header.frame_id = frame_id
+        marker.header.stamp = stamp
+        marker.ns = ns
+        marker.id = marker_id
+        marker.type = Marker.LINE_LIST
+        marker.action = Marker.ADD
+        marker.pose.orientation.w = 1.0
+        marker.scale.x = float(width)
+        marker.color.r = float(color[0])
+        marker.color.g = float(color[1])
+        marker.color.b = float(color[2])
+        marker.color.a = float(color[3])
+        if pair_segments is None:
+            return marker
+        for segment in np.asarray(pair_segments, dtype=np.float64):
+            if segment.shape != (2, 2):
+                continue
+            for x, y in segment:
+                point = self._point_msg(float(x), float(y), 0.03)
+                marker.points.append(point)
+        return marker
+
+    @staticmethod
+    def _point_msg(x: float, y: float, z: float) -> Point:
+        point = Point()
+        point.x = x
+        point.y = y
+        point.z = z
+        return point
+
+    # -----------------------------------------------------------------------
+    # Shared logging helper
+    # -----------------------------------------------------------------------
+
+    def _log_mode_summary(
+        self,
+        *,
+        mode: str,
+        result: Any,
+        operator_state: str,
+        operator_reason: str,
+        hold_active: bool,
+    ) -> None:
+        now_sec = time.monotonic()
+        last_sec = self._last_throttled_log_sec.get("mode_summary", -1.0)
+        if (now_sec - last_sec) < self.log_throttle_s:
+            return
+        self.get_logger().info(
+            (
+                "mode=%s state=%s reason=%s status=%s tracks=%d stale=%d left=%d right=%d pairs=%d unknown=%d width=%.2f held=%d"
+            )
+            % (
+                mode,
+                operator_state,
+                operator_reason,
+                result.status,
+                int(self._active_remembered_cone_count),
+                int(self._active_stale_cone_count),
+                int(result.left_chain_length),
+                int(result.right_chain_length),
+                int(result.accepted_pair_count),
+                int(result.unknown_pair_count),
+                float(self._filtered_track_width_m),
+                1 if hold_active else 0,
+            )
+        )
+        self._last_throttled_log_sec["mode_summary"] = now_sec
+
+    # -----------------------------------------------------------------------
+    # Shared marker builder — midpoint and single_boundary planners
+    # -----------------------------------------------------------------------
+
+    def _build_markers(
+        self,
+        *,
+        now,
+        frame_id: str,
+        result: Optional[Any],
+        centerline: np.ndarray,
+        raw_centerline: np.ndarray,
+        raw_midpoint_chain: np.ndarray,
+        status: str,
+        operator_state: str,
+        control_target_frame: Optional[np.ndarray],
+    ) -> MarkerArray:
+        arr = MarkerArray()
+
+        clear = Marker()
+        clear.header.frame_id = frame_id
+        clear.header.stamp = now
+        clear.action = Marker.DELETEALL
+        arr.markers.append(clear)
+
+        marker_id = 1
+        if result is None:
+            self._append_status_marker(
+                arr,
+                marker_id,
+                frame_id,
+                now,
+                status,
+                operator_state=operator_state,
+            )
+            return arr
+
+        if self.show_raw_cones:
+            marker_id = self._append_remembered_cone_marker(
+                arr,
+                marker_id,
+                frame_id,
+                now,
+            )
+
+        left_boundary = np.array(result.left_boundary, copy=True)
+        right_boundary = np.array(result.right_boundary, copy=True)
+        if left_boundary.shape[0] > 0:
+            self._last_viz_left_boundary = np.array(left_boundary, copy=True)
+        elif self._last_viz_left_boundary is not None:
+            left_boundary = np.array(self._last_viz_left_boundary, copy=True)
+        if right_boundary.shape[0] > 0:
+            self._last_viz_right_boundary = np.array(right_boundary, copy=True)
+        elif self._last_viz_right_boundary is not None:
+            right_boundary = np.array(self._last_viz_right_boundary, copy=True)
+
+        if self.show_boundary_chains:
+            arr.markers.append(
+                self._make_line_strip_marker(
+                    frame_id=frame_id,
+                    stamp=now,
+                    marker_id=marker_id,
+                    ns="boundary_left",
+                    points=left_boundary,
+                    color=(0.2, 0.45, 1.0, 0.95),
+                    width=0.10,
+                    z_offset=0.12,
+                )
+            )
+            marker_id += 1
+            left_points_marker = self._make_points_marker(
+                frame_id=frame_id,
+                stamp=now,
+                marker_id=marker_id,
+                ns="boundary_left_points",
+                points=left_boundary,
+                color=(0.2, 0.55, 1.0, 1.0),
+                scale=0.22,
+            )
+            for point in left_points_marker.points:
+                point.z = 0.13
+            arr.markers.append(left_points_marker)
+            marker_id += 1
+            arr.markers.append(
+                self._make_line_strip_marker(
+                    frame_id=frame_id,
+                    stamp=now,
+                    marker_id=marker_id,
+                    ns="boundary_right",
+                    points=right_boundary,
+                    color=(1.0, 0.9, 0.2, 0.95),
+                    width=0.10,
+                    z_offset=0.14,
+                )
+            )
+            marker_id += 1
+            right_points_marker = self._make_points_marker(
+                frame_id=frame_id,
+                stamp=now,
+                marker_id=marker_id,
+                ns="boundary_right_points",
+                points=right_boundary,
+                color=(1.0, 0.92, 0.25, 1.0),
+                scale=0.22,
+            )
+            for point in right_points_marker.points:
+                point.z = 0.15
+            arr.markers.append(right_points_marker)
+            marker_id += 1
+
+        active_boundary = np.empty((0, 2), dtype=np.float64)
+        if result.planner_mode == "single_boundary":
+            if result.active_boundary_side == "blue":
+                active_boundary = left_boundary
+            elif result.active_boundary_side == "yellow":
+                active_boundary = right_boundary
+        if active_boundary.shape[0] > 0:
+            arr.markers.append(
+                self._make_line_strip_marker(
+                    frame_id=frame_id,
+                    stamp=now,
+                    marker_id=marker_id,
+                    ns="single_boundary_active",
+                    points=active_boundary,
+                    color=(0.15, 1.0, 0.2, 1.0),
+                    width=0.16,
+                    z_offset=0.20,
+                )
+            )
+            marker_id += 1
+
+        if self.show_pair_lines:
+            arr.markers.append(
+                self._make_pair_segment_marker(
+                    frame_id=frame_id,
+                    stamp=now,
+                    marker_id=marker_id,
+                    ns="accepted_pairs",
+                    pair_segments=self._current_pair_segments_for_viz,
+                    color=(0.2, 1.0, 0.3, 0.95),
+                    width=0.07,
+                )
+            )
+            marker_id += 1
+
+        if self.show_raw_midpoint_chain:
+            arr.markers.append(
+                self._make_line_strip_marker(
+                    frame_id=frame_id,
+                    stamp=now,
+                    marker_id=marker_id,
+                    ns="raw_midpoint_chain",
+                    points=raw_midpoint_chain,
+                    color=(1.0, 1.0, 1.0, 0.95),
+                    width=0.06,
+                    z_offset=0.03,
+                )
+            )
+            marker_id += 1
+
+        if self.show_raw_offset_path:
+            raw_offset_path = np.array(result.raw_offset_path, copy=True)
+            if raw_offset_path.shape[0] > 0:
+                self._last_viz_raw_offset_path = np.array(raw_offset_path, copy=True)
+            elif self._last_viz_raw_offset_path is not None:
+                raw_offset_path = np.array(self._last_viz_raw_offset_path, copy=True)
+            arr.markers.append(
+                self._make_line_strip_marker(
+                    frame_id=frame_id,
+                    stamp=now,
+                    marker_id=marker_id,
+                    ns="raw_offset_path",
+                    points=raw_offset_path,
+                    color=(0.2, 1.0, 1.0, 0.9),
+                    width=0.09,
+                    z_offset=0.18,
+                )
+            )
+            marker_id += 1
+            raw_offset_points_marker = self._make_points_marker(
+                frame_id=frame_id,
+                stamp=now,
+                marker_id=marker_id,
+                ns="raw_offset_path_points",
+                points=raw_offset_path,
+                color=(0.2, 1.0, 1.0, 1.0),
+                scale=0.20,
+            )
+            for point in raw_offset_points_marker.points:
+                point.z = 0.19
+            arr.markers.append(raw_offset_points_marker)
+            marker_id += 1
+
+        if self.show_raw_prevalidation_centerline:
+            arr.markers.append(
+                self._make_line_strip_marker(
+                    frame_id=frame_id,
+                    stamp=now,
+                    marker_id=marker_id,
+                    ns="raw_prevalidation_centerline",
+                    points=raw_centerline,
+                    color=(1.0, 0.15, 0.85, 0.9),
+                    width=0.07,
+                    z_offset=0.05,
+                )
+            )
+            marker_id += 1
+
+        arr.markers.append(
+            self._make_line_strip_marker(
+                frame_id=frame_id,
+                stamp=now,
+                marker_id=marker_id,
+                ns="centerline",
+                points=centerline,
+                color=(0.95, 0.15, 0.15, 1.0),
+                width=self._centerline_marker_width_m,
+                z_offset=0.07,
+            )
+        )
+        marker_id += 1
+
+        if self.show_lookahead_point and control_target_frame is not None:
+            marker = Marker()
+            marker.header.frame_id = frame_id
+            marker.header.stamp = now
+            marker.ns = "lookahead"
+            marker.id = marker_id
+            marker.type = Marker.SPHERE
+            marker.action = Marker.ADD
+            marker.scale.x = 0.25
+            marker.scale.y = 0.25
+            marker.scale.z = 0.25
+            marker.color.r = 1.0
+            marker.color.g = 0.0
+            marker.color.b = 0.0
+            marker.color.a = 1.0
+            marker.pose.position.x = float(control_target_frame[0])
+            marker.pose.position.y = float(control_target_frame[1])
+            marker.pose.position.z = 0.05
+            marker.pose.orientation.w = 1.0
+            arr.markers.append(marker)
+            marker_id += 1
+
+        self._append_status_marker(
+            arr,
+            marker_id,
+            frame_id,
+            now,
+            status,
+            operator_state=operator_state,
+        )
+        return arr
+
+    # -----------------------------------------------------------------------
+    # Timer preamble — shared by all three planner nodes
+    # -----------------------------------------------------------------------
+
+    def _resolve_cone_planning_context(
+        self,
+    ) -> Optional[tuple[Any, str, float, float, float, np.ndarray, list, np.ndarray]]:
+        """Snapshot cones, resolve vehicle pose and frame.
+
+        Returns (cones_msg, target_frame, vehicle_x, vehicle_y, vehicle_yaw,
+        points_xy, colors, confidences) or None if a failure was detected and
+        an empty cycle was already published.
+        """
+        cones_msg = self._latest_cones_msg
+        if cones_msg is None:
+            zero_cmd_sent = int(self._apply_no_path_behavior())
+            self._publish_empty_cycle(
+                frame_id=self.odom_frame,
+                status="waiting for /tracked_cones",
+                operator_state="waiting",
+                operator_reason="waiting_for_cones",
+                cmd_speed=0.0,
+                cmd_steering=0.0,
+                lookahead=0.0,
+                zero_cmd_sent_flag=zero_cmd_sent,
+            )
+            return None
+
+        source_frame = str(cones_msg.header.frame_id).strip() or self.odom_frame
+        target_frame = self._resolve_planning_frame(source_frame, cones_msg.header.stamp)
+
+        pose = self._resolve_vehicle_pose(target_frame, cones_msg.header.stamp)
+        if pose is None and target_frame != self.odom_frame:
+            self._warn_throttled(
+                "fallback_odom",
+                f"cannot resolve base pose in {target_frame}; falling back to odom",
+            )
+            target_frame = self.odom_frame
+            pose = self._resolve_vehicle_pose(target_frame, cones_msg.header.stamp)
+
+        if pose is None:
+            zero_cmd_sent = int(self._apply_no_path_behavior())
+            self._publish_empty_cycle(
+                frame_id=target_frame,
+                status="missing vehicle pose (tf and /sim/odom unavailable)",
+                operator_state="waiting",
+                operator_reason="missing_vehicle_pose",
+                cmd_speed=0.0,
+                cmd_steering=0.0,
+                lookahead=0.0,
+                zero_cmd_sent_flag=zero_cmd_sent,
+            )
+            return None
+
+        vehicle_x, vehicle_y, vehicle_yaw = pose
+        points_xy, colors, confidences = self._convert_cones_to_frame(
+            cones_msg,
+            source_frame,
+            target_frame,
+            vehicle_xy=(vehicle_x, vehicle_y),
+            vehicle_yaw=vehicle_yaw,
+        )
+        if points_xy is None:
+            if target_frame != self.odom_frame:
+                self._warn_throttled(
+                    "fallback_odom_cones",
+                    f"cannot transform cones to {target_frame}; planning in odom frame",
+                )
+                target_frame = self.odom_frame
+                pose = self._resolve_vehicle_pose(target_frame, cones_msg.header.stamp)
+                if pose is None:
+                    zero_cmd_sent = int(self._apply_no_path_behavior())
+                    self._publish_empty_cycle(
+                        frame_id=self.odom_frame,
+                        status="cone transform failed and odom pose unavailable",
+                        operator_state="waiting",
+                        operator_reason="cone_transform_unavailable",
+                        cmd_speed=0.0,
+                        cmd_steering=0.0,
+                        lookahead=0.0,
+                        zero_cmd_sent_flag=zero_cmd_sent,
+                    )
+                    return None
+                vehicle_x, vehicle_y, vehicle_yaw = pose
+                points_xy, colors, confidences = self._convert_cones_to_frame(
+                    cones_msg,
+                    source_frame,
+                    target_frame,
+                    vehicle_xy=(vehicle_x, vehicle_y),
+                    vehicle_yaw=vehicle_yaw,
+                )
+
+        if points_xy is None:
+            zero_cmd_sent = int(self._apply_no_path_behavior())
+            self._publish_empty_cycle(
+                frame_id=target_frame,
+                status="cone transform unavailable",
+                operator_state="waiting",
+                operator_reason="cone_transform_unavailable",
+                cmd_speed=0.0,
+                cmd_steering=0.0,
+                lookahead=0.0,
+                zero_cmd_sent_flag=zero_cmd_sent,
+            )
+            return None
+
+        return cones_msg, target_frame, vehicle_x, vehicle_y, vehicle_yaw, points_xy, colors, confidences
