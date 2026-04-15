@@ -726,7 +726,13 @@ def _pair_boundary_chains(
                 else "unknown"
             )
             if config.enforce_opposite_color_pairing:
-                if {anchor_raw_color, partner_raw_color} != {"blue", "yellow"}:
+                raw_pair = {anchor_raw_color, partner_raw_color}
+                if raw_pair not in (
+                    {"blue", "yellow"},
+                    {"orange", "blue"},
+                    {"orange", "yellow"},
+                    {"orange"},
+                ):
                     reject_counts["color"] += 1
                     continue
             delta = other_local - anchor_local
