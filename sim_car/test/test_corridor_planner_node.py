@@ -574,7 +574,7 @@ def test_candidate_path_rejects_soft_corridor_when_core_status_is_not_ok():
     assert reason == "candidate_extent_too_short"
 
 
-def test_remembered_corridor_geometry_does_not_supply_memory_candidate():
+def test_remembered_corridor_geometry_supplies_midpoint_candidate():
     node = _make_node()
     result = _sample_result()
 
@@ -608,8 +608,8 @@ def test_remembered_corridor_geometry_does_not_supply_memory_candidate():
 
     assert pair_segments.shape[0] == 3
     assert midpoint_chain.shape[0] == 3
-    assert source == "none"
-    assert candidate.shape == (0, 2)
+    assert source == "corridor_midpoints"
+    assert np.allclose(candidate, midpoint_chain)
 
 
 def test_valid_live_corridor_candidate_directly_replaces_existing_buffer():
@@ -725,7 +725,7 @@ def test_validated_near_field_jump_ok_replaces_buffer_directly():
     assert np.allclose(updated[:, 1], candidate_y, atol=1e-3)
 
 
-def test_select_candidate_centerline_does_not_recover_near_field_corridor_jump():
+def test_select_candidate_centerline_uses_midpoints_after_near_field_corridor_jump():
     node = _make_node()
     result = _sample_result()
     result.status = "near-field continuity rejected fresh path"
@@ -741,11 +741,11 @@ def test_select_candidate_centerline_does_not_recover_near_field_corridor_jump()
         vehicle_yaw=0.0,
     )
 
-    assert source == "none"
-    assert centerline.shape == (0, 2)
+    assert source == "corridor_midpoints"
+    assert np.allclose(centerline, result.midpoints_raw)
 
 
-def test_select_candidate_centerline_rejects_short_corridor_prefix():
+def test_select_candidate_centerline_uses_short_corridor_midpoint_prefix():
     node = _make_node()
     result = _sample_result()
     result.status = "too few valid corridor samples"
@@ -764,5 +764,5 @@ def test_select_candidate_centerline_rejects_short_corridor_prefix():
         vehicle_yaw=0.0,
     )
 
-    assert source == "none"
-    assert centerline.shape == (0, 2)
+    assert source == "corridor_midpoints"
+    assert np.allclose(centerline, result.midpoints_raw)

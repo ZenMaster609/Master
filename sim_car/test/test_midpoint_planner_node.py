@@ -664,7 +664,7 @@ def test_remember_pairs_keeps_non_tentative_pairs_even_with_low_confidence_metad
     assert node._pair_memory[0].right_track_id == 32
 
 
-def test_sparse_pair_midline_does_not_create_bridge_candidate():
+def test_sparse_pair_midline_creates_midpoint_chain_candidate():
     node = _make_node()
     result = _sample_result()
     result.status = "path forward extent too short"
@@ -682,8 +682,8 @@ def test_sparse_pair_midline_does_not_create_bridge_candidate():
         vehicle_yaw=0.0,
     )
 
-    assert source == "none"
-    assert candidate.shape == (0, 2)
+    assert source == "midpoint_chain"
+    assert np.allclose(candidate, result.midpoints_raw)
 
 
 def test_blend_midline_samples_snaps_to_candidate_when_within_allowed_shift():
@@ -948,7 +948,7 @@ def test_candidate_path_rejects_projected_pairs_on_jump_against_stored_midline()
     assert candidate_reason == "no reliable midpoint chain"
 
 
-def test_select_candidate_centerline_does_not_recover_near_field_jump():
+def test_select_candidate_centerline_uses_midpoints_after_near_field_jump():
     node = _make_node()
     result = _sample_result()
     result.status = "near-field continuity rejected fresh path"
@@ -963,11 +963,11 @@ def test_select_candidate_centerline_does_not_recover_near_field_jump():
         vehicle_yaw=0.0,
     )
 
-    assert source == "none"
-    assert centerline.shape == (0, 2)
+    assert source == "midpoint_chain"
+    assert np.allclose(centerline, result.midpoints_raw)
 
 
-def test_select_candidate_centerline_rejects_short_live_prefix():
+def test_select_candidate_centerline_uses_short_live_midpoint_prefix():
     node = _make_node()
     result = _sample_result()
     result.status = "path forward extent too short"
@@ -985,11 +985,11 @@ def test_select_candidate_centerline_rejects_short_live_prefix():
         vehicle_yaw=0.0,
     )
 
-    assert source == "none"
-    assert centerline.shape == (0, 2)
+    assert source == "midpoint_chain"
+    assert np.allclose(centerline, result.midpoints_raw)
 
 
-def test_select_candidate_centerline_does_not_bridge_to_live_pair_midline_when_path_disappears():
+def test_select_candidate_centerline_uses_live_pair_midline_when_path_disappears():
     node = _make_node()
     result = _sample_result()
     result.status = "path heading delta exceeded limit"
@@ -1011,8 +1011,8 @@ def test_select_candidate_centerline_does_not_bridge_to_live_pair_midline_when_p
         vehicle_yaw=0.0,
     )
 
-    assert source == "none"
-    assert centerline.shape == (0, 2)
+    assert source == "midpoint_chain"
+    assert np.allclose(centerline, result.midpoints_raw)
 
 
 def test_candidate_path_rejects_unsupported_bridge_source():

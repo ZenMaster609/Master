@@ -49,6 +49,9 @@ MSG_TRACK_STATE_TENTATIVE = int(getattr(ConeDetection, "TRACK_STATE_TENTATIVE", 
 MSG_TRACK_STATE_CONFIRMED = int(getattr(ConeDetection, "TRACK_STATE_CONFIRMED", 1))
 MSG_TRACK_STATE_STALE = int(getattr(ConeDetection, "TRACK_STATE_STALE", 2))
 _PAIR_PASSED_MARGIN_M = 0.5
+_CORRIDOR_MIDPOINT_SOURCE = "corridor_midpoints"
+_CORRIDOR_MIDPOINT_MIN_POINTS = 2
+_CENTERLINE_MARKER_WIDTH_M = 0.20
 _CORRIDOR_ANALYSIS_SAMPLE_COUNT = 8
 _CORRIDOR_ANALYSIS_SAMPLE_SPACING_M = 1.0
 _ANCHOR_TAPER_GATE_LATERAL_M = 0.20
@@ -237,6 +240,8 @@ class CorridorPlannerNode(TrackedConePlannerBase):
             "corridor.membership_margin_m": 0.15,
             "midline_memory.pair_memory_retention_s": 12.0,
             "lap_tracking.target_laps": 0,
+            "validation.candidate_min_points": _CORRIDOR_MIDPOINT_MIN_POINTS,
+            "validation.candidate_min_extent_m": 0.25,
             "validation.min_path_points": 4,
             "validation.min_forward_extent_m": 2.0,
             "validation.max_heading_delta_rad": 0.75,
@@ -1651,12 +1656,10 @@ class CorridorPlannerNode(TrackedConePlannerBase):
         now_sec: float,
         support_centerline: Optional[np.ndarray] = None,
     ) -> np.ndarray:
-        del support_centerline
         direct_commit = (
-            candidate_source == "validated"
+            candidate_source in {"validated", _CORRIDOR_MIDPOINT_SOURCE}
             and candidate_update_ok is not False
-            and result.status == "ok"
-            and result.centerline.shape[0] >= 2
+            and np.asarray(candidate_centerline, dtype=np.float64).shape[0] >= 2
         )
         return self._update_midline_memory_common(
             candidate_centerline=candidate_centerline,
@@ -1668,6 +1671,7 @@ class CorridorPlannerNode(TrackedConePlannerBase):
             vehicle_y=vehicle_y,
             vehicle_yaw=vehicle_yaw,
             now_sec=now_sec,
+            support_centerline=support_centerline,
             direct_commit=direct_commit,
         )
 
@@ -1681,7 +1685,12 @@ class CorridorPlannerNode(TrackedConePlannerBase):
         result: CorridorPlannerResult,
         candidate_source: str = "validated",
     ) -> tuple[bool, str]:
-        if candidate_centerline.shape[0] < self.candidate_min_points:
+        min_points = (
+            _CORRIDOR_MIDPOINT_MIN_POINTS
+            if candidate_source == _CORRIDOR_MIDPOINT_SOURCE
+            else self.candidate_min_points
+        )
+        if candidate_centerline.shape[0] < min_points:
             return False, "candidate_too_short"
         if not np.all(np.isfinite(candidate_centerline)):
             return False, "candidate_non_finite"
@@ -1692,10 +1701,12 @@ class CorridorPlannerNode(TrackedConePlannerBase):
             vehicle_y=vehicle_y,
             vehicle_yaw=vehicle_yaw,
         )
-        if candidate_local.shape[0] < self.candidate_min_points:
+        if candidate_local.shape[0] < min_points:
             return False, "candidate_no_local_path"
         if self._path_forward_extent_local(candidate_local) < self.candidate_min_extent_m:
             return False, "candidate_extent_too_short"
+        if candidate_source == _CORRIDOR_MIDPOINT_SOURCE:
+            return True, "ok"
         if candidate_source != "validated":
             return False, result.reject_reason or result.status or "unsupported_candidate_source"
         if result.status != "ok":
@@ -1839,10 +1850,57 @@ class CorridorPlannerNode(TrackedConePlannerBase):
         vehicle_y: float,
         vehicle_yaw: float,
     ) -> tuple[np.ndarray, str]:
-        del support_chain, memory_midpoint_chain, frame_id, vehicle_x, vehicle_y, vehicle_yaw
+        candidates: list[tuple[float, int, str, np.ndarray]] = []
+
+        def add_candidate(path: np.ndarray, source: str, priority: int) -> None:
+            candidate = self._finite_corridor_path(path)
+            if candidate.shape[0] < _CORRIDOR_MIDPOINT_MIN_POINTS:
+                return
+            extent = self._candidate_forward_extent_m(
+                centerline=candidate,
+                frame_id=frame_id,
+                vehicle_x=vehicle_x,
+                vehicle_y=vehicle_y,
+                vehicle_yaw=vehicle_yaw,
+            )
+            if extent <= 1e-6:
+                return
+            candidates.append((extent, priority, source, candidate))
+
         if result.status == "ok" and result.centerline.shape[0] > 0:
-            return np.array(result.centerline, copy=True), "validated"
-        return np.empty((0, 2), dtype=np.float64), "none"
+            add_candidate(result.centerline, "validated", 30)
+
+        # The visible corridor anchor chain is the most literal "pair midpoint to
+        # pair midpoint" path. Prefer it when it reaches farther than the fitted
+        # core centerline, including remembered pairs beyond the current live fit.
+        add_candidate(support_chain, _CORRIDOR_MIDPOINT_SOURCE, 20)
+        add_candidate(result.prevalidation_centerline, _CORRIDOR_MIDPOINT_SOURCE, 10)
+        add_candidate(memory_midpoint_chain, _CORRIDOR_MIDPOINT_SOURCE, 5)
+
+        if not candidates:
+            return np.empty((0, 2), dtype=np.float64), "none"
+
+        best_extent = max(extent for extent, _, _, _ in candidates)
+        extent_tolerance_m = max(0.05, 0.5 * float(self.midline_station_spacing_m))
+        near_best = [
+            candidate
+            for candidate in candidates
+            if candidate[0] >= (best_extent - extent_tolerance_m)
+        ]
+        _, _, source, path = max(near_best, key=lambda candidate: (candidate[1], candidate[0]))
+        return np.array(path, copy=True), source
+
+    @staticmethod
+    def _finite_corridor_path(path: np.ndarray) -> np.ndarray:
+        arr = np.asarray(path, dtype=np.float64)
+        if arr.size == 0:
+            return np.empty((0, 2), dtype=np.float64)
+        if arr.ndim != 2 or arr.shape[1] != 2:
+            return np.empty((0, 2), dtype=np.float64)
+        finite_mask = np.all(np.isfinite(arr), axis=1)
+        if not np.any(finite_mask):
+            return np.empty((0, 2), dtype=np.float64)
+        return np.array(arr[finite_mask], copy=True)
 
     def _candidate_forward_extent_m(
         self,
@@ -2576,7 +2634,7 @@ class CorridorPlannerNode(TrackedConePlannerBase):
                 ns="centerline",
                 points=centerline,
                 color=(0.95, 0.15, 0.15, 1.0),
-                width=0.09,
+                width=_CENTERLINE_MARKER_WIDTH_M,
                 z_offset=0.07,
             )
         )
