@@ -49,7 +49,6 @@ MSG_TRACK_STATE_TENTATIVE = int(getattr(ConeDetection, "TRACK_STATE_TENTATIVE", 
 MSG_TRACK_STATE_CONFIRMED = int(getattr(ConeDetection, "TRACK_STATE_CONFIRMED", 1))
 MSG_TRACK_STATE_STALE = int(getattr(ConeDetection, "TRACK_STATE_STALE", 2))
 _PAIR_PASSED_MARGIN_M = 0.5
-_LIVE_PREFIX_MIN_POINTS = 2
 
 
 @dataclass
@@ -1276,16 +1275,11 @@ class MidpointPlannerNode(TrackedConePlannerBase):
         now_sec: float,
         support_centerline: Optional[np.ndarray] = None,
     ) -> np.ndarray:
+        del support_centerline
         direct_commit = self._midpoint_candidate_should_commit_directly(
             result=result,
             candidate_source=candidate_source,
             candidate_update_ok=candidate_update_ok,
-        )
-        allow_estimation = self._midpoint_candidate_should_allow_estimation(
-            result=result,
-            candidate_source=candidate_source,
-            candidate_update_ok=candidate_update_ok,
-            candidate_update_reason=candidate_update_reason,
         )
         return self._update_midline_memory_common(
             candidate_centerline=candidate_centerline,
@@ -1297,9 +1291,7 @@ class MidpointPlannerNode(TrackedConePlannerBase):
             vehicle_y=vehicle_y,
             vehicle_yaw=vehicle_yaw,
             now_sec=now_sec,
-            support_centerline=support_centerline,
             direct_commit=direct_commit,
-            allow_estimation=allow_estimation,
         )
 
     def _midpoint_candidate_should_commit_directly(
@@ -1316,21 +1308,6 @@ class MidpointPlannerNode(TrackedConePlannerBase):
         if result.status != "ok" or result.centerline.shape[0] < 2:
             return False
         return True
-
-    def _midpoint_candidate_should_allow_estimation(
-        self,
-        *,
-        result: MidpointPlannerResult,
-        candidate_source: str,
-        candidate_update_ok: Optional[bool],
-        candidate_update_reason: str,
-    ) -> bool:
-        if candidate_source not in {"recoverable_live_path", "pair_midline_bridge"}:
-            return False
-        if candidate_update_ok is False:
-            return False
-        del candidate_update_reason
-        return self._has_recoverable_live_prefix_shortfall(result) or candidate_source == "pair_midline_bridge"
 
     def _candidate_path_is_updateable(
         self,
@@ -1357,14 +1334,8 @@ class MidpointPlannerNode(TrackedConePlannerBase):
             return False, "candidate_no_local_path"
         if self._path_forward_extent_local(candidate_local) < self.candidate_min_extent_m:
             return False, "candidate_extent_too_short"
-        if candidate_source == "recoverable_live_path":
-            if not self._has_recoverable_live_rejection(result):
-                return False, result.reject_reason or result.status
-            return True, "ok"
-        if candidate_source == "pair_midline_bridge":
-            if not self._has_pair_midline_bridge_support(result, result.midpoints_raw):
-                return False, result.reject_reason or result.status
-            return True, "ok"
+        if candidate_source != "validated":
+            return False, result.reject_reason or result.status or "unsupported_candidate_source"
         if result.status != "ok":
             return False, result.reject_reason or result.status
         return True, "ok"
@@ -1399,142 +1370,10 @@ class MidpointPlannerNode(TrackedConePlannerBase):
         vehicle_y: float,
         vehicle_yaw: float,
     ) -> tuple[np.ndarray, str]:
+        del support_chain, frame_id, vehicle_x, vehicle_y, vehicle_yaw
         if result.status == "ok" and result.centerline.shape[0] > 0:
             return np.array(result.centerline, copy=True), "validated"
-        recoverable_live_path = self._recoverable_live_path(result)
-        if recoverable_live_path.shape[0] > 0:
-            return recoverable_live_path, "recoverable_live_path"
-        if self._has_pair_midline_bridge_support(result, support_chain):
-            bridged = self._build_pair_midline_bridge_candidate(
-                pair_midline=support_chain,
-                frame_id=frame_id,
-                vehicle_x=vehicle_x,
-                vehicle_y=vehicle_y,
-                vehicle_yaw=vehicle_yaw,
-            )
-            if bridged.shape[0] > 0:
-                return bridged, "pair_midline_bridge"
         return np.empty((0, 2), dtype=np.float64), "none"
-
-    def _has_recoverable_live_prefix_shortfall(
-        self,
-        result: MidpointPlannerResult,
-    ) -> bool:
-        return (result.reject_reason or result.status) in {
-            "path has too few points",
-            "path forward extent too short",
-        }
-
-    def _has_recoverable_live_rejection(
-        self,
-        result: MidpointPlannerResult,
-    ) -> bool:
-        return (result.reject_reason or result.status) in {
-            "path has too few points",
-            "path forward extent too short",
-        }
-
-    def _has_pair_midline_bridge_support(
-        self,
-        result: MidpointPlannerResult,
-        pair_midline: np.ndarray,
-    ) -> bool:
-        if int(result.accepted_pair_count) < int(self._core_config.min_pair_count):
-            return False
-        pair_midline = np.asarray(pair_midline, dtype=np.float64)
-        if pair_midline.shape[0] < 2:
-            return False
-        return bool(np.all(np.isfinite(pair_midline)))
-
-    def _recoverable_live_path(
-        self,
-        result: MidpointPlannerResult,
-    ) -> np.ndarray:
-        if not self._has_recoverable_live_rejection(result):
-            return np.empty((0, 2), dtype=np.float64)
-        path = np.asarray(result.prevalidation_centerline, dtype=np.float64)
-        if path.shape[0] < _LIVE_PREFIX_MIN_POINTS:
-            return np.empty((0, 2), dtype=np.float64)
-        if not np.all(np.isfinite(path)):
-            return np.empty((0, 2), dtype=np.float64)
-        return np.array(path, copy=True)
-
-    def _build_pair_midline_bridge_candidate(
-        self,
-        *,
-        pair_midline: np.ndarray,
-        frame_id: str,
-        vehicle_x: float,
-        vehicle_y: float,
-        vehicle_yaw: float,
-    ) -> np.ndarray:
-        pair_midline = np.asarray(pair_midline, dtype=np.float64)
-        if pair_midline.shape[0] < 2:
-            return np.empty((0, 2), dtype=np.float64)
-
-        pair_local = self._centerline_to_vehicle_frame(
-            centerline=pair_midline,
-            frame_id=frame_id,
-            vehicle_x=vehicle_x,
-            vehicle_y=vehicle_y,
-            vehicle_yaw=vehicle_yaw,
-        )
-        if pair_local.shape[0] < 2 or not np.all(np.isfinite(pair_local)):
-            return np.empty((0, 2), dtype=np.float64)
-
-        forward_indices = np.flatnonzero(pair_local[:, 0] >= -0.1)
-        if forward_indices.size == 0:
-            return np.empty((0, 2), dtype=np.float64)
-        suffix_start = max(0, int(forward_indices[0]) - 1)
-        forward_local = np.array(pair_local[suffix_start:], copy=True)
-        if forward_local.shape[0] < 2:
-            return np.empty((0, 2), dtype=np.float64)
-
-        cumulative = self._path_cumulative_lengths(forward_local)
-        total_length = float(cumulative[-1])
-        if total_length <= 1e-6:
-            return np.empty((0, 2), dtype=np.float64)
-
-        nearest_s = self._project_point_to_path_s(
-            forward_local,
-            cumulative,
-            np.array([0.0, 0.0], dtype=np.float64),
-        )
-        step_m = max(0.05, float(self.centerline_path_resolution_m))
-        tail_samples = np.arange(nearest_s, total_length + 1e-9, step_m, dtype=np.float64)
-        if tail_samples.size == 0 or abs(float(tail_samples[0]) - nearest_s) > 1e-9:
-            tail_samples = np.concatenate(([nearest_s], tail_samples))
-        if tail_samples[-1] < total_length:
-            tail_samples = np.concatenate((tail_samples, [total_length]))
-        tail_local = self._sample_path_at_lengths(forward_local, cumulative, tail_samples)
-        if tail_local.shape[0] == 0:
-            return np.empty((0, 2), dtype=np.float64)
-
-        closest_local = np.asarray(tail_local[0], dtype=np.float64)
-        if float(closest_local[0]) < -0.1:
-            return np.empty((0, 2), dtype=np.float64)
-
-        connector_length = float(np.hypot(closest_local[0], closest_local[1]))
-        if connector_length <= 1e-6:
-            connector_local = np.array([[0.0, 0.0]], dtype=np.float64)
-        else:
-            connector_count = max(2, int(math.ceil(connector_length / step_m)) + 1)
-            ratios = np.linspace(0.0, 1.0, connector_count, dtype=np.float64)
-            connector_local = ratios[:, None] * closest_local[None, :]
-
-        if np.allclose(connector_local[-1], tail_local[0]):
-            candidate_local = np.vstack((connector_local[:-1], tail_local))
-        else:
-            candidate_local = np.vstack((connector_local, tail_local))
-        if candidate_local.shape[0] < 2:
-            return np.empty((0, 2), dtype=np.float64)
-        return self._local_path_to_frame(
-            local_path=candidate_local,
-            frame_id=frame_id,
-            vehicle_x=vehicle_x,
-            vehicle_y=vehicle_y,
-            vehicle_yaw=vehicle_yaw,
-        )
 
     def _local_path_to_frame(
         self,

@@ -574,7 +574,7 @@ def test_candidate_path_rejects_soft_corridor_when_core_status_is_not_ok():
     assert reason == "candidate_extent_too_short"
 
 
-def test_remembered_corridor_geometry_can_supply_memory_candidate():
+def test_remembered_corridor_geometry_does_not_supply_memory_candidate():
     node = _make_node()
     result = _sample_result()
 
@@ -608,8 +608,8 @@ def test_remembered_corridor_geometry_can_supply_memory_candidate():
 
     assert pair_segments.shape[0] == 3
     assert midpoint_chain.shape[0] == 3
-    assert source == "pair_memory_projection"
-    assert np.allclose(candidate, midpoint_chain)
+    assert source == "none"
+    assert candidate.shape == (0, 2)
 
 
 def test_valid_live_corridor_candidate_directly_replaces_existing_buffer():
@@ -745,7 +745,7 @@ def test_select_candidate_centerline_does_not_recover_near_field_corridor_jump()
     assert centerline.shape == (0, 2)
 
 
-def test_select_candidate_centerline_returns_short_recoverable_corridor_prefix_for_memory_estimation():
+def test_select_candidate_centerline_rejects_short_corridor_prefix():
     node = _make_node()
     result = _sample_result()
     result.status = "too few valid corridor samples"
@@ -764,5 +764,5 @@ def test_select_candidate_centerline_returns_short_recoverable_corridor_prefix_f
         vehicle_yaw=0.0,
     )
 
-    assert source == "recoverable_live_path"
-    assert np.allclose(centerline, result.prevalidation_centerline)
+    assert source == "none"
+    assert centerline.shape == (0, 2)

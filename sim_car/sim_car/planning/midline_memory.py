@@ -8,7 +8,6 @@ import numpy as np
 from sim_car.planning.path_stability import (
     extract_forward_path_from_pose,
     path_cumulative_lengths,
-    project_point_to_path_s,
     sample_path_at_lengths,
 )
 
@@ -50,6 +49,8 @@ class MidlineCandidate:
     update_reason: str = "ok"
     support_path: np.ndarray | None = None
     direct_commit: bool = False
+    # Compatibility-only. Midline memory no longer estimates or extends
+    # planner candidates; planners must provide their own publishable midline.
     allow_estimation: bool = False
 
 
@@ -106,6 +107,8 @@ class CommittedMidlineMemory:
         candidate_valid = bool(candidate.updateable) and candidate_ok
         if not candidate.updateable:
             candidate_reason = candidate.update_reason or candidate_reason
+        direct_commit = bool(candidate.direct_commit)
+        update_reason = str(candidate.update_reason or "ok")
 
         stored_forward = self._stored_forward(vehicle_xy=vehicle_xy)
         candidate_forward = (
@@ -122,16 +125,9 @@ class CommittedMidlineMemory:
             vehicle_xy=vehicle_xy,
             vehicle_yaw=vehicle_yaw,
         )
-        support_forward = (
-            self._candidate_forward(
-                candidate_path=_as_path(candidate.support_path),
-                vehicle_xy=vehicle_xy,
-            )
-            if candidate.support_path is not None
-            else np.empty((0, 2), dtype=np.float64)
-        )
+        del candidate
 
-        if candidate_valid and bool(candidate.direct_commit):
+        if candidate_valid and direct_commit:
             estimation = _estimation_metrics(
                 mode="none",
                 live_prefix_extent_m=_path_extent(candidate_forward),
@@ -145,7 +141,7 @@ class CommittedMidlineMemory:
                 centerline=committed,
                 accepted=True,
                 mode="direct",
-                reason=candidate.update_reason or "ok",
+                reason=update_reason or "ok",
                 metrics=metrics,
                 estimation=estimation,
             )
@@ -159,14 +155,6 @@ class CommittedMidlineMemory:
                 mode="none",
                 live_prefix_extent_m=_path_extent(candidate_forward),
             )
-            if bool(candidate.allow_estimation):
-                candidate_forward, estimation = self._estimate_short_candidate(
-                    candidate_forward=candidate_forward,
-                    stored_forward=None if self._stored_expired(now_sec) else stored_forward,
-                    support_forward=support_forward,
-                    vehicle_xy=vehicle_xy,
-                    vehicle_yaw=vehicle_yaw,
-                )
             seeded = self._resample_stations(candidate_forward)
             self.path = np.array(seeded, copy=True)
             self.confidence = 1.0
@@ -176,7 +164,7 @@ class CommittedMidlineMemory:
                 centerline=seeded,
                 accepted=True,
                 mode="seed",
-                reason=candidate.update_reason or "ok",
+                reason=update_reason or "ok",
                 metrics=metrics,
                 estimation=estimation,
             )
@@ -213,21 +201,10 @@ class CommittedMidlineMemory:
                 mode="none",
                 live_prefix_extent_m=_path_extent(candidate_forward),
             )
-            if bool(candidate.allow_estimation):
-                candidate_forward, estimation = self._estimate_short_candidate(
-                    candidate_forward=candidate_forward,
-                    stored_forward=stored_forward,
-                    support_forward=support_forward,
-                    vehicle_xy=vehicle_xy,
-                    vehicle_yaw=vehicle_yaw,
-                )
             candidate_samples = self._resample_stations(candidate_forward)
             if stored_forward is None or stored_forward.shape[0] < 2:
                 updated = candidate_samples
                 mode = "seed"
-            elif str(estimation["mode"]) == "tangent_tail":
-                updated = candidate_samples
-                mode = "estimate"
             else:
                 stored_samples = self._resample_stations(stored_forward)
                 updated = self._blend_samples_path_relative(
@@ -245,7 +222,7 @@ class CommittedMidlineMemory:
                 centerline=updated,
                 accepted=True,
                 mode=mode,
-                reason=candidate.update_reason or "ok",
+                reason=update_reason or "ok",
                 metrics=metrics,
                 estimation=estimation,
             )
@@ -415,170 +392,9 @@ class CommittedMidlineMemory:
             reason=reason,
             metrics=metrics,
             estimation=_estimation_metrics(
-                mode="hold",
-                estimated_point_count=int(held.shape[0]),
-                estimated_extent_m=_path_extent(held),
+                mode="none",
             ),
         )
-
-    def _estimate_short_candidate(
-        self,
-        *,
-        candidate_forward: np.ndarray,
-        stored_forward: np.ndarray | None,
-        support_forward: np.ndarray,
-        vehicle_xy: tuple[float, float],
-        vehicle_yaw: float,
-        prefer_stored_tail: bool = True,
-    ) -> tuple[np.ndarray, dict[str, float | str]]:
-        candidate_forward = _as_path(candidate_forward)
-        live_extent = _path_extent(candidate_forward)
-        target_extent = min(
-            float(self.config.min_estimated_extent_m),
-            live_extent + float(self.config.max_estimation_extension_m),
-            float(self.config.horizon_m),
-        )
-        if (
-            candidate_forward.shape[0] < 2
-            or live_extent >= target_extent - 1e-9
-            or live_extent >= float(self.config.min_estimated_extent_m) - 1e-9
-        ):
-            return np.array(candidate_forward, copy=True), _estimation_metrics(
-                mode="none",
-                live_prefix_extent_m=live_extent,
-            )
-
-        if prefer_stored_tail and stored_forward is not None and stored_forward.shape[0] >= 2:
-            joined, join_metrics = self._append_stored_tail(
-                candidate_forward=candidate_forward,
-                stored_forward=stored_forward,
-                target_extent_m=target_extent,
-            )
-            if joined is not None and _path_extent(joined) > live_extent + 1e-6:
-                return joined, _estimation_metrics(
-                    mode="stored_tail",
-                    estimated_point_count=max(0, int(joined.shape[0] - candidate_forward.shape[0])),
-                    estimated_extent_m=max(0.0, _path_extent(joined) - live_extent),
-                    live_prefix_extent_m=live_extent,
-                    join_lateral_m=join_metrics["join_lateral_m"],
-                    join_heading_rad=join_metrics["join_heading_rad"],
-                )
-
-        tangent = self._append_tangent_tail(
-            candidate_forward=candidate_forward,
-            support_forward=support_forward,
-            target_extent_m=target_extent,
-            vehicle_xy=vehicle_xy,
-            vehicle_yaw=vehicle_yaw,
-        )
-        if tangent is not None and _path_extent(tangent) > live_extent + 1e-6:
-            return tangent, _estimation_metrics(
-                mode="tangent_tail",
-                estimated_point_count=max(0, int(tangent.shape[0] - candidate_forward.shape[0])),
-                estimated_extent_m=max(0.0, _path_extent(tangent) - live_extent),
-                live_prefix_extent_m=live_extent,
-            )
-        return np.array(candidate_forward, copy=True), _estimation_metrics(
-            mode="none",
-            live_prefix_extent_m=live_extent,
-        )
-
-    def _append_stored_tail(
-        self,
-        *,
-        candidate_forward: np.ndarray,
-        stored_forward: np.ndarray,
-        target_extent_m: float,
-    ) -> tuple[np.ndarray | None, dict[str, float]]:
-        live_extent = _path_extent(candidate_forward)
-        if stored_forward.shape[0] < 2 or live_extent >= float(target_extent_m):
-            return None, _join_metrics()
-        stored_cum = path_cumulative_lengths(stored_forward)
-        stored_total = float(stored_cum[-1])
-        if stored_total <= 1e-6:
-            return None, _join_metrics()
-        live_end = np.asarray(candidate_forward[-1], dtype=np.float64)
-        join_s = project_point_to_path_s(
-            stored_forward,
-            stored_cum,
-            live_end,
-        )
-        join_point = sample_path_at_lengths(
-            stored_forward,
-            stored_cum,
-            np.asarray([join_s], dtype=np.float64),
-        )[0]
-        live_tangent = _tangent_at(candidate_forward, candidate_forward.shape[0] - 1)
-        stored_tangent = _tangent_at_s(stored_forward, stored_cum, join_s)
-        join_delta = join_point - live_end
-        live_normal = np.array([-live_tangent[1], live_tangent[0]], dtype=np.float64)
-        join_lateral = abs(float(np.dot(join_delta, live_normal)))
-        join_heading = _heading_delta(live_tangent, stored_tangent)
-        metrics = _join_metrics(
-            join_lateral_m=join_lateral,
-            join_heading_rad=join_heading,
-        )
-        if join_lateral > float(self.config.max_estimation_join_lateral_m):
-            return None, metrics
-        if join_heading > float(self.config.max_estimation_join_heading_rad):
-            return None, metrics
-
-        needed_tail_m = max(0.0, float(target_extent_m) - live_extent)
-        final_s = min(stored_total, join_s + needed_tail_m)
-        if final_s <= join_s + 1e-6:
-            return None, metrics
-        step = max(0.05, float(self.config.station_spacing_m))
-        samples = np.arange(join_s, final_s + 1e-9, step, dtype=np.float64)
-        if samples.size == 0 or abs(float(samples[0]) - join_s) > 1e-9:
-            samples = np.concatenate(([join_s], samples))
-        if samples[-1] < final_s:
-            samples = np.concatenate((samples, [final_s]))
-        tail = sample_path_at_lengths(stored_forward, stored_cum, samples)
-        if tail.shape[0] == 0:
-            return None, metrics
-        if float(np.hypot(*(tail[0] - live_end))) <= step * 0.5:
-            tail = tail[1:]
-        if tail.shape[0] == 0:
-            return None, metrics
-        return np.vstack((candidate_forward, tail)), metrics
-
-    def _append_tangent_tail(
-        self,
-        *,
-        candidate_forward: np.ndarray,
-        support_forward: np.ndarray,
-        target_extent_m: float,
-        vehicle_xy: tuple[float, float],
-        vehicle_yaw: float,
-    ) -> np.ndarray | None:
-        if not bool(self.config.allow_tangent_estimate_without_memory):
-            return None
-        live_extent = _path_extent(candidate_forward)
-        extension_m = min(
-            max(0.0, float(target_extent_m) - live_extent),
-            float(self.config.max_tangent_estimation_extension_m),
-            float(self.config.max_estimation_extension_m),
-        )
-        if candidate_forward.shape[0] < 2 or extension_m <= 1e-6:
-            return None
-        direction = _tangent_at(candidate_forward, candidate_forward.shape[0] - 1)
-        support_direction = _support_tail_direction(
-            candidate_end=candidate_forward[-1],
-            support_forward=support_forward,
-        )
-        if support_direction is not None:
-            direction = direction + support_direction
-            norm = float(np.hypot(direction[0], direction[1]))
-            if norm > 1e-9:
-                direction = direction / norm
-        if _direction_local_x(direction, vehicle_yaw=vehicle_yaw) <= 1e-6:
-            direction = np.array([math.cos(float(vehicle_yaw)), math.sin(float(vehicle_yaw))], dtype=np.float64)
-        step = max(0.05, float(self.config.station_spacing_m))
-        samples = np.arange(step, extension_m + 1e-9, step, dtype=np.float64)
-        if samples.size == 0 or samples[-1] < extension_m:
-            samples = np.concatenate((samples, [extension_m]))
-        tail = candidate_forward[-1][None, :] + (samples[:, None] * direction[None, :])
-        return np.vstack((candidate_forward, tail))
 
     def _blend_samples_path_relative(
         self,
@@ -733,62 +549,3 @@ def _tangent_at(path: np.ndarray, idx: int) -> np.ndarray:
     if norm <= 1e-9 or not math.isfinite(norm):
         return np.array([1.0, 0.0], dtype=np.float64)
     return np.asarray(tangent / norm, dtype=np.float64)
-
-
-def _tangent_at_s(path: np.ndarray, cumulative: np.ndarray, station_m: float) -> np.ndarray:
-    if path.shape[0] < 2 or cumulative.shape[0] < 2:
-        return np.array([1.0, 0.0], dtype=np.float64)
-    total = float(cumulative[-1])
-    eps = max(0.05, min(0.25, total * 0.05))
-    s0 = max(0.0, float(station_m) - eps)
-    s1 = min(total, float(station_m) + eps)
-    if s1 <= s0 + 1e-9:
-        return _tangent_at(path, min(path.shape[0] - 1, int(np.searchsorted(cumulative, station_m))))
-    points = sample_path_at_lengths(
-        path,
-        cumulative,
-        np.asarray([s0, s1], dtype=np.float64),
-    )
-    tangent = points[1] - points[0]
-    norm = float(np.hypot(tangent[0], tangent[1]))
-    if norm <= 1e-9 or not math.isfinite(norm):
-        return np.array([1.0, 0.0], dtype=np.float64)
-    return np.asarray(tangent / norm, dtype=np.float64)
-
-
-def _heading_delta(a: np.ndarray, b: np.ndarray) -> float:
-    yaw_a = math.atan2(float(a[1]), float(a[0]))
-    yaw_b = math.atan2(float(b[1]), float(b[0]))
-    return abs(float(math.atan2(math.sin(yaw_b - yaw_a), math.cos(yaw_b - yaw_a))))
-
-
-def _direction_local_x(direction: np.ndarray, *, vehicle_yaw: float) -> float:
-    cos_y = math.cos(float(vehicle_yaw))
-    sin_y = math.sin(float(vehicle_yaw))
-    return float((cos_y * float(direction[0])) + (sin_y * float(direction[1])))
-
-
-def _support_tail_direction(
-    *,
-    candidate_end: np.ndarray,
-    support_forward: np.ndarray,
-) -> np.ndarray | None:
-    support_forward = _as_path(support_forward)
-    if support_forward.shape[0] < 2:
-        return None
-    cumulative = path_cumulative_lengths(support_forward)
-    total = float(cumulative[-1])
-    if total <= 1e-6:
-        return None
-    join_s = project_point_to_path_s(
-        support_forward,
-        cumulative,
-        np.asarray(candidate_end, dtype=np.float64),
-    )
-    if join_s >= total - 1e-6:
-        return None
-    direction = _tangent_at_s(support_forward, cumulative, join_s)
-    norm = float(np.hypot(direction[0], direction[1]))
-    if norm <= 1e-9 or not math.isfinite(norm):
-        return None
-    return np.asarray(direction / norm, dtype=np.float64)

@@ -49,7 +49,6 @@ MSG_TRACK_STATE_TENTATIVE = int(getattr(ConeDetection, "TRACK_STATE_TENTATIVE", 
 MSG_TRACK_STATE_CONFIRMED = int(getattr(ConeDetection, "TRACK_STATE_CONFIRMED", 1))
 MSG_TRACK_STATE_STALE = int(getattr(ConeDetection, "TRACK_STATE_STALE", 2))
 _PAIR_PASSED_MARGIN_M = 0.5
-_LIVE_PREFIX_MIN_POINTS = 2
 _CORRIDOR_ANALYSIS_SAMPLE_COUNT = 8
 _CORRIDOR_ANALYSIS_SAMPLE_SPACING_M = 1.0
 _ANCHOR_TAPER_GATE_LATERAL_M = 0.20
@@ -1652,24 +1651,12 @@ class CorridorPlannerNode(TrackedConePlannerBase):
         now_sec: float,
         support_centerline: Optional[np.ndarray] = None,
     ) -> np.ndarray:
+        del support_centerline
         direct_commit = (
             candidate_source == "validated"
             and candidate_update_ok is not False
             and result.status == "ok"
             and result.centerline.shape[0] >= 2
-        )
-        allow_estimation = (
-            candidate_update_ok is not False
-            and (
-                (
-                    candidate_source == "recoverable_live_path"
-                    and self._has_recoverable_live_prefix_shortfall(result)
-                )
-                or (
-                    candidate_source == "pair_memory_projection"
-                    and self._has_recoverable_memory_rejection(result)
-                )
-            )
         )
         return self._update_midline_memory_common(
             candidate_centerline=candidate_centerline,
@@ -1681,9 +1668,7 @@ class CorridorPlannerNode(TrackedConePlannerBase):
             vehicle_y=vehicle_y,
             vehicle_yaw=vehicle_yaw,
             now_sec=now_sec,
-            support_centerline=support_centerline,
             direct_commit=direct_commit,
-            allow_estimation=allow_estimation,
         )
 
     def _candidate_path_is_updateable(
@@ -1711,14 +1696,8 @@ class CorridorPlannerNode(TrackedConePlannerBase):
             return False, "candidate_no_local_path"
         if self._path_forward_extent_local(candidate_local) < self.candidate_min_extent_m:
             return False, "candidate_extent_too_short"
-        if candidate_source == "recoverable_live_path":
-            if not self._has_recoverable_live_rejection(result):
-                return False, result.reject_reason or result.status
-            return True, "ok"
-        if candidate_source == "pair_memory_projection":
-            if not self._has_recoverable_memory_rejection(result):
-                return False, result.reject_reason or result.status
-            return True, "ok"
+        if candidate_source != "validated":
+            return False, result.reject_reason or result.status or "unsupported_candidate_source"
         if result.status != "ok":
             return False, result.reject_reason or result.status
         return True, "ok"
@@ -1860,62 +1839,10 @@ class CorridorPlannerNode(TrackedConePlannerBase):
         vehicle_y: float,
         vehicle_yaw: float,
     ) -> tuple[np.ndarray, str]:
+        del support_chain, memory_midpoint_chain, frame_id, vehicle_x, vehicle_y, vehicle_yaw
         if result.status == "ok" and result.centerline.shape[0] > 0:
             return np.array(result.centerline, copy=True), "validated"
-        recoverable_live_path = self._recoverable_live_path(result)
-        if recoverable_live_path.shape[0] > 0:
-            return recoverable_live_path, "recoverable_live_path"
-        if self._has_recoverable_memory_rejection(result):
-            del frame_id, vehicle_x, vehicle_y, vehicle_yaw
-            memory_candidate = np.asarray(memory_midpoint_chain, dtype=np.float64)
-            if memory_candidate.shape[0] >= 2 and np.all(np.isfinite(memory_candidate)):
-                return memory_candidate, "pair_memory_projection"
         return np.empty((0, 2), dtype=np.float64), "none"
-
-    def _has_recoverable_live_prefix_shortfall(
-        self,
-        result: CorridorPlannerResult,
-    ) -> bool:
-        return (result.reject_reason or result.status) in {
-            "too few valid corridor samples",
-            "path has too few points",
-            "path forward extent too short",
-        }
-
-    def _has_recoverable_live_rejection(
-        self,
-        result: CorridorPlannerResult,
-    ) -> bool:
-        return (result.reject_reason or result.status) in {
-            "too few valid corridor samples",
-            "path has too few points",
-            "path forward extent too short",
-        }
-
-    def _has_recoverable_memory_rejection(
-        self,
-        result: CorridorPlannerResult,
-    ) -> bool:
-        return (result.reject_reason or result.status) in {
-            "no reliable corridor boundaries",
-            "no valid corridor overlap",
-            "too few valid corridor samples",
-            "path has too few points",
-            "path forward extent too short",
-        }
-
-    def _recoverable_live_path(
-        self,
-        result: CorridorPlannerResult,
-    ) -> np.ndarray:
-        if not self._has_recoverable_live_rejection(result):
-            return np.empty((0, 2), dtype=np.float64)
-        path = np.asarray(result.prevalidation_centerline, dtype=np.float64)
-        if path.shape[0] < _LIVE_PREFIX_MIN_POINTS:
-            return np.empty((0, 2), dtype=np.float64)
-        if not np.all(np.isfinite(path)):
-            return np.empty((0, 2), dtype=np.float64)
-        return np.array(path, copy=True)
 
     def _candidate_forward_extent_m(
         self,

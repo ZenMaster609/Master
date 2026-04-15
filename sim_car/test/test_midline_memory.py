@@ -176,7 +176,7 @@ def test_curved_path_blends_by_path_relative_station():
     assert result.near_field_lateral_delta_max_m > 0.0
 
 
-def test_short_valid_prefix_gets_stored_tail_estimate():
+def test_short_valid_prefix_does_not_append_stored_path():
     mem = _memory(
         candidate_jump_reject_threshold_m=5.0,
         min_estimated_extent_m=6.0,
@@ -194,13 +194,14 @@ def test_short_valid_prefix_gets_stored_tail_estimate():
     )
 
     assert result.candidate_accepted is True
-    assert result.estimation_mode == "stored_tail"
-    assert result.estimated_point_count > 0
+    assert result.update_mode == "blend"
+    assert result.estimation_mode == "none"
+    assert result.estimated_point_count == 0
     assert result.live_prefix_extent_m == pytest.approx(2.0)
-    assert result.centerline[-1, 0] == pytest.approx(6.0)
+    assert result.centerline[-1, 0] == pytest.approx(2.0)
 
 
-def test_short_valid_prefix_does_not_estimate_unless_allowed():
+def test_short_valid_prefix_does_not_estimate():
     mem = _memory(
         candidate_jump_reject_threshold_m=5.0,
         min_estimated_extent_m=6.0,
@@ -223,7 +224,7 @@ def test_short_valid_prefix_does_not_estimate_unless_allowed():
     assert result.estimated_point_count == 0
 
 
-def test_bad_stored_tail_join_uses_bounded_tangent_estimate():
+def test_offset_stored_path_does_not_append_synthetic_tail():
     mem = _memory(
         candidate_jump_reject_threshold_m=5.0,
         min_estimated_extent_m=6.0,
@@ -243,13 +244,13 @@ def test_bad_stored_tail_join_uses_bounded_tangent_estimate():
     )
 
     assert result.candidate_accepted is True
-    assert result.update_mode == "estimate"
-    assert result.estimation_mode == "tangent_tail"
-    assert result.estimated_extent_m <= 2.0 + 1e-9
-    assert result.centerline[-1, 0] == pytest.approx(4.0)
+    assert result.update_mode == "blend"
+    assert result.estimation_mode == "none"
+    assert result.estimated_extent_m == pytest.approx(0.0)
+    assert result.centerline[-1, 0] == pytest.approx(2.0)
 
 
-def test_tangent_estimate_without_memory_is_short_and_bounded():
+def test_tangent_estimate_without_memory_is_disabled():
     mem = _memory(
         min_estimated_extent_m=6.0,
         max_estimation_extension_m=4.0,
@@ -266,12 +267,12 @@ def test_tangent_estimate_without_memory_is_short_and_bounded():
 
     assert result.candidate_accepted is True
     assert result.update_mode == "seed"
-    assert result.estimation_mode == "tangent_tail"
-    assert result.estimated_extent_m <= 1.5 + 1e-9
-    assert 3.0 < result.centerline[-1, 0] < 4.0
+    assert result.estimation_mode == "none"
+    assert result.estimated_extent_m == pytest.approx(0.0)
+    assert result.centerline[-1, 0] == pytest.approx(2.0)
 
 
-def test_invalid_candidate_holds_stored_path_with_hold_estimation_mode():
+def test_invalid_candidate_holds_stored_path_without_estimation_mode():
     mem = _memory(hold_last_valid_duration_s=3.0)
     stored = np.array([[0.0, 0.0], [2.0, 0.0], [4.0, 0.0]], dtype=np.float64)
     mem.update(candidate=_candidate(stored), vehicle_xy=(0.0, 0.0), vehicle_yaw=0.0, now_sec=1.0)
@@ -285,11 +286,12 @@ def test_invalid_candidate_holds_stored_path_with_hold_estimation_mode():
 
     assert result.candidate_accepted is False
     assert result.update_mode == "hold"
-    assert result.estimation_mode == "hold"
+    assert result.estimation_mode == "none"
+    assert result.estimated_point_count == 0
     assert result.centerline.shape[0] >= 2
 
 
-def test_same_shared_memory_inputs_produce_same_estimate_for_all_planner_sources():
+def test_same_shared_memory_inputs_do_not_estimate_for_any_planner_source():
     stored = np.column_stack((np.arange(0.0, 9.0, 1.0), np.zeros(9)))
     live_prefix = np.array([[0.0, 0.0], [2.0, 0.0]], dtype=np.float64)
     outputs = []
@@ -324,7 +326,9 @@ def test_same_shared_memory_inputs_produce_same_estimate_for_all_planner_sources
             now_sec=1.1,
         )
         outputs.append(result.centerline)
-        assert result.estimation_mode == "stored_tail"
+        assert result.estimation_mode == "none"
+        assert result.estimated_point_count == 0
+        assert result.centerline[-1, 0] == pytest.approx(2.0)
 
     assert np.allclose(outputs[0], outputs[1])
     assert np.allclose(outputs[1], outputs[2])

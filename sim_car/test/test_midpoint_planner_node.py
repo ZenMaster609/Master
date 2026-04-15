@@ -664,20 +664,26 @@ def test_remember_pairs_keeps_non_tentative_pairs_even_with_low_confidence_metad
     assert node._pair_memory[0].right_track_id == 32
 
 
-def test_pair_midline_bridge_does_not_extend_sparse_pairs_to_forced_extent():
+def test_sparse_pair_midline_does_not_create_bridge_candidate():
     node = _make_node()
-    midpoint_chain = np.array([[0.8, 0.0], [1.3, 0.2]], dtype=np.float64)
+    result = _sample_result()
+    result.status = "path forward extent too short"
+    result.reject_reason = result.status
+    result.centerline = np.empty((0, 2), dtype=np.float64)
+    result.prevalidation_centerline = np.empty((0, 2), dtype=np.float64)
+    result.midpoints_raw = np.array([[0.8, 0.0], [1.3, 0.2]], dtype=np.float64)
 
-    candidate = node._build_pair_midline_bridge_candidate(
-        pair_midline=midpoint_chain,
+    candidate, source = node._select_candidate_centerline(
+        result=result,
+        support_chain=result.midpoints_raw,
         frame_id="odom",
         vehicle_x=0.0,
         vehicle_y=0.0,
         vehicle_yaw=0.0,
     )
 
-    assert candidate.shape[0] >= 2
-    assert np.allclose(candidate[-1], midpoint_chain[-1])
+    assert source == "none"
+    assert candidate.shape == (0, 2)
 
 
 def test_blend_midline_samples_snaps_to_candidate_when_within_allowed_shift():
@@ -961,7 +967,7 @@ def test_select_candidate_centerline_does_not_recover_near_field_jump():
     assert centerline.shape == (0, 2)
 
 
-def test_select_candidate_centerline_returns_short_recoverable_live_prefix_for_memory_estimation():
+def test_select_candidate_centerline_rejects_short_live_prefix():
     node = _make_node()
     result = _sample_result()
     result.status = "path forward extent too short"
@@ -979,11 +985,11 @@ def test_select_candidate_centerline_returns_short_recoverable_live_prefix_for_m
         vehicle_yaw=0.0,
     )
 
-    assert source == "recoverable_live_path"
-    assert np.allclose(centerline, result.prevalidation_centerline)
+    assert source == "none"
+    assert centerline.shape == (0, 2)
 
 
-def test_select_candidate_centerline_bridges_to_live_pair_midline_when_path_disappears():
+def test_select_candidate_centerline_does_not_bridge_to_live_pair_midline_when_path_disappears():
     node = _make_node()
     result = _sample_result()
     result.status = "path heading delta exceeded limit"
@@ -1005,13 +1011,11 @@ def test_select_candidate_centerline_bridges_to_live_pair_midline_when_path_disa
         vehicle_yaw=0.0,
     )
 
-    assert source == "pair_midline_bridge"
-    assert centerline.shape[0] >= result.midpoints_raw.shape[0]
-    assert np.allclose(centerline[0], np.array([0.0, 0.0], dtype=np.float64))
-    assert np.allclose(centerline[-1], result.midpoints_raw[-1])
+    assert source == "none"
+    assert centerline.shape == (0, 2)
 
 
-def test_candidate_path_accepts_pair_midline_bridge_from_live_pairs():
+def test_candidate_path_rejects_unsupported_bridge_source():
     node = _make_node()
     result = _sample_result()
     result.status = "path heading delta exceeded limit"
@@ -1023,22 +1027,14 @@ def test_candidate_path_accepts_pair_midline_bridge_from_live_pairs():
         [[2.0, 1.0], [4.0, 1.0], [6.0, 1.0]],
         dtype=np.float64,
     )
-    candidate = node._build_pair_midline_bridge_candidate(
-        pair_midline=result.midpoints_raw,
-        frame_id="odom",
-        vehicle_x=0.0,
-        vehicle_y=0.0,
-        vehicle_yaw=0.0,
-    )
-
     candidate_ok, candidate_reason = node._candidate_path_is_updateable(
-        candidate_centerline=candidate,
+        candidate_centerline=result.midpoints_raw,
         vehicle_x=0.0,
         vehicle_y=0.0,
         vehicle_yaw=0.0,
         result=result,
-        candidate_source="pair_midline_bridge",
+        candidate_source="legacy_bridge",
     )
 
-    assert candidate_ok
-    assert candidate_reason == "ok"
+    assert not candidate_ok
+    assert candidate_reason == "path heading delta exceeded limit"
