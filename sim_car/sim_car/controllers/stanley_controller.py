@@ -9,6 +9,10 @@ from typing import Optional
 import numpy as np
 
 from sim_car.controllers.base import ControllerOutput, FloatArray, StanleyDebugInfo
+from sim_car.controllers._path_utils import (
+    nearest_projection_on_path,
+    validate_control_path,
+)
 
 
 @dataclass(frozen=True)
@@ -42,9 +46,9 @@ class StanleyController:
         speed_mps: float,
         yaw_rate_rps: float,
     ) -> ControllerOutput:
-        self._validate_path(control_path)
+        validate_control_path(control_path)
 
-        target_point, nearest_segment_idx = self._nearest_projection(control_path)
+        target_point, nearest_segment_idx = nearest_projection_on_path(control_path)
         heading_segment_idx = int(
             np.clip(
                 nearest_segment_idx + self._config.lookahead_idx_offset,
@@ -58,7 +62,7 @@ class StanleyController:
             path_heading = 0.0
         else:
             path_heading = float(math.atan2(float(seg_vec[1]), float(seg_vec[0])))
-        heading_error = self._normalize_angle(path_heading)
+        heading_error = _normalize_angle(path_heading)
 
         cross_track_error = float(target_point[1])
         if abs(cross_track_error) < self._config.cross_track_deadband_m:
@@ -124,41 +128,6 @@ class StanleyController:
             ),
         )
 
-    @staticmethod
-    def _validate_path(control_path: FloatArray) -> None:
-        if control_path.ndim != 2 or control_path.shape[1] != 2:
-            raise ValueError('control_path must have shape (N, 2)')
-        if control_path.shape[0] == 0:
-            raise ValueError('control_path cannot be empty')
 
-    @staticmethod
-    def _normalize_angle(angle_rad: float) -> float:
-        return float(math.atan2(math.sin(angle_rad), math.cos(angle_rad)))
-
-    @staticmethod
-    def _nearest_projection(control_path: FloatArray) -> tuple[np.ndarray, int]:
-        if control_path.shape[0] == 1:
-            return np.asarray(control_path[0], dtype=np.float64), 0
-
-        best_distance_sq = float('inf')
-        best_point = np.asarray(control_path[0], dtype=np.float64)
-        best_segment_idx = 0
-
-        for seg_idx in range(control_path.shape[0] - 1):
-            p0 = control_path[seg_idx]
-            p1 = control_path[seg_idx + 1]
-            seg = p1 - p0
-            seg_len_sq = float(np.dot(seg, seg))
-            if seg_len_sq <= 1e-12:
-                projected = p0
-            else:
-                t = float(np.clip(-np.dot(p0, seg) / seg_len_sq, 0.0, 1.0))
-                projected = p0 + (t * seg)
-
-            distance_sq = float(np.dot(projected, projected))
-            if distance_sq < best_distance_sq:
-                best_distance_sq = distance_sq
-                best_point = np.asarray(projected, dtype=np.float64)
-                best_segment_idx = seg_idx
-
-        return best_point, best_segment_idx
+def _normalize_angle(angle_rad: float) -> float:
+    return float(math.atan2(math.sin(angle_rad), math.cos(angle_rad)))

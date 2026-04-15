@@ -1,10 +1,10 @@
+"""Common configuration schema and factory helpers for tracked-cone planner nodes."""
+
 from __future__ import annotations
 
 from dataclasses import dataclass, fields
 import math
 from typing import Any
-
-import numpy as np
 
 from sim_car.planning.controller_config import build_steering_controller
 
@@ -208,6 +208,10 @@ class MigratedTrackedConePlannerCommonConfig:
     show_selected_edges: bool
 
 
+# ---------------------------------------------------------------------------
+# Public API
+# ---------------------------------------------------------------------------
+
 def normalize_tracked_cone_controller_type(controller_type: str) -> str:
     normalized = str(controller_type).strip().lower() or 'stanley'
     if normalized not in SUPPORTED_TRACKED_CONE_CONTROLLER_TYPES:
@@ -218,20 +222,11 @@ def normalize_tracked_cone_controller_type(controller_type: str) -> str:
     return normalized
 
 
-def build_tracked_cone_controller(
-    *,
-    node: Any,
-    controller_type: str,
-    publish_rate_hz: float,
-):
+def build_tracked_cone_controller(*, node: Any, controller_type: str, publish_rate_hz: float):
     normalized = normalize_tracked_cone_controller_type(controller_type)
     if normalized == 'none':
         return None
-    return build_steering_controller(
-        node=node,
-        controller_type=normalized,
-        publish_rate_hz=publish_rate_hz,
-    )
+    return build_steering_controller(node=node, controller_type=normalized, publish_rate_hz=publish_rate_hz)
 
 
 def log_tracked_cone_controller_mode(node: Any, *, controller_type: str) -> None:
@@ -239,9 +234,11 @@ def log_tracked_cone_controller_mode(node: Any, *, controller_type: str) -> None
         node.get_logger().info("control.controller_type 'none'; controller output is disabled")
 
 
-def emit_migrated_planner_compatibility_warnings(node: Any, *, planner_label: str, temporal_alpha: float) -> None:
-    default_temporal_alpha = float(MIGRATED_TRACKED_CONE_COMPATIBILITY_DEFAULTS['centerline.temporal_alpha'])
-    if math.isclose(float(temporal_alpha), default_temporal_alpha, rel_tol=0.0, abs_tol=1e-9):
+def emit_migrated_planner_compatibility_warnings(
+    node: Any, *, planner_label: str, temporal_alpha: float
+) -> None:
+    default = float(MIGRATED_TRACKED_CONE_COMPATIBILITY_DEFAULTS['centerline.temporal_alpha'])
+    if math.isclose(float(temporal_alpha), default, rel_tol=0.0, abs_tol=1e-9):
         return
     node.get_logger().warn(
         "Parameter 'centerline.temporal_alpha' is compatibility-only for %s; "
@@ -256,34 +253,163 @@ def read_migrated_tracked_cone_planner_common_config(
     planner_label: str,
     diagnostics_topic_fallback: str,
 ) -> MigratedTrackedConePlannerCommonConfig:
-    temporal_alpha = float(
-        np.clip(float(node.get_parameter('centerline.temporal_alpha').value), 0.0, 1.0)
-    )
+    """Read all common planner parameters from *node* and return a frozen config object."""
+
+    # Runtime
     publish_rate_hz = max(1.0, float(node.get_parameter('runtime.publish_rate_hz').value))
+    log_throttle_s = max(0.1, float(node.get_parameter('runtime.log_throttle_s').value))
+
+    # Control
     controller_type = normalize_tracked_cone_controller_type(
         node.get_parameter('control.controller_type').value
     )
+    odom_lag_compensation_s = min(
+        max(0.0, float(node.get_parameter('control.odom_lag_compensation_ms').value)), 150.0
+    ) / 1000.0
+    stop_if_no_path = bool(node.get_parameter('control.stop_if_no_path').value)
+
+    # Frames
+    planning_frame = str(node.get_parameter('frames.planning_frame').value).strip() or 'odom'
+    odom_frame = str(node.get_parameter('frames.odom_frame').value).strip() or 'odom'
+    base_frame = str(node.get_parameter('frames.base_frame').value).strip() or 'front_axle'
+    tf_timeout_s = max(0.0, float(node.get_parameter('frames.tf_timeout_s').value))
+
+    # Topics
+    tracked_cones_topic = str(node.get_parameter('topics.tracked_cones_topic').value).strip()
+    cmd_topic = str(node.get_parameter('topics.cmd_topic').value).strip()
+    centerline_topic = str(node.get_parameter('topics.centerline_topic').value).strip()
+    viz_topic = str(node.get_parameter('topics.viz_topic').value).strip()
+    points_topic = str(node.get_parameter('topics.points_topic').value).strip()
+    odom_topic = str(node.get_parameter('topics.odom_topic').value).strip()
+
+    # Filtering
+    infer_unknown_by_side = bool(node.get_parameter('filtering.infer_unknown_by_side').value)
+    infer_orange_by_side = bool(node.get_parameter('filtering.infer_orange_by_side').value)
+    orange_min_lateral_m = float(node.get_parameter('filtering.orange_min_lateral_m').value)
+    orange_neighbor_radius_m = float(node.get_parameter('filtering.orange_neighbor_radius_m').value)
+    orange_neighbor_margin_m = float(node.get_parameter('filtering.orange_neighbor_margin_m').value)
+
+    # Centerline
+    centerline_path_resolution_m = max(
+        0.05, float(node.get_parameter('centerline.path_resolution_m').value)
+    )
+    temporal_alpha = max(0.0, min(1.0, float(node.get_parameter('centerline.temporal_alpha').value)))
+
+    # Midline memory — distances are lower-bounded by earlier levels
+    midline_horizon_m = max(1.0, float(node.get_parameter('midline_memory.horizon_m').value))
+    station_spacing = max(0.05, float(node.get_parameter('midline_memory.station_spacing_m').value))
+    near_dist = max(0.0, float(node.get_parameter('midline_memory.near_distance_m').value))
+    mid_dist = max(near_dist, float(node.get_parameter('midline_memory.mid_distance_m').value))
+    handoff_dist = max(
+        station_spacing,
+        float(node.get_parameter('midline_memory.control_handoff_distance_m').value),
+    )
+
+    # Midline lateral shift limits — each level >= the previous
+    near_shift = max(0.0, float(node.get_parameter('midline_memory.near_max_lateral_shift_m').value))
+    mid_shift = max(near_shift, float(node.get_parameter('midline_memory.mid_max_lateral_shift_m').value))
+    far_shift = max(mid_shift, float(node.get_parameter('midline_memory.far_max_lateral_shift_m').value))
+
+    near_alpha = max(0.0, min(1.0, float(node.get_parameter('midline_memory.near_alpha').value)))
+    mid_alpha = max(0.0, min(1.0, float(node.get_parameter('midline_memory.mid_alpha').value)))
+    far_alpha = max(0.0, min(1.0, float(node.get_parameter('midline_memory.far_alpha').value)))
+    min_buffer_confidence = max(
+        0.0, min(1.0, float(node.get_parameter('midline_memory.min_buffer_confidence').value))
+    )
+    midline_hold = max(0.0, float(node.get_parameter('midline_memory.hold_last_valid_duration_s').value))
+    midline_min_estimated_extent_m = max(
+        0.5, float(node.get_parameter('midline_memory.min_estimated_extent_m').value)
+    )
+    midline_max_estimation_extension_m = max(
+        0.0, float(node.get_parameter('midline_memory.max_estimation_extension_m').value)
+    )
+    midline_max_estimation_join_lateral_m = max(
+        0.0, float(node.get_parameter('midline_memory.max_estimation_join_lateral_m').value)
+    )
+    midline_max_estimation_join_heading_rad = max(
+        0.0, float(node.get_parameter('midline_memory.max_estimation_join_heading_rad').value)
+    )
+    midline_allow_tangent = bool(
+        node.get_parameter('midline_memory.allow_tangent_estimate_without_memory').value
+    )
+    midline_max_tangent_extension_m = max(
+        0.0, float(node.get_parameter('midline_memory.max_tangent_estimation_extension_m').value)
+    )
+
+    # Speed control
+    speed_min = max(0.0, float(node.get_parameter('speed_control.speed_min_mps').value))
+    speed_max = max(speed_min, float(node.get_parameter('speed_control.speed_max_mps').value))
+    curvature_speed_gain = max(
+        0.0, float(node.get_parameter('speed_control.curvature_speed_gain').value)
+    )
+    lowpass_speed_alpha = max(
+        0.0, min(1.0, float(node.get_parameter('speed_control.lowpass_speed_alpha').value))
+    )
+
+    # Validation / path hold
+    hold_last_valid_s = max(midline_hold, float(node.get_parameter('validation.hold_last_valid_s').value))
+    hold_exit_clean_frames = max(1, int(node.get_parameter('validation.hold_exit_clean_frames').value))
+    candidate_jump_reject_threshold_m = max(
+        0.0, float(node.get_parameter('validation.candidate_jump_reject_threshold_m').value)
+    )
+    candidate_jump_recover_frames = max(
+        1, int(node.get_parameter('validation.candidate_jump_recover_frames').value)
+    )
+    candidate_min_points = max(2, int(node.get_parameter('validation.candidate_min_points').value))
+    candidate_min_extent_m = max(
+        0.5, float(node.get_parameter('validation.candidate_min_extent_m').value)
+    )
+
+    # Diagnostics
+    diagnostics_topic = (
+        str(node.get_parameter('diagnostics.topic').value).strip() or diagnostics_topic_fallback
+    )
+    centerline_jump_horizon_m = max(
+        0.5, float(node.get_parameter('diagnostics.centerline_jump_horizon_m').value)
+    )
+    edge_quantization_m = max(1e-6, float(node.get_parameter('diagnostics.edge_quantization_m').value))
+    jump_warn_threshold_m = max(0.0, float(node.get_parameter('diagnostics.jump_warn_threshold_m').value))
+    edge_churn_warn_threshold = max(
+        0.0, float(node.get_parameter('diagnostics.edge_churn_warn_threshold').value)
+    )
+    publish_control_debug = bool(node.get_parameter('diagnostics.publish_control_debug').value)
+    publish_thesis_context = bool(node.get_parameter('diagnostics.publish_thesis_context').value)
+
+    # Debug markers
+    enable_debug_markers = bool(node.get_parameter('debug.enable_markers').value)
+    show_raw_cones = bool(node.get_parameter('debug.show_raw_cones').value)
+    show_boundary_chains = bool(node.get_parameter('debug.show_boundary_chains').value)
+    show_pair_lines = bool(node.get_parameter('debug.show_pair_lines').value)
+    show_raw_midpoint_chain = bool(node.get_parameter('debug.show_raw_midpoint_chain').value)
+    show_raw_prevalidation_centerline = bool(
+        node.get_parameter('debug.show_raw_prevalidation_centerline').value
+    )
+    publish_points_topic = bool(node.get_parameter('debug.publish_points_topic').value)
+    show_lookahead_point = bool(node.get_parameter('debug.show_lookahead_point').value)
+
     common = MigratedTrackedConePlannerCommonConfig(
-        planning_frame=str(node.get_parameter('frames.planning_frame').value).strip() or 'odom',
-        odom_frame=str(node.get_parameter('frames.odom_frame').value).strip() or 'odom',
-        base_frame=str(node.get_parameter('frames.base_frame').value).strip() or 'front_axle',
-        tf_timeout_s=max(0.0, float(node.get_parameter('frames.tf_timeout_s').value)),
-        tracked_cones_topic=str(node.get_parameter('topics.tracked_cones_topic').value),
-        cmd_topic=str(node.get_parameter('topics.cmd_topic').value),
-        centerline_topic=str(node.get_parameter('topics.centerline_topic').value),
-        viz_topic=str(node.get_parameter('topics.viz_topic').value),
-        points_topic=str(node.get_parameter('topics.points_topic').value),
-        odom_topic=str(node.get_parameter('topics.odom_topic').value),
-        infer_unknown_by_side=bool(node.get_parameter('filtering.infer_unknown_by_side').value),
-        infer_orange_by_side=bool(node.get_parameter('filtering.infer_orange_by_side').value),
-        orange_min_lateral_m=float(node.get_parameter('filtering.orange_min_lateral_m').value),
-        orange_neighbor_radius_m=float(node.get_parameter('filtering.orange_neighbor_radius_m').value),
-        orange_neighbor_margin_m=float(node.get_parameter('filtering.orange_neighbor_margin_m').value),
-        centerline_path_resolution_m=max(
-            0.05,
-            float(node.get_parameter('centerline.path_resolution_m').value),
-        ),
+        # Frames
+        planning_frame=planning_frame,
+        odom_frame=odom_frame,
+        base_frame=base_frame,
+        tf_timeout_s=tf_timeout_s,
+        # Topics
+        tracked_cones_topic=tracked_cones_topic,
+        cmd_topic=cmd_topic,
+        centerline_topic=centerline_topic,
+        viz_topic=viz_topic,
+        points_topic=points_topic,
+        odom_topic=odom_topic,
+        # Filtering
+        infer_unknown_by_side=infer_unknown_by_side,
+        infer_orange_by_side=infer_orange_by_side,
+        orange_min_lateral_m=orange_min_lateral_m,
+        orange_neighbor_radius_m=orange_neighbor_radius_m,
+        orange_neighbor_margin_m=orange_neighbor_margin_m,
+        # Centerline
+        centerline_path_resolution_m=centerline_path_resolution_m,
         temporal_alpha=temporal_alpha,
+        # Temporal smoothing — disabled; midline memory owns stability
         enable_temporal_smoothing=False,
         smoothing_alpha=temporal_alpha,
         enable_near_field_freeze=False,
@@ -293,163 +419,71 @@ def read_migrated_tracked_cone_planner_common_config(
         commit_plan_horizon_m=0.0,
         commit_stable_frames=1,
         commit_update_max_churn_ratio=1.0,
-        midline_horizon_m=max(1.0, float(node.get_parameter('midline_memory.horizon_m').value)),
-        midline_station_spacing_m=max(
-            0.05,
-            float(node.get_parameter('midline_memory.station_spacing_m').value),
-        ),
-        midline_near_distance_m=max(
-            0.0,
-            float(node.get_parameter('midline_memory.near_distance_m').value),
-        ),
-        midline_mid_distance_m=max(
-            max(0.0, float(node.get_parameter('midline_memory.near_distance_m').value)),
-            float(node.get_parameter('midline_memory.mid_distance_m').value),
-        ),
-        midline_control_handoff_distance_m=max(
-            max(0.05, float(node.get_parameter('midline_memory.station_spacing_m').value)),
-            float(node.get_parameter('midline_memory.control_handoff_distance_m').value),
-        ),
-        midline_near_alpha=float(
-            np.clip(float(node.get_parameter('midline_memory.near_alpha').value), 0.0, 1.0)
-        ),
-        midline_mid_alpha=float(
-            np.clip(float(node.get_parameter('midline_memory.mid_alpha').value), 0.0, 1.0)
-        ),
-        midline_far_alpha=float(
-            np.clip(float(node.get_parameter('midline_memory.far_alpha').value), 0.0, 1.0)
-        ),
-        midline_near_max_shift_m=max(
-            0.0,
-            float(node.get_parameter('midline_memory.near_max_lateral_shift_m').value),
-        ),
-        midline_mid_max_shift_m=max(
-            max(0.0, float(node.get_parameter('midline_memory.near_max_lateral_shift_m').value)),
-            float(node.get_parameter('midline_memory.mid_max_lateral_shift_m').value),
-        ),
-        midline_far_max_shift_m=max(
-            max(
-                max(0.0, float(node.get_parameter('midline_memory.near_max_lateral_shift_m').value)),
-                float(node.get_parameter('midline_memory.mid_max_lateral_shift_m').value),
-            ),
-            float(node.get_parameter('midline_memory.far_max_lateral_shift_m').value),
-        ),
-        midline_min_buffer_confidence=float(
-            np.clip(float(node.get_parameter('midline_memory.min_buffer_confidence').value), 0.0, 1.0)
-        ),
-        midline_hold_last_valid_duration_s=max(
-            0.0,
-            float(node.get_parameter('midline_memory.hold_last_valid_duration_s').value),
-        ),
-        midline_min_estimated_extent_m=max(
-            0.5,
-            float(node.get_parameter('midline_memory.min_estimated_extent_m').value),
-        ),
-        midline_max_estimation_extension_m=max(
-            0.0,
-            float(node.get_parameter('midline_memory.max_estimation_extension_m').value),
-        ),
-        midline_max_estimation_join_lateral_m=max(
-            0.0,
-            float(node.get_parameter('midline_memory.max_estimation_join_lateral_m').value),
-        ),
-        midline_max_estimation_join_heading_rad=max(
-            0.0,
-            float(node.get_parameter('midline_memory.max_estimation_join_heading_rad').value),
-        ),
-        midline_allow_tangent_estimate_without_memory=bool(
-            node.get_parameter('midline_memory.allow_tangent_estimate_without_memory').value
-        ),
-        midline_max_tangent_estimation_extension_m=max(
-            0.0,
-            float(node.get_parameter('midline_memory.max_tangent_estimation_extension_m').value),
-        ),
+        # Midline memory
+        midline_horizon_m=midline_horizon_m,
+        midline_station_spacing_m=station_spacing,
+        midline_near_distance_m=near_dist,
+        midline_mid_distance_m=mid_dist,
+        midline_control_handoff_distance_m=handoff_dist,
+        midline_near_alpha=near_alpha,
+        midline_mid_alpha=mid_alpha,
+        midline_far_alpha=far_alpha,
+        midline_near_max_shift_m=near_shift,
+        midline_mid_max_shift_m=mid_shift,
+        midline_far_max_shift_m=far_shift,
+        midline_min_buffer_confidence=min_buffer_confidence,
+        midline_hold_last_valid_duration_s=midline_hold,
+        midline_min_estimated_extent_m=midline_min_estimated_extent_m,
+        midline_max_estimation_extension_m=midline_max_estimation_extension_m,
+        midline_max_estimation_join_lateral_m=midline_max_estimation_join_lateral_m,
+        midline_max_estimation_join_heading_rad=midline_max_estimation_join_heading_rad,
+        midline_allow_tangent_estimate_without_memory=midline_allow_tangent,
+        midline_max_tangent_estimation_extension_m=midline_max_tangent_extension_m,
+        # Runtime
         publish_rate_hz=publish_rate_hz,
-        log_throttle_s=max(0.1, float(node.get_parameter('runtime.log_throttle_s').value)),
+        log_throttle_s=log_throttle_s,
+        # Control
         controller_type=controller_type,
-        odom_lag_compensation_s=(
-            min(
-                max(0.0, float(node.get_parameter('control.odom_lag_compensation_ms').value)),
-                150.0,
-            )
-            / 1000.0
-        ),
+        odom_lag_compensation_s=odom_lag_compensation_s,
         _controller=build_tracked_cone_controller(
-            node=node,
-            controller_type=controller_type,
-            publish_rate_hz=publish_rate_hz,
+            node=node, controller_type=controller_type, publish_rate_hz=publish_rate_hz
         ),
-        stop_if_no_path=bool(node.get_parameter('control.stop_if_no_path').value),
-        speed_min_mps=max(0.0, float(node.get_parameter('speed_control.speed_min_mps').value)),
-        speed_max_mps=max(
-            max(0.0, float(node.get_parameter('speed_control.speed_min_mps').value)),
-            float(node.get_parameter('speed_control.speed_max_mps').value),
-        ),
-        curvature_speed_gain=max(0.0, float(node.get_parameter('speed_control.curvature_speed_gain').value)),
-        lowpass_speed_alpha=float(
-            np.clip(float(node.get_parameter('speed_control.lowpass_speed_alpha').value), 0.0, 1.0)
-        ),
-        hold_last_valid_s=max(
-            max(0.0, float(node.get_parameter('midline_memory.hold_last_valid_duration_s').value)),
-            float(node.get_parameter('validation.hold_last_valid_s').value),
-        ),
-        hold_exit_clean_frames=max(
-            1,
-            int(node.get_parameter('validation.hold_exit_clean_frames').value),
-        ),
-        candidate_jump_reject_threshold_m=max(
-            0.0,
-            float(node.get_parameter('validation.candidate_jump_reject_threshold_m').value),
-        ),
-        candidate_jump_recover_frames=max(
-            1,
-            int(node.get_parameter('validation.candidate_jump_recover_frames').value),
-        ),
-        candidate_min_points=max(
-            2,
-            int(node.get_parameter('validation.candidate_min_points').value),
-        ),
-        candidate_min_extent_m=max(
-            0.5,
-            float(node.get_parameter('validation.candidate_min_extent_m').value),
-        ),
-        diagnostics_topic=str(node.get_parameter('diagnostics.topic').value).strip() or diagnostics_topic_fallback,
-        centerline_jump_horizon_m=max(
-            0.5,
-            float(node.get_parameter('diagnostics.centerline_jump_horizon_m').value),
-        ),
-        edge_quantization_m=max(
-            1e-6,
-            float(node.get_parameter('diagnostics.edge_quantization_m').value),
-        ),
-        jump_warn_threshold_m=max(
-            0.0,
-            float(node.get_parameter('diagnostics.jump_warn_threshold_m').value),
-        ),
-        edge_churn_warn_threshold=max(
-            0.0,
-            float(node.get_parameter('diagnostics.edge_churn_warn_threshold').value),
-        ),
-        publish_control_debug=bool(node.get_parameter('diagnostics.publish_control_debug').value),
-        publish_thesis_context=bool(node.get_parameter('diagnostics.publish_thesis_context').value),
-        enable_debug_markers=bool(node.get_parameter('debug.enable_markers').value),
-        show_raw_cones=bool(node.get_parameter('debug.show_raw_cones').value),
-        show_boundary_chains=bool(node.get_parameter('debug.show_boundary_chains').value),
-        show_pair_lines=bool(node.get_parameter('debug.show_pair_lines').value),
-        show_raw_midpoint_chain=bool(node.get_parameter('debug.show_raw_midpoint_chain').value),
-        show_raw_prevalidation_centerline=bool(
-            node.get_parameter('debug.show_raw_prevalidation_centerline').value
-        ),
-        publish_points_topic=bool(node.get_parameter('debug.publish_points_topic').value),
-        show_lookahead_point=bool(node.get_parameter('debug.show_lookahead_point').value),
+        stop_if_no_path=stop_if_no_path,
+        # Speed control
+        speed_min_mps=speed_min,
+        speed_max_mps=speed_max,
+        curvature_speed_gain=curvature_speed_gain,
+        lowpass_speed_alpha=lowpass_speed_alpha,
+        # Validation / hold
+        hold_last_valid_s=hold_last_valid_s,
+        hold_exit_clean_frames=hold_exit_clean_frames,
+        candidate_jump_reject_threshold_m=candidate_jump_reject_threshold_m,
+        candidate_jump_recover_frames=candidate_jump_recover_frames,
+        candidate_min_points=candidate_min_points,
+        candidate_min_extent_m=candidate_min_extent_m,
+        # Diagnostics
+        diagnostics_topic=diagnostics_topic,
+        centerline_jump_horizon_m=centerline_jump_horizon_m,
+        edge_quantization_m=edge_quantization_m,
+        jump_warn_threshold_m=jump_warn_threshold_m,
+        edge_churn_warn_threshold=edge_churn_warn_threshold,
+        publish_control_debug=publish_control_debug,
+        publish_thesis_context=publish_thesis_context,
+        # Debug markers
+        enable_debug_markers=enable_debug_markers,
+        show_raw_cones=show_raw_cones,
+        show_boundary_chains=show_boundary_chains,
+        show_pair_lines=show_pair_lines,
+        show_raw_midpoint_chain=show_raw_midpoint_chain,
+        show_raw_prevalidation_centerline=show_raw_prevalidation_centerline,
+        publish_points_topic=publish_points_topic,
+        show_lookahead_point=show_lookahead_point,
         show_triangulation_edges=False,
         show_candidate_edges=False,
         show_selected_edges=False,
     )
     emit_migrated_planner_compatibility_warnings(
-        node,
-        planner_label=planner_label,
-        temporal_alpha=common.temporal_alpha,
+        node, planner_label=planner_label, temporal_alpha=common.temporal_alpha
     )
     log_tracked_cone_controller_mode(node, controller_type=common.controller_type)
     return common

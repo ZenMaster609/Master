@@ -148,6 +148,12 @@ def compute_corridor_centerline(
     prior: Optional[CorridorPlannerPrior] = None,
     track_ids: Optional[np.ndarray] = None,
 ) -> CorridorPlannerResult:
+    """Compute a local centerline using a resampled corridor between left/right boundaries.
+
+    Builds boundary chains, resamples them at constant arc-length, extracts the corridor
+    interior, fits a smooth centerline through the corridor anchors, and validates the result.
+    Returns a result with ``status='ok'`` on success or a descriptive failure status.
+    """
     if points_xy.size == 0:
         return _empty_result("no cones available")
 
@@ -429,6 +435,11 @@ def update_track_width_estimate(
     measured_width_m: Optional[float],
     config: CorridorPlannerConfig,
 ) -> float:
+    """Exponential-moving-average update of the running track width estimate.
+
+    The update is rate-limited by ``config.max_width_delta_per_update_m`` and
+    the result is clamped to ``[config.min_width_m, config.max_width_m]``.
+    """
     width = (
         config.initial_width_m
         if previous_width_m is None or not math.isfinite(float(previous_width_m))

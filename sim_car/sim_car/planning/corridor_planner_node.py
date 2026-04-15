@@ -240,7 +240,7 @@ class CorridorPlannerNode(TrackedConePlannerBase):
             "corridor.membership_margin_m": 0.15,
             "midline_memory.pair_memory_retention_s": 12.0,
             "lap_tracking.target_laps": 0,
-            "validation.candidate_min_points": _CORRIDOR_MIDPOINT_MIN_POINTS,
+            "validation.candidate_min_points": 2,
             "validation.candidate_min_extent_m": 0.25,
             "validation.min_path_points": 4,
             "validation.min_forward_extent_m": 2.0,

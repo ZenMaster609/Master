@@ -9,6 +9,11 @@ from typing import Optional
 import numpy as np
 
 from sim_car.controllers.base import ControllerOutput, FloatArray
+from sim_car.controllers._path_utils import (
+    nearest_projection_on_path,
+    target_point_from_projection,
+    validate_control_path,
+)
 
 
 @dataclass(frozen=True)
@@ -41,11 +46,11 @@ class PurePursuitController:
     ) -> ControllerOutput:
         del yaw_rate_rps
 
-        self._validate_path(control_path)
+        validate_control_path(control_path)
 
-        projected_point, nearest_segment_idx = self._nearest_projection(control_path)
+        projected_point, nearest_segment_idx = nearest_projection_on_path(control_path)
         commanded_lookahead = self._compute_commanded_lookahead(float(speed_mps))
-        target_point = self._target_point_from_projection(
+        target_point = target_point_from_projection(
             control_path=control_path,
             projected_point=projected_point,
             nearest_segment_idx=nearest_segment_idx,
@@ -96,66 +101,3 @@ class PurePursuitController:
         return float(
             np.clip(raw, self._config.min_lookahead_m, self._config.max_lookahead_m)
         )
-
-    @staticmethod
-    def _validate_path(control_path: FloatArray) -> None:
-        if control_path.ndim != 2 or control_path.shape[1] != 2:
-            raise ValueError("control_path must have shape (N, 2)")
-        if control_path.shape[0] == 0:
-            raise ValueError("control_path cannot be empty")
-
-    @staticmethod
-    def _nearest_projection(control_path: FloatArray) -> tuple[np.ndarray, int]:
-        if control_path.shape[0] == 1:
-            return np.asarray(control_path[0], dtype=np.float64), 0
-
-        best_distance_sq = float("inf")
-        best_point = np.asarray(control_path[0], dtype=np.float64)
-        best_segment_idx = 0
-
-        for seg_idx in range(control_path.shape[0] - 1):
-            p0 = control_path[seg_idx]
-            p1 = control_path[seg_idx + 1]
-            seg = p1 - p0
-            seg_len_sq = float(np.dot(seg, seg))
-            if seg_len_sq <= 1e-12:
-                projected = p0
-            else:
-                t = float(np.clip(-np.dot(p0, seg) / seg_len_sq, 0.0, 1.0))
-                projected = p0 + (t * seg)
-
-            distance_sq = float(np.dot(projected, projected))
-            if distance_sq < best_distance_sq:
-                best_distance_sq = distance_sq
-                best_point = np.asarray(projected, dtype=np.float64)
-                best_segment_idx = seg_idx
-
-        return best_point, best_segment_idx
-
-    @staticmethod
-    def _target_point_from_projection(
-        *,
-        control_path: FloatArray,
-        projected_point: np.ndarray,
-        nearest_segment_idx: int,
-        lookahead_m: float,
-    ) -> np.ndarray:
-        if control_path.shape[0] == 1:
-            return np.asarray(control_path[0], dtype=np.float64)
-
-        remaining = max(0.0, float(lookahead_m))
-        current_point = np.asarray(projected_point, dtype=np.float64)
-
-        for seg_idx in range(nearest_segment_idx, control_path.shape[0] - 1):
-            seg_end = np.asarray(control_path[seg_idx + 1], dtype=np.float64)
-            seg_vec = seg_end - current_point
-            seg_len = float(np.hypot(seg_vec[0], seg_vec[1]))
-            if seg_len <= 1e-9:
-                current_point = seg_end
-                continue
-            if remaining <= seg_len:
-                return current_point + ((remaining / seg_len) * seg_vec)
-            remaining -= seg_len
-            current_point = seg_end
-
-        return np.asarray(control_path[-1], dtype=np.float64)

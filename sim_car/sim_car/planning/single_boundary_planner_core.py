@@ -143,6 +143,12 @@ def compute_single_boundary_centerline(
     prior: Optional[SingleBoundaryPlannerPrior] = None,
     track_ids: Optional[np.ndarray] = None,
 ) -> SingleBoundaryPlannerResult:
+    """Compute a local centerline using only one visible boundary.
+
+    Attempts normal paired midpoint planning first. If that fails and a single boundary
+    chain is available, offsets it laterally by the estimated track half-width to produce
+    a centerline. Returns a result with ``status='ok'`` on success.
+    """
     if points_xy.size == 0:
         return _empty_result("no cones available")
 

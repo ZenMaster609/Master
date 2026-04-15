@@ -10,10 +10,11 @@ from sim_car.cones.tracking.fusion import (
     blend_track_confidence,
     class_from_probs,
     normalize_color,
-    resolve_boundary_color_by_lateral_position,
     update_class_probs,
     update_color_belief,
 )
+# Re-export for backward compatibility with tests that import from this module.
+from sim_car.cones.tracking.global_memory import GlobalCone, GlobalConeMemory  # noqa: F401
 
 TRACK_STATE_TENTATIVE = 0
 TRACK_STATE_CONFIRMED = 1
@@ -22,6 +23,8 @@ TRACK_STATE_STALE = 2
 
 @dataclass
 class TrackUpdate:
+    """A fused observation from lidar/camera used to update a cone track."""
+
     assoc_x: float
     assoc_y: float
     update_x: Optional[float]
@@ -72,18 +75,6 @@ class ConeTrack:
 
     def is_planner_track(self) -> bool:
         return self.track_state in {TRACK_STATE_CONFIRMED, TRACK_STATE_STALE}
-
-
-@dataclass
-class GlobalCone:
-    cone_id: int
-    x: float
-    y: float
-    z: float
-    class_label: str
-    confidence: float
-    hits: int
-    last_update_sec: float
 
 
 @dataclass
@@ -196,9 +187,7 @@ class LocalConeTracker:
                     consecutive_seen_count=1,
                     missed_count=0,
                     track_state=(
-                        TRACK_STATE_CONFIRMED
-                        if int(confirm_hits) <= 1
-                        else TRACK_STATE_TENTATIVE
+                        TRACK_STATE_CONFIRMED if int(confirm_hits) <= 1 else TRACK_STATE_TENTATIVE
                     ),
                     last_update_source=update.update_source or 'unknown',
                     lidar_seen_recently=bool(update.has_lidar),
@@ -250,10 +239,14 @@ class LocalConeTracker:
         merge_sq = merge_radius_m * merge_radius_m
         merged_count = 0
         keep: list[ConeTrack] = []
-        base_positions_by_track_id = {
-            track.track_id: track_positions_in_base[idx]
-            for idx, track in enumerate(self.tracks)
-        } if track_positions_in_base is not None and len(track_positions_in_base) == len(self.tracks) else {}
+        base_positions_by_track_id = (
+            {
+                track.track_id: track_positions_in_base[idx]
+                for idx, track in enumerate(self.tracks)
+            }
+            if track_positions_in_base is not None and len(track_positions_in_base) == len(self.tracks)
+            else {}
+        )
 
         for candidate in sorted(
             self.tracks,
@@ -327,40 +320,6 @@ class LocalConeTracker:
         self.tracks = keep
         return merged_count
 
-    @staticmethod
-    def _tracks_are_merge_compatible(
-        *,
-        candidate: ConeTrack,
-        existing: ConeTrack,
-        dist_sq: float,
-        merge_sq: float,
-        base_positions_by_track_id: dict[int, tuple[float, float]],
-        longitudinal_tolerance_m: float,
-        lateral_tolerance_m: float,
-    ) -> bool:
-        if dist_sq <= merge_sq:
-            return True
-
-        if longitudinal_tolerance_m <= 0.0 or lateral_tolerance_m <= 0.0:
-            return False
-
-        candidate_base = base_positions_by_track_id.get(candidate.track_id)
-        existing_base = base_positions_by_track_id.get(existing.track_id)
-        if candidate_base is None or existing_base is None:
-            return False
-
-        dx_base = abs(candidate_base[0] - existing_base[0])
-        dy_base = abs(candidate_base[1] - existing_base[1])
-        if dy_base > lateral_tolerance_m or dx_base > longitudinal_tolerance_m:
-            return False
-
-        # Prevent same-color cones on opposite sides of the car from collapsing
-        # if the color estimate is still uncertain.
-        if candidate_base[1] * existing_base[1] < 0.0 and max(abs(candidate_base[1]), abs(existing_base[1])) > 0.2:
-            return False
-
-        return True
-
     def prune(
         self,
         *,
@@ -387,9 +346,7 @@ class LocalConeTracker:
             age = now_sec - track.last_seen_sec
             if track.is_confirmed(confirm_hits):
                 track.track_state = (
-                    TRACK_STATE_STALE
-                    if age > float(stale_after_sec)
-                    else TRACK_STATE_CONFIRMED
+                    TRACK_STATE_STALE if age > float(stale_after_sec) else TRACK_STATE_CONFIRMED
                 )
             else:
                 track.track_state = TRACK_STATE_TENTATIVE
@@ -436,8 +393,7 @@ class LocalConeTracker:
                 continue
             if track.track_state == TRACK_STATE_CONFIRMED:
                 out.append(track)
-                continue
-            if (
+            elif (
                 publish_stale_tracks
                 and track.track_state == TRACK_STATE_STALE
                 and track.age_sec(now_sec) <= float(stale_planner_ttl_sec)
@@ -445,7 +401,12 @@ class LocalConeTracker:
                 out.append(track)
         return out
 
+    # ------------------------------------------------------------------
+    # Data association
+    # ------------------------------------------------------------------
+
     def _associate(self, updates: list[TrackUpdate], gate_radius_m: float):
+        """Greedy nearest-neighbour assignment within gate_radius_m."""
         candidates: list[tuple[float, int, int]] = []
         gate_sq = gate_radius_m * gate_radius_m
         for t_idx, track in enumerate(self.tracks):
@@ -470,20 +431,13 @@ class LocalConeTracker:
         unmatched_update_idx = [i for i in range(len(updates)) if i not in taken_updates]
         return assignments, unmatched_update_idx
 
-    def _find_nearby_track_for_update(
-        self,
-        *,
-        update: TrackUpdate,
-        radius_m: float,
-    ) -> Optional[int]:
+    def _find_nearby_track_for_update(self, *, update: TrackUpdate, radius_m: float) -> Optional[int]:
         if not self.tracks:
             return None
-
         radius_sq = radius_m * radius_m
         update_label = normalize_color(update.camera_label or 'unknown')
         best_idx: Optional[int] = None
         best_score = float('inf')
-
         for idx, track in enumerate(self.tracks):
             if not self._track_labels_compatible(track, update_label):
                 continue
@@ -497,7 +451,6 @@ class LocalConeTracker:
             if score < best_score:
                 best_score = score
                 best_idx = idx
-
         return best_idx
 
     @staticmethod
@@ -508,6 +461,10 @@ class LocalConeTracker:
         if track_norm == 'unknown' or update_norm == 'unknown':
             return True
         return track_norm == update_norm
+
+    # ------------------------------------------------------------------
+    # Track update (three separate concerns)
+    # ------------------------------------------------------------------
 
     @staticmethod
     def _apply_update(
@@ -521,188 +478,110 @@ class LocalConeTracker:
         color_decay: float,
         color_switch_margin: float,
     ) -> None:
-        if update.update_x is not None and update.update_y is not None:
-            if update.update_source == 'lidar':
-                alpha = max(0.0, min(1.0, alpha_lidar))
-            elif update.update_source == 'camera':
-                alpha = max(0.0, min(1.0, alpha_camera))
-            else:
-                alpha = 0.25
-            old_x = track.x
-            old_y = track.y
-            old_z = track.z
-            track.x = (1.0 - alpha) * old_x + alpha * float(update.update_x)
-            track.y = (1.0 - alpha) * old_y + alpha * float(update.update_y)
-            track.z = (1.0 - alpha) * old_z + alpha * float(update.update_z or 0.0)
+        _update_position(track, update, alpha_lidar=alpha_lidar, alpha_camera=alpha_camera)
+        _update_color(track, update, color_decay=color_decay, color_switch_margin=color_switch_margin)
+        _update_bookkeeping(track, update, now_sec=now_sec, track_confidence_gain=track_confidence_gain)
 
-            residual_sq = ((track.x - old_x) ** 2 + (track.y - old_y) ** 2)
-            track.variance = (1.0 - alpha) * track.variance + alpha * residual_sq
+    # ------------------------------------------------------------------
+    # Merge compatibility check
+    # ------------------------------------------------------------------
 
-        if update.camera_label is not None:
-            track.class_probs, track.stable_label, track.stable_color_confidence = update_color_belief(
-                track.class_probs,
-                label=update.camera_label,
-                confidence=update.camera_confidence,
-                current_label=track.stable_label,
-                color_decay=color_decay,
-                color_switch_margin=color_switch_margin,
-            )
-            if normalize_color(update.camera_label) != 'unknown':
-                track.unknown_streak = 0
-                track.camera_class_confirmed = True
-            elif not track.camera_class_confirmed:
-                track.unknown_streak += 1
+    @staticmethod
+    def _tracks_are_merge_compatible(
+        *,
+        candidate: ConeTrack,
+        existing: ConeTrack,
+        dist_sq: float,
+        merge_sq: float,
+        base_positions_by_track_id: dict[int, tuple[float, float]],
+        longitudinal_tolerance_m: float,
+        lateral_tolerance_m: float,
+    ) -> bool:
+        if dist_sq <= merge_sq:
+            return True
+        if longitudinal_tolerance_m <= 0.0 or lateral_tolerance_m <= 0.0:
+            return False
+        candidate_base = base_positions_by_track_id.get(candidate.track_id)
+        existing_base = base_positions_by_track_id.get(existing.track_id)
+        if candidate_base is None or existing_base is None:
+            return False
+        dx_base = abs(candidate_base[0] - existing_base[0])
+        dy_base = abs(candidate_base[1] - existing_base[1])
+        if dy_base > lateral_tolerance_m or dx_base > longitudinal_tolerance_m:
+            return False
+        # Prevent same-color cones on opposite sides of the car from collapsing.
+        if candidate_base[1] * existing_base[1] < 0.0 and max(abs(candidate_base[1]), abs(existing_base[1])) > 0.2:
+            return False
+        return True
+
+
+# ---------------------------------------------------------------------------
+# Track update sub-routines (module-level so they can be tested independently)
+# ---------------------------------------------------------------------------
+
+def _update_position(track: ConeTrack, update: TrackUpdate, *, alpha_lidar: float, alpha_camera: float) -> None:
+    """EMA position update with source-dependent alpha."""
+    if update.update_x is None or update.update_y is None:
+        return
+    if update.update_source == 'lidar':
+        alpha = max(0.0, min(1.0, alpha_lidar))
+    elif update.update_source == 'camera':
+        alpha = max(0.0, min(1.0, alpha_camera))
+    else:
+        alpha = 0.25
+    old_x, old_y, old_z = track.x, track.y, track.z
+    track.x = (1.0 - alpha) * old_x + alpha * float(update.update_x)
+    track.y = (1.0 - alpha) * old_y + alpha * float(update.update_y)
+    track.z = (1.0 - alpha) * old_z + alpha * float(update.update_z or 0.0)
+    residual_sq = (track.x - old_x) ** 2 + (track.y - old_y) ** 2
+    track.variance = (1.0 - alpha) * track.variance + alpha * residual_sq
+
+
+def _update_color(
+    track: ConeTrack,
+    update: TrackUpdate,
+    *,
+    color_decay: float,
+    color_switch_margin: float,
+) -> None:
+    """Bayesian color belief update and unknown-streak bookkeeping."""
+    if update.camera_label is not None:
+        track.class_probs, track.stable_label, track.stable_color_confidence = update_color_belief(
+            track.class_probs,
+            label=update.camera_label,
+            confidence=update.camera_confidence,
+            current_label=track.stable_label,
+            color_decay=color_decay,
+            color_switch_margin=color_switch_margin,
+        )
+        if normalize_color(update.camera_label) != 'unknown':
+            track.unknown_streak = 0
+            track.camera_class_confirmed = True
         elif not track.camera_class_confirmed:
             track.unknown_streak += 1
-
-        track.last_seen_sec = now_sec
-        track.seen_count += 1
-        track.consecutive_seen_count += 1
-        track.missed_count = 0
-        track.lidar_seen_recently = bool(update.has_lidar)
-        track.camera_seen_recently = bool(update.has_camera)
-        track.last_update_source = str(update.update_source or 'unknown')
-        track.track_confidence = blend_track_confidence(
-            track.track_confidence,
-            observation_confidence=max(update.camera_confidence, 0.6 if update.has_lidar else 0.0),
-            track_confidence_gain=track_confidence_gain,
-            track_confidence_decay=0.0,
-            seen=True,
-        )
+    elif not track.camera_class_confirmed:
+        track.unknown_streak += 1
 
 
-class GlobalConeMemory:
-    """Long-lived global cone store used for track-belief plotting."""
-
-    def __init__(self) -> None:
-        self._next_id = 1
-        self.cones: list[GlobalCone] = []
-
-    def update_from_tracks(
-        self,
-        *,
-        tracks: list[ConeTrack],
-        now_sec: float,
-        merge_radius_m: float,
-        max_cones: int,
-    ) -> None:
-        merge_sq = merge_radius_m * merge_radius_m
-        for track in tracks:
-            label, conf = track.class_label()
-            best_idx = -1
-            best_dist_sq = float('inf')
-            for idx, cone in enumerate(self.cones):
-                dx = cone.x - track.x
-                dy = cone.y - track.y
-                d2 = dx * dx + dy * dy
-                if d2 <= merge_sq and d2 < best_dist_sq:
-                    best_dist_sq = d2
-                    best_idx = idx
-            if best_idx >= 0:
-                cone = self.cones[best_idx]
-                alpha = 1.0 / float(max(2, cone.hits + 1))
-                cone.x = (1.0 - alpha) * cone.x + alpha * track.x
-                cone.y = (1.0 - alpha) * cone.y + alpha * track.y
-                cone.z = (1.0 - alpha) * cone.z + alpha * track.z
-                cone.hits += 1
-                cone.last_update_sec = now_sec
-                if label != 'unknown':
-                    cone.class_label = label
-                cone.confidence = max(cone.confidence, conf)
-            else:
-                self.cones.append(
-                    GlobalCone(
-                        cone_id=self._next_id,
-                        x=track.x,
-                        y=track.y,
-                        z=track.z,
-                        class_label=label,
-                        confidence=conf,
-                        hits=1,
-                        last_update_sec=now_sec,
-                    )
-                )
-                self._next_id += 1
-
-        if len(self.cones) > max_cones:
-            self.cones.sort(key=lambda c: (c.hits, c.last_update_sec), reverse=True)
-            self.cones = self.cones[:max_cones]
-
-    def infer_boundaries_and_centerline(
-        self,
-        *,
-        min_hits: int,
-        min_confidence: float = 0.0,
-        vehicle_x: float,
-        vehicle_y: float,
-        heading_x: float,
-        heading_y: float,
-    ) -> tuple[list[tuple[float, float]], list[tuple[float, float]], list[tuple[float, float]]]:
-        cones = [
-            c for c in self.cones
-            if c.hits >= int(min_hits) and float(c.confidence) >= float(min_confidence)
-        ]
-        left: list[tuple[float, float]] = []
-        right: list[tuple[float, float]] = []
-        for cone in cones:
-            dx = cone.x - vehicle_x
-            dy = cone.y - vehicle_y
-            lateral_y = (-heading_y * dx) + (heading_x * dy)
-            resolved_label = resolve_boundary_color_by_lateral_position(
-                cone.class_label,
-                lateral_y,
-                infer_unknown=True,
-                infer_orange=True,
-            )
-            if resolved_label == 'blue':
-                left.append((cone.x, cone.y))
-            elif resolved_label == 'yellow':
-                right.append((cone.x, cone.y))
-
-        left_sorted = self._order_side(left, vehicle_x, vehicle_y, heading_x, heading_y)
-        right_sorted = self._order_side(right, vehicle_x, vehicle_y, heading_x, heading_y)
-        center = self._build_centerline(left_sorted, right_sorted)
-        return left_sorted, right_sorted, center
-
-    @staticmethod
-    def _order_side(
-        points: list[tuple[float, float]],
-        vehicle_x: float,
-        vehicle_y: float,
-        heading_x: float,
-        heading_y: float,
-    ) -> list[tuple[float, float]]:
-        if not points:
-            return []
-
-        def projection(p: tuple[float, float]) -> float:
-            dx = p[0] - vehicle_x
-            dy = p[1] - vehicle_y
-            return dx * heading_x + dy * heading_y
-
-        return sorted(points, key=projection)
-
-    @staticmethod
-    def _build_centerline(
-        left: list[tuple[float, float]],
-        right: list[tuple[float, float]],
-    ) -> list[tuple[float, float]]:
-        if not left or not right:
-            return []
-
-        center: list[tuple[float, float]] = []
-        for lx, ly in left:
-            best_idx = -1
-            best_dist_sq = float('inf')
-            for idx, (rx, ry) in enumerate(right):
-                d2 = (rx - lx) ** 2 + (ry - ly) ** 2
-                if d2 < best_dist_sq:
-                    best_dist_sq = d2
-                    best_idx = idx
-            if best_idx < 0:
-                continue
-            rx, ry = right[best_idx]
-            center.append(((lx + rx) * 0.5, (ly + ry) * 0.5))
-
-        center.sort(key=lambda p: p[0])
-        return center
+def _update_bookkeeping(
+    track: ConeTrack,
+    update: TrackUpdate,
+    *,
+    now_sec: float,
+    track_confidence_gain: float,
+) -> None:
+    """Update temporal metadata and track confidence."""
+    track.last_seen_sec = now_sec
+    track.seen_count += 1
+    track.consecutive_seen_count += 1
+    track.missed_count = 0
+    track.lidar_seen_recently = bool(update.has_lidar)
+    track.camera_seen_recently = bool(update.has_camera)
+    track.last_update_source = str(update.update_source or 'unknown')
+    track.track_confidence = blend_track_confidence(
+        track.track_confidence,
+        observation_confidence=max(update.camera_confidence, 0.6 if update.has_lidar else 0.0),
+        track_confidence_gain=track_confidence_gain,
+        track_confidence_decay=0.0,
+        seen=True,
+    )

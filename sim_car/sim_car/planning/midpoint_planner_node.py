@@ -196,7 +196,7 @@ class MidpointPlannerNode(TrackedConePlannerBase):
             "centerline.midpoint_order_history_size": 3,
             "centerline.midpoint_order_backtrack_tolerance_m": 0.35,
             "lap_tracking.target_laps": 0,
-            "validation.candidate_min_points": _MIDPOINT_CHAIN_MIN_POINTS,
+            "validation.candidate_min_points": 2,
             "validation.candidate_min_extent_m": 0.25,
             "validation.min_path_points": 4,
             "validation.min_forward_extent_m": 2.0,

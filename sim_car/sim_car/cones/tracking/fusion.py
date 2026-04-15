@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
 import math
 from typing import Optional
 
@@ -11,23 +10,6 @@ import numpy as np
 
 CLASS_NAMES = ("unknown", "blue", "yellow", "orange")
 CLASS_TO_INDEX = {name: idx for idx, name in enumerate(CLASS_NAMES)}
-
-
-@dataclass
-class FusedObservation:
-    """A fused per-cone observation from lidar/camera detections."""
-
-    assoc_x: float
-    assoc_y: float
-    update_x: Optional[float]
-    update_y: Optional[float]
-    update_z: Optional[float]
-    update_source: Optional[str]
-    has_lidar: bool
-    has_camera: bool
-    camera_label: Optional[str]
-    camera_confidence: float
-    range_m: float
 
 
 def normalize_color(label: str) -> str:
