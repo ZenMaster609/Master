@@ -5,20 +5,12 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 import math
-import time
 from typing import Optional
 
 import numpy as np
 import rclpy
-from ackermann_msgs.msg import AckermannDriveStamped
-from diagnostic_msgs.msg import DiagnosticArray
-from geometry_msgs.msg import Point, PoseArray
-from nav_msgs.msg import Odometry, Path
-from rclpy.duration import Duration
 from rclpy.executors import ExternalShutdownException
 from rclpy.node import Node
-from rclpy.qos import qos_profile_sensor_data
-from tf2_ros import Buffer, TransformListener
 from vehicle_plotter_msgs.msg import ConeDetection, ConeDetectionArray
 from visualization_msgs.msg import Marker, MarkerArray
 
@@ -49,11 +41,9 @@ MSG_TRACK_STATE_TENTATIVE = int(getattr(ConeDetection, "TRACK_STATE_TENTATIVE", 
 MSG_TRACK_STATE_CONFIRMED = int(getattr(ConeDetection, "TRACK_STATE_CONFIRMED", 1))
 MSG_TRACK_STATE_STALE = int(getattr(ConeDetection, "TRACK_STATE_STALE", 2))
 _PAIR_PASSED_MARGIN_M = 0.5
-_LIVE_PREFIX_MIN_POINTS = 2
-_LIVE_PREFIX_MIN_EXTENT_M = 1.5
-_TARGET_COMPLETED_PATH_EXTENT_M = 6.0
-_MAX_COMPLETION_ADD_M = 4.0
-_TAIL_DIRECTION_POINT_COUNT = 3
+_CORRIDOR_MIDPOINT_SOURCE = "corridor_midpoints"
+_CORRIDOR_MIDPOINT_MIN_POINTS = 2
+_CENTERLINE_MARKER_WIDTH_M = 0.20
 _CORRIDOR_ANALYSIS_SAMPLE_COUNT = 8
 _CORRIDOR_ANALYSIS_SAMPLE_SPACING_M = 1.0
 _ANCHOR_TAPER_GATE_LATERAL_M = 0.20
@@ -141,82 +131,12 @@ class CorridorPlannerNode(TrackedConePlannerBase):
         self._declare_parameters()
         self._read_parameters()
 
-        self._tf_buffer = Buffer(cache_time=Duration(seconds=10.0))
-        self._tf_listener = TransformListener(self._tf_buffer, self)
-
-        self._latest_cones_msg: Optional[ConeDetectionArray] = None
-        self._latest_odom_msg: Optional[Odometry] = None
-        self._latest_speed_mps: float = 0.0
-        self._latest_yaw_rate_rps: float = 0.0
-        self._last_throttled_log_sec: dict[str, float] = {}
-        self._previous_centerline: Optional[np.ndarray] = None
-        self._previous_raw_centerline: Optional[np.ndarray] = None
-        self._previous_tracked_points: Optional[np.ndarray] = None
-        self._previous_edge_keys: set[tuple[int, int, int, int]] = set()
-        self._last_valid_centerline: Optional[np.ndarray] = None
-        self._last_valid_raw_midpoint_chain: Optional[np.ndarray] = None
-        self._last_valid_pair_segments: Optional[np.ndarray] = None
-        self._last_valid_pair_track_ids: Optional[np.ndarray] = None
-        self._current_pair_segments_for_viz: Optional[np.ndarray] = None
-        self._last_valid_width_m: Optional[float] = self._filtered_track_width_m
-        self._last_valid_time_sec: float = -1.0
-        self._committed_centerline: Optional[np.ndarray] = None
-        self._commit_stable_frame_count: int = 0
-        self._hold_mode_active: bool = False
-        self._hold_clean_frame_count: int = 0
-        self._last_speed_cmd: Optional[float] = None
-        self._last_steering_cmd: Optional[float] = None
-        self._last_operator_state: Optional[str] = None
-        self._last_operator_reason: Optional[str] = None
+        self._init_common_planner_state()
         self._pair_memory: list[_PairMemoryEntry] = []
-        self._midline_buffer_path: Optional[np.ndarray] = None
-        self._midline_buffer_confidence: float = 0.0
-        self._midline_buffer_last_update_sec: float = -1.0
-        self._last_midline_update_mode: str = "hold"
-        self._last_viz_left_boundary: Optional[np.ndarray] = None
-        self._last_viz_right_boundary: Optional[np.ndarray] = None
-        self._candidate_jump_reject_streak: int = 0
-
-        self._active_planner_mode = "waiting"
-        self._active_remembered_cone_count = 0
-        self._active_stale_cone_count = 0
-        self._active_left_chain_length = 0
-        self._active_right_chain_length = 0
-        self._active_pair_count = 0
-        self._active_unknown_pair_count = 0
-        self._active_filtered_track_width_m = self._filtered_track_width_m
-        self._active_held_path_flag = 0
         self._active_cone_audit_counts = self._empty_cone_audit_counts()
 
-        self._cmd_pub = self.create_publisher(AckermannDriveStamped, self.cmd_topic, 10)
-        self._path_pub = self.create_publisher(Path, self.centerline_topic, 10)
-        self._viz_pub = self.create_publisher(MarkerArray, self.viz_topic, 10)
+        self._init_common_ros_interfaces()
         self._cone_audit_viz_pub = self.create_publisher(MarkerArray, self.cone_audit_viz_topic, 10)
-        self._points_pub = self.create_publisher(PoseArray, self.points_topic, 10)
-        self._diag_pub = self.create_publisher(DiagnosticArray, self.diagnostics_topic, 10)
-
-        self.create_subscription(
-            ConeDetectionArray,
-            self.tracked_cones_topic,
-            self._cones_cb,
-            qos_profile_sensor_data,
-        )
-        self.create_subscription(
-            Odometry,
-            self.odom_topic,
-            self._odom_cb,
-            qos_profile_sensor_data,
-        )
-
-        loop_hz = max(1.0, float(self.publish_rate_hz))
-        self.create_timer(1.0 / loop_hz, self._on_timer)
-
-        self.get_logger().info(
-            "corridor_planner_node ready "
-            f"cones={self.tracked_cones_topic} odom={self.odom_topic} "
-            f"cmd={self.cmd_topic} path={self.centerline_topic} viz={self.viz_topic} "
-            f"planning_frame={self.planning_frame} controller={self.controller_type}"
-        )
 
     def _declare_parameters(self) -> None:
         defaults = dict(COMMON_MIGRATED_TRACKED_CONE_PLANNER_DEFAULTS)
@@ -228,13 +148,15 @@ class CorridorPlannerNode(TrackedConePlannerBase):
 
             "width_estimation.min_trustworthy_pairs": 3,
             "corridor.min_corridor_width_m": 2.2,
-            "corridor.max_corridor_width_m": 7.4,
+            "corridor.max_corridor_width_m": 6.4,
             "corridor.boundary_resample_dx": 0.5,
             "corridor.min_required_corridor_samples": 5,
             "corridor.path_fit_smoothing_window": 5,
             "corridor.membership_margin_m": 0.15,
             "midline_memory.pair_memory_retention_s": 12.0,
             "lap_tracking.target_laps": 0,
+            "validation.candidate_min_points": 2,
+            "validation.candidate_min_extent_m": 0.25,
             "validation.min_path_points": 4,
             "validation.min_forward_extent_m": 2.0,
             "validation.max_heading_delta_rad": 0.75,
@@ -349,104 +271,15 @@ class CorridorPlannerNode(TrackedConePlannerBase):
         self._filtered_track_width_m = float(self._core_config.initial_width_m)
 
     def _on_timer(self) -> None:
+        ctx = self._resolve_cone_planning_context()
+        if ctx is None:
+            return
+        cones_msg, target_frame, vehicle_x, vehicle_y, vehicle_yaw, points_xy, colors, confidences = ctx
         control_target_frame: Optional[np.ndarray] = None
         control_debug_metrics: Optional[dict[str, float]] = None
         cmd_speed = 0.0
         cmd_steering = 0.0
         lookahead = 0.0
-
-        cones_msg = self._latest_cones_msg
-        if cones_msg is None:
-            zero_cmd_sent = int(self._apply_no_path_behavior())
-            self._publish_empty_cycle(
-                frame_id=self.odom_frame,
-                status="waiting for /tracked_cones",
-                operator_state="waiting",
-                operator_reason="waiting_for_cones",
-                cmd_speed=cmd_speed,
-                cmd_steering=cmd_steering,
-                lookahead=lookahead,
-                zero_cmd_sent_flag=zero_cmd_sent,
-            )
-            return
-
-        source_frame = str(cones_msg.header.frame_id).strip() or self.odom_frame
-        target_frame = self._resolve_planning_frame(source_frame, cones_msg.header.stamp)
-
-        pose = self._resolve_vehicle_pose(target_frame, cones_msg.header.stamp)
-        if pose is None and target_frame != self.odom_frame:
-            self._warn_throttled(
-                "fallback_odom",
-                f"cannot resolve base pose in {target_frame}; falling back to odom",
-            )
-            target_frame = self.odom_frame
-            pose = self._resolve_vehicle_pose(target_frame, cones_msg.header.stamp)
-
-        if pose is None:
-            zero_cmd_sent = int(self._apply_no_path_behavior())
-            self._publish_empty_cycle(
-                frame_id=target_frame,
-                status="missing vehicle pose (tf and /sim/odom unavailable)",
-                operator_state="waiting",
-                operator_reason="missing_vehicle_pose",
-                cmd_speed=cmd_speed,
-                cmd_steering=cmd_steering,
-                lookahead=lookahead,
-                zero_cmd_sent_flag=zero_cmd_sent,
-            )
-            return
-
-        vehicle_x, vehicle_y, vehicle_yaw = pose
-        points_xy, colors, confidences = self._convert_cones_to_frame(
-            cones_msg,
-            source_frame,
-            target_frame,
-            vehicle_xy=(vehicle_x, vehicle_y),
-            vehicle_yaw=vehicle_yaw,
-        )
-        if points_xy is None:
-            if target_frame != self.odom_frame:
-                self._warn_throttled(
-                    "fallback_odom_cones",
-                    f"cannot transform cones to {target_frame}; planning in odom frame",
-                )
-                target_frame = self.odom_frame
-                pose = self._resolve_vehicle_pose(target_frame, cones_msg.header.stamp)
-                if pose is None:
-                    zero_cmd_sent = int(self._apply_no_path_behavior())
-                    self._publish_empty_cycle(
-                        frame_id=self.odom_frame,
-                        status="cone transform failed and odom pose unavailable",
-                        operator_state="waiting",
-                        operator_reason="cone_transform_unavailable",
-                        cmd_speed=cmd_speed,
-                        cmd_steering=cmd_steering,
-                        lookahead=lookahead,
-                        zero_cmd_sent_flag=zero_cmd_sent,
-                    )
-                    return
-                vehicle_x, vehicle_y, vehicle_yaw = pose
-                points_xy, colors, confidences = self._convert_cones_to_frame(
-                    cones_msg,
-                    source_frame,
-                    target_frame,
-                    vehicle_xy=(vehicle_x, vehicle_y),
-                    vehicle_yaw=vehicle_yaw,
-                )
-
-        if points_xy is None:
-            zero_cmd_sent = int(self._apply_no_path_behavior())
-            self._publish_empty_cycle(
-                frame_id=target_frame,
-                status="cone transform unavailable",
-                operator_state="waiting",
-                operator_reason="cone_transform_unavailable",
-                cmd_speed=cmd_speed,
-                cmd_steering=cmd_steering,
-                lookahead=lookahead,
-                zero_cmd_sent_flag=zero_cmd_sent,
-            )
-            return
 
         self._update_remembered_cone_viz(points_xy=points_xy, colors=colors)
         now_sec = float(self.get_clock().now().nanoseconds) * 1e-9
@@ -607,10 +440,6 @@ class CorridorPlannerNode(TrackedConePlannerBase):
             result=result,
             candidate_source=candidate_source,
         )
-        candidate_update_ok, candidate_update_reason = self._update_candidate_jump_reject_streak(
-            candidate_update_ok=candidate_update_ok,
-            candidate_update_reason=candidate_update_reason,
-        )
         centerline = self._update_midline_buffer(
             candidate_centerline=raw_centerline,
             candidate_source=candidate_source,
@@ -622,6 +451,13 @@ class CorridorPlannerNode(TrackedConePlannerBase):
             vehicle_yaw=vehicle_yaw,
             result=result,
             now_sec=now_sec,
+            support_centerline=raw_midpoint_chain,
+        )
+        candidate_update_ok = bool(
+            getattr(self, "_last_midline_candidate_update_ok", candidate_update_ok)
+        )
+        candidate_update_reason = str(
+            getattr(self, "_last_midline_candidate_update_reason", candidate_update_reason)
         )
         buffered_centerline = np.array(centerline, copy=True)
         centerline = self._anchor_centerline_near_vehicle(
@@ -933,6 +769,20 @@ class CorridorPlannerNode(TrackedConePlannerBase):
                 "midline_update_mode": (
                     "hold" if publish_mode == "held" else self._last_midline_update_mode
                 ),
+                "midline_update_reason": getattr(self, "_last_midline_candidate_update_reason", ""),
+                "midline_candidate_jump_m": getattr(self, "_last_midline_candidate_jump_m", float("nan")),
+                "midline_near_lateral_delta_max_m": getattr(
+                    self,
+                    "_last_midline_near_lateral_delta_max_m",
+                    float("nan"),
+                ),
+                "midline_buffer_confidence": getattr(
+                    self,
+                    "_last_midline_buffer_confidence",
+                    float("nan"),
+                ),
+                "midline_recovery_count": getattr(self, "_midline_recovery_count", 0),
+                **self._midline_estimation_metrics_for_diagnostics(),
                 "reject_corridor_geometry_count": result.reject_counts.get("corridor_geometry", 0),
                 "reject_corridor_samples_count": result.reject_counts.get("corridor_samples", 0),
                 "reject_path_outside_corridor_count": result.reject_counts.get("path_outside_corridor", 0),
@@ -1394,10 +1244,6 @@ class CorridorPlannerNode(TrackedConePlannerBase):
         self._pair_memory = keep
         return keep
 
-    def _active_pair_memory(self, now_sec: float) -> list[tuple[int, int]]:
-        del now_sec
-        return []
-
     def _pair_entries_from_segments(
         self,
         *,
@@ -1510,6 +1356,7 @@ class CorridorPlannerNode(TrackedConePlannerBase):
         ordered_indices = [seed_idx]
         remaining = {idx for idx in range(len(entries)) if idx != seed_idx}
         heading = np.asarray([1.0, 0.0], dtype=np.float64)
+        current_range = float(np.hypot(local_midpoints[seed_idx, 0], local_midpoints[seed_idx, 1]))
 
         while remaining:
             current_idx = ordered_indices[-1]
@@ -1520,6 +1367,9 @@ class CorridorPlannerNode(TrackedConePlannerBase):
                 delta = local_midpoints[candidate_idx] - current_point
                 distance = float(np.hypot(delta[0], delta[1]))
                 if distance <= 1e-6:
+                    continue
+                candidate_range = float(np.hypot(local_midpoints[candidate_idx, 0], local_midpoints[candidate_idx, 1]))
+                if candidate_range < current_range - 0.20:
                     continue
                 step_dir = delta / distance
                 heading_error = abs(math.atan2(step_dir[1], step_dir[0]) - math.atan2(heading[1], heading[0]))
@@ -1544,18 +1394,8 @@ class CorridorPlannerNode(TrackedConePlannerBase):
                 heading = delta / delta_norm
             ordered_indices.append(best_idx)
             remaining.remove(best_idx)
+            current_range = float(np.hypot(local_midpoints[best_idx, 0], local_midpoints[best_idx, 1]))
 
-        if remaining:
-            ordered_indices.extend(
-                sorted(
-                    remaining,
-                    key=lambda idx: (
-                        max(float(local_midpoints[idx, 0]), 0.0),
-                        abs(float(local_midpoints[idx, 1])),
-                        idx,
-                    ),
-                )
-            )
         return [entries[idx] for idx in ordered_indices]
 
     @staticmethod
@@ -1614,9 +1454,6 @@ class CorridorPlannerNode(TrackedConePlannerBase):
             vehicle_yaw=vehicle_yaw,
         )
 
-    def _apply_mode_hysteresis(self, candidate_mode: str) -> str:
-        return "corridor" if candidate_mode != "none" else "none"
-
     def _update_midline_buffer(
         self,
         *,
@@ -1630,101 +1467,26 @@ class CorridorPlannerNode(TrackedConePlannerBase):
         vehicle_yaw: float,
         result: CorridorPlannerResult,
         now_sec: float,
+        support_centerline: Optional[np.ndarray] = None,
     ) -> np.ndarray:
-        self._last_midline_update_mode = "hold"
-        if not self._is_alias(frame_id, self.odom_frame):
-            if candidate_centerline.shape[0] > 0:
-                self._midline_buffer_path = np.array(candidate_centerline, copy=True)
-                self._midline_buffer_last_update_sec = now_sec
-                self._midline_buffer_confidence = 1.0
-                self._last_midline_update_mode = (
-                    "recovery"
-                    if candidate_update_reason == "candidate_jump_recovery"
-                    else "direct"
-                )
-            return candidate_centerline
-
-        candidate_valid = (
-            bool(candidate_update_ok)
-            if candidate_update_ok is not None
-            else self._candidate_path_is_updateable(
-                candidate_centerline=candidate_centerline,
-                vehicle_x=vehicle_x,
-                vehicle_y=vehicle_y,
-                vehicle_yaw=vehicle_yaw,
-                result=result,
-                candidate_source=candidate_source,
-            )[0]
+        direct_commit = (
+            candidate_source in {"validated", _CORRIDOR_MIDPOINT_SOURCE}
+            and candidate_update_ok is not False
+            and np.asarray(candidate_centerline, dtype=np.float64).shape[0] >= 2
         )
-        stored_forward = None
-        if self._midline_buffer_path is not None and self._midline_buffer_path.shape[0] >= 2:
-            stored_forward = self._extract_forward_path_from_pose(
-                path=self._midline_buffer_path,
-                vehicle_xy=(vehicle_x, vehicle_y),
-                resolution_m=self.midline_station_spacing_m,
-            )
-
-        if candidate_valid:
-            candidate_forward = self._extract_forward_path_from_pose(
-                path=candidate_centerline,
-                vehicle_xy=(vehicle_x, vehicle_y),
-                resolution_m=self.midline_station_spacing_m,
-            )
-            if candidate_forward is None or candidate_forward.shape[0] < 2:
-                candidate_forward = np.array(candidate_centerline, copy=True)
-            candidate_samples = self._resample_midline_stations(candidate_forward)
-            if stored_forward is None or stored_forward.shape[0] < 2:
-                updated = candidate_samples
-                self._last_midline_update_mode = (
-                    "recovery"
-                    if candidate_update_reason == "candidate_jump_recovery"
-                    else "direct"
-                )
-            else:
-                stored_samples = self._resample_midline_stations(stored_forward)
-                if candidate_source == "validated" and candidate_update_reason == "candidate_jump_near_field_ok":
-                    updated = candidate_samples
-                    self._last_midline_update_mode = "direct"
-                elif candidate_source == "completed_live_prefix":
-                    updated = self._blend_completed_live_prefix_samples(
-                        stored_samples=stored_samples,
-                        candidate_samples=candidate_samples,
-                        frame_id=frame_id,
-                        vehicle_x=vehicle_x,
-                        vehicle_y=vehicle_y,
-                        vehicle_yaw=vehicle_yaw,
-                        live_prefix=result.prevalidation_centerline,
-                    )
-                else:
-                    updated = self._blend_midline_samples(
-                        stored_samples=stored_samples,
-                        candidate_samples=candidate_samples,
-                        vehicle_x=vehicle_x,
-                        vehicle_y=vehicle_y,
-                        vehicle_yaw=vehicle_yaw,
-                    )
-                    self._last_midline_update_mode = "blend"
-            self._midline_buffer_path = np.array(updated, copy=True)
-            self._midline_buffer_last_update_sec = now_sec
-            self._midline_buffer_confidence = min(1.0, self._midline_buffer_confidence + 0.25)
-            return updated
-
-        self._midline_buffer_confidence = max(0.0, self._midline_buffer_confidence - 0.10)
-        if self._midline_buffer_path is None or self._midline_buffer_path.shape[0] < 2:
-            return np.empty((0, 2), dtype=np.float64)
-        if self._midline_buffer_last_update_sec < 0.0:
-            return np.empty((0, 2), dtype=np.float64)
-        if (now_sec - self._midline_buffer_last_update_sec) > self.midline_hold_last_valid_duration_s:
-            self._midline_buffer_path = None
-            return np.empty((0, 2), dtype=np.float64)
-        if self._midline_buffer_confidence < self.midline_min_buffer_confidence:
-            self._midline_buffer_path = None
-            return np.empty((0, 2), dtype=np.float64)
-        if stored_forward is not None and stored_forward.shape[0] >= 2:
-            self._last_midline_update_mode = "hold"
-            return self._resample_midline_stations(stored_forward)
-        self._last_midline_update_mode = "hold"
-        return np.array(self._midline_buffer_path, copy=True)
+        return self._update_midline_memory_common(
+            candidate_centerline=candidate_centerline,
+            candidate_source=candidate_source,
+            candidate_update_ok=candidate_update_ok,
+            candidate_update_reason=candidate_update_reason,
+            frame_id=frame_id,
+            vehicle_x=vehicle_x,
+            vehicle_y=vehicle_y,
+            vehicle_yaw=vehicle_yaw,
+            now_sec=now_sec,
+            support_centerline=support_centerline,
+            direct_commit=direct_commit,
+        )
 
     def _candidate_path_is_updateable(
         self,
@@ -1736,7 +1498,12 @@ class CorridorPlannerNode(TrackedConePlannerBase):
         result: CorridorPlannerResult,
         candidate_source: str = "validated",
     ) -> tuple[bool, str]:
-        if candidate_centerline.shape[0] < self.candidate_min_points:
+        min_points = (
+            _CORRIDOR_MIDPOINT_MIN_POINTS
+            if candidate_source == _CORRIDOR_MIDPOINT_SOURCE
+            else self.candidate_min_points
+        )
+        if candidate_centerline.shape[0] < min_points:
             return False, "candidate_too_short"
         if not np.all(np.isfinite(candidate_centerline)):
             return False, "candidate_non_finite"
@@ -1747,79 +1514,17 @@ class CorridorPlannerNode(TrackedConePlannerBase):
             vehicle_y=vehicle_y,
             vehicle_yaw=vehicle_yaw,
         )
-        if candidate_local.shape[0] < self.candidate_min_points:
+        if candidate_local.shape[0] < min_points:
             return False, "candidate_no_local_path"
         if self._path_forward_extent_local(candidate_local) < self.candidate_min_extent_m:
             return False, "candidate_extent_too_short"
-        if self._midline_buffer_path is not None and self._midline_buffer_path.shape[0] >= 2:
-            jump_path = candidate_centerline
-            if candidate_source == "completed_live_prefix":
-                jump_path = self._candidate_prefix_for_jump_check(
-                    candidate_centerline=candidate_centerline,
-                    frame_id=self.odom_frame,
-                    vehicle_x=vehicle_x,
-                    vehicle_y=vehicle_y,
-                    vehicle_yaw=vehicle_yaw,
-                    direct_prefix_distance_m=self._completed_live_prefix_handoff_distance_m(
-                        live_prefix=result.prevalidation_centerline,
-                        frame_id=self.odom_frame,
-                        vehicle_x=vehicle_x,
-                        vehicle_y=vehicle_y,
-                        vehicle_yaw=vehicle_yaw,
-                    ),
-                )
-            jump = compute_centerline_jump_max(
-                jump_path,
-                self._midline_buffer_path,
-                min(self.midline_horizon_m, self.centerline_jump_horizon_m),
-            )
-            if jump > self.candidate_jump_reject_threshold_m:
-                if self._should_accept_large_candidate_jump(
-                    candidate_centerline=candidate_centerline,
-                    candidate_source=candidate_source,
-                    vehicle_x=vehicle_x,
-                    vehicle_y=vehicle_y,
-                    vehicle_yaw=vehicle_yaw,
-                ):
-                    return True, "candidate_jump_near_field_ok"
-                return False, "candidate_jump_rejected"
-        if candidate_source in {"completed_live_prefix", "recoverable_live_path"}:
-            if not self._has_recoverable_live_rejection(result):
-                return False, result.reject_reason or result.status
+        if candidate_source == _CORRIDOR_MIDPOINT_SOURCE:
             return True, "ok"
-        if candidate_source == "pair_memory_projection":
-            if not self._has_recoverable_memory_rejection(result):
-                return False, result.reject_reason or result.status
-            return True, "ok"
+        if candidate_source != "validated":
+            return False, result.reject_reason or result.status or "unsupported_candidate_source"
         if result.status != "ok":
             return False, result.reject_reason or result.status
         return True, "ok"
-
-    def _should_accept_large_candidate_jump(
-        self,
-        *,
-        candidate_centerline: np.ndarray,
-        candidate_source: str,
-        vehicle_x: float,
-        vehicle_y: float,
-        vehicle_yaw: float,
-    ) -> bool:
-        if candidate_source != "validated":
-            return False
-        metrics = self._candidate_transition_metrics(
-            candidate_centerline=candidate_centerline,
-            vehicle_x=vehicle_x,
-            vehicle_y=vehicle_y,
-            vehicle_yaw=vehicle_yaw,
-            horizon_m=_VALIDATED_JUMP_ACCEPT_HORIZON_M,
-        )
-        if int(metrics["sample_count"]) < 2:
-            return False
-        return (
-            float(metrics["lateral_max_m"]) <= _VALIDATED_JUMP_ACCEPT_LATERAL_MAX_M
-            and float(metrics["lateral_mean_m"]) <= _VALIDATED_JUMP_ACCEPT_LATERAL_MEAN_M
-            and float(metrics["heading_delta_rad"]) <= _VALIDATED_JUMP_ACCEPT_HEADING_DELTA_RAD
-        )
 
     def _candidate_transition_metrics(
         self,
@@ -1932,440 +1637,57 @@ class CorridorPlannerNode(TrackedConePlannerBase):
         vehicle_y: float,
         vehicle_yaw: float,
     ) -> tuple[np.ndarray, str]:
+        candidates: list[tuple[float, int, str, np.ndarray]] = []
+
+        def add_candidate(path: np.ndarray, source: str, priority: int) -> None:
+            candidate = self._finite_corridor_path(path)
+            if candidate.shape[0] < _CORRIDOR_MIDPOINT_MIN_POINTS:
+                return
+            extent = self._candidate_forward_extent_m(
+                centerline=candidate,
+                frame_id=frame_id,
+                vehicle_x=vehicle_x,
+                vehicle_y=vehicle_y,
+                vehicle_yaw=vehicle_yaw,
+            )
+            if extent <= 1e-6:
+                return
+            candidates.append((extent, priority, source, candidate))
+
         if result.status == "ok" and result.centerline.shape[0] > 0:
-            return np.array(result.centerline, copy=True), "validated"
-        recoverable_live_path = self._recoverable_live_path(result)
-        if recoverable_live_path.shape[0] > 0:
-            if (result.reject_reason or result.status) == "near-field continuity rejected fresh path":
-                return recoverable_live_path, "recoverable_live_path"
-            required_extent_m = max(
-                float(self.candidate_min_extent_m),
-                float(_TARGET_COMPLETED_PATH_EXTENT_M),
-            )
-            if self._candidate_forward_extent_m(
-                centerline=recoverable_live_path,
-                frame_id=frame_id,
-                vehicle_x=vehicle_x,
-                vehicle_y=vehicle_y,
-                vehicle_yaw=vehicle_yaw,
-            ) >= required_extent_m:
-                return recoverable_live_path, "recoverable_live_path"
-            completed = self._complete_live_prefix_candidate(
-                live_prefix=recoverable_live_path,
-                support_chain=support_chain,
-                frame_id=frame_id,
-                vehicle_x=vehicle_x,
-                vehicle_y=vehicle_y,
-                vehicle_yaw=vehicle_yaw,
-            )
-            if completed.shape[0] > 0:
-                return completed, "completed_live_prefix"
-        if self._has_recoverable_memory_rejection(result):
-            memory_candidate = self._project_corridor_memory_candidate(
-                midpoint_chain=np.asarray(memory_midpoint_chain, dtype=np.float64),
-                frame_id=frame_id,
-                vehicle_x=vehicle_x,
-                vehicle_y=vehicle_y,
-                vehicle_yaw=vehicle_yaw,
-            )
-            if memory_candidate.shape[0] > 0:
-                return memory_candidate, "pair_memory_projection"
-        return np.empty((0, 2), dtype=np.float64), "none"
+            add_candidate(result.centerline, "validated", 30)
 
-    def _has_recoverable_live_prefix_shortfall(
-        self,
-        result: CorridorPlannerResult,
-    ) -> bool:
-        return (result.reject_reason or result.status) in {
-            "too few valid corridor samples",
-            "path has too few points",
-            "path forward extent too short",
-        }
+        # The visible corridor anchor chain is the most literal "pair midpoint to
+        # pair midpoint" path. Prefer it when it reaches farther than the fitted
+        # core centerline, including remembered pairs beyond the current live fit.
+        add_candidate(support_chain, _CORRIDOR_MIDPOINT_SOURCE, 20)
+        add_candidate(result.prevalidation_centerline, _CORRIDOR_MIDPOINT_SOURCE, 10)
+        add_candidate(memory_midpoint_chain, _CORRIDOR_MIDPOINT_SOURCE, 5)
 
-    def _has_recoverable_live_rejection(
-        self,
-        result: CorridorPlannerResult,
-    ) -> bool:
-        return (result.reject_reason or result.status) in {
-            "too few valid corridor samples",
-            "path has too few points",
-            "path forward extent too short",
-            "near-field continuity rejected fresh path",
-        }
+        if not candidates:
+            return np.empty((0, 2), dtype=np.float64), "none"
 
-    def _has_recoverable_memory_rejection(
-        self,
-        result: CorridorPlannerResult,
-    ) -> bool:
-        return (result.reject_reason or result.status) in {
-            "no reliable corridor boundaries",
-            "no valid corridor overlap",
-            "too few valid corridor samples",
-            "path has too few points",
-            "path forward extent too short",
-            "near-field continuity rejected fresh path",
-        }
+        best_extent = max(extent for extent, _, _, _ in candidates)
+        extent_tolerance_m = max(0.05, 0.5 * float(self.midline_station_spacing_m))
+        near_best = [
+            candidate
+            for candidate in candidates
+            if candidate[0] >= (best_extent - extent_tolerance_m)
+        ]
+        _, _, source, path = max(near_best, key=lambda candidate: (candidate[1], candidate[0]))
+        return np.array(path, copy=True), source
 
-    def _recoverable_live_path(
-        self,
-        result: CorridorPlannerResult,
-    ) -> np.ndarray:
-        if not self._has_recoverable_live_rejection(result):
+    @staticmethod
+    def _finite_corridor_path(path: np.ndarray) -> np.ndarray:
+        arr = np.asarray(path, dtype=np.float64)
+        if arr.size == 0:
             return np.empty((0, 2), dtype=np.float64)
-        path = np.asarray(result.prevalidation_centerline, dtype=np.float64)
-        if path.shape[0] < _LIVE_PREFIX_MIN_POINTS:
+        if arr.ndim != 2 or arr.shape[1] != 2:
             return np.empty((0, 2), dtype=np.float64)
-        if not np.all(np.isfinite(path)):
+        finite_mask = np.all(np.isfinite(arr), axis=1)
+        if not np.any(finite_mask):
             return np.empty((0, 2), dtype=np.float64)
-        return np.array(path, copy=True)
-
-    def _candidate_forward_extent_m(
-        self,
-        *,
-        centerline: np.ndarray,
-        frame_id: str,
-        vehicle_x: float,
-        vehicle_y: float,
-        vehicle_yaw: float,
-    ) -> float:
-        if centerline.shape[0] == 0:
-            return 0.0
-        local_path = self._centerline_to_vehicle_frame(
-            centerline=centerline,
-            frame_id=frame_id,
-            vehicle_x=vehicle_x,
-            vehicle_y=vehicle_y,
-            vehicle_yaw=vehicle_yaw,
-        )
-        return self._path_forward_extent_local(local_path)
-
-    def _complete_live_prefix_candidate(
-        self,
-        *,
-        live_prefix: np.ndarray,
-        support_chain: np.ndarray,
-        frame_id: str,
-        vehicle_x: float,
-        vehicle_y: float,
-        vehicle_yaw: float,
-        required_extent_m: Optional[float] = None,
-    ) -> np.ndarray:
-        if live_prefix.shape[0] < _LIVE_PREFIX_MIN_POINTS:
-            return np.empty((0, 2), dtype=np.float64)
-        prefix_local = self._centerline_to_vehicle_frame(
-            centerline=live_prefix,
-            frame_id=frame_id,
-            vehicle_x=vehicle_x,
-            vehicle_y=vehicle_y,
-            vehicle_yaw=vehicle_yaw,
-        )
-        if prefix_local.shape[0] < _LIVE_PREFIX_MIN_POINTS:
-            return np.empty((0, 2), dtype=np.float64)
-        live_extent_m = self._path_forward_extent_local(prefix_local)
-        if live_extent_m < _LIVE_PREFIX_MIN_EXTENT_M:
-            return np.empty((0, 2), dtype=np.float64)
-
-        required_extent_m = (
-            max(float(required_extent_m), float(self.candidate_min_extent_m))
-            if required_extent_m is not None
-            else max(_TARGET_COMPLETED_PATH_EXTENT_M, float(self.candidate_min_extent_m))
-        )
-        if live_extent_m >= required_extent_m:
-            return np.array(live_prefix, copy=True)
-        max_total_extent_m = live_extent_m + _MAX_COMPLETION_ADD_M
-        if max_total_extent_m < required_extent_m:
-            return np.empty((0, 2), dtype=np.float64)
-
-        direction = self._completion_direction_from_support(
-            live_prefix_local=prefix_local,
-            support_chain=support_chain,
-            frame_id=frame_id,
-            vehicle_x=vehicle_x,
-            vehicle_y=vehicle_y,
-            vehicle_yaw=vehicle_yaw,
-        )
-        if direction is None:
-            return np.empty((0, 2), dtype=np.float64)
-
-        completed_local = np.array(prefix_local, copy=True)
-        step_m = max(0.05, float(self.centerline_path_resolution_m))
-        target_extent_m = min(required_extent_m, max_total_extent_m)
-        while self._path_forward_extent_local(completed_local) + 1e-9 < target_extent_m:
-            delta_x = max(step_m, float(direction[0]) * step_m)
-            slope = float(direction[1]) / max(float(direction[0]), 1e-6)
-            next_point = np.array(
-                [
-                    float(completed_local[-1, 0]) + delta_x,
-                    float(completed_local[-1, 1]) + (slope * delta_x),
-                ],
-                dtype=np.float64,
-            )
-            if next_point[0] <= completed_local[-1, 0]:
-                next_point[0] = completed_local[-1, 0] + step_m
-            completed_local = np.vstack((completed_local, next_point))
-
-        return self._local_path_to_frame(
-            local_path=completed_local,
-            frame_id=frame_id,
-            vehicle_x=vehicle_x,
-            vehicle_y=vehicle_y,
-            vehicle_yaw=vehicle_yaw,
-        )
-
-    def _project_corridor_memory_candidate(
-        self,
-        *,
-        midpoint_chain: np.ndarray,
-        frame_id: str,
-        vehicle_x: float,
-        vehicle_y: float,
-        vehicle_yaw: float,
-    ) -> np.ndarray:
-        return self._complete_live_prefix_candidate(
-            live_prefix=midpoint_chain,
-            support_chain=midpoint_chain,
-            frame_id=frame_id,
-            vehicle_x=vehicle_x,
-            vehicle_y=vehicle_y,
-            vehicle_yaw=vehicle_yaw,
-            required_extent_m=max(float(self.candidate_min_extent_m), _LIVE_PREFIX_MIN_EXTENT_M),
-        )
-
-    def _completion_direction_from_support(
-        self,
-        *,
-        live_prefix_local: np.ndarray,
-        support_chain: np.ndarray,
-        frame_id: str,
-        vehicle_x: float,
-        vehicle_y: float,
-        vehicle_yaw: float,
-    ) -> Optional[np.ndarray]:
-        prefix_slice = live_prefix_local[-min(_TAIL_DIRECTION_POINT_COUNT, live_prefix_local.shape[0]):]
-        prefix_delta = prefix_slice[-1] - prefix_slice[0]
-        direction = None
-        prefix_norm = float(np.hypot(prefix_delta[0], prefix_delta[1]))
-        if prefix_norm > 1e-9:
-            direction = prefix_delta / prefix_norm
-
-        if support_chain.shape[0] >= 2:
-            support_local = self._centerline_to_vehicle_frame(
-                centerline=support_chain,
-                frame_id=frame_id,
-                vehicle_x=vehicle_x,
-                vehicle_y=vehicle_y,
-                vehicle_yaw=vehicle_yaw,
-            )
-            if support_local.shape[0] >= 2:
-                support_slice = support_local[-min(_TAIL_DIRECTION_POINT_COUNT, support_local.shape[0]):]
-                support_delta = support_slice[-1] - support_slice[0]
-                support_norm = float(np.hypot(support_delta[0], support_delta[1]))
-                if support_norm > 1e-9:
-                    support_dir = support_delta / support_norm
-                    direction = support_dir if direction is None else direction + support_dir
-
-        if direction is None:
-            return None
-        direction_norm = float(np.hypot(direction[0], direction[1]))
-        if direction_norm <= 1e-9:
-            return None
-        direction = direction / direction_norm
-        if float(direction[0]) <= 1e-6:
-            direction = np.asarray([1.0, 0.0], dtype=np.float64)
-        return direction
-
-    def _local_path_to_frame(
-        self,
-        *,
-        local_path: np.ndarray,
-        frame_id: str,
-        vehicle_x: float,
-        vehicle_y: float,
-        vehicle_yaw: float,
-    ) -> np.ndarray:
-        if self._is_alias(frame_id, self.base_frame):
-            return np.array(local_path, copy=True)
-        if not self._is_alias(frame_id, self.odom_frame):
-            return np.empty((0, 2), dtype=np.float64)
-
-        output = np.empty_like(local_path)
-        for idx in range(local_path.shape[0]):
-            ox, oy = self._base_point_to_odom(
-                float(local_path[idx, 0]),
-                float(local_path[idx, 1]),
-                vehicle_x,
-                vehicle_y,
-                vehicle_yaw,
-            )
-            output[idx, 0] = ox
-            output[idx, 1] = oy
-        return output
-
-    def _completed_live_prefix_handoff_distance_m(
-        self,
-        *,
-        live_prefix: np.ndarray,
-        frame_id: str,
-        vehicle_x: float,
-        vehicle_y: float,
-        vehicle_yaw: float,
-    ) -> float:
-        extent_m = self._candidate_forward_extent_m(
-            centerline=live_prefix,
-            frame_id=frame_id,
-            vehicle_x=vehicle_x,
-            vehicle_y=vehicle_y,
-            vehicle_yaw=vehicle_yaw,
-        )
-        return max(float(self.midline_control_handoff_distance_m), float(extent_m))
-
-    def _blend_completed_live_prefix_samples(
-        self,
-        *,
-        stored_samples: np.ndarray,
-        candidate_samples: np.ndarray,
-        frame_id: str,
-        vehicle_x: float,
-        vehicle_y: float,
-        vehicle_yaw: float,
-        live_prefix: np.ndarray,
-    ) -> np.ndarray:
-        return self._blend_midline_samples(
-            stored_samples=stored_samples,
-            candidate_samples=candidate_samples,
-            vehicle_x=vehicle_x,
-            vehicle_y=vehicle_y,
-            vehicle_yaw=vehicle_yaw,
-            direct_prefix_distance_m=self._completed_live_prefix_handoff_distance_m(
-                live_prefix=live_prefix,
-                frame_id=frame_id,
-                vehicle_x=vehicle_x,
-                vehicle_y=vehicle_y,
-                vehicle_yaw=vehicle_yaw,
-            ),
-        )
-
-    def _candidate_prefix_for_jump_check(
-        self,
-        *,
-        candidate_centerline: np.ndarray,
-        frame_id: str,
-        vehicle_x: float,
-        vehicle_y: float,
-        vehicle_yaw: float,
-        direct_prefix_distance_m: float,
-    ) -> np.ndarray:
-        if candidate_centerline.shape[0] < 2:
-            return np.array(candidate_centerline, copy=True)
-        candidate_local = self._centerline_to_vehicle_frame(
-            centerline=candidate_centerline,
-            frame_id=frame_id,
-            vehicle_x=vehicle_x,
-            vehicle_y=vehicle_y,
-            vehicle_yaw=vehicle_yaw,
-        )
-        if candidate_local.shape[0] < 2:
-            return np.array(candidate_centerline, copy=True)
-        cumulative = self._path_cumulative_lengths(candidate_local)
-        cutoff_idx = int(np.searchsorted(cumulative, float(direct_prefix_distance_m), side="right")) + 1
-        cutoff_idx = max(2, min(candidate_centerline.shape[0], cutoff_idx))
-        return np.array(candidate_centerline[:cutoff_idx], copy=True)
-
-    def _resample_midline_stations(self, path: np.ndarray) -> np.ndarray:
-        if path.shape[0] < 2:
-            return np.array(path, copy=True)
-        cumulative = self._path_cumulative_lengths(path)
-        total = min(float(cumulative[-1]), float(self.midline_horizon_m))
-        if total <= 1e-6:
-            return np.asarray(path[:1], dtype=np.float64)
-        step = max(0.05, float(self.midline_station_spacing_m))
-        samples = np.arange(0.0, total + 1e-9, step, dtype=np.float64)
-        if samples.size == 0 or samples[-1] < total:
-            samples = np.concatenate((samples, [total]))
-        return self._sample_path_at_lengths(path, cumulative, samples)
-
-    def _blend_midline_samples(
-        self,
-        *,
-        stored_samples: np.ndarray,
-        candidate_samples: np.ndarray,
-        vehicle_x: float,
-        vehicle_y: float,
-        vehicle_yaw: float,
-        direct_prefix_distance_m: Optional[float] = None,
-    ) -> np.ndarray:
-        if stored_samples.shape[0] == 0:
-            return np.array(candidate_samples, copy=True)
-        if candidate_samples.shape[0] == 0:
-            return np.array(stored_samples, copy=True)
-        count = min(stored_samples.shape[0], candidate_samples.shape[0])
-        stored_local = self._centerline_to_vehicle_frame(
-            centerline=stored_samples[:count],
-            frame_id=self.odom_frame,
-            vehicle_x=vehicle_x,
-            vehicle_y=vehicle_y,
-            vehicle_yaw=vehicle_yaw,
-        )
-        candidate_local = self._centerline_to_vehicle_frame(
-            centerline=candidate_samples[:count],
-            frame_id=self.odom_frame,
-            vehicle_x=vehicle_x,
-            vehicle_y=vehicle_y,
-            vehicle_yaw=vehicle_yaw,
-        )
-        updated_local = np.array(stored_local, copy=True)
-        step = max(0.05, float(self.midline_station_spacing_m))
-        direct_prefix_distance = (
-            0.0
-            if direct_prefix_distance_m is None
-            else float(direct_prefix_distance_m)
-        )
-        for idx in range(count):
-            distance_ahead = float(idx) * step
-            alpha, max_shift = self._midline_blend_params(distance_ahead)
-            delta_local = candidate_local[idx] - stored_local[idx]
-            heading_delta = self._local_heading_delta_at_index(candidate_local, idx)
-            if math.isfinite(heading_delta) and heading_delta > 1e-6:
-                curvature_scale = 1.0 + min(1.0, heading_delta / 0.25)
-                alpha = min(0.85, alpha * curvature_scale)
-                max_shift *= 1.0 + min(0.75, heading_delta / 0.30)
-            if abs(float(delta_local[1])) >= 0.35:
-                alpha = max(alpha, min(0.85, 0.55 + (0.25 * min(1.0, abs(float(delta_local[1])) / 0.8))))
-            if distance_ahead <= direct_prefix_distance:
-                updated_local[idx] = candidate_local[idx]
-                continue
-            # Keep the candidate longitudinal progression and stabilize only the
-            # lateral shape. Blending x here can freeze curvature and make the
-            # controller chase an outdated heading segment.
-            updated_local[idx, 0] = candidate_local[idx, 0]
-            updated_local[idx, 1] = stored_local[idx, 1] + float(
-                np.clip(alpha * delta_local[1], -max_shift, max_shift)
-            )
-            if idx > 0:
-                updated_local[idx, 0] = max(updated_local[idx, 0], updated_local[idx - 1, 0] + 0.05)
-        updated = np.empty((count, 2), dtype=np.float64)
-        for idx in range(count):
-            ox, oy = self._base_point_to_odom(
-                float(updated_local[idx, 0]),
-                float(updated_local[idx, 1]),
-                vehicle_x,
-                vehicle_y,
-                vehicle_yaw,
-            )
-            updated[idx, 0] = ox
-            updated[idx, 1] = oy
-        if candidate_samples.shape[0] > count:
-            updated = np.vstack((updated, candidate_samples[count:]))
-        elif stored_samples.shape[0] > count:
-            updated = np.vstack((updated, stored_samples[count:]))
-        return updated
-
-    def _midline_blend_params(self, distance_ahead: float) -> tuple[float, float]:
-        if distance_ahead <= self.midline_near_distance_m:
-            return self.midline_near_alpha, self.midline_near_max_shift_m
-        if distance_ahead <= self.midline_mid_distance_m:
-            return self.midline_mid_alpha, self.midline_mid_max_shift_m
-        return self.midline_far_alpha, self.midline_far_max_shift_m
+        return np.array(arr[finite_mask], copy=True)
 
     @staticmethod
     def _local_heading_delta_at_index(path_local: np.ndarray, idx: int) -> float:
@@ -2393,99 +1715,6 @@ class CorridorPlannerNode(TrackedConePlannerBase):
         if float(np.hypot(delta[0], delta[1])) <= 1e-6:
             return 0.0
         return float(math.atan2(delta[1], delta[0]))
-
-    def _prepare_centerline_for_current_pose(
-        self,
-        *,
-        centerline: np.ndarray,
-        frame_id: str,
-        vehicle_x: float,
-        vehicle_y: float,
-        vehicle_yaw: float,
-    ) -> np.ndarray:
-        if centerline.shape[0] == 0:
-            return centerline
-        if not self._is_alias(frame_id, self.odom_frame):
-            return centerline
-        forward = self._extract_forward_path_from_pose(
-            path=centerline,
-            vehicle_xy=(vehicle_x, vehicle_y),
-            resolution_m=self.midline_station_spacing_m,
-        )
-        prepared = (
-            np.array(forward, copy=True)
-            if forward is not None and forward.shape[0] > 0
-            else np.array(centerline, copy=True)
-        )
-        return self._anchor_centerline_near_vehicle(
-            centerline=prepared,
-            frame_id=frame_id,
-            vehicle_x=vehicle_x,
-            vehicle_y=vehicle_y,
-            vehicle_yaw=vehicle_yaw,
-        )
-
-    def _anchor_centerline_near_vehicle(
-        self,
-        *,
-        centerline: np.ndarray,
-        frame_id: str,
-        vehicle_x: float,
-        vehicle_y: float,
-        vehicle_yaw: float,
-        preserve_live_lateral_near_vehicle: bool = False,
-    ) -> np.ndarray:
-        if centerline.shape[0] == 0:
-            return centerline
-        if not self._is_alias(frame_id, self.odom_frame):
-            return centerline
-
-        local = self._centerline_to_vehicle_frame(
-            centerline=centerline,
-            frame_id=frame_id,
-            vehicle_x=vehicle_x,
-            vehicle_y=vehicle_y,
-            vehicle_yaw=vehicle_yaw,
-        )
-        if local.shape[0] == 0:
-            return centerline
-
-        # Do not let the controller chase a laterally offset path origin.
-        keep_mask = local[:, 0] >= -0.1
-        local = local[keep_mask]
-        if local.shape[0] == 0:
-            local = np.array([[0.0, 0.0]], dtype=np.float64)
-
-        anchor_length_m = max(0.5, min(1.5, float(self.midline_near_distance_m)))
-        preserve_live_lateral_near_vehicle = (
-            preserve_live_lateral_near_vehicle
-            or self._should_preserve_near_vehicle_lateral(local, anchor_length_m)
-        )
-        for idx in range(local.shape[0]):
-            x_val = float(local[idx, 0])
-            if x_val <= 0.0:
-                local[idx, 1] = 0.0
-                continue
-            if not preserve_live_lateral_near_vehicle and x_val < anchor_length_m:
-                local[idx, 1] *= x_val / anchor_length_m
-
-        local[0, 0] = 0.0
-        local[0, 1] = 0.0
-        if local.shape[0] == 1:
-            local = np.vstack((local, np.array([[max(0.5, anchor_length_m), 0.0]], dtype=np.float64)))
-
-        anchored = np.empty_like(local)
-        for idx in range(local.shape[0]):
-            ox, oy = self._base_point_to_odom(
-                float(local[idx, 0]),
-                float(local[idx, 1]),
-                vehicle_x,
-                vehicle_y,
-                vehicle_yaw,
-            )
-            anchored[idx, 0] = ox
-            anchored[idx, 1] = oy
-        return anchored
 
     @staticmethod
     def _should_preserve_near_vehicle_lateral(local_path: np.ndarray, anchor_length_m: float) -> bool:
@@ -2619,17 +1848,6 @@ class CorridorPlannerNode(TrackedConePlannerBase):
             samples = np.concatenate((samples, [total]))
         sampled = self._sample_path_at_lengths(local, cumulative, samples)
         return np.asarray(sampled[:_CORRIDOR_ANALYSIS_SAMPLE_COUNT], dtype=np.float64)
-
-    @staticmethod
-    def _path_forward_extent_local(path_local: np.ndarray) -> float:
-        if path_local.shape[0] == 0:
-            return 0.0
-        if path_local.shape[0] == 1:
-            return max(0.0, float(path_local[0, 0]))
-        diffs = np.diff(path_local, axis=0)
-        path_length = float(np.sum(np.hypot(diffs[:, 0], diffs[:, 1])))
-        x_span = float(np.max(path_local[:, 0]) - np.min(path_local[:, 0]))
-        return max(path_length, x_span)
 
     def _publish_empty_cycle(
         self,
@@ -2956,7 +2174,7 @@ class CorridorPlannerNode(TrackedConePlannerBase):
                 ns="centerline",
                 points=centerline,
                 color=(0.95, 0.15, 0.15, 1.0),
-                width=0.09,
+                width=_CENTERLINE_MARKER_WIDTH_M,
                 z_offset=0.07,
             )
         )
@@ -3087,82 +2305,6 @@ class CorridorPlannerNode(TrackedConePlannerBase):
         if reason == "pair_not_in_longest_valid_slice":
             return 0.85, 0.85, 0.85, 0.75
         return 0.65, 0.2, 1.0, 0.9
-
-    def _make_pair_segment_marker(
-        self,
-        *,
-        frame_id: str,
-        stamp,
-        marker_id: int,
-        ns: str,
-        pair_segments: Optional[np.ndarray],
-        color: tuple[float, float, float, float],
-        width: float,
-    ) -> Marker:
-        marker = Marker()
-        marker.header.frame_id = frame_id
-        marker.header.stamp = stamp
-        marker.ns = ns
-        marker.id = marker_id
-        marker.type = Marker.LINE_LIST
-        marker.action = Marker.ADD
-        marker.pose.orientation.w = 1.0
-        marker.scale.x = float(width)
-        marker.color.r = float(color[0])
-        marker.color.g = float(color[1])
-        marker.color.b = float(color[2])
-        marker.color.a = float(color[3])
-        if pair_segments is None:
-            return marker
-        for segment in np.asarray(pair_segments, dtype=np.float64):
-            if segment.shape != (2, 2):
-                continue
-            for x, y in segment:
-                point = self._point_msg(float(x), float(y), 0.03)
-                marker.points.append(point)
-        return marker
-
-    @staticmethod
-    def _point_msg(x: float, y: float, z: float):
-        point = Point()
-        point.x = x
-        point.y = y
-        point.z = z
-        return point
-
-    def _log_mode_summary(
-        self,
-        *,
-        mode: str,
-        result: CorridorPlannerResult,
-        operator_state: str,
-        operator_reason: str,
-        hold_active: bool,
-    ) -> None:
-        now_sec = time.monotonic()
-        last_sec = self._last_throttled_log_sec.get("mode_summary", -1.0)
-        if (now_sec - last_sec) < self.log_throttle_s:
-            return
-        self.get_logger().info(
-            (
-                "mode=%s state=%s reason=%s status=%s tracks=%d stale=%d left=%d right=%d corridor=%d unknown=%d width=%.2f held=%d"
-            )
-            % (
-                mode,
-                operator_state,
-                operator_reason,
-                result.status,
-                int(self._active_remembered_cone_count),
-                int(self._active_stale_cone_count),
-                int(result.left_chain_length),
-                int(result.right_chain_length),
-                int(result.accepted_pair_count),
-                int(result.unknown_pair_count),
-                float(self._filtered_track_width_m),
-                1 if hold_active else 0,
-            )
-        )
-        self._last_throttled_log_sec["mode_summary"] = now_sec
 
 
 def main(args=None) -> None:

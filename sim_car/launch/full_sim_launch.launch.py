@@ -272,7 +272,7 @@ def generate_launch_description():
     planner_rate_arg = DeclareLaunchArgument(
         'planner_rate_hz',
         default_value='60.0',
-        description='Planner/controller/odom target rate in Hz'
+        description='Planner/controller/odom t  arget rate in Hz'
     )
 
     planner_odom_delay_ms_arg = DeclareLaunchArgument(

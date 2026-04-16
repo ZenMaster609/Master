@@ -132,8 +132,8 @@ Visualization Manager:
       Alpha: 1
       Buffer Length: 1
       Color: 255; 64; 64
-      Line Style: Lines
-      Line Width: 0.08
+      Line Style: Billboards
+      Line Width: 0.20
       Offset:
         X: 0
         Y: 0

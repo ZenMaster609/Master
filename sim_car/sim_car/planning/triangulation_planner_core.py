@@ -138,7 +138,12 @@ def compute_centerline(
     config: CoreConfig,
     prior: Optional[CorePrior] = None,
 ) -> CoreResult:
-    """Build a local centerline from tracked cones in a common planning frame."""
+    """Build a local centerline using Delaunay triangulation as candidate generation.
+
+    Filters cones, builds a Delaunay mesh, selects cross-boundary diagonal edges by
+    alignment and kink score, chains them into a midpoint sequence, and validates the result.
+    Returns a result with ``status='ok'`` on success or a descriptive failure status.
+    """
     if points_xy.size == 0:
         return _empty_result('no cones available')
 
@@ -432,6 +437,10 @@ def compute_centerline_jump_max(
     previous_centerline: Optional[np.ndarray],
     horizon_m: float,
 ) -> float:
+    """Return the maximum point-to-point displacement between two centerlines within *horizon_m*.
+
+    Used for diagnostics / jump rejection. Returns 0.0 if no previous centerline is available.
+    """
     if previous_centerline is None:
         return 0.0
     current = _sanitize_path(current_centerline)

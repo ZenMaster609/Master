@@ -158,6 +158,12 @@ def compute_midpoint_centerline(
     track_ids: Optional[np.ndarray] = None,
     raw_colors: Optional[list[str]] = None,
 ) -> MidpointPlannerResult:
+    """Compute a local centerline by pairing left/right boundary cones and taking midpoints.
+
+    Filters cones by geometry and confidence, builds boundary chains, pairs them by width
+    constraints, orders the midpoints forward, resamples, and validates the result.
+    Returns a result with ``status='ok'`` on success or a descriptive failure status.
+    """
     if points_xy.size == 0:
         return _empty_result("no cones available")
 
@@ -404,6 +410,11 @@ def update_track_width_estimate(
     measured_width_m: Optional[float],
     config: MidpointPlannerConfig,
 ) -> float:
+    """Exponential-moving-average update of the running track width estimate.
+
+    The update is rate-limited by ``config.max_width_delta_per_update_m`` and
+    the result is clamped to ``[config.min_width_m, config.max_width_m]``.
+    """
     width = (
         config.initial_width_m if previous_width_m is None or not math.isfinite(float(previous_width_m))
         else float(previous_width_m)
@@ -715,7 +726,13 @@ def _pair_boundary_chains(
                 else "unknown"
             )
             if config.enforce_opposite_color_pairing:
-                if {anchor_raw_color, partner_raw_color} != {"blue", "yellow"}:
+                raw_pair = {anchor_raw_color, partner_raw_color}
+                if raw_pair not in (
+                    {"blue", "yellow"},
+                    {"orange", "blue"},
+                    {"orange", "yellow"},
+                    {"orange"},
+                ):
                     reject_counts["color"] += 1
                     continue
             delta = other_local - anchor_local
@@ -960,7 +977,7 @@ def _order_pairs_into_midpoint_chain(
     current_midpoint = np.asarray(local_midpoints[start_idx], dtype=np.float64)
 
     while len(ordered) < len(pairs):
-        reference_direction, use_vehicle_progress = _midpoint_progress_reference(
+        reference_direction, _ = _midpoint_progress_reference(
             ordered_pairs=ordered,
             handoff_distance_m=float(config.midpoint_order_reference_handoff_m),
             history_size=max(2, int(config.midpoint_order_history_size)),
@@ -985,7 +1002,6 @@ def _order_pairs_into_midpoint_chain(
             if forward_progress_m < -max_backward_step_m:
                 continue
 
-            backward_x = max(0.0, float(current_midpoint[0] - midpoint[0]))
             backward_progress_penalty = max(0.0, -forward_progress_m)
             width_jump_penalty = max(
                 0.0,
@@ -996,7 +1012,6 @@ def _order_pairs_into_midpoint_chain(
                 distance
                 + (2.0 * backward_progress_penalty)
                 + (0.25 * width_jump_penalty)
-                + ((3.0 * backward_x) if use_vehicle_progress else (0.25 * backward_x))
             )
             if cost < best_cost:
                 best_cost = cost
@@ -1023,6 +1038,13 @@ def _midpoint_progress_reference(
 ) -> tuple[np.ndarray, bool]:
     vehicle_forward = np.asarray([1.0, 0.0], dtype=np.float64)
     if len(ordered_pairs) <= 1:
+        # Use direction from vehicle toward the first pair as the initial
+        # reference so candidates behind the vehicle in x but further along
+        # a turning track are not immediately filtered out.
+        mp = np.asarray(ordered_pairs[-1].midpoint_local, dtype=np.float64)
+        mp_norm = float(np.hypot(mp[0], mp[1]))
+        if mp_norm > 1e-9:
+            return mp / mp_norm, True
         return vehicle_forward, True
 
     midpoint_history = np.asarray(
