@@ -879,22 +879,68 @@ class MidpointPlannerNode(TrackedConePlannerBase):
         if len(entries) <= 1:
             return list(entries)
 
-        def sort_key(entry: _PairMemoryEntry) -> tuple[float, float, int, int]:
-            midpoint_x_base, midpoint_y_base = self._odom_point_to_base(
-                entry.midpoint_x_odom,
-                entry.midpoint_y_odom,
-                vehicle_x,
-                vehicle_y,
-                vehicle_yaw,
+        local = [
+            self._odom_point_to_base(
+                e.midpoint_x_odom, e.midpoint_y_odom, vehicle_x, vehicle_y, vehicle_yaw
             )
-            return (
-                float(midpoint_x_base),
-                abs(float(midpoint_y_base)),
-                int(entry.left_track_id),
-                int(entry.right_track_id),
-            )
+            for e in entries
+        ]
 
-        return sorted(entries, key=sort_key)
+        # Pick the starting entry: prefer ahead of vehicle, then nearest.
+        def start_key(i: int) -> tuple[float, float, float, int]:
+            x, y = local[i]
+            return (0.0 if x >= 0.0 else 1.0, math.hypot(x, y), abs(y), i)
+
+        remaining = list(range(len(entries)))
+        start = min(remaining, key=start_key)
+        ordered = [start]
+        remaining.remove(start)
+
+        # Use direction from vehicle to first pair as the initial reference so
+        # pairs that are to the side (during a turn) are not misordered.
+        sp = local[start]
+        sp_norm = math.hypot(sp[0], sp[1])
+        ref = np.array(sp, dtype=np.float64) / sp_norm if sp_norm > 1e-9 else np.array([1.0, 0.0])
+
+        _history_size = 3
+        _backtrack_tol_m = 0.35
+
+        while remaining:
+            curr = np.array(local[ordered[-1]], dtype=np.float64)
+            # Update reference direction from recent chain history.
+            if len(ordered) >= 2:
+                hist = max(0, len(ordered) - _history_size)
+                delta = curr - np.array(local[ordered[hist]], dtype=np.float64)
+                norm = float(np.hypot(delta[0], delta[1]))
+                if norm > 1e-9:
+                    ref = delta / norm
+
+            best_i: Optional[int] = None
+            best_cost = float("inf")
+            for i in remaining:
+                pt = np.array(local[i], dtype=np.float64)
+                delta = pt - curr
+                dist = float(np.hypot(delta[0], delta[1]))
+                if dist < 1e-9:
+                    continue
+                forward = float(np.dot(delta, ref))
+                if forward < -_backtrack_tol_m:
+                    continue
+                cost = dist + 2.0 * max(0.0, -forward)
+                if cost < best_cost:
+                    best_cost = cost
+                    best_i = i
+
+            if best_i is None:
+                break
+            ordered.append(best_i)
+            remaining.remove(best_i)
+
+        # Append any unreachable entries at the end as a fallback.
+        for i in remaining:
+            ordered.append(i)
+
+        return [entries[i] for i in ordered]
 
     def _pair_entries_from_segments(
         self,
@@ -1054,7 +1100,18 @@ class MidpointPlannerNode(TrackedConePlannerBase):
                     right_y_odom=float(right_y_odom),
                 )
             )
-        self._pair_memory = remembered_pairs
+        merged: dict[tuple[int, int], _PairMemoryEntry] = {}
+        for entry in self._pair_memory:
+            merged[(entry.left_track_id, entry.right_track_id)] = entry
+        for entry in remembered_pairs:
+            key = (entry.left_track_id, entry.right_track_id)
+            # A live pair that shares a track ID with a memory pair means the
+            # cone is now matched to a better partner — evict the stale pairing.
+            stale = [k for k in merged if k != key and (k[0] == key[0] or k[1] == key[1])]
+            for k in stale:
+                del merged[k]
+            merged[key] = entry
+        self._pair_memory = list(merged.values())
 
     def _held_pair_geometry(
         self,

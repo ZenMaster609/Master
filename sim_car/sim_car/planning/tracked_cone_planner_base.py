@@ -84,6 +84,8 @@ class TrackedConePlannerBase(TrackedConePlannerRuntime):
         self._last_viz_left_boundary = None
         self._last_viz_right_boundary = None
         self._last_viz_raw_offset_path = None
+        self._last_viz_pair_segments = None
+        self._last_viz_raw_midpoint_chain = None
         self._candidate_jump_reject_streak = 0
 
         self._active_planner_mode = "waiting"
@@ -791,13 +793,18 @@ class TrackedConePlannerBase(TrackedConePlannerRuntime):
             marker_id += 1
 
         if self.show_pair_lines:
+            pair_segs = self._current_pair_segments_for_viz
+            if pair_segs is not None and pair_segs.size > 0:
+                self._last_viz_pair_segments = np.array(pair_segs, copy=True)
+            elif self._last_viz_pair_segments is not None:
+                pair_segs = self._last_viz_pair_segments
             arr.markers.append(
                 self._make_pair_segment_marker(
                     frame_id=frame_id,
                     stamp=now,
                     marker_id=marker_id,
                     ns="accepted_pairs",
-                    pair_segments=self._current_pair_segments_for_viz,
+                    pair_segments=pair_segs,
                     color=(0.2, 1.0, 0.3, 0.95),
                     width=0.07,
                 )
@@ -805,13 +812,18 @@ class TrackedConePlannerBase(TrackedConePlannerRuntime):
             marker_id += 1
 
         if self.show_raw_midpoint_chain:
+            midpoint_chain = raw_midpoint_chain
+            if midpoint_chain.size > 0:
+                self._last_viz_raw_midpoint_chain = np.array(midpoint_chain, copy=True)
+            elif self._last_viz_raw_midpoint_chain is not None:
+                midpoint_chain = np.array(self._last_viz_raw_midpoint_chain, copy=True)
             arr.markers.append(
                 self._make_line_strip_marker(
                     frame_id=frame_id,
                     stamp=now,
                     marker_id=marker_id,
                     ns="raw_midpoint_chain",
-                    points=raw_midpoint_chain,
+                    points=midpoint_chain,
                     color=(1.0, 1.0, 1.0, 0.95),
                     width=0.06,
                     z_offset=0.03,
