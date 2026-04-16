@@ -559,8 +559,15 @@ class TrackedConePlannerBase(TrackedConePlannerRuntime):
             if not preserve and x_val < anchor_length_m:
                 local[idx, 1] *= x_val / anchor_length_m
 
-        local[0, 0] = 0.0
-        local[0, 1] = 0.0
+        if float(local[0, 0]) > anchor_length_m:
+            # Path starts well ahead of the vehicle (e.g. committed from pair
+            # memory that has no near-vehicle points). Insert the vehicle origin
+            # rather than replacing the first pair point — otherwise zeroing it
+            # creates a single long beam segment to local[1].
+            local = np.vstack((np.array([[0.0, 0.0]], dtype=np.float64), local))
+        else:
+            local[0, 0] = 0.0
+            local[0, 1] = 0.0
         if local.shape[0] == 1:
             local = np.vstack((local, np.array([[max(0.5, anchor_length_m), 0.0]], dtype=np.float64)))
 
