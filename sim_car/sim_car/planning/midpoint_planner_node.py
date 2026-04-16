@@ -1262,7 +1262,6 @@ class MidpointPlannerNode(TrackedConePlannerBase):
         if result.status == "ok" and result.centerline.shape[0] > 0:
             add_candidate(result.centerline, "validated", 30)
         add_candidate(support_chain, _MIDPOINT_CHAIN_SOURCE, 20)
-        add_candidate(result.prevalidation_centerline, _MIDPOINT_CHAIN_SOURCE, 10)
 
         if not candidates:
             return np.empty((0, 2), dtype=np.float64), "none"

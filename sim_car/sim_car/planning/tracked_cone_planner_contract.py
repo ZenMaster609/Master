@@ -31,7 +31,7 @@ COMMON_MIGRATED_TRACKED_CONE_PLANNER_DEFAULTS: dict[str, object] = {
     'debug.show_pair_lines': True,
     'debug.show_raw_cones': True,
     'debug.show_raw_midpoint_chain': True,
-    'debug.show_raw_prevalidation_centerline': True,
+    'debug.show_raw_prevalidation_centerline': False,
     'diagnostics.centerline_jump_horizon_m': 8.0,
     'diagnostics.edge_churn_warn_threshold': 0.4,
     'diagnostics.edge_quantization_m': 0.05,
