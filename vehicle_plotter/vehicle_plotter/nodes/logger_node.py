@@ -43,6 +43,7 @@ from sim_car.sensors.steering_convention import steering_joint_mean_to_deg
 from ..core.vehicle_state import VehicleState
 from ..core.run_session import RunSession
 from ..core.qos_profiles import PLOTTER_QOS, RELIABLE_SENSOR_QOS
+from ..utils.transforms import quaternion_to_yaw
 from ..logging.log_writer import LogWriter
 from ..logging.log_config import LogConfig
 from ..logging.path_tracking_eval import (
@@ -74,6 +75,7 @@ from ..logging.steering_diagnostics import (
     CONE_AUDIT_DIAG_KEYS,
     PLANNER_DIAG_DEFAULTS,
     PLANNER_DIAG_TEXT_DEFAULTS,
+    STEERING_DIAG_FIELDNAMES,
     analyze_csv,
     heading_error,
     nearest_point_on_polyline,
@@ -581,7 +583,7 @@ class LoggerNode(Node):
             self._diag_vehicle_x_m = float(resolved_control_pose[0])
             self._diag_vehicle_y_m = float(resolved_control_pose[1])
         q = msg.pose.pose.orientation
-        self._diag_vehicle_yaw_rad = self._yaw_from_quat(float(q.x), float(q.y), float(q.z), float(q.w))
+        self._diag_vehicle_yaw_rad = quaternion_to_yaw(float(q.x), float(q.y), float(q.z), float(q.w))
         self._diag_vehicle_yaw_rate_rps = float(msg.twist.twist.angular.z)
         self._diag_vehicle_speed_mps = float(
             math.hypot(float(msg.twist.twist.linear.x), float(msg.twist.twist.linear.y))
@@ -617,7 +619,7 @@ class LoggerNode(Node):
         self._path_eval_vehicle_stamp = msg.header.stamp
 
         q = msg.pose.pose.orientation
-        yaw = self._yaw_from_quat(float(q.x), float(q.y), float(q.z), float(q.w))
+        yaw = quaternion_to_yaw(float(q.x), float(q.y), float(q.z), float(q.w))
         self._path_eval_vehicle_yaw_rad = yaw
         heading_xy = np.asarray([math.cos(yaw), math.sin(yaw)], dtype=np.float64)
         if self._path_eval_start_xy is None:
@@ -958,79 +960,9 @@ class LoggerNode(Node):
         if self._steering_diag_enabled:
             diag_path = self._run_session.logs_path / self._steering_diag_filename
             self._diag_file_handle = open(diag_path, 'w', newline='', encoding='utf-8')
-            fieldnames = [
-                'timestamp_sec',
-                'cmd_stamp_sec',
-                'cmd_age_sec',
-                'desired_steering_rad',
-                'desired_speed_mps',
-                'actual_steering_deg',
-                'actual_steering_rad',
-                'steering_error_rad',
-                'steering_error_abs_rad',
-                'raw_steering_cmd_rad',
-                'final_steering_cmd_rad',
-                'steering_after_clamp_rad',
-                'steering_after_filter_rad',
-                'steering_after_rate_limit_rad',
-                'steering_saturated_flag',
-                'vehicle_x_m',
-                'vehicle_y_m',
-                'vehicle_yaw_rad',
-                'vehicle_yaw_rate_rps',
-                'vehicle_speed_mps',
-                'physics_state_vx_mps',
-                'physics_state_vy_mps',
-                'physics_state_speed_mps',
-                'physics_state_yaw_rad',
-                'physics_state_yaw_rate_rps',
-                'physics_state_ax_mps2',
-                'physics_state_ay_mps2',
-                'physics_desired_accel_mps2',
-                'physics_actual_accel_mps2',
-                'physics_desired_steering_rad',
-                'physics_actual_steering_rad',
-                'physics_steering_tracking_error_rad',
-                'physics_sideslip_rad',
-                'physics_slip_angle_front_rad',
-                'physics_slip_angle_rear_rad',
-                'physics_kinematic_blend',
-                'physics_kinematic_vy_ref_mps',
-                'physics_kinematic_yaw_rate_ref_rps',
-                'speed_term_mps',
-                'centerline_available',
-                'centerline_point_count',
-                'cte_m',
-                'cte_abs_m',
-                'heading_error_rad',
-                'heading_error_abs_rad',
-                'heading_contribution_rad',
-                'cross_track_contribution_rad',
-                'yaw_rate_damping_contribution_rad',
-                'nearest_path_index',
-                'heading_path_index',
-                'target_point_x_base_m',
-                'target_point_y_base_m',
-                'target_point_x_frame_m',
-                'target_point_y_frame_m',
-                'nearest_path_point_x_m',
-                'nearest_path_point_y_m',
-                'planner_centerline_jump_max_m',
-                'planner_selected_edge_churn_ratio',
-                'planner_selected_chain_churn_ratio',
-                'planner_tracked_cones_frame_delta_p95_m',
-                'planner_state_code',
-                'planner_fresh_publish_flag',
-                'planner_held_publish_flag',
-                'planner_stopped_flag',
-                'planner_waiting_flag',
-                'planner_operator_reason_code',
-                'planner_hold_remaining_s',
-                'planner_control_path_point_count',
-                'planner_zero_cmd_sent_flag',
-            ]
-            fieldnames.extend(f'planner_{key}' for key in CONE_AUDIT_DIAG_KEYS)
-            self._diag_csv_writer = csv.DictWriter(self._diag_file_handle, fieldnames=fieldnames)
+            self._diag_csv_writer = csv.DictWriter(
+                self._diag_file_handle, fieldnames=list(STEERING_DIAG_FIELDNAMES)
+            )
             self._diag_csv_writer.writeheader()
             self.get_logger().info(f'Controller diagnostics CSV: {diag_path}')
         if self._thesis_diag_enabled:
@@ -1921,7 +1853,7 @@ class LoggerNode(Node):
             return None
         translation = transform.transform.translation
         rotation = transform.transform.rotation
-        yaw = self._yaw_from_quat(
+        yaw = quaternion_to_yaw(
             float(rotation.x),
             float(rotation.y),
             float(rotation.z),
@@ -1957,7 +1889,7 @@ class LoggerNode(Node):
             return None
         translation = transform.transform.translation
         rotation = transform.transform.rotation
-        yaw = self._yaw_from_quat(
+        yaw = quaternion_to_yaw(
             float(rotation.x),
             float(rotation.y),
             float(rotation.z),
@@ -1992,7 +1924,7 @@ class LoggerNode(Node):
             base_frame=base_frame,
             tx=float(pose.position.x),
             ty=float(pose.position.y),
-            yaw=self._yaw_from_quat(float(q.x), float(q.y), float(q.z), float(q.w)),
+            yaw=quaternion_to_yaw(float(q.x), float(q.y), float(q.z), float(q.w)),
         )
 
     def _path_eval_resolve_control_point_to_frame(
@@ -2064,12 +1996,6 @@ class LoggerNode(Node):
 
     def _is_control_frame_alias(self, frame_a: str, frame_b: str) -> bool:
         return bool(self._control_frame_aliases(frame_a).intersection(self._control_frame_aliases(frame_b)))
-
-    @staticmethod
-    def _yaw_from_quat(qx: float, qy: float, qz: float, qw: float) -> float:
-        siny_cosp = 2.0 * (qw * qz + qx * qy)
-        cosy_cosp = 1.0 - 2.0 * (qy * qy + qz * qz)
-        return math.atan2(siny_cosp, cosy_cosp)
 
     def _safe_log_info(self, message: str) -> None:
         try:

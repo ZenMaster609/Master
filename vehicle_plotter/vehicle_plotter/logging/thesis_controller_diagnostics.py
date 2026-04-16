@@ -10,6 +10,15 @@ from typing import Any
 
 import numpy as np
 
+from ._stats import (
+    safe_float as _safe_float,
+    median_dt as _median_dt,
+    estimate_lag as _estimate_lag,
+    nanmean as _nanmean,
+    nanrms as _nanrms,
+    nanmaxabs as _nanmaxabs,
+    nancorr as _nancorr,
+)
 from .steering_diagnostics import (
     CONE_AUDIT_DIAG_KEYS,
     corridor_analysis_sample_metric_keys,
@@ -367,62 +376,8 @@ def _read_rows(csv_path: Path) -> list[dict[str, float]]:
     return rows
 
 
-def _safe_float(value: Any) -> float:
-    try:
-        out = float(value)
-    except (TypeError, ValueError):
-        return float('nan')
-    return out if math.isfinite(out) else float('nan')
-
-
 def _series(rows: list[dict[str, float]], key: str) -> np.ndarray:
     return np.asarray([_safe_float(row.get(key, float('nan'))) for row in rows], dtype=np.float64)
-
-
-def _median_dt(timestamps: np.ndarray) -> float:
-    finite = timestamps[np.isfinite(timestamps)]
-    if finite.size < 2:
-        return float('nan')
-    dt = np.diff(np.sort(finite))
-    dt = dt[dt > 1e-6]
-    if dt.size == 0:
-        return float('nan')
-    return float(np.median(dt))
-
-
-def _estimate_lag(desired: np.ndarray, actual: np.ndarray, dt: float) -> tuple[int, float]:
-    mask = np.isfinite(desired) & np.isfinite(actual)
-    if np.count_nonzero(mask) < 8:
-        return 0, float('nan')
-    x = desired[mask] - np.mean(desired[mask])
-    y = actual[mask] - np.mean(actual[mask])
-    corr = np.correlate(y, x, mode='full')
-    lags = np.arange(-len(x) + 1, len(x), dtype=np.int64)
-    best_idx = int(np.argmax(corr))
-    lag_samples = int(lags[best_idx])
-    lag_sec = float(lag_samples * dt) if math.isfinite(dt) else float('nan')
-    return lag_samples, lag_sec
-
-
-def _nanmean(values: np.ndarray) -> float:
-    finite = values[np.isfinite(values)]
-    if finite.size == 0:
-        return float('nan')
-    return float(np.mean(finite))
-
-
-def _nanrms(values: np.ndarray) -> float:
-    finite = values[np.isfinite(values)]
-    if finite.size == 0:
-        return float('nan')
-    return float(np.sqrt(np.mean(np.square(finite))))
-
-
-def _nanmaxabs(values: np.ndarray) -> float:
-    finite = values[np.isfinite(values)]
-    if finite.size == 0:
-        return float('nan')
-    return float(np.max(np.abs(finite)))
 
 
 def _nanpercentile_abs(values: np.ndarray, percentile: float) -> float:
@@ -461,12 +416,3 @@ def _rms_rate(values: np.ndarray, dt: float) -> float:
     return float(np.sqrt(np.mean(np.square(rates))))
 
 
-def _nancorr(a: np.ndarray, b: np.ndarray) -> float:
-    mask = np.isfinite(a) & np.isfinite(b)
-    if np.count_nonzero(mask) < 3:
-        return float('nan')
-    a_masked = a[mask]
-    b_masked = b[mask]
-    if np.std(a_masked) <= 1e-12 or np.std(b_masked) <= 1e-12:
-        return float('nan')
-    return float(np.corrcoef(a_masked, b_masked)[0, 1])

@@ -10,6 +10,16 @@ from typing import Any
 
 import numpy as np
 
+from ._stats import (
+    safe_float as _safe_float,
+    median_dt as _median_dt,
+    estimate_lag as _estimate_lag,
+    nanmean as _nanmean,
+    nanrms as _nanrms,
+    nanmaxabs as _nanmaxabs,
+    nancorr as _nancorr,
+)
+
 CORRIDOR_ANALYSIS_SAMPLE_PREFIXES = (
     "corridor_raw_anchor",
     "corridor_prevalidation_centerline",
@@ -161,6 +171,79 @@ for _key in CONE_AUDIT_DIAG_KEYS:
     PLANNER_DIAG_DEFAULTS[_key] = float("nan")
 for _key in CORRIDOR_PAIR_AUDIT_DIAG_KEYS:
     PLANNER_DIAG_DEFAULTS[_key] = float("nan")
+
+STEERING_DIAG_FIELDNAMES: list[str] = [
+    "timestamp_sec",
+    "cmd_stamp_sec",
+    "cmd_age_sec",
+    "desired_steering_rad",
+    "desired_speed_mps",
+    "actual_steering_deg",
+    "actual_steering_rad",
+    "steering_error_rad",
+    "steering_error_abs_rad",
+    "raw_steering_cmd_rad",
+    "final_steering_cmd_rad",
+    "steering_after_clamp_rad",
+    "steering_after_filter_rad",
+    "steering_after_rate_limit_rad",
+    "steering_saturated_flag",
+    "vehicle_x_m",
+    "vehicle_y_m",
+    "vehicle_yaw_rad",
+    "vehicle_yaw_rate_rps",
+    "vehicle_speed_mps",
+    "physics_state_vx_mps",
+    "physics_state_vy_mps",
+    "physics_state_speed_mps",
+    "physics_state_yaw_rad",
+    "physics_state_yaw_rate_rps",
+    "physics_state_ax_mps2",
+    "physics_state_ay_mps2",
+    "physics_desired_accel_mps2",
+    "physics_actual_accel_mps2",
+    "physics_desired_steering_rad",
+    "physics_actual_steering_rad",
+    "physics_steering_tracking_error_rad",
+    "physics_sideslip_rad",
+    "physics_slip_angle_front_rad",
+    "physics_slip_angle_rear_rad",
+    "physics_kinematic_blend",
+    "physics_kinematic_vy_ref_mps",
+    "physics_kinematic_yaw_rate_ref_rps",
+    "speed_term_mps",
+    "centerline_available",
+    "centerline_point_count",
+    "cte_m",
+    "cte_abs_m",
+    "heading_error_rad",
+    "heading_error_abs_rad",
+    "heading_contribution_rad",
+    "cross_track_contribution_rad",
+    "yaw_rate_damping_contribution_rad",
+    "nearest_path_index",
+    "heading_path_index",
+    "target_point_x_base_m",
+    "target_point_y_base_m",
+    "target_point_x_frame_m",
+    "target_point_y_frame_m",
+    "nearest_path_point_x_m",
+    "nearest_path_point_y_m",
+    "planner_centerline_jump_max_m",
+    "planner_selected_edge_churn_ratio",
+    "planner_selected_chain_churn_ratio",
+    "planner_tracked_cones_frame_delta_p95_m",
+    "planner_state_code",
+    "planner_fresh_publish_flag",
+    "planner_held_publish_flag",
+    "planner_stopped_flag",
+    "planner_waiting_flag",
+    "planner_operator_reason_code",
+    "planner_hold_remaining_s",
+    "planner_control_path_point_count",
+    "planner_zero_cmd_sent_flag",
+]
+STEERING_DIAG_FIELDNAMES.extend(f"planner_{key}" for key in CONE_AUDIT_DIAG_KEYS)
 
 
 def normalize_angle(angle_rad: float) -> float:
@@ -373,37 +456,11 @@ def _read_rows(csv_path: Path) -> list[dict[str, str]]:
         return [row for row in reader if row]
 
 
-def _safe_float(value: Any) -> float:
-    try:
-        out = float(value)
-    except (TypeError, ValueError):
+def _nanstd(values: np.ndarray) -> float:
+    valid = values[np.isfinite(values)]
+    if valid.size == 0:
         return float("nan")
-    return out if math.isfinite(out) else float("nan")
-
-
-def _median_dt(timestamps: np.ndarray) -> float:
-    finite = timestamps[np.isfinite(timestamps)]
-    if finite.size < 2:
-        return float("nan")
-    dt = np.diff(np.sort(finite))
-    dt = dt[dt > 1e-6]
-    if dt.size == 0:
-        return float("nan")
-    return float(np.median(dt))
-
-
-def _estimate_lag(desired: np.ndarray, actual: np.ndarray, dt: float) -> tuple[int, float]:
-    mask = np.isfinite(desired) & np.isfinite(actual)
-    if np.count_nonzero(mask) < 8:
-        return 0, float("nan")
-    x = desired[mask] - np.mean(desired[mask])
-    y = actual[mask] - np.mean(actual[mask])
-    corr = np.correlate(y, x, mode="full")
-    lags = np.arange(-len(x) + 1, len(x), dtype=np.int64)
-    best_idx = int(np.argmax(corr))
-    lag_samples = int(lags[best_idx])
-    lag_sec = float(lag_samples * dt) if math.isfinite(dt) else float("nan")
-    return lag_samples, lag_sec
+    return float(np.std(valid))
 
 
 def _dominant_frequency_metrics(signal: np.ndarray, dt: float) -> tuple[float, float]:
@@ -424,43 +481,3 @@ def _dominant_frequency_metrics(signal: np.ndarray, dt: float) -> tuple[float, f
     mean_mag = float(np.mean(mag[1:])) if mag.size > 1 else float("nan")
     ratio = float(peak / mean_mag) if mean_mag > 1e-12 else float("nan")
     return float(freqs[peak_idx]), ratio
-
-
-def _nanmean(values: np.ndarray) -> float:
-    valid = values[np.isfinite(values)]
-    if valid.size == 0:
-        return float("nan")
-    return float(np.mean(valid))
-
-
-def _nanstd(values: np.ndarray) -> float:
-    valid = values[np.isfinite(values)]
-    if valid.size == 0:
-        return float("nan")
-    return float(np.std(valid))
-
-
-def _nanrms(values: np.ndarray) -> float:
-    valid = values[np.isfinite(values)]
-    if valid.size == 0:
-        return float("nan")
-    return float(np.sqrt(np.mean(valid * valid)))
-
-
-def _nanmaxabs(values: np.ndarray) -> float:
-    valid = values[np.isfinite(values)]
-    if valid.size == 0:
-        return float("nan")
-    return float(np.max(np.abs(valid)))
-
-
-def _nancorr(a: np.ndarray, b: np.ndarray) -> float:
-    mask = np.isfinite(a) & np.isfinite(b)
-    if np.count_nonzero(mask) < 3:
-        return float("nan")
-    av = a[mask]
-    bv = b[mask]
-    if np.std(av) < 1e-12 or np.std(bv) < 1e-12:
-        return float("nan")
-    corr = np.corrcoef(av, bv)[0, 1]
-    return float(corr) if math.isfinite(float(corr)) else float("nan")
