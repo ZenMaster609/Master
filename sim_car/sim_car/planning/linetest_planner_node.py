@@ -18,8 +18,10 @@ from rclpy.executors import ExternalShutdownException
 from rclpy.node import Node
 from rclpy.qos import qos_profile_sensor_data
 from std_msgs.msg import Float32
+from vehicle_plotter_msgs.msg import ConeDetectionArray
 from visualization_msgs.msg import Marker, MarkerArray
 
+from sim_car.cones.tracking.fusion import normalize_color
 from sim_car.cones.tracking.pose import (
     convert_odom_child_pose_to_base_frame,
     project_planar_pose_constant_twist,
@@ -97,6 +99,9 @@ class LineTestPlannerNode(Node):
         self._gt_anchor_xy: Optional[np.ndarray] = None
         self._gt_anchor_heading_xy: Optional[np.ndarray] = None
         self._gt_track_sub = None
+        self._latest_cones_msg: Optional[ConeDetectionArray] = None
+        self._lap_tracking_completed_laps = 0
+        self._lap_tracking_armed = True
 
         self._cmd_pub = self.create_publisher(AckermannDriveStamped, self.cmd_topic, 10)
         self._brake_pub = self.create_publisher(Float32, self.brake_cmd_topic, 10)
@@ -111,6 +116,13 @@ class LineTestPlannerNode(Node):
             self._odom_cb,
             qos_profile_sensor_data,
         )
+        if self.tracked_cones_topic:
+            self.create_subscription(
+                ConeDetectionArray,
+                self.tracked_cones_topic,
+                self._cones_cb,
+                qos_profile_sensor_data,
+            )
         if self.path_source == 'ground_truth_midline':
             self._gt_track_sub = self.create_subscription(
                 ConeArrayWithCovariance,
@@ -147,7 +159,9 @@ class LineTestPlannerNode(Node):
             'topics.viz_topic': '/planner_viz',
             'topics.points_topic': '/planned_centerline_points',
             'topics.odom_topic': '/sim/odom',
+            'topics.tracked_cones_topic': '/tracked_cones',
             'topics.gt_track_topic': '/ground_truth/track',
+            'lap_tracking.target_laps': 0,
             'runtime.publish_rate_hz': 60.0,
             'runtime.log_throttle_s': 1.0,
             'path.source': 'fixed_line',
@@ -207,7 +221,12 @@ class LineTestPlannerNode(Node):
         self.viz_topic = str(self.get_parameter('topics.viz_topic').value)
         self.points_topic = str(self.get_parameter('topics.points_topic').value)
         self.odom_topic = str(self.get_parameter('topics.odom_topic').value)
+        self.tracked_cones_topic = str(self.get_parameter('topics.tracked_cones_topic').value)
         self.gt_track_topic = str(self.get_parameter('topics.gt_track_topic').value)
+        self.lap_tracking_target_laps = max(
+            0,
+            int(self.get_parameter('lap_tracking.target_laps').value),
+        )
 
         self.publish_rate_hz = max(1.0, float(self.get_parameter('runtime.publish_rate_hz').value))
         self.log_throttle_s = max(0.1, float(self.get_parameter('runtime.log_throttle_s').value))
@@ -299,12 +318,53 @@ class LineTestPlannerNode(Node):
             self._latest_speed_mps = float(math.hypot(vx, vy))
             self._latest_yaw_rate_rps = float(msg.twist.twist.angular.z)
 
+    def _cones_cb(self, msg: ConeDetectionArray) -> None:
+        self._latest_cones_msg = msg
+
     def _gt_track_cb(self, msg: ConeArrayWithCovariance) -> None:
         self._latest_gt_track_msg = msg
         if self._gt_midline_source is None:
             return
         # The GT track is static for these maps. Keep the cached midline stable
         # once built from the first valid odom pose.
+
+    def _update_lap_tracking_from_orange_cones(self, vehicle_pose: tuple[float, float, float]) -> None:
+        msg = self._latest_cones_msg
+        if msg is None or not self._is_alias(str(msg.header.frame_id).strip(), self.odom_frame):
+            return
+        orange = [
+            cone for cone in msg.cones
+            if normalize_color(getattr(cone, 'color', '')) == 'orange'
+        ]
+        if not orange:
+            return
+
+        vehicle_x, vehicle_y, vehicle_yaw = vehicle_pose
+        points = np.asarray(
+            [(float(cone.position.x), float(cone.position.y)) for cone in orange],
+            dtype=np.float64,
+        )
+        rel = points - np.asarray([vehicle_x, vehicle_y], dtype=np.float64)
+        cos_yaw = math.cos(float(vehicle_yaw))
+        sin_yaw = math.sin(float(vehicle_yaw))
+        forward = (cos_yaw * rel[:, 0]) + (sin_yaw * rel[:, 1])
+        lateral = (-sin_yaw * rel[:, 0]) + (cos_yaw * rel[:, 1])
+        near_mask = np.abs(lateral) <= 5.0
+        if not np.any(near_mask):
+            return
+
+        forward = forward[near_mask]
+        lateral = lateral[near_mask]
+        order = np.argsort(np.abs(forward) + (0.25 * np.abs(lateral)))
+        gate_forward_m = float(np.mean(forward[order[: min(2, len(order))]]))
+        if gate_forward_m > 1.0:
+            self._lap_tracking_armed = True
+        elif self._lap_tracking_armed and gate_forward_m <= 0.0:
+            self._lap_tracking_completed_laps += 1
+            self._lap_tracking_armed = False
+            self.get_logger().info(
+                f'smalltrack laps={self._lap_tracking_completed_laps}/{self.lap_tracking_target_laps or 0}'
+            )
 
     def _on_timer(self) -> None:
         frame_id = self.odom_frame
@@ -330,6 +390,7 @@ class LineTestPlannerNode(Node):
                 zero_cmd_sent_flag = int(self._apply_no_path_behavior())
         else:
             vehicle_x, vehicle_y, vehicle_yaw = vehicle_pose
+            self._update_lap_tracking_from_orange_cones(vehicle_pose)
             if self.path_source == 'ground_truth_midline':
                 if centerline.shape[0] < 2:
                     operator_state = 'waiting'
@@ -909,8 +970,14 @@ class LineTestPlannerNode(Node):
             f'{operator_state.upper()} | '
             f'{_OPERATOR_REASON_LABELS.get(operator_reason, operator_reason)}\n'
             f'line pts={centerline_point_count} ctrl pts={control_path_point_count}\n'
-            f'CMD: v={cmd_speed:.2f} m/s delta={cmd_steering:.3f} rad lookahead={lookahead:.2f} m'
+            f'CMD: v={cmd_speed:.2f} m/s delta={cmd_steering:.3f} rad lookahead={lookahead:.2f} m\n'
+            f'{self._lap_status_text()}'
         )
+
+    def _lap_status_text(self) -> str:
+        if self.lap_tracking_target_laps > 0:
+            return f'LAPS: {int(self._lap_tracking_completed_laps)}/{int(self.lap_tracking_target_laps)}'
+        return f'LAPS: {int(self._lap_tracking_completed_laps)}/off'
 
     def _compute_speed_command(self, kappa: float) -> float:
         v_des = self.speed_max_mps / (1.0 + self.curvature_speed_gain * abs(kappa))

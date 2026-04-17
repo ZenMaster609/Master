@@ -163,6 +163,17 @@ def test_full_launch_declares_and_passes_path_tracking_eval():
     assert "logger autostop reached lap target" in content
 
 
+def test_full_launch_passes_lap_tracking_to_all_smalltrack_capable_planners():
+    content = FULL_LAUNCH.read_text(encoding='utf-8')
+
+    corridor_block = content.split("corridor_planner_node = Node(", 1)[1].split("linetest_planner_node = Node(", 1)[0]
+    linetest_block = content.split("linetest_planner_node = Node(", 1)[1].split("camera_debug_viewer_node = Node(", 1)[0]
+
+    assert "'lap_tracking.target_laps': resolved_path_tracking_autostop_laps" in corridor_block
+    assert "'topics.tracked_cones_topic': planner_input_topic" in linetest_block
+    assert "'lap_tracking.target_laps': resolved_path_tracking_autostop_laps" in linetest_block
+
+
 def test_full_launch_always_wires_offline_cone_eval_topics():
     content = FULL_LAUNCH.read_text(encoding='utf-8')
 

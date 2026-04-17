@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import math
 import time
 from typing import Any, Optional
 
@@ -87,6 +88,8 @@ class TrackedConePlannerBase(TrackedConePlannerRuntime):
         self._last_viz_pair_segments = None
         self._last_viz_raw_midpoint_chain = None
         self._candidate_jump_reject_streak = 0
+        self._lap_tracking_completed_laps = 0
+        self._lap_tracking_armed = True
 
         self._active_planner_mode = "waiting"
         self._active_remembered_cone_count = 0
@@ -1039,3 +1042,47 @@ class TrackedConePlannerBase(TrackedConePlannerRuntime):
             return None
 
         return cones_msg, target_frame, vehicle_x, vehicle_y, vehicle_yaw, points_xy, colors, confidences
+
+    def _update_smalltrack_lap_from_orange_cones(
+        self,
+        *,
+        cones_msg: ConeDetectionArray,
+        points_xy: np.ndarray,
+        vehicle_x: float,
+        vehicle_y: float,
+        vehicle_yaw: float,
+    ) -> None:
+        orange_idx = [
+            idx
+            for idx, cone in enumerate(cones_msg.cones)
+            if normalize_color(getattr(cone, "color", "")) == "orange"
+        ]
+        points = np.asarray(points_xy, dtype=np.float64)
+        if not orange_idx or points.ndim != 2 or points.shape[0] <= max(orange_idx):
+            return
+
+        rel = points[np.asarray(orange_idx, dtype=np.int64)] - np.asarray(
+            [vehicle_x, vehicle_y],
+            dtype=np.float64,
+        )
+        cos_yaw = math.cos(float(vehicle_yaw))
+        sin_yaw = math.sin(float(vehicle_yaw))
+        forward = (cos_yaw * rel[:, 0]) + (sin_yaw * rel[:, 1])
+        lateral = (-sin_yaw * rel[:, 0]) + (cos_yaw * rel[:, 1])
+        near_mask = np.abs(lateral) <= 5.0
+        if not np.any(near_mask):
+            return
+
+        forward = forward[near_mask]
+        lateral = lateral[near_mask]
+        order = np.argsort(np.abs(forward) + (0.25 * np.abs(lateral)))
+        gate_forward_m = float(np.mean(forward[order[: min(2, len(order))]]))
+
+        if gate_forward_m > 1.0:
+            self._lap_tracking_armed = True
+        elif self._lap_tracking_armed and gate_forward_m <= 0.0:
+            self._lap_tracking_completed_laps += 1
+            self._lap_tracking_armed = False
+            self.get_logger().info(
+                f"smalltrack laps={self._lap_tracking_completed_laps}/{self.lap_tracking_target_laps or 0}"
+            )

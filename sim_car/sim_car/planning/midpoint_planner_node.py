@@ -235,6 +235,13 @@ class MidpointPlannerNode(TrackedConePlannerBase):
         if ctx is None:
             return
         cones_msg, target_frame, vehicle_x, vehicle_y, vehicle_yaw, points_xy, colors, confidences = ctx
+        self._update_smalltrack_lap_from_orange_cones(
+            cones_msg=cones_msg,
+            points_xy=points_xy,
+            vehicle_x=vehicle_x,
+            vehicle_y=vehicle_y,
+            vehicle_yaw=vehicle_yaw,
+        )
         control_target_frame: Optional[np.ndarray] = None
         control_debug_metrics: Optional[dict[str, float]] = None
         cmd_speed = 0.0
@@ -1408,8 +1415,8 @@ class MidpointPlannerNode(TrackedConePlannerBase):
 
     def _lap_status_text(self) -> str:
         if self.lap_tracking_target_laps > 0:
-            return f"LAPS: 0/{int(self.lap_tracking_target_laps)}"
-        return "LAPS: 0/off"
+            return f"LAPS: {int(self._lap_tracking_completed_laps)}/{int(self.lap_tracking_target_laps)}"
+        return f"LAPS: {int(self._lap_tracking_completed_laps)}/off"
 
     def _midpoint_debug_stage(self, result: MidpointPlannerResult) -> str:
         pair_ready = int(result.accepted_pair_count) >= int(

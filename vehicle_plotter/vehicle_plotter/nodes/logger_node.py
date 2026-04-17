@@ -354,6 +354,7 @@ class LoggerNode(Node):
         self._path_eval_smalltrack_gate_source = None
         self._path_eval_smalltrack_lap_counter: Optional[GateLapCounter] = None
         self._path_eval_smalltrack_completed_laps = 0
+        self._path_eval_smalltrack_lap_times_sec: list[float] = []
         self._path_eval_smalltrack_autostop_triggered = False
 
         if self._path_tracking_eval_enabled:
@@ -732,6 +733,8 @@ class LoggerNode(Node):
         snapshot = self._path_eval_smalltrack_lap_counter.update(vehicle_xy_gate, timestamp_sec)
         self._path_eval_smalltrack_completed_laps = int(snapshot.completed_laps)
         if snapshot.just_completed_lap:
+            if snapshot.last_lap_time_sec is not None:
+                self._path_eval_smalltrack_lap_times_sec.append(float(snapshot.last_lap_time_sec))
             self.get_logger().info(
                 f'Smalltrack lap completed: laps={snapshot.completed_laps} crossings={snapshot.gate_crossings}'
             )
@@ -1663,6 +1666,12 @@ class LoggerNode(Node):
                 if self._path_tracking_eval_track_name == 'smalltrack'
                 and self._path_tracking_eval_autostop_laps > 0
                 else None,
+                average_lap_time_sec=(
+                    float(np.mean(self._path_eval_smalltrack_lap_times_sec))
+                    if self._path_tracking_eval_track_name == 'smalltrack'
+                    and self._path_eval_smalltrack_lap_times_sec
+                    else None
+                ),
             )
             if generated_overlay is not None:
                 self._safe_log_info(f'Generated path tracking overlay plot: {generated_overlay}')

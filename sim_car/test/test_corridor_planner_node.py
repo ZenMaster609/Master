@@ -132,6 +132,8 @@ def _make_node() -> CorridorPlannerNode:
         min_required_corridor_samples=3,
     )
     node.lap_tracking_target_laps = 0
+    node._lap_tracking_completed_laps = 0
+    node._lap_tracking_armed = True
     node._filtered_track_width_m = 3.6
     node._is_alias = lambda frame_a, frame_b: frame_a == frame_b
     node.get_clock = lambda: _FakeClock(TimeMsg(sec=1, nanosec=0))
@@ -520,8 +522,65 @@ def test_lap_status_text_uses_configured_target_laps():
     assert node._lap_status_text() == "LAPS: 0/off"
 
     node.lap_tracking_target_laps = 1
+    node._lap_tracking_completed_laps = 1
 
-    assert node._lap_status_text() == "LAPS: 0/1"
+    assert node._lap_status_text() == "LAPS: 1/1"
+
+
+def test_smalltrack_lap_counter_uses_camera_orange_pair_or_single_cone():
+    node = _make_node()
+    node.get_logger = lambda: SimpleNamespace(info=lambda _msg: None)
+    node.lap_tracking_target_laps = 10
+
+    msg = ConeDetectionArray()
+    pair_points = np.array([[2.0, 1.5], [2.0, -1.5]], dtype=np.float64)
+    for x, y in pair_points:
+        cone = ConeDetection()
+        cone.color = "orange"
+        cone.position.x = float(x)
+        cone.position.y = float(y)
+        msg.cones.append(cone)
+
+    node._update_smalltrack_lap_from_orange_cones(
+        cones_msg=msg,
+        points_xy=pair_points,
+        vehicle_x=0.0,
+        vehicle_y=0.0,
+        vehicle_yaw=0.0,
+    )
+    node._update_smalltrack_lap_from_orange_cones(
+        cones_msg=msg,
+        points_xy=pair_points,
+        vehicle_x=3.0,
+        vehicle_y=0.0,
+        vehicle_yaw=0.0,
+    )
+    assert node._lap_tracking_completed_laps == 1
+
+    node._lap_tracking_armed = True
+    single_msg = ConeDetectionArray()
+    cone = ConeDetection()
+    cone.color = "orange"
+    cone.position.x = 2.0
+    cone.position.y = 1.5
+    single_msg.cones.append(cone)
+    single_point = np.array([[2.0, 1.5]], dtype=np.float64)
+
+    node._update_smalltrack_lap_from_orange_cones(
+        cones_msg=single_msg,
+        points_xy=single_point,
+        vehicle_x=0.0,
+        vehicle_y=0.0,
+        vehicle_yaw=0.0,
+    )
+    node._update_smalltrack_lap_from_orange_cones(
+        cones_msg=single_msg,
+        points_xy=single_point,
+        vehicle_x=3.0,
+        vehicle_y=0.0,
+        vehicle_yaw=0.0,
+    )
+    assert node._lap_tracking_completed_laps == 2
 
 
 def test_held_centerline_returns_last_valid_path_within_timeout():

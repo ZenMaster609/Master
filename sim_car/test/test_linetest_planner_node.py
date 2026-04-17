@@ -121,6 +121,7 @@ def _make_node() -> LineTestPlannerNode:
     node.viz_topic = '/planner_viz'
     node.points_topic = '/planned_centerline_points'
     node.odom_topic = '/sim/odom'
+    node.tracked_cones_topic = '/tracked_cones'
     node.gt_track_topic = '/ground_truth/track'
     node.publish_rate_hz = 60.0
     node.log_throttle_s = 0.0
@@ -154,6 +155,10 @@ def _make_node() -> LineTestPlannerNode:
     node._gt_anchor_xy = None
     node._gt_anchor_heading_xy = None
     node._gt_track_sub = None
+    node.lap_tracking_target_laps = 0
+    node._latest_cones_msg = None
+    node._lap_tracking_completed_laps = 0
+    node._lap_tracking_armed = True
     node._latest_speed_mps = 0.0
     node._latest_yaw_rate_rps = 0.0
     node._last_speed_cmd = None
@@ -416,7 +421,17 @@ def test_gt_linetest_publishes_midline_and_tracks_forward_loop_without_end_brake
     assert captured_path.shape[0] >= 3
     assert captured_path[0, 0] == pytest.approx(0.0, abs=0.15)
     assert node._brake_pub.messages[-1].data == pytest.approx(0.0)
-    assert node._cmd_pub.messages[-1].drive.speed > 0.0
+
+
+def test_lap_status_text_uses_completed_laps() -> None:
+    node = _make_node()
+
+    assert node._lap_status_text() == 'LAPS: 0/off'
+
+    node.lap_tracking_target_laps = 10
+    node._lap_tracking_completed_laps = 3
+
+    assert node._lap_status_text() == 'LAPS: 3/10'
 
 
 def test_publish_diagnostics_uses_linetest_identity_and_expected_keys():

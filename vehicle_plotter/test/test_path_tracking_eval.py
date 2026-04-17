@@ -6,6 +6,7 @@ import pathlib
 import sys
 
 import numpy as np
+import pytest
 
 TEST_DIR = pathlib.Path(__file__).resolve().parent
 PACKAGE_ROOT = TEST_DIR.parent
@@ -267,6 +268,7 @@ def test_gate_lap_counter_ignores_start_crossing_then_counts_next_full_crossing(
 
     assert snapshot.completed_laps == 1
     assert snapshot.just_completed_lap
+    assert snapshot.last_lap_time_sec == pytest.approx(4.0)
 
 
 def test_track_width_and_half_width_percentage_formatting():
@@ -497,6 +499,7 @@ def test_analyze_path_tracking_csv_and_plot_smoke(tmp_path):
         planner_trace_xy=planner_trace,
         lap_count=2,
         lap_target=3,
+        average_lap_time_sec=83.0,
     )
     assert generated_overlay == overlay_plot
     assert overlay_plot.exists()

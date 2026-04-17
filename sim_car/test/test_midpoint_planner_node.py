@@ -139,7 +139,11 @@ def _make_node() -> MidpointPlannerNode:
     node._active_reject_width_range_count = 0
     node._active_reject_progress_count = 0
     node._active_reject_orientation_count = 0
+    node._last_viz_pair_segments = None
+    node._last_viz_raw_midpoint_chain = None
     node.lap_tracking_target_laps = 0
+    node._lap_tracking_completed_laps = 0
+    node._lap_tracking_armed = True
     node._is_alias = lambda frame_a, frame_b: frame_a == frame_b
     node.get_clock = lambda: _FakeClock(TimeMsg(sec=1, nanosec=0))
     return node
@@ -365,8 +369,9 @@ def test_lap_status_text_uses_configured_target_laps():
     assert node._lap_status_text() == "LAPS: 0/off"
 
     node.lap_tracking_target_laps = 1
+    node._lap_tracking_completed_laps = 1
 
-    assert node._lap_status_text() == "LAPS: 0/1"
+    assert node._lap_status_text() == "LAPS: 1/1"
 
 
 def test_convert_cones_to_frame_resolves_orange_with_and_without_boundary_hints():

@@ -454,6 +454,7 @@ def generate_path_tracking_overlay_plot(
     gt_overlay_segments_xy: Optional[list[np.ndarray]] = None,
     lap_count: Optional[int] = None,
     lap_target: Optional[int] = None,
+    average_lap_time_sec: Optional[float] = None,
     title: str = "GT Midline vs Planner vs Driven Trajectory",
     dpi: int = 150,
 ) -> Optional[Path]:
@@ -539,6 +540,8 @@ def generate_path_tracking_overlay_plot(
         text_lines.append(f"Completed laps: {int(lap_count)}")
     if lap_target is not None and int(lap_target) > 0:
         text_lines.append(f"Auto-stop target: {int(lap_target)}")
+    if average_lap_time_sec is not None and np.isfinite(float(average_lap_time_sec)):
+        text_lines.append(f"Avg lap time: {_format_duration_minutes_seconds(float(average_lap_time_sec))}")
     avg_text = "\n".join(text_lines)
     ax.text(
         0.02,
@@ -562,3 +565,11 @@ def generate_path_tracking_overlay_plot(
     fig.savefig(output_path, dpi=dpi, bbox_inches="tight")
     plt.close(fig)
     return output_path
+
+
+def _format_duration_minutes_seconds(duration_sec: float) -> str:
+    if not np.isfinite(duration_sec):
+        return "n/a"
+    total_seconds = max(0, int(round(float(duration_sec))))
+    minutes, seconds = divmod(total_seconds, 60)
+    return f"{minutes:02d}:{seconds:02d}"

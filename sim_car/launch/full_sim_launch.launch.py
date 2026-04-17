@@ -1242,7 +1242,6 @@ def generate_launch_description():
                     value_type=float,
                 ),
                 **_planner_pipeline_parameters(),
-                'lap_tracking.gt_track_topic': '/ground_truth/track',
                 'lap_tracking.target_laps': resolved_path_tracking_autostop_laps,
                 'diagnostics.publish_thesis_context': ParameterValue(
                     LaunchConfiguration('thesis_controller_diagnostics'),
@@ -1278,7 +1277,6 @@ def generate_launch_description():
                     value_type=float,
                 ),
                 **_planner_pipeline_parameters(),
-                'lap_tracking.gt_track_topic': '/ground_truth/track',
                 'lap_tracking.target_laps': resolved_path_tracking_autostop_laps,
                 'diagnostics.publish_thesis_context': ParameterValue(
                     LaunchConfiguration('thesis_controller_diagnostics'),
@@ -1314,6 +1312,7 @@ def generate_launch_description():
                     value_type=float,
                 ),
                 **_planner_pipeline_parameters(),
+                'lap_tracking.target_laps': resolved_path_tracking_autostop_laps,
                 'diagnostics.publish_thesis_context': ParameterValue(
                     LaunchConfiguration('thesis_controller_diagnostics'),
                     value_type=bool,
@@ -1354,6 +1353,8 @@ def generate_launch_description():
                     value_type=bool,
                 ),
                 'topics.odom_topic': planner_odom_topic,
+                'topics.tracked_cones_topic': planner_input_topic,
+                'lap_tracking.target_laps': resolved_path_tracking_autostop_laps,
                 'control.odom_lag_compensation_ms': ParameterValue(
                     LaunchConfiguration('planner_odom_lag_compensation_ms'),
                     value_type=float,

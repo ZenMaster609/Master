@@ -68,6 +68,7 @@ class GateLapCounterSnapshot:
     distance_since_last_crossing_m: float
     ignore_first_crossing: bool
     just_completed_lap: bool
+    last_lap_time_sec: float | None = None
 
 
 class GateLapCounter:
@@ -98,13 +99,23 @@ class GateLapCounter:
         self._gate_crossings = 0
         self._ignore_first_crossing = False
 
-    def snapshot(self, *, just_completed_lap: bool = False) -> GateLapCounterSnapshot:
+    def snapshot(
+        self,
+        *,
+        just_completed_lap: bool = False,
+        last_lap_time_sec: float | None = None,
+    ) -> GateLapCounterSnapshot:
         return GateLapCounterSnapshot(
             completed_laps=int(self._completed_laps),
             gate_crossings=int(self._gate_crossings),
             distance_since_last_crossing_m=float(self._distance_since_last_crossing_m),
             ignore_first_crossing=bool(self._ignore_first_crossing),
             just_completed_lap=bool(just_completed_lap),
+            last_lap_time_sec=(
+                float(last_lap_time_sec)
+                if last_lap_time_sec is not None and math.isfinite(float(last_lap_time_sec))
+                else None
+            ),
         )
 
     def update(self, point_xy: np.ndarray, timestamp_sec: float) -> GateLapCounterSnapshot:
@@ -125,12 +136,18 @@ class GateLapCounter:
             self._distance_since_last_crossing_m += step_m
 
         just_completed_lap = False
+        lap_time_sec: float | None = None
         if _segments_intersect_2d(
             self._prev_point_xy,
             point,
             self._gate_segment_xy[0],
             self._gate_segment_xy[1],
         ):
+            crossing_interval_sec = (
+                now_sec - self._last_crossing_time_sec
+                if math.isfinite(now_sec) and math.isfinite(self._last_crossing_time_sec)
+                else float("nan")
+            )
             should_ignore = self._gate_crossings == 0 and self._ignore_first_crossing
             enough_distance = self._distance_since_last_crossing_m >= self._min_lap_travel_m
             enough_time = (
@@ -141,12 +158,14 @@ class GateLapCounter:
             if not should_ignore and enough_distance and enough_time:
                 self._completed_laps += 1
                 just_completed_lap = True
+                if math.isfinite(crossing_interval_sec) and crossing_interval_sec >= 0.0:
+                    lap_time_sec = float(crossing_interval_sec)
             self._gate_crossings += 1
             self._distance_since_last_crossing_m = 0.0
             self._last_crossing_time_sec = now_sec
 
         self._prev_point_xy = point
-        return self.snapshot(just_completed_lap=just_completed_lap)
+        return self.snapshot(just_completed_lap=just_completed_lap, last_lap_time_sec=lap_time_sec)
 
 
 def _as_xy(points: Iterable[Iterable[float]]) -> np.ndarray:
