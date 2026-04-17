@@ -277,13 +277,13 @@ def generate_launch_description():
 
     planner_odom_delay_ms_arg = DeclareLaunchArgument(
         'planner_odom_delay_ms',
-        default_value='0.0',
+        default_value='20.0',
         description='Optional fixed delay applied to planner/controller odometry feed (ms)'
     )
 
     planner_odom_lag_compensation_ms_arg = DeclareLaunchArgument(
         'planner_odom_lag_compensation_ms',
-        default_value='0.0',
+        default_value='20.0',
         description='Optional forward pose compensation applied inside planner/controller path transform (ms)'
     )
 
