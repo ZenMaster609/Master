@@ -40,10 +40,6 @@ cone_memory_node:
     enable_tentative_viz: false
     enable_raw_debug_viz: false
 
-    enable_global_track_memory: true
-    global_merge_radius_m: 0.6
-    global_min_hits_for_track: 2
-    global_max_cones: 2000
     believed_track_viz_min_hits: 3
     believed_track_viz_min_confidence: 0.45
     believed_track_viz_max_gap_m: 6.0
@@ -52,6 +48,12 @@ cone_memory_node:
 
     save_track_plot_on_shutdown: true
     track_plot_data_filename: "cone_memory_track_data.csv"
+
+    enable_permanent_cone_memory: true
+    permanent_harvest_m: 2.0
+    permanent_min_confidence: 0.5
+    permanent_min_seen: 5
+    permanent_dedup_radius_m: 0.7
 
     lidar_cones_topic: "/sim/lidar/perception/cones_3d"
     camera_cones_topic: "/sim/stereo/perception/cones_3d"

@@ -12,6 +12,7 @@ from rclpy.time import Time
 from visualization_msgs.msg import Marker, MarkerArray
 
 from sim_car.cones.nodes.memory_types import SensorDetection
+from sim_car.cones.tracking.global_memory import PermaCone
 from sim_car.cones.tracking.tracker import (
     TRACK_STATE_CONFIRMED,
     TRACK_STATE_STALE,
@@ -194,6 +195,42 @@ def make_line_marker(
         pt.y = float(y)
         pt.z = 0.02
         marker.points.append(pt)
+    return marker
+
+
+def make_perma_cone_marker(
+    perma: PermaCone,
+    marker_id: int,
+    now: Time,
+    *,
+    odom_frame: str,
+    publish_rate_hz: float,
+) -> Marker:
+    """Build a tall thin CYLINDER marker for a permanently-remembered cone.
+
+    Taller (0.65 m) and thinner (0.18 m) than live cone markers (0.30 × 0.30 m)
+    so they are visually distinct in RViz.
+    """
+    r, g, b = cone_color_rgb(perma.label)
+    marker = Marker()
+    marker.header.frame_id = odom_frame
+    marker.header.stamp = now.to_msg()
+    marker.ns = 'permanent'
+    marker.id = marker_id
+    marker.type = Marker.CYLINDER
+    marker.action = Marker.ADD
+    marker.pose.position.x = float(perma.x)
+    marker.pose.position.y = float(perma.y)
+    marker.pose.position.z = float(perma.z) + 0.325   # half-height offset so base sits on ground
+    marker.pose.orientation.w = 1.0
+    marker.scale.x = 0.18
+    marker.scale.y = 0.18
+    marker.scale.z = 0.65
+    marker.color.a = 0.70
+    marker.color.r = r
+    marker.color.g = g
+    marker.color.b = b
+    marker.lifetime = Duration(seconds=0.5).to_msg()
     return marker
 
 

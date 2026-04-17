@@ -26,6 +26,7 @@ from sim_car.cones.nodes._memory_viz import (
     make_cone_marker,
     make_id_marker,
     make_line_marker,
+    make_perma_cone_marker,
     make_raw_sensor_markers,
     split_polyline_by_gap,
 )
@@ -37,6 +38,7 @@ from sim_car.cones.tracking.fusion import (
     resolve_boundary_colors_for_planning,
 )
 from sim_car.cones.tracking.pose import base_point_to_odom, convert_odom_child_pose_to_base_frame, odom_point_to_base
+from sim_car.cones.tracking.global_memory import PermaCone, PermanentConeStore
 from sim_car.cones.tracking.tracker import (
     TRACK_STATE_CONFIRMED,
     ConeTrack,
@@ -58,6 +60,7 @@ class ConeMemoryNode(Node):
         self._last_throttled_log_sec: dict[str, float] = {}
 
         self._local_tracker = LocalConeTracker()
+        self._permanent_cone_store = PermanentConeStore()
         self._latest_lidar: list[SensorDetection] = []
         self._latest_camera: list[SensorDetection] = []
         self._latest_lidar_stamp_ns: int = -1
@@ -147,10 +150,6 @@ class ConeMemoryNode(Node):
         self.declare_parameter('enable_tentative_viz', False)
         self.declare_parameter('enable_raw_debug_viz', False)
 
-        self.declare_parameter('enable_global_track_memory', True)
-        self.declare_parameter('global_merge_radius_m', 0.6)
-        self.declare_parameter('global_min_hits_for_track', 2)
-        self.declare_parameter('global_max_cones', 2000)
         self.declare_parameter('believed_track_viz_min_hits', 3)
         self.declare_parameter('believed_track_viz_min_confidence', 0.45)
         self.declare_parameter('believed_track_viz_max_gap_m', 6.0)
@@ -159,6 +158,12 @@ class ConeMemoryNode(Node):
 
         self.declare_parameter('save_track_plot_on_shutdown', True)
         self.declare_parameter('track_plot_data_filename', 'cone_memory_track_data.csv')
+
+        self.declare_parameter('enable_permanent_cone_memory', True)
+        self.declare_parameter('permanent_harvest_m', 2.0)
+        self.declare_parameter('permanent_min_confidence', 0.65)
+        self.declare_parameter('permanent_min_seen', 5)
+        self.declare_parameter('permanent_dedup_radius_m', 0.7)
 
         self.declare_parameter('lidar_cones_topic', '/sim/lidar/perception/cones_3d')
         self.declare_parameter('camera_cones_topic', '/sim/stereo/perception/cones_3d')
@@ -225,10 +230,6 @@ class ConeMemoryNode(Node):
         self.enable_tentative_viz = bool(self.get_parameter('enable_tentative_viz').value)
         self.enable_raw_debug_viz = bool(self.get_parameter('enable_raw_debug_viz').value)
 
-        self.enable_global_track_memory = bool(self.get_parameter('enable_global_track_memory').value)
-        self.global_merge_radius_m = max(0.05, float(self.get_parameter('global_merge_radius_m').value))
-        self.global_min_hits_for_track = max(1, int(self.get_parameter('global_min_hits_for_track').value))
-        self.global_max_cones = max(10, int(self.get_parameter('global_max_cones').value))
         self.believed_track_viz_min_hits = max(1, int(self.get_parameter('believed_track_viz_min_hits').value))
         self.believed_track_viz_min_confidence = max(
             0.0, min(1.0, float(self.get_parameter('believed_track_viz_min_confidence').value))
@@ -241,6 +242,12 @@ class ConeMemoryNode(Node):
 
         self.save_track_plot_on_shutdown = bool(self.get_parameter('save_track_plot_on_shutdown').value)
         self.track_plot_data_filename = str(self.get_parameter('track_plot_data_filename').value).strip()
+
+        self.enable_permanent_cone_memory = bool(self.get_parameter('enable_permanent_cone_memory').value)
+        self.permanent_harvest_m = max(0.0, float(self.get_parameter('permanent_harvest_m').value))
+        self.permanent_min_confidence = max(0.0, min(1.0, float(self.get_parameter('permanent_min_confidence').value)))
+        self.permanent_min_seen = max(1, int(self.get_parameter('permanent_min_seen').value))
+        self.permanent_dedup_radius_m = max(0.1, float(self.get_parameter('permanent_dedup_radius_m').value))
 
         self.lidar_cones_topic = str(self.get_parameter('lidar_cones_topic').value)
         self.camera_cones_topic = str(self.get_parameter('camera_cones_topic').value)
@@ -436,6 +443,23 @@ class ConeMemoryNode(Node):
             odom_point_to_base(track.x, track.y, (veh_x, veh_y, veh_yaw))
             for track in self._local_tracker.tracks
         ]
+        if self.enable_permanent_cone_memory:
+            harvested = self._permanent_cone_store.harvest(
+                self._local_tracker.tracks,
+                track_positions_in_base,
+                now_sec,
+                behind_harvest_m=self.permanent_harvest_m,
+                confirmed_ttl_sec=self.confirmed_prune_after_sec,
+                min_confidence=self.permanent_min_confidence,
+                min_seen=self.permanent_min_seen,
+                confirm_hits=self.confirm_hits,
+                merge_radius_m=self.permanent_dedup_radius_m,
+            )
+            if harvested:
+                self.get_logger().info(
+                    f'perma-cones: +{harvested} harvested '
+                    f'(total={len(self._permanent_cone_store.cones)})'
+                )
         pruned = self._local_tracker.prune(
             now_sec=now_sec,
             tentative_ttl_sec=self.tentative_ttl_sec,
@@ -470,6 +494,16 @@ class ConeMemoryNode(Node):
             stale_planner_ttl_sec=self.stale_planner_ttl_sec,
         )
 
+        permanent_for_planner: list[PermaCone] = []
+        if self.enable_permanent_cone_memory:
+            permanent_for_planner = self._permanent_cone_store.nearby_without_live_track(
+                vehicle_x=veh_x,
+                vehicle_y=veh_y,
+                planning_range_m=self.max_range_m,
+                live_tracks=planner_tracks,
+                dedup_radius_m=self.permanent_dedup_radius_m,
+            )
+
         heading_x = math.cos(veh_yaw)
         heading_y = math.sin(veh_yaw)
 
@@ -495,17 +529,24 @@ class ConeMemoryNode(Node):
         self._publish_tracked_cones(
             planner_tracks, now,
             vehicle_x=veh_x, vehicle_y=veh_y, heading_x=heading_x, heading_y=heading_y,
+            permanent_cones=permanent_for_planner,
         )
-        self._publish_local_markers(confirmed=confirmed, stale=stale, tentative=tentative, now=now)
+        perma_all = self._permanent_cone_store.cones if self.enable_permanent_cone_memory else []
+        self._publish_local_markers(
+            confirmed=confirmed, stale=stale, tentative=tentative,
+            permanent=perma_all, now=now,
+        )
         self._publish_track_markers(tracks=planner_tracks, left=viz_left, right=viz_right, center=viz_center, now=now)
         if self.enable_raw_debug_viz:
             self._publish_raw_markers(now=now)
 
         status_suffix = '' if stats is not None else ' inputs=reused'
+        perma_total = len(self._permanent_cone_store.cones) if self.enable_permanent_cone_memory else 0
         self._info_throttled(
             'cone_memory_status',
             f'tracks total={len(self._local_tracker.tracks)} confirmed={len(confirmed)} '
             f'stale={len(stale)} tentative={len(tentative)} planner={len(planner_tracks)} '
+            f'perma_total={perma_total} perma_injected={len(permanent_for_planner)} '
             f'left={len(left)} right={len(right)} center={len(center)} '
             f'pruned={pruned} merged={merged_tracks}{status_suffix}',
         )
@@ -650,6 +691,8 @@ class ConeMemoryNode(Node):
     # Publishing
     # ------------------------------------------------------------------
 
+    _PERMA_TRACK_ID_BASE = 1_000_000
+
     def _publish_tracked_cones(
         self,
         tracks: list[ConeTrack],
@@ -659,6 +702,7 @@ class ConeMemoryNode(Node):
         vehicle_y: float,
         heading_x: float,
         heading_y: float,
+        permanent_cones: list[PermaCone] = (),
     ) -> None:
         msg = ConeDetectionArray()
         msg.header.stamp = (
@@ -694,6 +738,20 @@ class ConeMemoryNode(Node):
             _set_cone_field(cone, 'first_seen', self._ns_to_stamp(int(max(0.0, track.first_seen_sec) * 1e9)))
             _set_cone_field(cone, 'last_seen', self._ns_to_stamp(int(max(0.0, track.last_seen_sec) * 1e9)))
             msg.cones.append(cone)
+        for idx, perma in enumerate(permanent_cones):
+            pcone = ConeDetection()
+            pcone.color = perma.label
+            _set_cone_field(pcone, 'boundary_color', perma.label)
+            pcone.confidence = float(perma.confidence)
+            pcone.position.x = float(perma.x)
+            pcone.position.y = float(perma.y)
+            pcone.position.z = float(perma.z)
+            _set_cone_field(pcone, 'track_id', self._PERMA_TRACK_ID_BASE + idx)
+            _set_cone_field(pcone, 'track_state', TRACK_STATE_CONFIRMED)
+            _set_cone_field(pcone, 'track_confidence', float(perma.confidence))
+            _set_cone_field(pcone, 'color_confidence', 1.0)
+            _set_cone_field(pcone, 'seen_count', int(perma.seen_count))
+            msg.cones.append(pcone)
         self._tracked_pub.publish(msg)
 
     def _publish_local_markers(
@@ -702,6 +760,7 @@ class ConeMemoryNode(Node):
         confirmed: list[ConeTrack],
         stale: list[ConeTrack],
         tentative: list[ConeTrack],
+        permanent: list[PermaCone],
         now: Time,
     ) -> None:
         arr = MarkerArray()
@@ -720,6 +779,14 @@ class ConeMemoryNode(Node):
                     arr.markers.append(
                         make_id_marker(track, now, odom_frame=self.odom_frame, publish_rate_hz=self.publish_rate_hz)
                     )
+        for idx, perma in enumerate(permanent):
+            arr.markers.append(
+                make_perma_cone_marker(
+                    perma, 200_000 + idx, now,
+                    odom_frame=self.odom_frame,
+                    publish_rate_hz=self.publish_rate_hz,
+                )
+            )
         self._viz_pub.publish(arr)
 
     def _publish_track_markers(
