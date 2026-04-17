@@ -4,11 +4,13 @@ The 2D LiDAR pipeline consumes `sensor_msgs/LaserScan`, extracts cone-like scan 
 
 It is selected with `lidar_pipeline:=scan2d`.
 
+The 2D path is the legacy scan pipeline. The current full-launch default is `lidar_pipeline:=pointcloud3d`.
+
 ## Runtime Flow
 
 `LaserScan -> lidar_node -> /sim/lidar/perception/cones_3d -> cone_evaluator_node / cone_memory_node`
 
-When measurement/raw prefixing is enabled, the topics use `/sim/raw/...` instead.
+When `measure:=true` or `sensor_pipeline:=true`, the topics use `/sim/raw/...` instead.
 
 The 2D LiDAR node does not classify cone color. It only estimates cone positions.
 

@@ -14,6 +14,8 @@ The full sim launch has three relevant switches:
 - `measure:=true`: start `measurement_node` and make the stack use `/sim/raw` inputs where applicable.
 - `sensor_pipeline:=true`: enable both raw sensor nodes and measurement together, and start the vehicle plotter state dashboard.
 
+`sensor_pipeline:=true` is the normal full path. It implies the raw sensor nodes and measurement layer, and it also makes `plotter_node` publish `/vehicle_plotter/state`. `logging:=true` can also enable the state dashboard/logging path, but it does not by itself start the raw sensor nodes or `measurement_node`.
+
 In normal sensor-pipeline runs, raw nodes publish under `/sim/raw/...`, `measurement_node` republishes under `/sim/...`, and downstream logging/plotting reads the measured topics.
 
 ## Enabled Sensors
@@ -99,7 +101,7 @@ The model is physics-inspired, not high fidelity:
 - brake temperatures rise during braking and cool with airflow/ambient cooling
 - pitot dynamic pressure follows vehicle speed
 
-The old combined virtual sensor node and old radiator-temperature node are no longer part of the current package.
+The current package uses the dedicated node list above rather than removed legacy aggregate sensor nodes.
 
 ## Measurement Node
 
@@ -132,7 +134,9 @@ With `sensor_pipeline:=true`:
 2. `measurement_node` applies configured imperfections.
 3. Measured `/sim/...` topics are consumed by `vehicle_plotter`.
 4. `plotter_node` publishes `/vehicle_plotter/state`.
-5. `logger_node` writes run artifacts if logging is enabled.
+5. `logger_node` writes enabled run artifacts.
+
+The full launch always starts the main `logger_node` for diagnostics and path evaluation, but vehicle-state log chunks require `/vehicle_plotter/state`, which is produced by `plotter_node` when `sensor_pipeline:=true` or `logging:=true`.
 
 This split is useful for debugging:
 

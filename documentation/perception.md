@@ -10,7 +10,7 @@ Typical camera flow:
 
 `camera images -> perception_node -> /sim/stereo/perception/cones_3d -> cone_evaluator_node -> cone_memory_node -> planner`
 
-When `measure:=true` or `sensor_pipeline:=true`, the launch file switches perception inputs and outputs under `/sim/raw/...`:
+When `measure:=true` or `sensor_pipeline:=true`, the launch file switches perception inputs and outputs under `/sim/raw/...` so the measurement layer remains the boundary between idealized sim signals and measured `/sim/...` signals:
 
 `/sim/raw/stereo/... -> perception_node -> /sim/raw/stereo/perception/cones_3d`
 
@@ -113,7 +113,7 @@ The evaluator publishes range-error samples under the selected eval prefix. The 
 
 ## Cone Memory And Planner Use
 
-`cone_memory_node` fuses camera and LiDAR cone detections into `/tracked_cones` when `cone_memory_enabled:=true`. The camera contributes class/color information and, depending on the configured range split, can also contribute position.
+`cone_memory_node` fuses camera and LiDAR cone detections into `/tracked_cones` when `cone_memory_enabled:=true`. The camera contributes class/color information and, depending on the configured range split, can also contribute position. With the default `lidar_pipeline:=pointcloud3d`, the launch reduces cone-memory confirmation to one hit so the filtered point-cloud detections can enter planning with less delay.
 
 Important fusion parameters:
 
@@ -121,7 +121,14 @@ Important fusion parameters:
 - `prefer_lidar_if_camera_missing_far`: use LiDAR position in the far band if camera position is missing.
 - `allow_camera_fallback_near`: allow camera position in the near band when LiDAR position is missing.
 
-If cone memory is disabled, normal track planners can use the camera cone topic directly. On skidpad and acceleration, the planner input still goes through the skidpad router when the selected planner supports tracked cones.
+If cone memory is disabled, normal track planners can use the camera cone topic directly. On skidpad and acceleration, the planner input still goes through the skidpad router when the selected planner is `midpoint`, `single_boundary`, or `corridor`.
+
+Planner input routing in the full launch is:
+
+- smalltrack with cone memory: `/tracked_cones`
+- smalltrack without cone memory: camera cone detections
+- skidpad/acceleration with tracked-cone planners: `/tracked_cones/skidpad_routed`
+- `linetest`: no cone input
 
 ## Useful Commands
 

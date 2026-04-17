@@ -34,6 +34,8 @@ Main launch arguments:
 - `planner_rate_hz`: planner/controller timer rate.
 - `planner_odom_delay_ms`: optional fixed delay on the odometry feed.
 - `planner_odom_lag_compensation_ms`: forward pose projection inside planner/controller transforms.
+- `logging`: enable vehicle-state logging/dashboard support.
+- `controller_diagnostics`, `thesis_controller_diagnostics`, and `path_tracking_eval`: enable logger-side evaluation artifacts.
 
 Example:
 
@@ -65,6 +67,8 @@ The selected `spawn.yaml` provides:
 - `filtering.planning_horizon_m` for the corridor planner
 
 This is how skidpad shortens the planning horizon without requiring a separate planner YAML.
+
+Planner config selection is registry-based. `midpoint`, `single_boundary`, and `corridor` are the migrated tracked-cone planners and use the shared tracked-cone runtime. `linetest` is configured separately and is allowed on `acceleration` and `smalltrack`. `none` disables planner node launch while keeping the rest of the stack available for sensor/perception checks.
 
 ## Shared Planner Groups
 
@@ -200,6 +204,8 @@ Useful parameters:
 - `lowpass_speed_alpha`
 
 The planner commands lower speed for higher curvature. Track overlays set the current main speeds: acceleration fixes min and max at the same high value, while smalltrack and skidpad allow lower speed in corners.
+
+When `controller:=none`, the launch overlays `control.controller_type: none` and the selected planner publishes paths/diagnostics without issuing normal controller commands.
 
 ## Controller Groups
 

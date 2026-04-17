@@ -1,8 +1,8 @@
 # Skidpad Routing
 
-The skidpad router is a deterministic mission filter for skidpad and acceleration runs. It republish cones for the active route branch so normal planners can drive the correct part of the course without understanding skidpad mission state.
+The skidpad router is a deterministic mission filter for skidpad and acceleration runs. It republishes cones for the active route branch so normal planners can drive the correct part of the course without understanding skidpad mission state.
 
-It runs as `skidpad_router_node` when the selected track is `skidpad` or `acceleration` and the selected planner is one of the tracked-cone planners.
+It runs as `skidpad_router_node` when the selected track is `skidpad` or `acceleration` and the selected planner is `midpoint`, `single_boundary`, or `corridor`.
 
 ## Core Idea
 
@@ -10,7 +10,7 @@ The router sits between cone memory and the planner:
 
 `/tracked_cones -> skidpad_router_node -> /tracked_cones/skidpad_routed -> planner`
 
-If cone memory is disabled, the router can use the direct camera cone topic as input. The planner still consumes the routed output on skidpad and acceleration.
+If cone memory is disabled, the router uses the direct camera cone topic as input. The planner still consumes the routed output on skidpad and acceleration. `linetest` does not use the router because it does not consume cones.
 
 ## State Machine
 

@@ -14,7 +14,7 @@ Main outputs:
 - accepted/rejected cluster debug markers
 - `/sim/lidar/perception/cones_3d` or `/sim/raw/lidar/perception/cones_3d`
 
-The output detections are normally fused by cone memory with camera detections.
+The output detections are normally fused by cone memory with camera detections. This is the current full-launch default LiDAR pipeline.
 
 ## PointCloud Decoding
 
