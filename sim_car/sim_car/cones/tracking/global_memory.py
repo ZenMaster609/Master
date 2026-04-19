@@ -2,7 +2,8 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+import math
+from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 
 from sim_car.cones.tracking.fusion import resolve_boundary_color_by_lateral_position
@@ -164,9 +165,12 @@ class PermaCone:
     x: float
     y: float
     z: float
-    label: str        # 'blue', 'yellow', or 'orange' — never 'unknown'
+    label: str            # 'blue', 'yellow', or 'orange' — never 'unknown'
     confidence: float
     seen_count: int
+    confirmed_by_live: bool = field(default=True)
+    # True  → a live local track appeared near this cone on the most recent pass
+    # False → reset when the car is far ahead; becomes True again if sensor sees it
 
 
 class PermanentConeStore:
@@ -260,3 +264,59 @@ class PermanentConeStore:
                 continue
             result.append(cone)
         return result
+
+    def update_and_prune(
+        self,
+        vehicle_x: float,
+        vehicle_y: float,
+        vehicle_yaw: float,
+        live_tracks: list[ConeTrack],
+        *,
+        prune_behind_m: float,
+        confirm_range_m: float,
+        dedup_radius_m: float,
+    ) -> int:
+        """Update live-detection flags and prune cones the car passed without seeing.
+
+        Each permanent cone's ``confirmed_by_live`` flag is:
+        - reset to False when the cone is more than (confirm_range_m + 5 m) ahead
+          of the car (arms the check for the next approach),
+        - set to True when a live local track appears within ``dedup_radius_m`` while
+          the car is within ``confirm_range_m`` of the cone.
+
+        A cone is removed when it is more than ``prune_behind_m`` behind the car
+        AND ``confirmed_by_live`` is still False — meaning the car passed close
+        enough for sensors to have detected it but nothing was found.
+        """
+        cos_yaw = math.cos(vehicle_yaw)
+        sin_yaw = math.sin(vehicle_yaw)
+        dedup_sq = dedup_radius_m * dedup_radius_m
+        reset_arm_m = confirm_range_m + 5.0
+        keep: list[PermaCone] = []
+        pruned = 0
+        for cone in self.cones:
+            dx = cone.x - vehicle_x
+            dy = cone.y - vehicle_y
+            dist_sq = dx * dx + dy * dy
+            x_base = cos_yaw * dx + sin_yaw * dy
+
+            # Arm for next pass: cone is far ahead, reset the confirmation flag
+            if x_base > reset_arm_m:
+                cone.confirmed_by_live = False
+
+            # Confirm: live track detected near this cone while within sensor range
+            if dist_sq <= confirm_range_m * confirm_range_m and not cone.confirmed_by_live:
+                if any(
+                    (cone.x - t.x) ** 2 + (cone.y - t.y) ** 2 <= dedup_sq
+                    for t in live_tracks
+                ):
+                    cone.confirmed_by_live = True
+
+            # Prune: passed by prune_behind_m with no live confirmation this pass
+            if x_base < -prune_behind_m and not cone.confirmed_by_live:
+                pruned += 1
+                continue
+
+            keep.append(cone)
+        self.cones = keep
+        return pruned

@@ -444,6 +444,19 @@ class ConeMemoryNode(Node):
             for track in self._local_tracker.tracks
         ]
         if self.enable_permanent_cone_memory:
+            pruned_unseen = self._permanent_cone_store.update_and_prune(
+                veh_x, veh_y, veh_yaw,
+                self._local_tracker.tracks,
+                prune_behind_m=self.behind_drop_m,
+                confirm_range_m=self.max_range_m,
+                dedup_radius_m=self.permanent_dedup_radius_m,
+            )
+            if pruned_unseen:
+                self.get_logger().info(
+                    f'perma-cones: pruned {pruned_unseen} unseen '
+                    f'(total={len(self._permanent_cone_store.cones)})'
+                )
+        if self.enable_permanent_cone_memory:
             harvested = self._permanent_cone_store.harvest(
                 self._local_tracker.tracks,
                 track_positions_in_base,
