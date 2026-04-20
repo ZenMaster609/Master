@@ -8,6 +8,10 @@ speed_control:
   speed_max_mps: 4.17
   curvature_speed_gain: 4.0
   lowpass_speed_alpha: 0.15
+  enable_stage_params: true
+  speed_max_mps_1: 4.17
+  speed_max_mps_2: 8.0
+  stage_index_topic: /skidpad_router/route_index
 
 planner_limits:
   max_planner_length_m: 14.0

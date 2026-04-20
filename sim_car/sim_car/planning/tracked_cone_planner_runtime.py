@@ -18,7 +18,7 @@ from rclpy.executors import ExternalShutdownException
 from rclpy.node import Node
 from rclpy.qos import qos_profile_sensor_data
 from rclpy.time import Time
-from std_msgs.msg import ColorRGBA
+from std_msgs.msg import ColorRGBA, Int32
 from tf2_ros import Buffer, TransformException, TransformListener
 from vehicle_plotter_msgs.msg import ConeDetectionArray
 from visualization_msgs.msg import Marker, MarkerArray
@@ -41,6 +41,7 @@ from sim_car.planning.triangulation_planner_core import (
 )
 from sim_car.planning.tracked_cone_planner_contract import (
     build_tracked_cone_controller,
+    build_tracked_cone_controller_for_stage,
     log_tracked_cone_controller_mode,
     normalize_tracked_cone_controller_type,
 )
@@ -246,10 +247,52 @@ class TrackedConePlannerRuntime(Node):
             'stanley.yaw_rate_damping_gain': 0.0,
             'stanley.wheelbase_m': 1.65,
             'stanley.cross_track_deadband_m': 0.0,
+            'stanley_1.k_gain': 1.2,
+            'stanley_1.softening_speed_mps': 0.0,
+            'stanley_1.heading_gain': 1.0,
+            'stanley_1.lookahead_idx_offset': 0,
+            'stanley_1.steering_limit_rad': 0.52,
+            'stanley_1.steering_lowpass_alpha': 1.0,
+            'stanley_1.steering_rate_limit_rad_s': 10.0,
+            'stanley_1.use_yaw_rate_damping': True,
+            'stanley_1.yaw_rate_damping_gain': 0.0,
+            'stanley_1.wheelbase_m': 1.65,
+            'stanley_1.cross_track_deadband_m': 0.0,
+            'stanley_2.k_gain': 1.2,
+            'stanley_2.softening_speed_mps': 0.0,
+            'stanley_2.heading_gain': 1.0,
+            'stanley_2.lookahead_idx_offset': 0,
+            'stanley_2.steering_limit_rad': 0.52,
+            'stanley_2.steering_lowpass_alpha': 1.0,
+            'stanley_2.steering_rate_limit_rad_s': 10.0,
+            'stanley_2.use_yaw_rate_damping': True,
+            'stanley_2.yaw_rate_damping_gain': 0.0,
+            'stanley_2.wheelbase_m': 1.65,
+            'stanley_2.cross_track_deadband_m': 0.0,
+            'pure_pursuit_1.lookahead_m': 3.0,
+            'pure_pursuit_1.min_lookahead_m': 1.5,
+            'pure_pursuit_1.max_lookahead_m': 8.0,
+            'pure_pursuit_1.lookahead_gain': 0.0,
+            'pure_pursuit_1.steering_limit_rad': 0.52,
+            'pure_pursuit_1.steering_lowpass_alpha': 1.0,
+            'pure_pursuit_1.steering_rate_limit_rad_s': 10.0,
+            'pure_pursuit_1.wheelbase_m': 1.65,
+            'pure_pursuit_2.lookahead_m': 3.0,
+            'pure_pursuit_2.min_lookahead_m': 1.5,
+            'pure_pursuit_2.max_lookahead_m': 8.0,
+            'pure_pursuit_2.lookahead_gain': 0.0,
+            'pure_pursuit_2.steering_limit_rad': 0.52,
+            'pure_pursuit_2.steering_lowpass_alpha': 1.0,
+            'pure_pursuit_2.steering_rate_limit_rad_s': 10.0,
+            'pure_pursuit_2.wheelbase_m': 1.65,
             'speed_control.speed_min_mps': 1.0,
             'speed_control.speed_max_mps': 1.8,
             'speed_control.curvature_speed_gain': 4.0,
             'speed_control.lowpass_speed_alpha': 0.15,
+            'speed_control.enable_stage_params': False,
+            'speed_control.speed_max_mps_1': 1.8,
+            'speed_control.speed_max_mps_2': 1.8,
+            'speed_control.stage_index_topic': '',
             'validation.hold_last_valid_s': 1.25,
             'validation.hold_exit_clean_frames': 2,
             'diagnostics.topic': self._planner_identity.diagnostics_topic,
@@ -353,6 +396,35 @@ class TrackedConePlannerRuntime(Node):
         self.lowpass_speed_alpha = float(
             np.clip(float(self.get_parameter('speed_control.lowpass_speed_alpha').value), 0.0, 1.0)
         )
+        self.enable_stage_params = bool(self.get_parameter('speed_control.enable_stage_params').value)
+        self.speed_max_mps_1 = max(
+            self.speed_min_mps, float(self.get_parameter('speed_control.speed_max_mps_1').value)
+        )
+        self.speed_max_mps_2 = max(
+            self.speed_min_mps, float(self.get_parameter('speed_control.speed_max_mps_2').value)
+        )
+        self._stage_index: int = 0
+        self._stage_by_topic: bool = False
+        if self.enable_stage_params:
+            self._controller_1 = build_tracked_cone_controller_for_stage(
+                node=self,
+                controller_type=self.controller_type,
+                publish_rate_hz=self.publish_rate_hz,
+                stage=1,
+            )
+            self._controller_2 = build_tracked_cone_controller_for_stage(
+                node=self,
+                controller_type=self.controller_type,
+                publish_rate_hz=self.publish_rate_hz,
+                stage=2,
+            )
+            stage_index_topic = str(self.get_parameter('speed_control.stage_index_topic').value).strip()
+            if stage_index_topic:
+                self._stage_by_topic = True
+                self.create_subscription(Int32, stage_index_topic, self._on_stage_index_cb, 10)
+        else:
+            self._controller_1 = None
+            self._controller_2 = None
         self.hold_last_valid_s = max(0.0, float(self.get_parameter('validation.hold_last_valid_s').value))
         self.hold_exit_clean_frames = max(
             1,
@@ -466,6 +538,7 @@ class TrackedConePlannerRuntime(Node):
             self._latest_yaw_rate_rps = float(msg.twist.twist.angular.z)
 
     def _on_timer(self) -> None:
+        self._apply_active_stage_params()
         control_target_base: Optional[np.ndarray] = None
         control_target_frame: Optional[np.ndarray] = None
         control_debug_metrics: Optional[dict[str, float]] = None
@@ -950,6 +1023,24 @@ class TrackedConePlannerRuntime(Node):
             out[idx, 0] = xb
             out[idx, 1] = yb
         return out
+
+    def _on_stage_index_cb(self, msg: Int32) -> None:
+        self._stage_index = int(msg.data) % 2
+
+    def _apply_active_stage_params(self) -> None:
+        if not self.enable_stage_params:
+            return
+        if not self._stage_by_topic:
+            completed = getattr(self, '_lap_tracking_completed_laps', 0)
+            self._stage_index = 0 if completed == 0 else 1
+        if self._stage_index == 0:
+            self.speed_max_mps = self.speed_max_mps_1
+            if self._controller_1 is not None:
+                self._controller = self._controller_1
+        else:
+            self.speed_max_mps = self.speed_max_mps_2
+            if self._controller_2 is not None:
+                self._controller = self._controller_2
 
     def _compute_speed_command(self, kappa: float) -> float:
         v_des = self.speed_max_mps / (1.0 + self.curvature_speed_gain * abs(kappa))

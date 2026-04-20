@@ -15,6 +15,7 @@ needed for normal use.
 from dataclasses import dataclass
 from launch import LaunchDescription
 import sys
+from typing import Any
 import tempfile
 from pathlib import Path
 
@@ -115,7 +116,7 @@ class LaunchSelection:
     spawn_y: str
     spawn_yaw: str
     path_tracking_autostop_laps: str
-    speed_control: dict[str, float]
+    speed_control: dict[str, Any]
     planner_limits: dict[str, float]
     planner_diagnostics_topic: str
     planner_default_rviz_profile: str
@@ -1656,6 +1657,14 @@ def _load_speed_control_defaults(spawn_config_path: str) -> dict[str, float]:
         if key not in speed_control:
             raise RuntimeError(f"Spawn config missing 'speed_control.{key}': {spawn_config_path}")
         resolved[key] = float(speed_control[key])
+    for key in ('speed_max_mps_1', 'speed_max_mps_2'):
+        if key in speed_control:
+            resolved[key] = float(speed_control[key])
+    if 'enable_stage_params' in speed_control:
+        resolved['enable_stage_params'] = bool(speed_control['enable_stage_params'])
+    stage_topic = str(speed_control.get('stage_index_topic', '')).strip()
+    if stage_topic:
+        resolved['stage_index_topic'] = stage_topic
     return resolved
 
 

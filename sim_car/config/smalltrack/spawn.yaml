@@ -5,9 +5,12 @@ spawn:
 
 speed_control:
   speed_min_mps: 1.0
-  speed_max_mps: 7.0
+  speed_max_mps: 20.0
   curvature_speed_gain: 4.0
   lowpass_speed_alpha: 0.15
+  enable_stage_params: true
+  speed_max_mps_1: 7.0
+  speed_max_mps_2: 20.0
 
 lap_tracking:
   auto_suspend_after_laps: 10

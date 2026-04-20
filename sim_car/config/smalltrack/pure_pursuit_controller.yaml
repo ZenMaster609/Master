@@ -6,3 +6,21 @@
       lookahead_m: 3.7
       min_lookahead_m: 0.5
       max_lookahead_m: 10.0
+    pure_pursuit_1:
+      lookahead_m: 3.7
+      min_lookahead_m: 0.5
+      max_lookahead_m: 10.0
+      lookahead_gain: 0.0
+      steering_limit_rad: 0.52
+      steering_lowpass_alpha: 1.0
+      steering_rate_limit_rad_s: 10.0
+      wheelbase_m: 1.65
+    pure_pursuit_2:
+      lookahead_m: 3.7
+      min_lookahead_m: 0.5
+      max_lookahead_m: 10.0
+      lookahead_gain: 0.0
+      steering_limit_rad: 0.52
+      steering_lowpass_alpha: 1.0
+      steering_rate_limit_rad_s: 10.0
+      wheelbase_m: 1.65

@@ -19,7 +19,7 @@ from nav_msgs.msg import Odometry
 from rclpy.executors import ExternalShutdownException
 from rclpy.node import Node
 from rclpy.qos import qos_profile_sensor_data
-from std_msgs.msg import Float32
+from std_msgs.msg import Float32, Int32
 from vehicle_plotter_msgs.msg import ConeDetection, ConeDetectionArray
 from visualization_msgs.msg import Marker, MarkerArray
 
@@ -65,6 +65,7 @@ class SkidpadRouterNode(Node):
         self._viz_pub = self.create_publisher(MarkerArray, self.viz_topic, 10)
         self._cmd_pub = self.create_publisher(AckermannDriveStamped, self.cmd_topic, 10)
         self._brake_pub = self.create_publisher(Float32, self.brake_cmd_topic, 10)
+        self._route_index_pub = self.create_publisher(Int32, '/skidpad_router/route_index', 10)
         self._stop_override_timer = None
         if self.stop_override_publish_period_s > 0.0:
             self._stop_override_timer = self.create_timer(
@@ -249,6 +250,9 @@ class SkidpadRouterNode(Node):
             speed_mps=speed_mps,
             now_sec=stamp_sec,
         )
+        route_index_msg = Int32()
+        route_index_msg.data = int(self._latest_snapshot.route_index)
+        self._route_index_pub.publish(route_index_msg)
         self._update_latched_stop_line_distance_from_pose()
         if self._stop_override_active:
             self._publish_parking_override_cmd(msg.header.stamp)

@@ -6,7 +6,7 @@ from dataclasses import dataclass, fields
 import math
 from typing import Any
 
-from sim_car.planning.controller_config import build_steering_controller
+from sim_car.planning.controller_config import build_steering_controller, build_steering_controller_for_stage
 
 PARAM_STATUS_ACTIVE = 'active'
 PARAM_STATUS_COMPATIBILITY_ONLY = 'compatibility_only'
@@ -227,6 +227,15 @@ def build_tracked_cone_controller(*, node: Any, controller_type: str, publish_ra
     if normalized == 'none':
         return None
     return build_steering_controller(node=node, controller_type=normalized, publish_rate_hz=publish_rate_hz)
+
+
+def build_tracked_cone_controller_for_stage(*, node: Any, controller_type: str, publish_rate_hz: float, stage: int):
+    normalized = normalize_tracked_cone_controller_type(controller_type)
+    if normalized == 'none':
+        return None
+    return build_steering_controller_for_stage(
+        node=node, controller_type=normalized, publish_rate_hz=publish_rate_hz, stage=stage
+    )
 
 
 def log_tracked_cone_controller_mode(node: Any, *, controller_type: str) -> None:
