@@ -433,6 +433,7 @@ def generate_path_tracking_cte_plot(
     ax.set_ylabel("CTE (m)")
     apply_axis_label_fontsize(ax)
     apply_tick_label_fontsize(ax)
+    ax.set_ylim(-2.0, 2.0)
     ax.grid(True, alpha=0.3)
     _legend_if_labeled(ax, loc="upper right")
 

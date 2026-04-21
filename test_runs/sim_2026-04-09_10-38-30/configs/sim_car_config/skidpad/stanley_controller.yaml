@@ -1,8 +1,0 @@
-/**:
-  ros__parameters:
-    control:
-      controller_type: stanley
-    stanley:
-      k_gain: 1.4
-      heading_gain: 1.8
-      lookahead_idx_offset: 0

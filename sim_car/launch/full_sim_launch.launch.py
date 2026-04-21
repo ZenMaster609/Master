@@ -1689,7 +1689,7 @@ def _load_yaml_file(config_path: str) -> dict:
     return config
 
 
-def _abbreviated_run_id_prefix(track: str, planner: str, controller: str, lidar_pipeline: str) -> str:
+def _abbreviated_run_id_prefix(track: str, planner: str, controller: str, lidar_pipeline: str, speed_max_mps: float) -> str:
     normalized_track = str(track).strip().lower() or 'smalltrack'
     normalized_planner = str(planner).strip().lower() or 'midpoint'
     normalized_controller = str(controller).strip().lower() or 'stanley'
@@ -1703,6 +1703,7 @@ def _abbreviated_run_id_prefix(track: str, planner: str, controller: str, lidar_
 
     return '_'.join([
         RUN_ID_TRACK_ABBREVIATIONS.get(normalized_track, normalized_track),
+        str(int(round(float(speed_max_mps)))),
         RUN_ID_PLANNER_ABBREVIATIONS.get(normalized_planner, normalized_planner),
         RUN_ID_CONTROLLER_ABBREVIATIONS.get(normalized_controller, normalized_controller),
         RUN_ID_LIDAR_PIPELINE_ABBREVIATIONS[normalized_lidar_pipeline],
@@ -1772,6 +1773,7 @@ def _configure_track_selection(context, *_args, **_kwargs):
         selection.planner,
         selection.controller,
         lidar_pipeline,
+        selection.speed_control['speed_max_mps'],
     )
 
     planner_config_path = selection.planner_config if selection.planner == 'linetest' else _write_parameter_overlay({})

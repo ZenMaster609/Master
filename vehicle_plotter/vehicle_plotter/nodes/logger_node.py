@@ -99,6 +99,14 @@ from ..logging.thesis_controller_diagnostics import (
 from ..logging.thesis_controller_plots import generate_thesis_controller_plot
 from ..logging.track_metrics_report import write_track_metrics_report
 
+_OFF_TRACK_NO_CONE_REASONS: frozenset[str] = frozenset({
+    'no_safe_chain',
+    'hold_expired_no_path',
+    'holding_previous_valid',
+    'hysteresis_holding',
+    'stop_if_no_path',
+})
+
 
 class LoggerNode(Node):
     """
@@ -171,6 +179,8 @@ class LoggerNode(Node):
         self.declare_parameter('path_tracking_eval_summary_txt', 'path_tracking_eval_summary.txt')
         self.declare_parameter('path_tracking_eval_autostop_laps', 0)
         self.declare_parameter('control_reference_wheelbase_m', 1.65)
+        self.declare_parameter('off_track_autostop_enabled', True)
+        self.declare_parameter('off_track_autostop_timeout_s', 5.0)
 
         # Get parameters
         self._log_format = self.get_parameter('format').value
@@ -278,6 +288,13 @@ class LoggerNode(Node):
             0,
             int(self.get_parameter('path_tracking_eval_autostop_laps').value),
         )
+        self._off_track_autostop_enabled = bool(
+            self.get_parameter('off_track_autostop_enabled').value
+        )
+        self._off_track_autostop_timeout_s = max(
+            1.0,
+            float(self.get_parameter('off_track_autostop_timeout_s').value),
+        )
         self._control_reference_wheelbase_m = max(
             0.1,
             float(self.get_parameter('control_reference_wheelbase_m').value),
@@ -356,6 +373,10 @@ class LoggerNode(Node):
         self._path_eval_smalltrack_completed_laps = 0
         self._path_eval_smalltrack_lap_times_sec: list[float] = []
         self._path_eval_smalltrack_autostop_triggered = False
+        self._path_eval_run_start_sec: Optional[float] = None
+        self._path_eval_run_last_sec: Optional[float] = None
+        self._off_track_no_cone_since: Optional[float] = None
+        self._off_track_autostop_triggered = False
 
         if self._path_tracking_eval_enabled:
             self._path_eval_tf_buffer = Buffer(cache_time=Duration(seconds=10.0))
@@ -386,6 +407,7 @@ class LoggerNode(Node):
         self._setup_cone_subscriptions()
         self._setup_steering_diag_subscriptions()
         self._setup_path_tracking_eval_subscriptions()
+        self._setup_off_track_autostop_subscription()
 
         if self._enable_state_logging:
             self.state_sub = self.create_subscription(
@@ -523,6 +545,43 @@ class LoggerNode(Node):
             f'odom={self._path_tracking_eval_odom_topic} '
             f'planner_path={self._path_tracking_eval_planner_path_topic}'
         )
+
+    def _setup_off_track_autostop_subscription(self) -> None:
+        if not self._off_track_autostop_enabled:
+            return
+        self._off_track_planner_diag_sub = self.create_subscription(
+            DiagnosticArray,
+            self._steering_diag_planner_diag_topic,
+            self._off_track_planner_diag_callback,
+            10,
+        )
+        self.get_logger().info(
+            f'Off-track autostop enabled: timeout={self._off_track_autostop_timeout_s}s '
+            f'topic={self._steering_diag_planner_diag_topic}'
+        )
+
+    def _off_track_planner_diag_callback(self, msg: DiagnosticArray) -> None:
+        if self._off_track_autostop_triggered:
+            return
+        text_metrics = parse_planner_diag_text(msg)
+        reason = text_metrics.get('operator_reason', '')
+        if reason in _OFF_TRACK_NO_CONE_REASONS:
+            now = float(self.get_clock().now().nanoseconds) * 1e-9
+            if self._off_track_no_cone_since is None:
+                self._off_track_no_cone_since = now
+            elapsed = now - self._off_track_no_cone_since
+            if elapsed >= self._off_track_autostop_timeout_s:
+                self._off_track_autostop_triggered = True
+                self.get_logger().warn(
+                    f'No visible cones for {elapsed:.1f}s (reason={reason!r}). '
+                    'Triggering clean exit to generate plots.'
+                )
+                self.shutdown()
+                self._request_process_exit(parent_delay_s=0.1, force_delay_s=5.0)
+                if rclpy.ok():
+                    rclpy.shutdown()
+        else:
+            self._off_track_no_cone_since = None
 
     def _steering_diag_cmd_callback(self, msg: AckermannDriveStamped) -> None:
         self._diag_desired_steering_rad = float(msg.drive.steering_angle)
@@ -750,10 +809,23 @@ class LoggerNode(Node):
                 f'{snapshot.completed_laps}/{self._path_tracking_eval_autostop_laps}. '
                 'Shutting down logger to finalize outputs.'
             )
-            self._request_process_exit(parent_delay_s=0.1, force_delay_s=5.0)
             self.shutdown()
+            self._request_process_exit(parent_delay_s=0.1, force_delay_s=5.0)
             if rclpy.ok():
                 rclpy.shutdown()
+
+    def _compute_average_lap_time_sec(self) -> Optional[float]:
+        if self._path_tracking_eval_track_name == 'smalltrack':
+            if self._path_eval_smalltrack_lap_times_sec:
+                return float(np.mean(self._path_eval_smalltrack_lap_times_sec))
+            return None
+        if (
+            self._path_eval_run_start_sec is not None
+            and self._path_eval_run_last_sec is not None
+            and self._path_eval_run_last_sec > self._path_eval_run_start_sec
+        ):
+            return self._path_eval_run_last_sec - self._path_eval_run_start_sec
+        return None
 
     def _request_process_exit(self, *, parent_delay_s: float = 0.0, force_delay_s: float = 5.0) -> None:
         # Autostop is meant to terminate the full launched sim, not only this logger node.
@@ -1437,6 +1509,9 @@ class LoggerNode(Node):
         else:
             row['status'] = 'waiting_for_planner_path'
 
+        if self._path_eval_run_start_sec is None:
+            self._path_eval_run_start_sec = now_sec
+        self._path_eval_run_last_sec = now_sec
         self._path_eval_csv_writer.writerow(row)
         self._path_eval_flush_counter += 1
         if self._path_eval_flush_counter >= self._path_eval_flush_stride:
@@ -1666,12 +1741,7 @@ class LoggerNode(Node):
                 if self._path_tracking_eval_track_name == 'smalltrack'
                 and self._path_tracking_eval_autostop_laps > 0
                 else None,
-                average_lap_time_sec=(
-                    float(np.mean(self._path_eval_smalltrack_lap_times_sec))
-                    if self._path_tracking_eval_track_name == 'smalltrack'
-                    and self._path_eval_smalltrack_lap_times_sec
-                    else None
-                ),
+                average_lap_time_sec=self._compute_average_lap_time_sec(),
             )
             if generated_overlay is not None:
                 self._safe_log_info(f'Generated path tracking overlay plot: {generated_overlay}')
@@ -1694,6 +1764,7 @@ class LoggerNode(Node):
                 lap_target=self._path_tracking_eval_autostop_laps,
                 overlay_average_distances=overlay_average_distances,
                 avg_track_width_m=overlay_track_width_m,
+                avg_lap_time_sec=self._compute_average_lap_time_sec(),
             )
             self._safe_log_info(
                 f'Updated per-track path tracking metrics: {csv_report_path}, {jsonl_report_path}'

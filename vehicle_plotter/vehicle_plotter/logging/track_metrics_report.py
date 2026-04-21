@@ -62,6 +62,7 @@ TRACK_METRICS_FIELDNAMES = [
     "stereo",
     "completed_laps",
     "lap_target",
+    "avg_lap_time_sec",
     "speed_min_mps",
     "speed_max_mps",
     "desired_speed_mps",
@@ -90,6 +91,7 @@ def build_track_metrics_record(
     run_id: str | None = None,
     completed_laps: int | None = None,
     lap_target: int | None = None,
+    avg_lap_time_sec: float | None = None,
     overlay_average_distances: dict[str, float] | None = None,
     avg_track_width_m: float | None = None,
 ) -> dict[str, Any]:
@@ -138,6 +140,7 @@ def build_track_metrics_record(
         "stereo": stereo_enabled,
         "completed_laps": _int_or_none(completed_laps),
         "lap_target": _int_or_none(lap_target),
+        "avg_lap_time_sec": _float_or_none(avg_lap_time_sec),
         "speed_min_mps": speed_min_mps,
         "speed_max_mps": speed_max_mps,
         "desired_speed_mps": desired_speed_mps,
@@ -183,6 +186,7 @@ def write_track_metrics_report(
     run_id: str | None = None,
     completed_laps: int | None = None,
     lap_target: int | None = None,
+    avg_lap_time_sec: float | None = None,
     overlay_average_distances: dict[str, float] | None = None,
     avg_track_width_m: float | None = None,
 ) -> tuple[Path, Path]:
@@ -193,6 +197,7 @@ def write_track_metrics_report(
         run_id=run_id,
         completed_laps=completed_laps,
         lap_target=lap_target,
+        avg_lap_time_sec=avg_lap_time_sec,
         overlay_average_distances=overlay_average_distances,
         avg_track_width_m=avg_track_width_m,
     )
