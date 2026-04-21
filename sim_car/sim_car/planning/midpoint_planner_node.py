@@ -104,7 +104,7 @@ class MidpointPlannerNode(TrackedConePlannerBase):
             "width_estimation.min_trustworthy_pairs": 2,
             "centerline.smoothing_window": 3,
             "centerline.max_heading_delta_rad": 0.75,
-            "centerline.max_midpoint_segment_length_m": 4.5,
+            "centerline.max_midpoint_segment_length_m": 10.0,
             "centerline.midpoint_order_reference_handoff_m": 6.0,
             "centerline.midpoint_order_history_size": 3,
             "centerline.midpoint_order_backtrack_tolerance_m": 0.35,

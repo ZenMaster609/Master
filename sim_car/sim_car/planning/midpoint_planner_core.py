@@ -26,7 +26,7 @@ class MidpointPlannerConfig:
     max_consecutive_unknown_pairs: int = 2
 
     min_step_m: float = 0.8
-    max_step_m: float = 6.0
+    max_step_m: float = 10.0
     max_heading_change_rad: float = 1.0
     min_forward_progress_m: float = 0.2
     min_chain_length: int = 3
