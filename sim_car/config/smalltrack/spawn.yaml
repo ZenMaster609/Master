@@ -5,7 +5,7 @@ spawn:
 
 speed_control:
   speed_min_mps: 1.0
-  speed_max_mps: 6.0
+  speed_max_mps: 8.0
   curvature_speed_gain: 4.0
   lowpass_speed_alpha: 0.15
 

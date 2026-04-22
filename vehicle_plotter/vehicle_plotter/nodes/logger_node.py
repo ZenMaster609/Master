@@ -68,6 +68,7 @@ from ..logging.path_tracking_eval_plots import (
     _estimate_average_track_width_m,
     build_skidpad_gt_overlay_segments,
     compute_path_tracking_overlay_average_distances,
+    compute_skidpad_circle_times_sec,
     generate_path_tracking_cte_plot,
     generate_path_tracking_overlay_plot,
 )
@@ -1736,6 +1737,11 @@ class LoggerNode(Node):
                 gt_reference_segments_xy=overlay_segments_xy,
             )
             overlay_track_width_m = _estimate_average_track_width_m(overlay_blue_xy, overlay_yellow_xy)
+            skidpad_circle_times = (
+                compute_skidpad_circle_times_sec(csv_path)
+                if self._path_tracking_eval_track_name == 'skidpad'
+                else None
+            )
             generated_overlay = generate_path_tracking_overlay_plot(
                 csv_path,
                 overlay_path,
@@ -1752,6 +1758,7 @@ class LoggerNode(Node):
                 and self._path_tracking_eval_autostop_laps > 0
                 else None,
                 average_lap_time_sec=self._compute_average_lap_time_sec(),
+                skidpad_circle_times_sec=skidpad_circle_times,
             )
             if generated_overlay is not None:
                 self._safe_log_info(f'Generated path tracking overlay plot: {generated_overlay}')

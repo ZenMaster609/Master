@@ -456,6 +456,7 @@ def generate_path_tracking_overlay_plot(
     lap_count: Optional[int] = None,
     lap_target: Optional[int] = None,
     average_lap_time_sec: Optional[float] = None,
+    skidpad_circle_times_sec: Optional[dict[int, float]] = None,
     title: str = "GT Midline vs Planner vs Driven Trajectory",
     dpi: int = 150,
 ) -> Optional[Path]:
@@ -543,6 +544,13 @@ def generate_path_tracking_overlay_plot(
         text_lines.append(f"Auto-stop target: {int(lap_target)}")
     if average_lap_time_sec is not None and np.isfinite(float(average_lap_time_sec)):
         text_lines.append(f"Avg lap time: {_format_duration_minutes_seconds(float(average_lap_time_sec))}")
+    if skidpad_circle_times_sec:
+        t2 = skidpad_circle_times_sec.get(2)
+        t4 = skidpad_circle_times_sec.get(4)
+        if t2 is not None and math.isfinite(t2):
+            text_lines.append(f"Right circle time: {_format_duration_minutes_seconds(t2)}")
+        if t4 is not None and math.isfinite(t4):
+            text_lines.append(f"Left circle time: {_format_duration_minutes_seconds(t4)}")
     avg_text = "\n".join(text_lines)
     ax.text(
         0.02,
@@ -574,3 +582,89 @@ def _format_duration_minutes_seconds(duration_sec: float) -> str:
     total_seconds = max(0, int(round(float(duration_sec))))
     minutes, seconds = divmod(total_seconds, 60)
     return f"{minutes:02d}:{seconds:02d}"
+
+
+def compute_skidpad_circle_times_sec(csv_path: Path) -> dict[int, float]:
+    """Return elapsed time (seconds) per circle for the skidpad sequence right-right-left-left.
+
+    Keys are 1-indexed circle numbers (1=first right, 2=second right,
+    3=first left, 4=second left).  Only circles for which a full lap was
+    detected will appear in the result.
+    """
+    rows = _read_rows(csv_path)
+    if not rows:
+        return {}
+
+    _CROSSROADS_CENTER = (0.0, 0.0)
+    _CROSSROADS_HALF_XY = (3.0, 2.5)
+    _RIGHT_CENTER = (9.25, 0.0)
+    _LEFT_CENTER = (-9.25, 0.0)
+    _RADIUS_MIN, _RADIUS_MAX = 6.5, 11.5
+    _LAP_COMPLETE_ANGLE = 5.5
+    _SEQUENCE = ("right", "right", "left", "left")
+
+    def _in_crossroads(x: float, y: float) -> bool:
+        cx, cy = _CROSSROADS_CENTER
+        hx, hy = _CROSSROADS_HALF_XY
+        return abs(x - cx) <= hx and abs(y - cy) <= hy
+
+    approach_complete = False
+    route_index = 0
+    completed_laps = 0
+    lap_angle_accum = 0.0
+    lap_armed = False
+    last_theta: Optional[float] = None
+    prev_in_crossroads: Optional[bool] = None
+
+    circle_times: dict[int, float] = {}
+    circle_start_sec: Optional[float] = None
+
+    for row in rows:
+        t = _safe_float(row.get("timestamp_sec", float("nan")))
+        x = _safe_float(row.get("front_axle_x_m", row.get("vehicle_x_m", float("nan"))))
+        y = _safe_float(row.get("front_axle_y_m", row.get("vehicle_y_m", float("nan"))))
+        if not (math.isfinite(t) and math.isfinite(x) and math.isfinite(y)):
+            continue
+
+        xroads = _in_crossroads(x, y)
+        just_entered = prev_in_crossroads is not None and not prev_in_crossroads and xroads
+
+        branch = _SEQUENCE[route_index] if route_index < len(_SEQUENCE) else "straight"
+
+        if branch in ("right", "left") and approach_complete:
+            cx, cy = _RIGHT_CENTER if branch == "right" else _LEFT_CENTER
+            r = math.hypot(x - cx, y - cy)
+            if not xroads and _RADIUS_MIN <= r <= _RADIUS_MAX:
+                theta = math.atan2(y - cy, x - cx)
+                if last_theta is not None:
+                    delta = (theta - last_theta + math.pi) % (2 * math.pi) - math.pi
+                    lap_angle_accum += delta
+                    if abs(lap_angle_accum) >= _LAP_COMPLETE_ANGLE:
+                        lap_armed = True
+                last_theta = theta
+            else:
+                last_theta = None
+        else:
+            last_theta = None
+            if branch not in ("right", "left"):
+                lap_angle_accum = 0.0
+                lap_armed = False
+
+        if just_entered:
+            if not approach_complete:
+                approach_complete = True
+                circle_start_sec = t
+            elif branch in ("right", "left") and lap_armed:
+                completed_laps += 1
+                if circle_start_sec is not None:
+                    circle_times[completed_laps] = t - circle_start_sec
+                circle_start_sec = t
+                if route_index < len(_SEQUENCE) - 1:
+                    route_index += 1
+                lap_angle_accum = 0.0
+                lap_armed = False
+                last_theta = None
+
+        prev_in_crossroads = xroads
+
+    return circle_times
