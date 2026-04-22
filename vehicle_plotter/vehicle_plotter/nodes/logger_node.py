@@ -1562,6 +1562,16 @@ class LoggerNode(Node):
             return
         self._shutdown_called = True
 
+        # Block SIGINT for the duration of finalization so that external
+        # shutdown signals (e.g. ros2 launch killing the process group when
+        # another node exits) cannot raise KeyboardInterrupt in the middle of
+        # matplotlib plot generation, which would abort the shutdown before
+        # plots are saved.
+        try:
+            signal.signal(signal.SIGINT, signal.SIG_IGN)
+        except (OSError, ValueError):
+            pass
+
         if self.log_writer is not None:
             self.log_writer.close()
             self.get_logger().info(
@@ -1897,7 +1907,7 @@ class LoggerNode(Node):
                 stamp_time,
                 timeout=timeout,
             )
-        except (TransformException, ValueError):
+        except Exception:
             pass
         try:
             return self._path_eval_tf_buffer.lookup_transform(
@@ -1906,7 +1916,7 @@ class LoggerNode(Node):
                 Time(),
                 timeout=timeout,
             )
-        except TransformException:
+        except Exception:
             return None
 
     def _path_eval_transform_path_to_frame(
