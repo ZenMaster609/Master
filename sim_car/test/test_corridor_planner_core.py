@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import math
 import pathlib
 import sys
 
@@ -59,6 +60,36 @@ def test_straight_corridor_uses_centered_path():
     assert np.allclose(result.centerline[:, 1], 0.0, atol=1e-6)
     assert np.allclose(result.raw_left_chain_points, points[0::2])
     assert np.allclose(result.raw_right_chain_points, points[1::2])
+
+
+def test_default_corridor_width_limit_accepts_wide_valid_corridor():
+    points = np.array(
+        [
+            [2.0, 3.5], [2.0, -3.5],
+            [4.0, 3.5], [4.0, -3.5],
+            [6.0, 3.5], [6.0, -3.5],
+            [8.0, 3.5], [8.0, -3.5],
+            [10.0, 3.5], [10.0, -3.5],
+        ],
+        dtype=np.float64,
+    )
+    colors = ["blue", "yellow"] * 5
+    conf = np.ones((10,), dtype=np.float64)
+
+    result = compute_corridor_centerline(
+        points,
+        colors,
+        conf,
+        (0.0, 0.0),
+        0.0,
+        _cfg(),
+        CorridorPlannerPrior(previous_width_m=3.6),
+    )
+
+    assert CorridorPlannerConfig().max_corridor_width_m == 8.0
+    assert result.status == "ok"
+    assert result.accepted_pair_count >= 5
+    assert result.corridor_width_max_m == 7.0
 
 
 def test_mild_asymmetry_stays_inside_corridor():
@@ -307,6 +338,57 @@ def test_prevalidation_centerline_is_preserved_when_validation_rejects_corridor_
     assert result.status == "path heading flip near vehicle"
     assert result.centerline.shape[0] == 0
     assert result.prevalidation_centerline.shape[0] >= 2
+
+
+def test_default_initial_heading_limit_is_one_hundred_thirty_five_degrees():
+    assert math.isclose(
+        CorridorPlannerConfig().max_initial_heading_error_rad,
+        3.0 * math.pi / 4.0,
+    )
+
+
+def test_initial_heading_error_between_old_limit_and_relaxed_default_is_accepted():
+    heading_rad = 1.2
+    stations = np.array([4.0, 5.5, 7.0, 8.5, 10.0], dtype=np.float64)
+    tangent = np.array([math.cos(heading_rad), math.sin(heading_rad)], dtype=np.float64)
+    normal = np.array([-math.sin(heading_rad), math.cos(heading_rad)], dtype=np.float64)
+    centers = stations[:, None] * tangent
+    left = centers + (1.8 * normal)
+    right = centers - (1.8 * normal)
+    points = np.empty((centers.shape[0] * 2, 2), dtype=np.float64)
+    colors: list[str] = []
+    for idx in range(centers.shape[0]):
+        points[2 * idx] = left[idx]
+        points[(2 * idx) + 1] = right[idx]
+        colors.extend(["blue", "yellow"])
+    conf = np.ones((points.shape[0],), dtype=np.float64)
+
+    result = compute_corridor_centerline(
+        points,
+        colors,
+        conf,
+        (0.0, 0.0),
+        0.0,
+        _cfg(
+            max_heading_change_rad=2.35,
+            max_curvature=0.8,
+            max_heading_delta_rad=0.9,
+            max_lateral_range_m=14.0,
+            min_required_corridor_samples=3,
+            planning_horizon_m=20.0,
+        ),
+        CorridorPlannerPrior(previous_width_m=3.6),
+    )
+
+    assert result.status == "ok"
+    assert result.centerline.shape[0] >= 4
+    initial_heading = abs(
+        math.atan2(
+            result.centerline[1, 1] - result.centerline[0, 1],
+            result.centerline[1, 0] - result.centerline[0, 0],
+        )
+    )
+    assert 1.0 < initial_heading < (3.0 * math.pi / 4.0)
 
 
 def test_concentric_arc_corridor_pairs_boundaries_through_turn():

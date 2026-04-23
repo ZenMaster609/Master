@@ -49,7 +49,7 @@ cone_memory_node:
     save_track_plot_on_shutdown: true
     track_plot_data_filename: "cone_memory_track_data.csv"
 
-    enable_permanent_cone_memory: true
+    enable_permanent_cone_memory: false
     permanent_harvest_m: 2.0
     permanent_min_confidence: 0.1
     permanent_min_seen: 3

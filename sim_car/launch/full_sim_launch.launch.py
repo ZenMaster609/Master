@@ -503,7 +503,7 @@ def generate_launch_description():
 
     camera_range_arg = DeclareLaunchArgument(
         'camera_range_m',
-        default_value='0.0',
+        default_value='10.0',
         description='Far-band range (m) where camera overrides lidar for position (0..20)'
     )
 

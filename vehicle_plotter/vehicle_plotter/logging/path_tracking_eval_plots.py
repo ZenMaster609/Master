@@ -18,6 +18,7 @@ from ..plotting.matplotlib_fonts import (
 )
 
 OVERLAY_LEGEND_FONTSIZE = LEGEND_FONTSIZE * 0.84
+MAX_PLOT_SAMPLES = 6000
 
 
 def _safe_float(value: object) -> float:
@@ -28,10 +29,11 @@ def _safe_float(value: object) -> float:
     return out if math.isfinite(out) else float("nan")
 
 
-def _read_rows(csv_path: Path) -> list[dict[str, float | str]]:
+def _read_rows(csv_path: Path, columns: Optional[set[str]] = None) -> list[dict[str, float | str]]:
     if not csv_path.exists():
         return []
     rows: list[dict[str, float | str]] = []
+    string_columns = {"status", "frame_id", "gt_source_frame", "odom_child_frame_id", "resolved_control_frame"}
     with open(csv_path, "r", newline="", encoding="utf-8") as handle:
         reader = csv.DictReader(handle)
         for raw_row in reader:
@@ -41,12 +43,23 @@ def _read_rows(csv_path: Path) -> list[dict[str, float | str]]:
             for key, value in raw_row.items():
                 if key is None:
                     continue
-                if key in {"status", "frame_id", "gt_source_frame", "odom_child_frame_id", "resolved_control_frame"}:
+                key_str = str(key)
+                if columns is not None and key_str not in columns:
+                    continue
+                if key_str in string_columns:
                     row[str(key)] = "" if value is None else str(value)
                 else:
-                    row[str(key)] = _safe_float(value)
+                    row[key_str] = _safe_float(value)
             rows.append(row)
     return rows
+
+
+def _limited_indices(valid: np.ndarray, max_samples: int = MAX_PLOT_SAMPLES) -> np.ndarray:
+    indices = np.flatnonzero(valid)
+    if indices.size <= max_samples:
+        return indices
+    selected = np.linspace(0, indices.size - 1, int(max_samples), dtype=np.int64)
+    return indices[selected]
 
 
 def _series(rows: list[dict[str, float | str]], key: str) -> np.ndarray:
@@ -329,7 +342,36 @@ def compute_path_tracking_overlay_average_distances(
     planner_trace_xy: np.ndarray,
     gt_reference_segments_xy: Optional[list[np.ndarray]] = None,
 ) -> dict[str, float]:
-    rows = _read_rows(csv_path)
+    rows = _read_rows(
+        csv_path,
+        {
+            "planner_reference_x_m",
+            "planner_reference_y_m",
+            "front_axle_x_m",
+            "front_axle_y_m",
+            "vehicle_x_m",
+            "vehicle_y_m",
+            "front_axle_vs_planner_cte_m",
+            "controller_vs_planner_cte_m",
+            "front_axle_vs_gt_cte_m",
+            "controller_vs_gt_cte_m",
+        },
+    )
+    return _compute_path_tracking_overlay_average_distances_from_rows(
+        rows,
+        gt_midline_xy=gt_midline_xy,
+        planner_trace_xy=planner_trace_xy,
+        gt_reference_segments_xy=gt_reference_segments_xy,
+    )
+
+
+def _compute_path_tracking_overlay_average_distances_from_rows(
+    rows: list[dict[str, float | str]],
+    *,
+    gt_midline_xy: np.ndarray,
+    planner_trace_xy: np.ndarray,
+    gt_reference_segments_xy: Optional[list[np.ndarray]] = None,
+) -> dict[str, float]:
     gt_midline_xy = np.asarray(gt_midline_xy, dtype=np.float64)
     planner_trace_xy = np.asarray(planner_trace_xy, dtype=np.float64)
     gt_reference_segments_xy = _normalize_polyline_set(gt_reference_segments_xy)
@@ -397,7 +439,18 @@ def generate_path_tracking_cte_plot(
     title: str = "Path Tracking Evaluation",
     dpi: int = 150,
 ) -> Optional[Path]:
-    rows = _read_rows(csv_path)
+    rows = _read_rows(
+        csv_path,
+        {
+            "timestamp_sec",
+            "planner_reference_vs_gt_cte_m",
+            "planner_vs_gt_cte_rms_m",
+            "front_axle_vs_planner_cte_m",
+            "controller_vs_planner_cte_m",
+            "front_axle_vs_gt_cte_m",
+            "controller_vs_gt_cte_m",
+        },
+    )
     if not rows:
         return None
 
@@ -416,17 +469,20 @@ def generate_path_tracking_cte_plot(
     valid_planner = np.isfinite(t) & np.isfinite(cte_planner)
     valid_gt = np.isfinite(t) & np.isfinite(cte_gt)
     if np.any(valid_planner_vs_gt):
+        plot_idx = _limited_indices(valid_planner_vs_gt)
         ax.plot(
-            t[valid_planner_vs_gt],
-            planner_vs_gt[valid_planner_vs_gt],
+            t[plot_idx],
+            planner_vs_gt[plot_idx],
             color="#2ca02c",
             linewidth=1.8,
             label="Planner ref vs GT midline",
         )
     if np.any(valid_planner):
-        ax.plot(t[valid_planner], cte_planner[valid_planner], color="#d62728", linewidth=1.8, label="Front axle vs Planner")
+        plot_idx = _limited_indices(valid_planner)
+        ax.plot(t[plot_idx], cte_planner[plot_idx], color="#d62728", linewidth=1.8, label="Front axle vs Planner")
     if np.any(valid_gt):
-        ax.plot(t[valid_gt], cte_gt[valid_gt], color="#1f77b4", linewidth=1.8, label="Front axle vs GT midline")
+        plot_idx = _limited_indices(valid_gt)
+        ax.plot(t[plot_idx], cte_gt[plot_idx], color="#1f77b4", linewidth=1.8, label="Front axle vs GT midline")
     ax.axhline(0.0, color="#7f7f7f", linewidth=1.0, alpha=0.6)
     ax.set_title(title, fontsize=DEFAULT_TITLE_FONTSIZE)
     ax.set_xlabel("Time (s)")
@@ -460,7 +516,21 @@ def generate_path_tracking_overlay_plot(
     title: str = "GT Midline vs Planner vs Driven Trajectory",
     dpi: int = 150,
 ) -> Optional[Path]:
-    rows = _read_rows(csv_path)
+    rows = _read_rows(
+        csv_path,
+        {
+            "planner_reference_x_m",
+            "planner_reference_y_m",
+            "front_axle_x_m",
+            "front_axle_y_m",
+            "vehicle_x_m",
+            "vehicle_y_m",
+            "front_axle_vs_planner_cte_m",
+            "controller_vs_planner_cte_m",
+            "front_axle_vs_gt_cte_m",
+            "controller_vs_gt_cte_m",
+        },
+    )
     gt_midline_xy = np.asarray(gt_midline_xy, dtype=np.float64)
     gt_left_xy = np.asarray(gt_left_xy, dtype=np.float64)
     gt_right_xy = np.asarray(gt_right_xy, dtype=np.float64)
@@ -477,8 +547,8 @@ def generate_path_tracking_overlay_plot(
     vehicle_x = _series_prefer(rows, "front_axle_x_m", "vehicle_x_m")
     vehicle_y = _series_prefer(rows, "front_axle_y_m", "vehicle_y_m")
     valid_vehicle = np.isfinite(vehicle_x) & np.isfinite(vehicle_y)
-    avg_distances = compute_path_tracking_overlay_average_distances(
-        csv_path,
+    avg_distances = _compute_path_tracking_overlay_average_distances_from_rows(
+        rows,
         gt_midline_xy=gt_midline_xy,
         planner_trace_xy=planner_trace_xy,
         gt_reference_segments_xy=gt_overlay_segments_xy,
@@ -511,9 +581,11 @@ def generate_path_tracking_overlay_plot(
             label="Planner trace",
         )
     if np.any(valid_vehicle):
-        ax.plot(vehicle_x[valid_vehicle], vehicle_y[valid_vehicle], color="#1f77b4", linewidth=1.8, label="Driven trajectory")
-        ax.scatter(vehicle_x[np.where(valid_vehicle)[0][0]], vehicle_y[np.where(valid_vehicle)[0][0]], color="green", s=45, zorder=5, label="Start")
-        ax.scatter(vehicle_x[np.where(valid_vehicle)[0][-1]], vehicle_y[np.where(valid_vehicle)[0][-1]], color="red", s=45, zorder=5, label="End")
+        valid_indices = np.flatnonzero(valid_vehicle)
+        plot_idx = _limited_indices(valid_vehicle)
+        ax.plot(vehicle_x[plot_idx], vehicle_y[plot_idx], color="#1f77b4", linewidth=1.8, label="Driven trajectory")
+        ax.scatter(vehicle_x[valid_indices[0]], vehicle_y[valid_indices[0]], color="green", s=45, zorder=5, label="Start")
+        ax.scatter(vehicle_x[valid_indices[-1]], vehicle_y[valid_indices[-1]], color="red", s=45, zorder=5, label="End")
     ax.set_title(title, fontsize=DEFAULT_TITLE_FONTSIZE)
     ax.set_xlabel("X (m)")
     ax.set_ylabel("Y (m)")

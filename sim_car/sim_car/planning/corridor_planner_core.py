@@ -48,7 +48,7 @@ class CorridorPlannerConfig:
     jump_check_horizon_m: float = 8.0
     max_near_field_lateral_jump_m: float = 0.8
     max_heading_delta_rad: float = 0.75
-    max_initial_heading_error_rad: float = 1.0
+    max_initial_heading_error_rad: float = 3.0 * math.pi / 4.0
     max_curvature: float = 0.45
 
 

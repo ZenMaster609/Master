@@ -1563,13 +1563,13 @@ class LoggerNode(Node):
             return
         self._shutdown_called = True
 
-        # Block SIGINT for the duration of finalization so that external
+        # Block shutdown signals for the duration of finalization so that external
         # shutdown signals (e.g. ros2 launch killing the process group when
-        # another node exits) cannot raise KeyboardInterrupt in the middle of
-        # matplotlib plot generation, which would abort the shutdown before
-        # plots are saved.
+        # another node exits) cannot interrupt matplotlib plot generation before
+        # the post-run plots are saved.
         try:
             signal.signal(signal.SIGINT, signal.SIG_IGN)
+            signal.signal(signal.SIGTERM, signal.SIG_IGN)
         except (OSError, ValueError):
             pass
 

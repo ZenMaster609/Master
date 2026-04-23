@@ -79,6 +79,12 @@ class OfflineConePlotter:
         if not csv_path.exists():
             return analyzer.compute_binned_rmse()
 
+        bin_centers = np.arange(0.5, 20.5, 1.0, dtype=np.float32)
+        counts = np.zeros(bin_centers.shape, dtype=np.int32)
+        error_sq_sum = np.zeros(bin_centers.shape, dtype=np.float64)
+        correct_class_count = 0
+        incorrect_class_count = 0
+
         with open(csv_path, 'r', newline='') as handle:
             reader = csv.DictReader(handle)
             for row in reader:
@@ -89,14 +95,31 @@ class OfflineConePlotter:
                 error_m = self._parse_optional_float(row.get('error_m', ''))
                 if not (math.isfinite(gt_range_m) and math.isfinite(error_m)):
                     continue
-                analyzer.add_sample(
-                    source=source,
-                    gt_range_m=gt_range_m,
-                    error_m=error_m,
-                    predicted_class_id=self._parse_optional_int(row.get('predicted_class_id', '')),
-                    ground_truth_class_id=self._parse_optional_int(row.get('ground_truth_class_id', '')),
-                )
-        return analyzer.compute_binned_rmse()
+
+                if not (0.0 <= gt_range_m <= 20.0):
+                    continue
+                bin_index = int(np.clip(math.floor(gt_range_m), 0, counts.size - 1))
+                counts[bin_index] += 1
+                error_sq_sum[bin_index] += float(error_m) * float(error_m)
+
+                predicted_class_id = self._parse_optional_int(row.get('predicted_class_id', ''))
+                ground_truth_class_id = self._parse_optional_int(row.get('ground_truth_class_id', ''))
+                if predicted_class_id is not None and ground_truth_class_id is not None:
+                    if int(predicted_class_id) == int(ground_truth_class_id):
+                        correct_class_count += 1
+                    else:
+                        incorrect_class_count += 1
+
+        rmse = np.full(counts.shape, np.nan, dtype=np.float32)
+        non_empty = counts > 0
+        rmse[non_empty] = np.sqrt(error_sq_sum[non_empty] / counts[non_empty]).astype(np.float32)
+        return RangeRMSEBinStats(
+            bin_centers=bin_centers,
+            total_counts=counts,
+            source_rmse={expected_source: rmse},
+            correct_class_count=correct_class_count,
+            incorrect_class_count=incorrect_class_count,
+        )
 
     @staticmethod
     def _normalize_source_name(value: object) -> str:

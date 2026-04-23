@@ -160,7 +160,7 @@ class CorridorPlannerNode(TrackedConePlannerBase):
             "validation.min_path_points": 4,
             "validation.min_forward_extent_m": 2.0,
             "validation.max_heading_delta_rad": 0.75,
-            "validation.max_initial_heading_error_rad": 1.0,
+            "validation.max_initial_heading_error_rad": 3.0 * math.pi / 4.0,
             "validation.max_curvature": 0.45,
             "debug.enable_cone_audit_markers": False,
             "debug.cone_audit_viz_topic": "/corridor_planner/cone_audit_viz",
