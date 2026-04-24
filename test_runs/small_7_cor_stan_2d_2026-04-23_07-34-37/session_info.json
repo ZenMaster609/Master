@@ -1,0 +1,24 @@
+{
+  "run_id": "small_7_cor_stan_2d_2026-04-23_07-34-37",
+  "adapter_type": "gazebo",
+  "originator_hostname": "alekspc",
+  "local_hostname": "alekspc",
+  "ros_domain_id": 0,
+  "start_time": "2026-04-23T07:34:38.432872",
+  "platform": {
+    "system": "Linux",
+    "release": "6.8.0-110-generic",
+    "machine": "x86_64",
+    "python_version": "3.10.12"
+  },
+  "paths": {
+    "base_path": "/home/aleks/ros2_ws/src/Master/multidata",
+    "session_path": "/home/aleks/ros2_ws/src/Master/multidata/small_7_cor_stan_2d_2026-04-23_07-34-37",
+    "logs_path": "/home/aleks/ros2_ws/src/Master/multidata/small_7_cor_stan_2d_2026-04-23_07-34-37/logs",
+    "rosbags_path": "/home/aleks/ros2_ws/src/Master/multidata/small_7_cor_stan_2d_2026-04-23_07-34-37/rosbags",
+    "plots_path": "/home/aleks/ros2_ws/src/Master/multidata/small_7_cor_stan_2d_2026-04-23_07-34-37/plots",
+    "configs_path": "/home/aleks/ros2_ws/src/Master/multidata/small_7_cor_stan_2d_2026-04-23_07-34-37/configs",
+    "legacy_plot_data_path": "/home/aleks/ros2_ws/src/Master/multidata/small_7_cor_stan_2d_2026-04-23_07-34-37/plot_data",
+    "legacy_ground_truth_path": "/home/aleks/ros2_ws/src/Master/multidata/small_7_cor_stan_2d_2026-04-23_07-34-37/ground_truth"
+  }
+}

@@ -1,0 +1,5 @@
+section,id,x,y,z,label,seen_count,track_confidence
+remembered_track,26016,-1.586098,20.871595,0.000000,orange,55,1.000000
+remembered_track,26032,-0.514382,20.941129,0.000000,orange,45,1.000000
+remembered_track,26101,1.605573,20.924782,0.000000,orange,41,1.000000
+centerline,0,-1.050240,20.906362,0.0,,,

@@ -33,6 +33,9 @@ class OfflineConePlotter:
             'label': 'mono_rmse',
             'color': 'tab:blue',
             'show_classification': True,
+            'stats_text_axes_xy': (0.98, 0.5),
+            'stats_text_ha': 'right',
+            'stats_text_va': 'center',
         },
         'stereo': {
             'csv': 'cone_range_rmse_samples_stereo.csv',
@@ -41,6 +44,9 @@ class OfflineConePlotter:
             'label': 'stereo_rmse',
             'color': 'tab:orange',
             'show_classification': True,
+            'stats_text_axes_xy': (0.5, 0.03),
+            'stats_text_ha': 'center',
+            'stats_text_va': 'bottom',
         },
         'lidar': {
             'csv': 'cone_range_rmse_samples_lidar.csv',
@@ -68,6 +74,9 @@ class OfflineConePlotter:
                     color=str(spec['color']),
                     output_filename=str(spec['png']),
                     show_classification=bool(spec['show_classification']),
+                    stats_text_axes_xy=tuple(spec.get('stats_text_axes_xy', (0.98, 0.98))),
+                    stats_text_ha=str(spec.get('stats_text_ha', 'right')),
+                    stats_text_va=str(spec.get('stats_text_va', 'top')),
                     dpi=dpi,
                 )
             )
@@ -160,6 +169,9 @@ class OfflineConePlotter:
         color: str,
         output_filename: str,
         show_classification: bool,
+        stats_text_axes_xy: tuple[float, float],
+        stats_text_ha: str,
+        stats_text_va: str,
         dpi: int,
     ) -> Path:
         bin_centers = np.asarray(stats.bin_centers, dtype=np.float32)
@@ -264,12 +276,12 @@ class OfflineConePlotter:
                 f'accuracy={accuracy_text}',
             ]
             ax_top.text(
-                0.98,
-                0.98,
+                float(stats_text_axes_xy[0]),
+                float(stats_text_axes_xy[1]),
                 '\n'.join(top_lines),
                 transform=ax_top.transAxes,
-                ha='right',
-                va='top',
+                ha=stats_text_ha,
+                va=stats_text_va,
                 fontsize=CONE_STATS_FONTSIZE,
                 bbox={
                     'boxstyle': 'round,pad=0.3',
