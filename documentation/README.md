@@ -22,6 +22,10 @@ This folder documents the current `sim_car`, `vehicle_plotter`, and `vehicle_plo
 - [Stanley Controller](stanley_controller.md): heading/cross-track controller behavior.
 - [Pure Pursuit Controller](pure_pursuit_controller.md): lookahead target controller behavior.
 
+## Code Reference
+
+- [Code Reference Index](code/README.md): companion pages that map each documentation topic to the source files, classes, and helper functions that implement it.
+
 ## Common Launch Recipes
 
 Build the current packages:
