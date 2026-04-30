@@ -14,17 +14,18 @@ import threading
 import csv
 
 from .plot_config import PlotConfig, PlotLayoutConfig, XAxisType, get_default_plots
-from .matplotlib_fonts import TICK_LABEL_FONTSIZE
+from .matplotlib_fonts import apply_serif_font_preferences
 from .backends.base_backend import PlotBackend, DummyBackend
 from .backends.pyqtgraph_backend import PyQtGraphBackend
 from ..core.vehicle_state import VehicleState
 from ..utils.ring_buffer import RingBuffer
 
 
-STATIC_DASHBOARD_TICK_FONTSIZE = TICK_LABEL_FONTSIZE * 0.8
-STATIC_DASHBOARD_TITLE_FONTSIZE = 12.0 * 1.2
-STATIC_DASHBOARD_Y_LABEL_FONTSIZE = 10.0 * 1.3 * 1.2
-STATIC_DASHBOARD_BOTTOM_X_LABEL_FONTSIZE = 10.0 * 1.5 * 1.1
+STATIC_DASHBOARD_TICK_FONTSIZE = 15.0
+STATIC_DASHBOARD_TITLE_FONTSIZE = 15.0
+STATIC_DASHBOARD_Y_LABEL_FONTSIZE = 15.0
+STATIC_DASHBOARD_BOTTOM_X_LABEL_FONTSIZE = 15.0
+STATIC_DASHBOARD_LEGEND_FONTSIZE = 15.0
 
 
 class PlotManager:
@@ -230,11 +231,13 @@ class PlotManager:
         self._backend.export_figure(path, dpi)
 
     def export_static_dashboard(self, path: str, dpi: int = 150) -> None:
-        """Export the buffered plots as one static PNG, even without a GUI backend."""
+        """Export the buffered plots as one static dashboard image/PDF."""
         import matplotlib
 
         matplotlib.use('Agg')
         import matplotlib.pyplot as plt
+
+        apply_serif_font_preferences()
 
         path_obj = Path(path)
         path_obj.parent.mkdir(parents=True, exist_ok=True)
@@ -306,7 +309,7 @@ class PlotManager:
                 if config.show_legend:
                     handles, labels = ax.get_legend_handles_labels()
                     if handles:
-                        ax.legend(loc='best', fontsize='small')
+                        ax.legend(loc='best', fontsize=STATIC_DASHBOARD_LEGEND_FONTSIZE)
 
         fig.tight_layout()
         fig.savefig(path_obj, dpi=dpi, bbox_inches='tight')

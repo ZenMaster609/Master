@@ -18,7 +18,7 @@ Session subdirectories:
 
 - `logs/`: parquet/CSV logs, summaries, and text reports
 - `rosbags/`: rosbag recordings
-- `plots/`: generated PNG plots
+- `plots/`: generated plot artifacts
 - `configs/`: copied YAML configs and launch-parameter snapshots
 
 `full_sim_launch.launch.py` passes a compact run-id prefix built from track, planner, controller, and LiDAR pipeline. Example:
@@ -143,7 +143,7 @@ Path tracking evaluation can write:
 - `logs/path_tracking_eval_track_metrics.json`
 - `logs/path_tracking_eval_track_metrics.txt`
 - `plots/path_tracking_eval_cte.png`
-- `plots/path_tracking_eval_overlay.png`
+- `plots/path_tracking_eval_overlay.pdf`
 
 ## Useful Commands
 

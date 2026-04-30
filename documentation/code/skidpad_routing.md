@@ -46,9 +46,8 @@ This page maps the `documentation/skidpad_routing.md` behavior to the skidpad ro
 - `detect_acceleration_stop_row` in `sim_car/sim_car/planning/skidpad_router_core.py`: identifies the acceleration stop row from orange-cone geometry.
 - `SkidpadRouterNode._detect_stop_line_cluster_mask`, `_detect_acceleration_stop_row_mask`, and `_apply_acceleration_stop_row_detection` in `sim_car/sim_car/planning/skidpad_router_node.py`: apply the core detection logic to the routed cone set.
 
-### Synthetic Straight Cones And Overrides
+### Stop Override
 
-- `SkidpadRouterNode._build_synthetic_cones` in `sim_car/sim_car/planning/skidpad_router_node.py`: injects synthetic parking-corridor cones when configured.
 - `SkidpadRouterNode._publish_parking_override_cmd` and `_parking_override_brake_cmd` in `sim_car/sim_car/planning/skidpad_router_node.py`: command the final parking stop override.
 
 ## Related Entry Points

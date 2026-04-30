@@ -206,20 +206,6 @@ def test_left_routing_suppresses_right_lobe_and_parking() -> None:
     assert mask.tolist() == [True, False, True, False]
 
 
-def test_straight_routing_adds_synthetic_bridge_pairs() -> None:
-    machine = SkidpadStateMachine(SkidpadRouterConfig())
-    now_sec = _enter_crossroads(machine)
-    now_sec = _complete_lap(machine, center_xy=machine.config.right_circle_center_xy, start_t=now_sec)
-    now_sec = _complete_lap(machine, center_xy=machine.config.right_circle_center_xy, start_t=now_sec)
-    now_sec = _complete_lap(machine, center_xy=machine.config.left_circle_center_xy, start_t=now_sec)
-    _complete_lap(machine, center_xy=machine.config.left_circle_center_xy, start_t=now_sec)
-
-    assert machine.stage_name() == "straight"
-    synthetic = machine.synthetic_cone_pairs()
-    assert len(synthetic) == 6
-    assert np.allclose([point[1] for point in synthetic], [3.5, 3.5, 5.5, 5.5, 7.5, 7.5])
-
-
 def test_test_park_only_skips_laps_and_routes_straight() -> None:
     machine = SkidpadStateMachine(SkidpadRouterConfig(test_park_only=True, route_laps=3))
 

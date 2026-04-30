@@ -72,12 +72,6 @@ In parking mode, the router focuses on orange cones. It removes detected stop-li
 
 This lets normal boundary planners treat parking-lane orange cones as temporary blue/yellow boundaries.
 
-## Synthetic Straight Cones
-
-During straight parking mode, the router can inject synthetic orange cone pairs. These are placed at configured Y positions with a configured half-width.
-
-They are skipped if a real routed cone already exists nearby. The purpose is to give the planner a clean short straight corridor when the real cone set near the parking area is sparse.
-
 ## Stop-Line Detection
 
 For skidpad parking, the router looks for a close pair of orange cones ahead of the vehicle and treats it as the stop line.

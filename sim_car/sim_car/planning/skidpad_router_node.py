@@ -134,8 +134,6 @@ class SkidpadRouterNode(Node):
             "parking.stop_approach_speed_gain": 1.5,
             "parking.brake_activation_margin_m": 1.0,
             "parking.brake_command": 1.0,
-            "synthetic.pair_half_width_m": 1.6375,
-            "synthetic.pair_y_m": [3.5, 5.5, 7.5],
         }
         for name, value in defaults.items():
             self.declare_parameter(name, value)
@@ -192,7 +190,6 @@ class SkidpadRouterNode(Node):
                 circle_radius_window_m=self.get_parameter("geometry.circle_radius_window_m").value,
                 route_sequence=self.get_parameter("routing.route_sequence").value,
                 route_laps=int(self.get_parameter("routing.route_laps").value),
-                synthetic_pair_y_m=self.get_parameter("synthetic.pair_y_m").value,
                 lap_complete_angle_rad=float(self.get_parameter("routing.lap_complete_angle_rad").value),
                 parking_corridor_half_width_m=float(self.get_parameter("parking.corridor_half_width_m").value),
                 parking_start_y_m=float(self.get_parameter("parking.start_y_m").value),
@@ -203,7 +200,6 @@ class SkidpadRouterNode(Node):
                 parked_speed_threshold_mps=float(self.get_parameter("parking.parked_speed_threshold_mps").value),
                 parked_hold_time_s=float(self.get_parameter("parking.parked_hold_time_s").value),
                 test_park_only=bool(self.get_parameter("parking.test_park_only").value),
-                synthetic_pair_half_width_m=float(self.get_parameter("synthetic.pair_half_width_m").value),
                 lobe_radius_m=float(self.get_parameter("routing.lobe_radius_m").value),
                 right_lobe_min_x_m=float(self.get_parameter("routing.right_lobe_min_x_m").value),
                 left_lobe_max_x_m=float(self.get_parameter("routing.left_lobe_max_x_m").value),
@@ -288,13 +284,6 @@ class SkidpadRouterNode(Node):
                 converted_cones=converted_cones,
                 cone_points_odom=cone_points_odom,
             )
-
-        if self._parking_mode_active:
-            existing = np.asarray(
-                [[cone.position.x, cone.position.y] for cone in routed_msg.cones],
-                dtype=np.float64,
-            ) if routed_msg.cones else np.empty((0, 2), dtype=np.float64)
-            routed_msg.cones.extend(self._build_synthetic_cones(existing_xy=existing, stamp=msg.header.stamp))
 
         self._update_stop_override_from_routed_cones(routed_cones=routed_msg.cones)
         if self._stop_override_active:
@@ -683,32 +672,6 @@ class SkidpadRouterNode(Node):
         msg = Float32()
         msg.data = float(np.clip(float(command), 0.0, 1.0))
         self._brake_pub.publish(msg)
-
-    def _build_synthetic_cones(self, *, existing_xy: np.ndarray, stamp) -> list[ConeDetection]:
-        cones: list[ConeDetection] = []
-        for idx, point_xy in enumerate(self._state_machine.synthetic_cone_pairs()):
-            if existing_xy.size > 0:
-                distances = np.linalg.norm(existing_xy - point_xy.reshape(1, 2), axis=1)
-                if float(np.min(distances)) < 0.75:
-                    continue
-            cone = ConeDetection()
-            cone.color = "orange"
-            cone.boundary_color = self._boundary_color_for_odom_point(float(point_xy[0]), float(point_xy[1]))
-            cone.position.x = float(point_xy[0])
-            cone.position.y = float(point_xy[1])
-            cone.position.z = 0.0
-            cone.confidence = 1.0
-            cone.track_id = int(4_000_000_000 + idx)
-            cone.track_state = ConeDetection.TRACK_STATE_CONFIRMED
-            cone.track_confidence = 1.0
-            cone.color_confidence = 1.0
-            cone.seen_count = 1
-            cone.consecutive_seen_count = 1
-            cone.missed_count = 0
-            cone.first_seen = stamp
-            cone.last_seen = stamp
-            cones.append(cone)
-        return cones
 
     def _publish_diagnostics(self, stamp) -> None:
         snapshot = self._latest_snapshot

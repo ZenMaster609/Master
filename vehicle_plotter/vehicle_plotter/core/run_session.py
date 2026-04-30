@@ -7,7 +7,7 @@ Storage Layout:
     ./multidata/<run_id>/
       logs/             # Parquet/CSV and other text artifacts
       rosbags/          # ros2 bag recordings
-      plots/            # PNG exports from plotter
+      plots/            # Exported plot artifacts
       configs/          # Run config snapshot (YAMLs + launch parameters)
 """
 
@@ -95,7 +95,7 @@ class RunSession:
         ./multidata/<prefix>_<timestamp>/
             logs/           # Parquet/CSV and other text artifacts
             rosbags/        # ros2 bag recordings
-            plots/          # PNG exports from plotter
+            plots/          # Exported plot artifacts
             configs/        # Run config snapshot (YAMLs + launch parameters)
 
     Where <prefix> is 'sim' for simulation unless run_id_prefix is provided.

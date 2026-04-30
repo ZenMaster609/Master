@@ -220,22 +220,6 @@ def test_route_parking_cones_uses_vehicle_frame_lateral_sign() -> None:
     assert [cone.boundary_color for cone in routed] == ["yellow", "blue"]
 
 
-def test_build_synthetic_cones_assigns_side_from_vehicle_frame_lateral_sign() -> None:
-    node = _make_node(test_park_only=True)
-    node._latest_pose_xy = (0.0, 0.0)
-    node._latest_yaw_rad = np.pi / 2.0
-    node._state_machine.approach_complete = True
-
-    cones = node._build_synthetic_cones(
-        existing_xy=np.empty((0, 2), dtype=np.float64),
-        stamp=TimeMsg(sec=0, nanosec=0),
-    )
-
-    assert len(cones) == 6
-    assert [cone.color for cone in cones] == ["orange"] * 6
-    assert [cone.boundary_color for cone in cones] == ["blue", "yellow", "blue", "yellow", "blue", "yellow"]
-
-
 def test_route_parking_cones_removes_detected_front_stop_line_row() -> None:
     node = _make_node(test_park_only=True)
     node._latest_yaw_rad = np.pi / 2.0

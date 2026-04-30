@@ -2,23 +2,42 @@
 
 from __future__ import annotations
 
+import argparse
 import csv
 import math
+import xml.etree.ElementTree as ET
 from pathlib import Path
 from typing import Optional
 
 import numpy as np
+import yaml
 
-from .path_tracking_eval import signed_cross_track_error
+from .path_tracking_eval import (
+    GateLapCounter,
+    build_gt_midline_from_cones,
+    build_smalltrack_lap_gate,
+    build_stitched_reference_trace,
+    path_cumulative_lengths,
+    signed_cross_track_error,
+)
 from ..plotting.matplotlib_fonts import (
     DEFAULT_TITLE_FONTSIZE,
     LEGEND_FONTSIZE,
+    apply_serif_font_preferences,
     apply_axis_label_fontsize,
     apply_tick_label_fontsize,
 )
 
-OVERLAY_LEGEND_FONTSIZE = LEGEND_FONTSIZE * 0.84
+OVERLAY_LEGEND_FONTSIZE = 13.0
+OVERLAY_TEXT_FONTSIZE = 15.0
+CTE_LEGEND_FONTSIZE = 15.0
+CTE_TEXT_FONTSIZE = 15.0
 MAX_PLOT_SAMPLES = 6000
+TRACK_MODEL_BY_TRACK = {
+    "acceleration": "acceleration",
+    "skidpad": "skidpad",
+    "smalltrack": "small_track",
+}
 
 
 def _safe_float(value: object) -> float:
@@ -457,6 +476,7 @@ def generate_path_tracking_cte_plot(
     import matplotlib
 
     matplotlib.use("Agg")
+    apply_serif_font_preferences()
     import matplotlib.pyplot as plt
 
     t = _relative_time(rows)
@@ -484,14 +504,17 @@ def generate_path_tracking_cte_plot(
         plot_idx = _limited_indices(valid_gt)
         ax.plot(t[plot_idx], cte_gt[plot_idx], color="#1f77b4", linewidth=1.8, label="Front axle vs GT midline")
     ax.axhline(0.0, color="#7f7f7f", linewidth=1.0, alpha=0.6)
-    ax.set_title(title, fontsize=DEFAULT_TITLE_FONTSIZE)
     ax.set_xlabel("Time (s)")
     ax.set_ylabel("CTE (m)")
     apply_axis_label_fontsize(ax)
     apply_tick_label_fontsize(ax)
+    ax.xaxis.label.set_size(CTE_TEXT_FONTSIZE)
+    ax.yaxis.label.set_size(CTE_TEXT_FONTSIZE)
+    ax.tick_params(axis="both", which="major", labelsize=CTE_TEXT_FONTSIZE)
+    ax.tick_params(axis="both", which="minor", labelsize=CTE_TEXT_FONTSIZE)
     ax.set_ylim(-2.0, 2.0)
     ax.grid(True, alpha=0.3)
-    _legend_if_labeled(ax, loc="upper right")
+    _legend_if_labeled(ax, loc="upper right", fontsize=CTE_LEGEND_FONTSIZE)
 
     output_path.parent.mkdir(parents=True, exist_ok=True)
     fig.tight_layout()
@@ -542,6 +565,7 @@ def generate_path_tracking_overlay_plot(
     import matplotlib
 
     matplotlib.use("Agg")
+    apply_serif_font_preferences()
     import matplotlib.pyplot as plt
 
     vehicle_x = _series_prefer(rows, "front_axle_x_m", "vehicle_x_m")
@@ -586,11 +610,14 @@ def generate_path_tracking_overlay_plot(
         ax.plot(vehicle_x[plot_idx], vehicle_y[plot_idx], color="#1f77b4", linewidth=1.8, label="Driven trajectory")
         ax.scatter(vehicle_x[valid_indices[0]], vehicle_y[valid_indices[0]], color="green", s=45, zorder=5, label="Start")
         ax.scatter(vehicle_x[valid_indices[-1]], vehicle_y[valid_indices[-1]], color="red", s=45, zorder=5, label="End")
-    ax.set_title(title, fontsize=DEFAULT_TITLE_FONTSIZE)
     ax.set_xlabel("X (m)")
     ax.set_ylabel("Y (m)")
     apply_axis_label_fontsize(ax)
     apply_tick_label_fontsize(ax)
+    ax.xaxis.label.set_size(OVERLAY_TEXT_FONTSIZE)
+    ax.yaxis.label.set_size(OVERLAY_TEXT_FONTSIZE)
+    ax.tick_params(axis="both", which="major", labelsize=OVERLAY_TEXT_FONTSIZE)
+    ax.tick_params(axis="both", which="minor", labelsize=OVERLAY_TEXT_FONTSIZE)
     ax.grid(True, alpha=0.3)
     ax.set_aspect("equal", adjustable="datalim")
     _legend_if_labeled(
@@ -631,7 +658,7 @@ def generate_path_tracking_overlay_plot(
         transform=ax.transAxes,
         ha="left",
         va="top",
-        fontsize=9.5,
+        fontsize=OVERLAY_TEXT_FONTSIZE,
         zorder=10,
         bbox={
             "boxstyle": "round,pad=0.35",
@@ -740,3 +767,339 @@ def compute_skidpad_circle_times_sec(csv_path: Path) -> dict[int, float]:
         prev_in_crossroads = xroads
 
     return circle_times
+
+
+def _load_yaml_mapping(path: Path) -> dict[str, object]:
+    if not path.exists():
+        return {}
+    with path.open("r", encoding="utf-8") as handle:
+        data = yaml.safe_load(handle) or {}
+    return data if isinstance(data, dict) else {}
+
+
+def _clean_string(value: object) -> str:
+    return str(value).strip() if value is not None else ""
+
+
+def _parse_pose_xy_yaw(pose_text: object) -> tuple[float, float, float]:
+    parts = str(pose_text or "").split()
+    if len(parts) < 2:
+        return 0.0, 0.0, 0.0
+    x_m = _safe_float(parts[0])
+    y_m = _safe_float(parts[1])
+    yaw_rad = _safe_float(parts[5]) if len(parts) >= 6 else 0.0
+    return (
+        x_m if math.isfinite(x_m) else 0.0,
+        y_m if math.isfinite(y_m) else 0.0,
+        yaw_rad if math.isfinite(yaw_rad) else 0.0,
+    )
+
+
+def _apply_planar_transform(points_xy: np.ndarray, *, tx_m: float, ty_m: float, yaw_rad: float) -> np.ndarray:
+    points_xy = np.asarray(points_xy, dtype=np.float64)
+    if points_xy.ndim != 2 or points_xy.shape[0] == 0:
+        return np.empty((0, 2), dtype=np.float64)
+    cos_yaw = math.cos(yaw_rad)
+    sin_yaw = math.sin(yaw_rad)
+    rot = np.asarray([[cos_yaw, -sin_yaw], [sin_yaw, cos_yaw]], dtype=np.float64)
+    transformed = points_xy @ rot.T
+    transformed[:, 0] += float(tx_m)
+    transformed[:, 1] += float(ty_m)
+    return transformed.astype(np.float64)
+
+
+def _resolve_track_model_from_world(world_path: Path) -> tuple[str, tuple[float, float, float]] | None:
+    try:
+        root = ET.parse(world_path).getroot()
+    except (ET.ParseError, FileNotFoundError):
+        return None
+
+    for include in root.findall(".//include"):
+        uri = _clean_string(include.findtext("uri"))
+        if not uri.startswith("model://"):
+            continue
+        model_name = uri.removeprefix("model://")
+        if model_name in {"asphalt_plane", "ground_plane"} or "backdrop" in model_name:
+            continue
+        return model_name, _parse_pose_xy_yaw(include.findtext("pose"))
+    return None
+
+
+def _resolve_track_model_path(
+    session_path: Path,
+    launch_params: dict[str, object],
+) -> tuple[Path, tuple[float, float, float]]:
+    world_text = _clean_string(launch_params.get("world"))
+    if world_text:
+        world_path = Path(world_text)
+        resolved = _resolve_track_model_from_world(world_path)
+        if resolved is not None:
+            model_name, model_pose = resolved
+            world_share_dir = world_path.parent.parent
+            candidates = [
+                world_share_dir / "models" / model_name / "model.sdf",
+                Path(__file__).resolve().parents[3] / "sim_car" / "models" / model_name / "model.sdf",
+            ]
+            for candidate in candidates:
+                if candidate.exists():
+                    return candidate, model_pose
+
+    track_name = _clean_string(launch_params.get("track")).lower()
+    model_name = TRACK_MODEL_BY_TRACK.get(track_name, track_name)
+    candidate = Path(__file__).resolve().parents[3] / "sim_car" / "models" / model_name / "model.sdf"
+    if candidate.exists():
+        return candidate, (0.0, 0.0, 0.0)
+    raise FileNotFoundError(f"Could not resolve a track model for session {session_path}")
+
+
+def _classify_cone_uri(uri: str) -> str:
+    model_name = _clean_string(uri).removeprefix("model://").lower()
+    if model_name == "blue_cone":
+        return "blue"
+    if model_name == "yellow_cone":
+        return "yellow"
+    if model_name == "big_cone":
+        return "big_orange"
+    return ""
+
+
+def _load_track_model_cones(
+    model_path: Path,
+    *,
+    model_pose_xy_yaw: tuple[float, float, float],
+) -> dict[str, np.ndarray]:
+    root = ET.parse(model_path).getroot()
+    tx_m, ty_m, yaw_rad = model_pose_xy_yaw
+    cones_by_color: dict[str, list[list[float]]] = {
+        "blue": [],
+        "yellow": [],
+        "big_orange": [],
+    }
+
+    for include in root.findall(".//include"):
+        color = _classify_cone_uri(_clean_string(include.findtext("uri")))
+        if not color:
+            continue
+        x_m, y_m, _include_yaw = _parse_pose_xy_yaw(include.findtext("pose"))
+        transformed = _apply_planar_transform(
+            np.asarray([[x_m, y_m]], dtype=np.float64),
+            tx_m=tx_m,
+            ty_m=ty_m,
+            yaw_rad=yaw_rad,
+        )
+        cones_by_color[color].append(transformed[0].tolist())
+
+    return {
+        color: np.asarray(points, dtype=np.float64).reshape((-1, 2)) if points else np.empty((0, 2), dtype=np.float64)
+        for color, points in cones_by_color.items()
+    }
+
+
+def _infer_start_heading_xy_from_rows(rows: list[dict[str, float | str]]) -> tuple[np.ndarray, np.ndarray]:
+    vehicle_xy = _xy_series_prefer(
+        rows,
+        "front_axle_x_m",
+        "front_axle_y_m",
+        "vehicle_x_m",
+        "vehicle_y_m",
+    )
+    if vehicle_xy.shape[0] == 0:
+        return np.asarray([0.0, 0.0], dtype=np.float64), np.asarray([1.0, 0.0], dtype=np.float64)
+
+    start_xy = np.asarray(vehicle_xy[0], dtype=np.float64)
+    heading_xy = np.asarray([1.0, 0.0], dtype=np.float64)
+    for point_xy in vehicle_xy[1:]:
+        delta = np.asarray(point_xy, dtype=np.float64) - start_xy
+        norm = float(np.hypot(delta[0], delta[1]))
+        if norm > 1e-6:
+            heading_xy = (delta / norm).astype(np.float64)
+            break
+    return start_xy, heading_xy
+
+
+def _compute_smalltrack_lap_metrics_from_rows(
+    rows: list[dict[str, float | str]],
+    *,
+    gt_midline_xy: np.ndarray,
+    big_orange_xy: np.ndarray,
+) -> tuple[int | None, float | None]:
+    gate = build_smalltrack_lap_gate(big_orange_xy=np.asarray(big_orange_xy, dtype=np.float64), frame_id="map")
+    gt_midline_xy = np.asarray(gt_midline_xy, dtype=np.float64)
+    if gate is None or gt_midline_xy.ndim != 2 or gt_midline_xy.shape[0] < 2:
+        return None, None
+
+    track_length_m = float(path_cumulative_lengths(gt_midline_xy)[-1])
+    min_lap_travel_m = max(15.0, 0.6 * track_length_m) if math.isfinite(track_length_m) else 25.0
+    gate_length_m = float(np.hypot(*(gate.segment_xy[1] - gate.segment_xy[0])))
+    counter = GateLapCounter(
+        gate.segment_xy,
+        min_lap_travel_m=min_lap_travel_m,
+        min_lap_time_sec=5.0,
+        near_gate_distance_m=max(4.0, 2.0 * gate_length_m),
+    )
+
+    timestamps_sec = _series(rows, "timestamp_sec")
+    vehicle_x = _series_prefer(rows, "front_axle_x_m", "vehicle_x_m")
+    vehicle_y = _series_prefer(rows, "front_axle_y_m", "vehicle_y_m")
+    lap_times_sec: list[float] = []
+    completed_laps = 0
+
+    for idx, timestamp_sec in enumerate(timestamps_sec):
+        if not (math.isfinite(timestamp_sec) and math.isfinite(vehicle_x[idx]) and math.isfinite(vehicle_y[idx])):
+            continue
+        snapshot = counter.update(
+            np.asarray([vehicle_x[idx], vehicle_y[idx]], dtype=np.float64),
+            float(timestamp_sec),
+        )
+        completed_laps = int(snapshot.completed_laps)
+        if snapshot.just_completed_lap and snapshot.last_lap_time_sec is not None:
+            lap_times_sec.append(float(snapshot.last_lap_time_sec))
+
+    average_lap_time_sec = float(np.mean(lap_times_sec)) if lap_times_sec else None
+    return completed_laps, average_lap_time_sec
+
+
+def _load_lap_target(session_path: Path, track_name: str) -> int | None:
+    spawn_path = session_path / "configs" / "sim_car_config" / str(track_name) / "spawn.yaml"
+    config = _load_yaml_mapping(spawn_path)
+    lap_tracking = config.get("lap_tracking")
+    if not isinstance(lap_tracking, dict):
+        return None
+    raw_value = lap_tracking.get("auto_suspend_after_laps")
+    try:
+        return int(raw_value) if raw_value is not None else None
+    except (TypeError, ValueError):
+        return None
+
+
+def _compute_session_duration_sec(rows: list[dict[str, float | str]]) -> float | None:
+    timestamps_sec = _series(rows, "timestamp_sec")
+    finite = timestamps_sec[np.isfinite(timestamps_sec)]
+    if finite.size < 2:
+        return None
+    duration_sec = float(finite[-1] - finite[0])
+    return duration_sec if duration_sec > 0.0 else None
+
+
+def regenerate_path_tracking_overlay_for_session(
+    session_path: Path,
+    *,
+    overlay_format: str = "pdf",
+    dpi: int = 150,
+    delete_legacy_png: bool = False,
+) -> Optional[Path]:
+    session_path = Path(session_path)
+    csv_path = session_path / "logs" / "path_tracking_eval.csv"
+    rows = _read_rows(
+        csv_path,
+        {
+            "timestamp_sec",
+            "planner_reference_x_m",
+            "planner_reference_y_m",
+            "front_axle_x_m",
+            "front_axle_y_m",
+            "vehicle_x_m",
+            "vehicle_y_m",
+            "front_axle_vs_planner_cte_m",
+            "controller_vs_planner_cte_m",
+            "front_axle_vs_gt_cte_m",
+            "controller_vs_gt_cte_m",
+        },
+    )
+    if not rows:
+        return None
+
+    launch_params = _load_yaml_mapping(session_path / "configs" / "launch_parameters.yaml")
+    track_name = _clean_string(launch_params.get("track")).lower() or "unknown"
+    planner_trace_xy = build_stitched_reference_trace(
+        _xy_series(rows, "planner_reference_x_m", "planner_reference_y_m"),
+        min_spacing_m=0.1,
+    )
+
+    overlay_segments_xy: Optional[list[np.ndarray]] = None
+    lap_count: int | None = None
+    average_lap_time_sec: float | None = None
+    skidpad_circle_times_sec: Optional[dict[int, float]] = None
+
+    if track_name == "skidpad":
+        gt_midline_xy = np.empty((0, 2), dtype=np.float64)
+        gt_left_xy, gt_right_xy = build_skidpad_gt_color_borders()
+        overlay_segments_xy = build_skidpad_gt_overlay_segments()
+        skidpad_circle_times_sec = compute_skidpad_circle_times_sec(csv_path)
+        average_lap_time_sec = _compute_session_duration_sec(rows)
+    else:
+        model_path, model_pose_xy_yaw = _resolve_track_model_path(session_path, launch_params)
+        cone_sets = _load_track_model_cones(model_path, model_pose_xy_yaw=model_pose_xy_yaw)
+        start_xy, heading_xy = _infer_start_heading_xy_from_rows(rows)
+        gt_midline = build_gt_midline_from_cones(
+            blue_xy=cone_sets["blue"],
+            yellow_xy=cone_sets["yellow"],
+            start_xy=start_xy,
+            heading_xy=heading_xy,
+            frame_id="map",
+            resolution_m=0.5,
+        )
+        gt_midline_xy = gt_midline.midline_xy
+        gt_left_xy = gt_midline.left_xy
+        gt_right_xy = gt_midline.right_xy
+        if track_name == "smalltrack":
+            lap_count, average_lap_time_sec = _compute_smalltrack_lap_metrics_from_rows(
+                rows,
+                gt_midline_xy=gt_midline_xy,
+                big_orange_xy=cone_sets["big_orange"],
+            )
+        else:
+            average_lap_time_sec = _compute_session_duration_sec(rows)
+
+    overlay_path = session_path / "plots" / f"path_tracking_eval_overlay.{overlay_format}"
+    generated_path = generate_path_tracking_overlay_plot(
+        csv_path,
+        overlay_path,
+        gt_midline_xy=gt_midline_xy,
+        gt_left_xy=gt_left_xy,
+        gt_right_xy=gt_right_xy,
+        planner_trace_xy=planner_trace_xy,
+        gt_overlay_segments_xy=overlay_segments_xy,
+        lap_count=lap_count,
+        lap_target=_load_lap_target(session_path, track_name),
+        average_lap_time_sec=average_lap_time_sec,
+        skidpad_circle_times_sec=skidpad_circle_times_sec,
+        dpi=dpi,
+    )
+    if generated_path is not None and delete_legacy_png:
+        legacy_png = session_path / "plots" / "path_tracking_eval_overlay.png"
+        if legacy_png.exists() and legacy_png != generated_path:
+            legacy_png.unlink()
+    return generated_path
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser(description="Regenerate path tracking overlay plots for an existing session")
+    parser.add_argument("session_path", help="Session directory under multidata/")
+    parser.add_argument(
+        "--overlay-format",
+        choices=["pdf", "png", "svg"],
+        default="pdf",
+        help="Output format for the regenerated overlay plot",
+    )
+    parser.add_argument("--dpi", type=int, default=150, help="DPI for raster output formats")
+    parser.add_argument(
+        "--delete-legacy-png",
+        action="store_true",
+        help="Delete an existing legacy PNG overlay after successfully generating the new artifact",
+    )
+    args = parser.parse_args()
+
+    generated_path = regenerate_path_tracking_overlay_for_session(
+        Path(args.session_path),
+        overlay_format=args.overlay_format,
+        dpi=args.dpi,
+        delete_legacy_png=args.delete_legacy_png,
+    )
+    if generated_path is None:
+        raise SystemExit("No path tracking overlay could be generated for the supplied session")
+    print(generated_path)
+
+
+if __name__ == "__main__":
+    main()

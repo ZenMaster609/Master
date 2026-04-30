@@ -29,8 +29,6 @@ class SkidpadRouterConfig:
     parked_speed_threshold_mps: float = 0.5
     parked_hold_time_s: float = 1.0
     test_park_only: bool = False
-    synthetic_pair_half_width_m: float = 1.6375
-    synthetic_pair_y_m: tuple[float, ...] = (3.5, 5.5, 7.5)
 
 
 @dataclass(frozen=True)
@@ -209,18 +207,6 @@ class SkidpadStateMachine:
         )
         return crossroads_mask | straight_mask
 
-    def synthetic_cone_pairs(self) -> list[np.ndarray]:
-        if self.active_branch() != "straight":
-            return []
-        pairs: list[np.ndarray] = []
-        half_width = float(max(0.0, self._config.synthetic_pair_half_width_m))
-        cx, _cy = self._config.crossroads_center_xy
-        for y_m in self._config.synthetic_pair_y_m:
-            y_val = float(y_m)
-            pairs.append(np.asarray([cx - half_width, y_val], dtype=np.float64))
-            pairs.append(np.asarray([cx + half_width, y_val], dtype=np.float64))
-        return pairs
-
     def is_in_crossroads(self, x_m: float, y_m: float) -> bool:
         cx, cy = self._config.crossroads_center_xy
         hx, hy = self._config.crossroads_half_extents_xy
@@ -330,7 +316,6 @@ def config_from_parameters(
     circle_radius_window_m: Sequence[float],
     route_sequence: Sequence[str],
     route_laps: int,
-    synthetic_pair_y_m: Sequence[float],
     lap_complete_angle_rad: float,
     parking_corridor_half_width_m: float,
     parking_start_y_m: float,
@@ -339,7 +324,6 @@ def config_from_parameters(
     parked_speed_threshold_mps: float,
     parked_hold_time_s: float,
     test_park_only: bool,
-    synthetic_pair_half_width_m: float,
     lobe_radius_m: float,
     right_lobe_min_x_m: float,
     left_lobe_max_x_m: float,
@@ -367,8 +351,6 @@ def config_from_parameters(
         parked_speed_threshold_mps=float(parked_speed_threshold_mps),
         parked_hold_time_s=float(parked_hold_time_s),
         test_park_only=bool(test_park_only),
-        synthetic_pair_half_width_m=float(synthetic_pair_half_width_m),
-        synthetic_pair_y_m=tuple(float(item) for item in synthetic_pair_y_m),
     )
 
 

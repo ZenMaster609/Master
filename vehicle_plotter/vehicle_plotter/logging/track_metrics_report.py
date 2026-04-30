@@ -81,7 +81,7 @@ TRACK_METRICS_FIELDNAMES = [
     "status_counts_json",
     "path_tracking_csv",
     "path_tracking_summary_json",
-    "path_tracking_overlay_png",
+    "path_tracking_overlay_pdf",
 ]
 
 
@@ -165,9 +165,9 @@ def build_track_metrics_record(
         "status_counts_json": json.dumps(status_counts, sort_keys=True),
         "path_tracking_csv": _relative_to_session(session_path, session_path / "logs" / "path_tracking_eval.csv"),
         "path_tracking_summary_json": _relative_to_session(session_path, summary_path),
-        "path_tracking_overlay_png": _relative_to_session(
+        "path_tracking_overlay_pdf": _relative_to_session(
             session_path,
-            session_path / "plots" / "path_tracking_eval_overlay.png",
+            session_path / "plots" / "path_tracking_eval_overlay.pdf",
         ),
     }
 

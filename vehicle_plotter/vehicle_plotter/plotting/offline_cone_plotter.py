@@ -16,10 +16,15 @@ from .matplotlib_fonts import (
     CONE_STATS_FONTSIZE,
     LEGEND_FONTSIZE,
     SUPTITLE_FONTSIZE,
+    apply_serif_font_preferences,
     apply_axis_label_fontsize,
     apply_tick_label_fontsize,
 )
 from .range_rmse_analyzer import RangeRMSEAnalyzer, RangeRMSEBinStats
+
+RANGE_RMSE_TEXT_FONTSIZE = 15.0
+RANGE_RMSE_LEGEND_FONTSIZE = 15.0
+RANGE_RMSE_STATS_FONTSIZE = 15.0
 
 
 class OfflineConePlotter:
@@ -28,7 +33,7 @@ class OfflineConePlotter:
     _SOURCE_SPECS = {
         'monocular': {
             'csv': 'cone_range_rmse_samples_mono.csv',
-            'png': 'cone_range_rmse_mono.png',
+            'output_stem': 'cone_range_rmse_mono',
             'title': 'Monocular Camera',
             'label': 'mono_rmse',
             'color': 'tab:blue',
@@ -39,7 +44,7 @@ class OfflineConePlotter:
         },
         'stereo': {
             'csv': 'cone_range_rmse_samples_stereo.csv',
-            'png': 'cone_range_rmse_stereo.png',
+            'output_stem': 'cone_range_rmse_stereo',
             'title': 'Stereo Camera',
             'label': 'stereo_rmse',
             'color': 'tab:orange',
@@ -50,7 +55,7 @@ class OfflineConePlotter:
         },
         'lidar': {
             'csv': 'cone_range_rmse_samples_lidar.csv',
-            'png': 'cone_range_rmse_lidar.png',
+            'output_stem': 'cone_range_rmse_lidar',
             'title': 'LiDAR',
             'label': 'lidar_rmse',
             'color': 'tab:green',
@@ -58,10 +63,11 @@ class OfflineConePlotter:
         },
     }
 
-    def __init__(self, session_path: Path):
+    def __init__(self, session_path: Path, *, output_format: str = 'pdf'):
         self.session_path = Path(session_path)
+        self.output_format = str(output_format).strip().lower() or 'pdf'
 
-    def generate_all_range_rmse_plots(self, dpi: int = 150) -> list[Path]:
+    def generate_all_range_rmse_plots(self, dpi: int = 150, *, delete_legacy_png: bool = False) -> list[Path]:
         output_paths: list[Path] = []
         for source_name, spec in self._SOURCE_SPECS.items():
             stats = self._load_source_stats(spec['csv'], expected_source=source_name)
@@ -72,12 +78,13 @@ class OfflineConePlotter:
                     title=str(spec['title']),
                     series_label=str(spec['label']),
                     color=str(spec['color']),
-                    output_filename=str(spec['png']),
+                    output_stem=str(spec['output_stem']),
                     show_classification=bool(spec['show_classification']),
                     stats_text_axes_xy=tuple(spec.get('stats_text_axes_xy', (0.98, 0.98))),
                     stats_text_ha=str(spec.get('stats_text_ha', 'right')),
                     stats_text_va=str(spec.get('stats_text_va', 'top')),
                     dpi=dpi,
+                    delete_legacy_png=delete_legacy_png,
                 )
             )
         return output_paths
@@ -167,12 +174,13 @@ class OfflineConePlotter:
         title: str,
         series_label: str,
         color: str,
-        output_filename: str,
+        output_stem: str,
         show_classification: bool,
         stats_text_axes_xy: tuple[float, float],
         stats_text_ha: str,
         stats_text_va: str,
         dpi: int,
+        delete_legacy_png: bool,
     ) -> Path:
         bin_centers = np.asarray(stats.bin_centers, dtype=np.float32)
         counts = np.asarray(stats.total_counts, dtype=np.int32)
@@ -190,6 +198,7 @@ class OfflineConePlotter:
         total_rmse_pct = self._compute_total_rmse_percent(bin_centers, {source_name: rmse})
         has_data = bool(np.any(counts > 0) and np.any(np.isfinite(rmse)))
 
+        apply_serif_font_preferences()
         fig, (ax_top, ax_bottom) = plt.subplots(
             2,
             1,
@@ -197,7 +206,6 @@ class OfflineConePlotter:
             figsize=(10.0, 7.0),
             gridspec_kw={'height_ratios': [3, 1]},
         )
-        fig.suptitle(f'{title} Cone Range-Binned RMSE', fontsize=SUPTITLE_FONTSIZE)
         ax_top_pct = ax_top.twinx()
 
         if has_data:
@@ -224,7 +232,7 @@ class OfflineConePlotter:
                     handles=handles,
                     loc='upper left',
                     bbox_to_anchor=(0.0, 0.88),
-                    fontsize=LEGEND_FONTSIZE,
+                    fontsize=RANGE_RMSE_LEGEND_FONTSIZE,
                 )
         else:
             ax_top.text(
@@ -234,7 +242,7 @@ class OfflineConePlotter:
                 transform=ax_top.transAxes,
                 ha='center',
                 va='center',
-                fontsize=12,
+                fontsize=RANGE_RMSE_TEXT_FONTSIZE,
                 bbox={
                     'boxstyle': 'round,pad=0.3',
                     'facecolor': 'white',
@@ -250,6 +258,12 @@ class OfflineConePlotter:
         apply_axis_label_fontsize(ax_top_pct)
         apply_tick_label_fontsize(ax_top)
         apply_tick_label_fontsize(ax_top_pct)
+        ax_top.yaxis.label.set_size(RANGE_RMSE_TEXT_FONTSIZE)
+        ax_top_pct.yaxis.label.set_size(RANGE_RMSE_TEXT_FONTSIZE)
+        ax_top.tick_params(axis='both', which='major', labelsize=RANGE_RMSE_TEXT_FONTSIZE)
+        ax_top.tick_params(axis='both', which='minor', labelsize=RANGE_RMSE_TEXT_FONTSIZE)
+        ax_top_pct.tick_params(axis='both', which='major', labelsize=RANGE_RMSE_TEXT_FONTSIZE)
+        ax_top_pct.tick_params(axis='both', which='minor', labelsize=RANGE_RMSE_TEXT_FONTSIZE)
         ax_top.grid(True, alpha=0.3)
 
         finite_rmse = rmse[np.isfinite(rmse)]
@@ -282,7 +296,7 @@ class OfflineConePlotter:
                 transform=ax_top.transAxes,
                 ha=stats_text_ha,
                 va=stats_text_va,
-                fontsize=CONE_STATS_FONTSIZE,
+                fontsize=RANGE_RMSE_STATS_FONTSIZE,
                 bbox={
                     'boxstyle': 'round,pad=0.3',
                     'facecolor': 'white',
@@ -303,15 +317,23 @@ class OfflineConePlotter:
         ax_bottom.set_ylabel('Samples')
         apply_axis_label_fontsize(ax_bottom)
         apply_tick_label_fontsize(ax_bottom)
+        ax_bottom.xaxis.label.set_size(RANGE_RMSE_TEXT_FONTSIZE)
+        ax_bottom.yaxis.label.set_size(RANGE_RMSE_TEXT_FONTSIZE)
+        ax_bottom.tick_params(axis='both', which='major', labelsize=RANGE_RMSE_TEXT_FONTSIZE)
+        ax_bottom.tick_params(axis='both', which='minor', labelsize=RANGE_RMSE_TEXT_FONTSIZE)
         ax_bottom.grid(True, alpha=0.3)
         ax_bottom.set_ylim(0.0, max(1.0, float(np.max(counts)) * 1.2) if counts.size > 0 else 1.0)
 
         fig.tight_layout()
         plots_path = self.session_path / 'plots'
         plots_path.mkdir(parents=True, exist_ok=True)
-        final_path = plots_path / output_filename
+        final_path = plots_path / f'{output_stem}.{self.output_format}'
         fig.savefig(final_path, dpi=dpi, bbox_inches='tight')
         plt.close(fig)
+        if delete_legacy_png and self.output_format != 'png':
+            legacy_png = plots_path / f'{output_stem}.png'
+            if legacy_png.exists():
+                legacy_png.unlink()
         return final_path
 
     @staticmethod

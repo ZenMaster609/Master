@@ -19,6 +19,7 @@ import matplotlib
 matplotlib.use('Agg')  # Non-interactive backend for headless operation
 
 import argparse
+from copy import deepcopy
 import json
 from pathlib import Path
 from typing import Dict, List, Optional, Any
@@ -26,7 +27,7 @@ from typing import Dict, List, Optional, Any
 import pandas as pd
 
 from ..core.vehicle_state import VehicleState
-from .plot_config import get_all_plots
+from .plot_config import PlotLayoutConfig, get_all_plots
 from .plot_manager import PlotManager
 from .plot_definitions import (
     PlotDefinition,
@@ -52,7 +53,7 @@ class OfflinePlotter:
     def __init__(
         self,
         session_path: Path,
-        output_format: str = 'png',
+        output_format: str = 'pdf',
         dpi: int = 150,
     ):
         """
@@ -213,25 +214,63 @@ class OfflinePlotter:
                 print(f"Error generating {plot_def.name}: {e}")
                 continue
 
-        combined_path = output_dir / "all_plots.png"
         try:
-            self.generate_combined_dashboard(combined_path)
-            generated_files.append(combined_path)
-            print(f"Generated: {combined_path}")
+            dashboard_paths = self.generate_split_dashboards(output_dir)
+            generated_files.extend(dashboard_paths)
+            for dashboard_path in dashboard_paths:
+                print(f"Generated: {dashboard_path}")
         except Exception as e:
-            print(f"Error generating combined dashboard: {e}")
+            print(f"Error generating split dashboards: {e}")
+        for stale_dashboard in output_dir.glob("all_plots.*"):
+            stale_dashboard.unlink()
         for stale_position_ins in output_dir.glob("position_ins.*"):
             stale_position_ins.unlink()
 
         return generated_files
 
+    def generate_split_dashboards(self, output_dir: Path) -> List[Path]:
+        """Render the live sensor dashboard as movement/mechanical 2x2 PDFs."""
+        output_dir = Path(output_dir)
+        output_dir.mkdir(parents=True, exist_ok=True)
+
+        outputs = [
+            (
+                output_dir / f"movement.{self.output_format}",
+                self._build_movement_layout(),
+            ),
+            (
+                output_dir / f"mechanical.{self.output_format}",
+                self._build_mechanical_layout(),
+            ),
+        ]
+
+        generated: List[Path] = []
+        for output_path, layout in outputs:
+            generated.append(self._export_dashboard(output_path, layout_config=layout))
+
+            if self.output_format != 'png':
+                legacy_png = output_path.with_suffix('.png')
+                if legacy_png.exists():
+                    legacy_png.unlink()
+
+        return generated
+
     def generate_combined_dashboard(self, output_path: Path) -> Path:
-        """Render the live 4x2 dashboard layout from logged state data."""
+        """Render a static dashboard layout from logged state data."""
+        return self._export_dashboard(output_path, layout_config=get_all_plots())
+
+    def _export_dashboard(
+        self,
+        output_path: Path,
+        *,
+        layout_config: PlotLayoutConfig,
+    ) -> Path:
+        """Export a specific dashboard layout to a static file."""
         if self.data is None:
             self.load_data()
 
         plot_manager = PlotManager(
-            layout_config=get_all_plots(),
+            layout_config=layout_config,
             enable_gui=False,
         )
         try:
@@ -242,6 +281,49 @@ class OfflinePlotter:
             plot_manager.close()
 
         return output_path
+
+    def _build_movement_layout(self) -> PlotLayoutConfig:
+        """Build the movement dashboard with wheel speed shown in m/s."""
+        layout = self._build_dashboard_layout([0, 1, 2, 3], window_title="Movement")
+        wheel_speed_plot = layout.plots[3]
+        wheel_speed_plot.name = "Wheel Speed (m/s)"
+        wheel_speed_plot.y_axis.label = "Wheel Speed"
+        wheel_speed_plot.y_axis.unit = "m/s"
+        wheel_speed_plot.y_axis.limits = (0.0, 8.0)
+        for series in wheel_speed_plot.series:
+            series.scale = 0.001
+        return layout
+
+    def _build_mechanical_layout(self) -> PlotLayoutConfig:
+        """Build the mechanical dashboard."""
+        return self._build_dashboard_layout([4, 5, 6, 7], window_title="Mechanical")
+
+    def _build_dashboard_layout(
+        self,
+        plot_indices: List[int],
+        *,
+        window_title: str,
+    ) -> PlotLayoutConfig:
+        """Clone selected dashboard plots into a 2x2 export layout."""
+        base_layout = get_all_plots()
+        cloned_plots = []
+        for position, plot_index in enumerate(plot_indices):
+            plot_config = deepcopy(base_layout.plots[plot_index])
+            plot_config.row = position // 2
+            plot_config.col = position % 2
+            plot_config.row_span = 1
+            plot_config.col_span = 1
+            cloned_plots.append(plot_config)
+
+        return PlotLayoutConfig(
+            plots=cloned_plots,
+            rows=2,
+            cols=2,
+            window_title=window_title,
+            window_size=(1650, 900),
+            dark_mode=base_layout.dark_mode,
+            update_rate_hz=base_layout.update_rate_hz,
+        )
 
     def _vehicle_state_from_row(self, row: Dict[str, Any]) -> VehicleState:
         """Map a logged row back into VehicleState for dashboard export."""

@@ -31,6 +31,7 @@ from vehicle_plotter.logging.path_tracking_eval_plots import (  # noqa: E402
     compute_path_tracking_overlay_average_distances,
     generate_path_tracking_cte_plot,
     generate_path_tracking_overlay_plot,
+    regenerate_path_tracking_overlay_for_session,
 )
 from vehicle_plotter.logging.track_metrics_report import (  # noqa: E402
     build_track_metrics_record,
@@ -349,6 +350,7 @@ def test_track_metrics_report_writes_appends_and_replaces_run(tmp_path):
     assert row1['allow_camera_fallback_near'] == 'false'
     assert row1['front_axle_vs_gt_avg_dist_m'] == '0.2'
     assert row1['front_axle_vs_planner_avg_dist_m'] == '0.1'
+    assert row1['path_tracking_overlay_pdf'] == 'plots/path_tracking_eval_overlay.pdf'
     assert row1['status_count_ok'] == '8'
     assert row2['planner'] == 'corridor'
     assert row2['controller'] == 'stanley'
@@ -364,6 +366,7 @@ def test_track_metrics_report_writes_appends_and_replaces_run(tmp_path):
     assert len(records) == 2
     typed_row1 = next(record for record in records if record['run_id'] == run1.name)
     assert typed_row1['completed_laps'] == 4
+    assert typed_row1['path_tracking_overlay_pdf'] == 'plots/path_tracking_eval_overlay.pdf'
     assert typed_row1['stereo'] is False
     assert typed_row1['lidar_enabled'] is True
     assert typed_row1['status_counts'] == {'ok': 8, 'waiting_for_odom': 2}
@@ -487,7 +490,7 @@ def test_analyze_path_tracking_csv_and_plot_smoke(tmp_path):
     assert cte_plot.exists()
     assert cte_plot.stat().st_size > 0
 
-    overlay_plot = tmp_path / 'path_tracking_eval_overlay.png'
+    overlay_plot = tmp_path / 'path_tracking_eval_overlay.pdf'
     gt_midline = np.asarray([[0.0, 0.0], [10.0, 0.0], [20.0, 0.0], [30.0, 0.0]], dtype=np.float64)
     planner_trace = np.asarray([[0.0, 0.1], [10.0, 0.1], [20.0, 0.1], [30.0, 0.1]], dtype=np.float64)
     generated_overlay = generate_path_tracking_overlay_plot(
@@ -504,6 +507,157 @@ def test_analyze_path_tracking_csv_and_plot_smoke(tmp_path):
     assert generated_overlay == overlay_plot
     assert overlay_plot.exists()
     assert overlay_plot.stat().st_size > 0
+
+
+def test_generate_path_tracking_overlay_plot_uses_pdf_typography_without_title(tmp_path, monkeypatch):
+    import matplotlib
+    from matplotlib.figure import Figure
+
+    csv_path = tmp_path / 'path_tracking_eval.csv'
+    with open(csv_path, 'w', newline='', encoding='utf-8') as handle:
+        writer = csv.DictWriter(
+            handle,
+            fieldnames=[
+                'timestamp_sec',
+                'sample_valid_flag',
+                'status',
+                'frame_id',
+                'gt_source_frame',
+                'vehicle_x_m',
+                'vehicle_y_m',
+                'front_axle_x_m',
+                'front_axle_y_m',
+                'planner_reference_x_m',
+                'planner_reference_y_m',
+                'planner_reference_vs_gt_cte_m',
+                'front_axle_vs_planner_cte_m',
+                'front_axle_vs_gt_cte_m',
+                'planner_vs_gt_cte_rms_m',
+                'planner_vs_gt_cte_p95_m',
+                'planner_vs_gt_cte_max_m',
+            ],
+        )
+        writer.writeheader()
+        for idx in range(5):
+            writer.writerow({
+                'timestamp_sec': float(idx),
+                'sample_valid_flag': 1.0,
+                'status': 'ok',
+                'frame_id': 'odom',
+                'gt_source_frame': 'map',
+                'vehicle_x_m': float(idx),
+                'vehicle_y_m': 0.15,
+                'front_axle_x_m': float(idx),
+                'front_axle_y_m': 0.15,
+                'planner_reference_x_m': float(idx),
+                'planner_reference_y_m': 0.1,
+                'planner_reference_vs_gt_cte_m': 0.1,
+                'front_axle_vs_planner_cte_m': 0.05,
+                'front_axle_vs_gt_cte_m': 0.15,
+                'planner_vs_gt_cte_rms_m': 0.1,
+                'planner_vs_gt_cte_p95_m': 0.1,
+                'planner_vs_gt_cte_max_m': 0.1,
+            })
+
+    captured: dict[str, Figure] = {}
+    original_savefig = Figure.savefig
+
+    def _capture_savefig(self, *args, **kwargs):
+        captured['figure'] = self
+        return original_savefig(self, *args, **kwargs)
+
+    monkeypatch.setattr(Figure, 'savefig', _capture_savefig)
+
+    output_path = tmp_path / 'path_tracking_eval_overlay.pdf'
+    generated = generate_path_tracking_overlay_plot(
+        csv_path,
+        output_path,
+        gt_midline_xy=np.asarray([[0.0, 0.0], [4.0, 0.0]], dtype=np.float64),
+        gt_left_xy=np.asarray([[0.0, 1.5], [4.0, 1.5]], dtype=np.float64),
+        gt_right_xy=np.asarray([[0.0, -1.5], [4.0, -1.5]], dtype=np.float64),
+        planner_trace_xy=np.asarray([[0.0, 0.1], [4.0, 0.1]], dtype=np.float64),
+        lap_count=1,
+        lap_target=3,
+        average_lap_time_sec=17.9,
+    )
+
+    assert generated == output_path
+    assert output_path.exists()
+    fig = captured['figure']
+    ax = fig.axes[0]
+    assert ax.get_title() == ''
+    assert matplotlib.rcParams['font.serif'][0] == 'Georgia'
+    assert ax.xaxis.label.get_size() == pytest.approx(10.0)
+    assert ax.yaxis.label.get_size() == pytest.approx(10.0)
+    assert all(tick.label1.get_size() == pytest.approx(10.0) for tick in ax.xaxis.get_major_ticks())
+    assert all(tick.label1.get_size() == pytest.approx(10.0) for tick in ax.yaxis.get_major_ticks())
+    assert ax.texts
+    assert ax.texts[0].get_fontsize() == pytest.approx(10.0)
+
+
+def test_regenerate_path_tracking_overlay_for_session_creates_pdf_and_deletes_legacy_png(tmp_path):
+    session_path = _write_track_metrics_fixture_run(tmp_path, 'small_mid_pp_2d_regen')
+    csv_path = session_path / 'logs' / 'path_tracking_eval.csv'
+    with open(csv_path, 'w', newline='', encoding='utf-8') as handle:
+        writer = csv.DictWriter(
+            handle,
+            fieldnames=[
+                'timestamp_sec',
+                'sample_valid_flag',
+                'status',
+                'frame_id',
+                'gt_source_frame',
+                'front_axle_x_m',
+                'front_axle_y_m',
+                'vehicle_x_m',
+                'vehicle_y_m',
+                'planner_reference_x_m',
+                'planner_reference_y_m',
+                'planner_reference_vs_gt_cte_m',
+                'front_axle_vs_planner_cte_m',
+                'front_axle_vs_gt_cte_m',
+                'planner_vs_gt_cte_rms_m',
+                'planner_vs_gt_cte_p95_m',
+                'planner_vs_gt_cte_max_m',
+            ],
+        )
+        writer.writeheader()
+        for idx in range(20):
+            t = idx * 0.1
+            writer.writerow({
+                'timestamp_sec': t,
+                'sample_valid_flag': 1.0,
+                'status': 'ok',
+                'frame_id': 'odom',
+                'gt_source_frame': 'map',
+                'front_axle_x_m': -12.5 + (0.2 * idx),
+                'front_axle_y_m': 10.0 + (0.05 * idx),
+                'vehicle_x_m': -12.5 + (0.2 * idx),
+                'vehicle_y_m': 10.0 + (0.05 * idx),
+                'planner_reference_x_m': -12.6 + (0.2 * idx),
+                'planner_reference_y_m': 10.0 + (0.04 * idx),
+                'planner_reference_vs_gt_cte_m': 0.1,
+                'front_axle_vs_planner_cte_m': 0.05,
+                'front_axle_vs_gt_cte_m': 0.15,
+                'planner_vs_gt_cte_rms_m': 0.1,
+                'planner_vs_gt_cte_p95_m': 0.1,
+                'planner_vs_gt_cte_max_m': 0.1,
+            })
+
+    legacy_png = session_path / 'plots' / 'path_tracking_eval_overlay.png'
+    legacy_png.parent.mkdir(parents=True, exist_ok=True)
+    legacy_png.write_bytes(b'legacy')
+
+    generated = regenerate_path_tracking_overlay_for_session(
+        session_path,
+        overlay_format='pdf',
+        delete_legacy_png=True,
+    )
+
+    assert generated == session_path / 'plots' / 'path_tracking_eval_overlay.pdf'
+    assert generated.exists()
+    assert generated.stat().st_size > 0
+    assert not legacy_png.exists()
 
 
 def test_generate_path_tracking_cte_plot_supports_planner_vs_gt_series_only(tmp_path):

@@ -1693,7 +1693,7 @@ class LoggerNode(Node):
         overlay_average_distances: Dict[str, float] = {}
         overlay_track_width_m = float('nan')
         try:
-            cte_plot_path = self._run_session.plots_path / 'path_tracking_eval_cte.png'
+            cte_plot_path = self._run_session.plots_path / 'path_tracking_eval_cte.pdf'
             generated_cte = generate_path_tracking_cte_plot(csv_path, cte_plot_path)
             if generated_cte is not None:
                 self._safe_log_info(f'Generated path tracking CTE plot: {generated_cte}')
@@ -1703,7 +1703,7 @@ class LoggerNode(Node):
             self._safe_log_warn(f'Failed path tracking CTE plot generation: {exc}')
 
         try:
-            overlay_path = self._run_session.plots_path / 'path_tracking_eval_overlay.png'
+            overlay_path = self._run_session.plots_path / 'path_tracking_eval_overlay.pdf'
             overlay_segments_xy = None
             overlay_midline_xy = self._path_eval_last_gt_midline_xy
             overlay_blue_xy = self._path_eval_last_gt_left_xy
@@ -1874,7 +1874,7 @@ class LoggerNode(Node):
 
         try:
             from ..plotting.offline_plotter import OfflinePlotter
-            plotter = OfflinePlotter(self._run_session.session_path)
+            plotter = OfflinePlotter(self._run_session.session_path, output_format='pdf')
             generated = plotter.generate_plots()
             total += len(generated)
         except ImportError as e:
@@ -1884,8 +1884,8 @@ class LoggerNode(Node):
 
         try:
             from ..plotting.offline_cone_plotter import OfflineConePlotter
-            cone_plotter = OfflineConePlotter(self._run_session.session_path)
-            generated_paths = cone_plotter.generate_all_range_rmse_plots()
+            cone_plotter = OfflineConePlotter(self._run_session.session_path, output_format='pdf')
+            generated_paths = cone_plotter.generate_all_range_rmse_plots(delete_legacy_png=True)
             total += len(generated_paths)
             for output_path in generated_paths:
                 self._safe_log_info(f"Generated cone range RMSE offline plot: {output_path}")
