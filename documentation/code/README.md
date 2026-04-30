@@ -14,6 +14,7 @@ Most pages focus on runtime symbols, but some topics are mainly implemented thro
 - [Vehicle Plotter](vehicle_plotter.md)
 - [Sensors](sensors.md)
 - [Perception](perception.md)
+- [Cones](cones.md)
 - [2D LiDAR](2d_lidar.md)
 - [3D LiDAR](3d_lidar.md)
 
@@ -31,3 +32,11 @@ Most pages focus on runtime symbols, but some topics are mainly implemented thro
 ## Environment
 
 - [Reproducible Environment](reproducible_environment.md)
+
+## Simulation Infrastructure (eufs_remastered)
+
+- [EUFS Vehicle Models](eufs_models.md)
+- [EUFS Gazebo Dynamics Plugin](eufs_gz_dynamics.md)
+- [EUFS Messages](eufs_msgs.md)
+- [Gazebo Cone Plugins](gazebo_cone_plugins.md)
+- [Steering GUI](steering_gui.md)
