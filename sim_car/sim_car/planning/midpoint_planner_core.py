@@ -158,6 +158,93 @@ class _BoundaryPair:
         return 0.5 * (self.left_local + self.right_local)
 
 
+@dataclass
+class _FilteredCones:
+    points: np.ndarray
+    local: np.ndarray
+    track_ids: np.ndarray
+    colors: list[str]
+    raw_colors: list[str]
+    colored_count: int
+
+
+def _filter_and_order_cones(
+    points_xy: np.ndarray,
+    colors: list[str],
+    confidences: np.ndarray,
+    track_ids: np.ndarray,
+    vehicle_xy: tuple[float, float],
+    vehicle_yaw: float,
+    config: MidpointPlannerConfig,
+    raw_colors: Optional[list[str]] = None,
+) -> "_FilteredCones":
+    normalized = [normalize_color(c) for c in colors]
+    if raw_colors is not None and len(raw_colors) == len(colors):
+        normalized_raw = [normalize_color(c) for c in raw_colors]
+    else:
+        normalized_raw = list(normalized)
+    local_points = _to_vehicle_frame(points_xy, vehicle_xy, vehicle_yaw)
+
+    mask_geom = _geometry_filter(local_points, config)
+    mask_conf = confidences >= float(config.min_confidence)
+    colored_mask = np.array([c in {"blue", "yellow"} for c in normalized], dtype=bool)
+    unknown_mask = np.array([c == "unknown" for c in normalized], dtype=bool)
+    selected_mask = mask_geom & mask_conf & (
+        colored_mask | (unknown_mask if config.allow_unknown_pair_completion else False)
+    )
+
+    indices = np.where(selected_mask)[0]
+    filtered_points = points_xy[selected_mask]
+    filtered_local = local_points[selected_mask]
+    filtered_track_ids = track_ids[selected_mask]
+    filtered_colors = [normalized[i] for i in indices]
+    filtered_raw_colors = [normalized_raw[i] for i in indices]
+    colored_count = int(np.count_nonzero(
+        np.array([c in {"blue", "yellow"} for c in filtered_colors], dtype=bool)
+    ))
+
+    order = _deterministic_order(filtered_local, filtered_points, filtered_colors)
+    return _FilteredCones(
+        points=filtered_points[order],
+        local=filtered_local[order],
+        track_ids=filtered_track_ids[order],
+        colors=[filtered_colors[i] for i in order],
+        raw_colors=[filtered_raw_colors[i] for i in order],
+        colored_count=colored_count,
+    )
+
+
+def _validate_path(
+    centerline: np.ndarray,
+    centerline_local: np.ndarray,
+    near_field: dict,
+    heading_delta_max: float,
+    continuity_threshold_m: float,
+    reject_counts: dict[str, int],
+    config: MidpointPlannerConfig,
+) -> str:
+    """Run path quality checks. Returns reject reason (empty string means ok). Mutates reject_counts."""
+    if centerline.shape[0] < int(config.min_path_points):
+        return "path has too few points"
+    if not np.all(np.isfinite(centerline)):
+        return "path contains non-finite geometry"
+    if _forward_extent_m(centerline_local) < float(config.min_forward_extent_m):
+        return "path forward extent too short"
+    start_heading_error = abs(_path_start_heading_error(centerline_local))
+    if start_heading_error > float(config.max_start_heading_error_rad):
+        reject_counts["midpoint_kink"] += 1
+        return "path heading flip near vehicle"
+    if near_field["lateral_max_m"] > continuity_threshold_m:
+        reject_counts["near_field_continuity"] += 1
+        return "near-field continuity rejected fresh path"
+    if heading_delta_max > float(config.max_heading_delta_rad):
+        reject_counts["midpoint_kink"] += 1
+        return "path heading delta exceeded limit"
+    if _path_self_intersects(centerline):
+        return "path self-crossing detected"
+    return ""
+
+
 def compute_midpoint_centerline(
     points_xy: np.ndarray,
     colors: list[str],
@@ -183,53 +270,30 @@ def compute_midpoint_centerline(
     else:
         track_ids = np.asarray(track_ids, dtype=np.int64)
 
-    normalized = [normalize_color(color) for color in colors]
-    if raw_colors is not None and len(raw_colors) == len(colors):
-        normalized_raw = [normalize_color(color) for color in raw_colors]
-    else:
-        normalized_raw = list(normalized)
-    local_points = _to_vehicle_frame(points_xy, vehicle_xy, vehicle_yaw)
-
-    mask_geom = _geometry_filter(local_points, config)
-    mask_conf = confidences >= float(config.min_confidence)
-    colored_mask = np.array([color in {"blue", "yellow"} for color in normalized], dtype=bool)
-    unknown_mask = np.array([color == "unknown" for color in normalized], dtype=bool)
-    selected_mask = mask_geom & mask_conf & (
-        colored_mask | (unknown_mask if config.allow_unknown_pair_completion else False)
+    # --- Filter & order cone inputs ---
+    cones = _filter_and_order_cones(
+        points_xy, colors, confidences, track_ids,
+        vehicle_xy, vehicle_yaw, config, raw_colors,
     )
-
-    filtered_points = points_xy[selected_mask]
-    filtered_local = local_points[selected_mask]
-    filtered_track_ids = track_ids[selected_mask]
-    filtered_colors = [normalized[idx] for idx in np.where(selected_mask)[0]]
-    filtered_raw_colors = [normalized_raw[idx] for idx in np.where(selected_mask)[0]]
-    colored_count = int(np.count_nonzero(np.array([color in {"blue", "yellow"} for color in filtered_colors], dtype=bool)))
-    if colored_count == 0:
+    if cones.colored_count == 0:
         return _empty_result(
             "no colored cones in planning region",
             reject_counts=_default_reject_counts(),
         )
-
-    order = _deterministic_order(filtered_local, filtered_points, filtered_colors)
-    filtered_points = filtered_points[order]
-    filtered_local = filtered_local[order]
-    filtered_track_ids = filtered_track_ids[order]
-    filtered_colors = [filtered_colors[idx] for idx in order]
-    filtered_raw_colors = [filtered_raw_colors[idx] for idx in order]
-
-    if colored_count < int(config.min_required_cones):
+    if cones.colored_count < int(config.min_required_cones):
         return _empty_result(
-            f"usable colored cones below minimum ({colored_count} < {int(config.min_required_cones)})",
-            filtered_points=filtered_points,
-            filtered_colors=filtered_colors,
+            f"usable colored cones below minimum ({cones.colored_count} < {int(config.min_required_cones)})",
+            filtered_points=cones.points,
+            filtered_colors=cones.colors,
             reject_counts=_default_reject_counts(),
         )
 
-    left_indices = np.flatnonzero(np.array([color == "blue" for color in filtered_colors], dtype=bool))
-    right_indices = np.flatnonzero(np.array([color == "yellow" for color in filtered_colors], dtype=bool))
-    unknown_indices = np.flatnonzero(np.array([color == "unknown" for color in filtered_colors], dtype=bool))
-    left_chain = _build_boundary_chain(filtered_points, filtered_local, left_indices, config)
-    right_chain = _build_boundary_chain(filtered_points, filtered_local, right_indices, config)
+    # --- Build boundary chains ---
+    left_indices = np.flatnonzero(np.array([c == "blue" for c in cones.colors], dtype=bool))
+    right_indices = np.flatnonzero(np.array([c == "yellow" for c in cones.colors], dtype=bool))
+    unknown_indices = np.flatnonzero(np.array([c == "unknown" for c in cones.colors], dtype=bool))
+    left_chain = _build_boundary_chain(cones.points, cones.local, left_indices, config)
+    right_chain = _build_boundary_chain(cones.points, cones.local, right_indices, config)
 
     reject_counts = _default_reject_counts()
     expected_width = _clamp(
@@ -237,15 +301,13 @@ def compute_midpoint_centerline(
         config.min_width_m,
         config.max_width_m,
     )
-    candidate_edges = np.empty((0, 2), dtype=np.int64)
 
+    # --- Pair cones into midpoint chain ---
+    candidate_edges = np.empty((0, 2), dtype=np.int64)
     pairs: list[_BoundaryPair] = []
     midpoint_chain = np.empty((0, 2), dtype=np.float64)
-    raw_offset_path = np.empty((0, 2), dtype=np.float64)
     selected_edges = np.empty((0, 2), dtype=np.int64)
-    used_fallback = False
     planner_mode = "none"
-    active_boundary_side = ""
     candidate_count = 0
     measured_width_m = float("nan")
 
@@ -256,10 +318,10 @@ def compute_midpoint_centerline(
     )
     if pairing_possible:
         pairs, candidate_count, unknown_pair_count, pair_reject_counts = _pair_boundary_chains(
-            filtered_points=filtered_points,
-            filtered_local=filtered_local,
-            filtered_track_ids=filtered_track_ids,
-            filtered_raw_colors=filtered_raw_colors,
+            filtered_points=cones.points,
+            filtered_local=cones.local,
+            filtered_track_ids=cones.track_ids,
+            filtered_raw_colors=cones.raw_colors,
             left_indices=left_indices,
             right_indices=right_indices,
             unknown_indices=unknown_indices,
@@ -270,13 +332,9 @@ def compute_midpoint_centerline(
             right_chain=right_chain,
         )
         _merge_reject_counts(reject_counts, pair_reject_counts)
-        pairs = _order_pairs_into_midpoint_chain(
-            pairs,
-            config=config,
-        )
+        pairs = _order_pairs_into_midpoint_chain(pairs, config=config)
         pairs = _trim_pairs_by_midpoint_step_length(
-            pairs,
-            max_segment_length_m=float(config.max_midpoint_segment_length_m),
+            pairs, max_segment_length_m=float(config.max_midpoint_segment_length_m),
         )
         if pairs:
             measured_width_m = float(np.median([pair.width_m for pair in pairs]))
@@ -302,8 +360,8 @@ def compute_midpoint_centerline(
         return _result_with_metadata(
             result=_empty_result(
                 "no reliable midpoint chain",
-                filtered_points=filtered_points,
-                filtered_colors=filtered_colors,
+                filtered_points=cones.points,
+                filtered_colors=cones.colors,
                 left_boundary=left_chain.global_points,
                 right_boundary=right_chain.global_points,
                 reject_counts=reject_counts,
@@ -317,8 +375,8 @@ def compute_midpoint_centerline(
             right_boundary_count=right_boundary_count,
         )
 
-    raw_curve = midpoint_chain
-    centerline = _finalize_path(raw_curve, config)
+    # --- Compute path metrics ---
+    centerline = _finalize_path(midpoint_chain, config)
     centerline_local = _to_vehicle_frame(centerline, vehicle_xy, vehicle_yaw)
     seed_distance_m = _first_point_distance(centerline_local)
     near_field = _near_field_delta_metrics(
@@ -328,7 +386,7 @@ def compute_midpoint_centerline(
         vehicle_yaw=vehicle_yaw,
         horizon_m=config.jump_check_horizon_m,
     )
-    near_field_kink_max_rad = _path_heading_delta_max(centerline_local)
+    heading_delta_max = _path_heading_delta_max(centerline_local)
     continuity_threshold_m = float(config.max_near_field_lateral_jump_m)
     if len(pairs) <= max(3, int(config.min_pair_count)):
         continuity_threshold_m = max(
@@ -336,44 +394,20 @@ def compute_midpoint_centerline(
             float(config.max_near_field_lateral_jump_m_sparse_pairs),
         )
 
+    # --- Validate path ---
     prevalidation_centerline = np.array(centerline, copy=True)
-    status = "ok"
-    reject_reason = ""
-    min_path_points = int(config.min_path_points)
-    min_forward_extent_m = float(config.min_forward_extent_m)
-    if centerline.shape[0] < min_path_points:
-        status = "path has too few points"
-        reject_reason = status
-    elif not np.all(np.isfinite(centerline)):
-        status = "path contains non-finite geometry"
-        reject_reason = status
-    elif _forward_extent_m(centerline_local) < min_forward_extent_m:
-        status = "path forward extent too short"
-        reject_reason = status
-    else:
-        start_heading_error = abs(_path_start_heading_error(centerline_local))
-        if start_heading_error > float(config.max_start_heading_error_rad):
-            reject_counts["midpoint_kink"] += 1
-            status = "path heading flip near vehicle"
-            reject_reason = status
-        elif near_field["lateral_max_m"] > continuity_threshold_m:
-            reject_counts["near_field_continuity"] += 1
-            status = "near-field continuity rejected fresh path"
-            reject_reason = status
-        elif near_field_kink_max_rad > float(config.max_heading_delta_rad):
-            reject_counts["midpoint_kink"] += 1
-            status = "path heading delta exceeded limit"
-            reject_reason = status
-        elif _path_self_intersects(centerline):
-            status = "path self-crossing detected"
-            reject_reason = status
-
+    reject_reason = _validate_path(
+        centerline, centerline_local, near_field, heading_delta_max,
+        continuity_threshold_m, reject_counts, config,
+    )
+    status = reject_reason if reject_reason else "ok"
     if status != "ok":
         centerline = np.empty((0, 2), dtype=np.float64)
 
-    result = MidpointPlannerResult(
-        filtered_points=filtered_points,
-        filtered_colors=filtered_colors,
+    # --- Assemble result ---
+    return MidpointPlannerResult(
+        filtered_points=cones.points,
+        filtered_colors=cones.colors,
         triangulation_edges=np.empty((0, 2), dtype=np.int64),
         candidate_edges=candidate_edges,
         selected_edges=selected_edges,
@@ -386,16 +420,14 @@ def compute_midpoint_centerline(
         used_fallback=False,
         status=status,
         candidate_count=int(candidate_count),
-        selected_chain_length=int(
-            len(pairs)
-        ),
+        selected_chain_length=int(len(pairs)),
         selected_chain_width_median=float(measured_width_m),
         expected_width_prior_m=float(expected_width),
         near_field_lateral_max_m=float(near_field["lateral_max_m"]),
         near_field_lateral_mean_m=float(near_field["lateral_mean_m"]),
         near_field_displacement_max_m=float(near_field["displacement_max_m"]),
         near_field_displacement_mean_m=float(near_field["displacement_mean_m"]),
-        near_field_kink_max_rad=float(near_field_kink_max_rad),
+        near_field_kink_max_rad=float(heading_delta_max),
         seed_midpoint_distance_m=float(seed_distance_m),
         seed_temporal_offset_m=float("nan"),
         reject_reason=reject_reason,
@@ -413,7 +445,6 @@ def compute_midpoint_centerline(
         filtered_track_width_m=float(expected_width),
         unknown_pair_count=int(unknown_pair_count),
     )
-    return result
 
 
 def _geometry_filter(local_points: np.ndarray, config: MidpointPlannerConfig) -> np.ndarray:
