@@ -6,6 +6,7 @@ This page maps the `documentation/corridor_planner.md` behavior to the corridor 
 
 - `sim_car/sim_car/planning/corridor_planner_node.py`
 - `sim_car/sim_car/planning/corridor_planner_core.py`
+- `sim_car/sim_car/planning/tracked_cone_planner_geometry.py`
 - `sim_car/sim_car/planning/tracked_cone_planner_contract.py`
 
 ## Function Map
@@ -24,8 +25,8 @@ This page maps the `documentation/corridor_planner.md` behavior to the corridor 
 ### Boundary Chain Construction
 
 - `_deterministic_order` in `sim_car/sim_car/planning/corridor_planner_core.py`: creates a stable cone ordering before chain construction.
-- `_build_boundary_chain` in `sim_car/sim_car/planning/corridor_planner_core.py`: constructs the blue and yellow boundary chains used by corridor sampling.
-- `_candidate_progresses_from_vehicle` and `_candidate_is_shadowed` in `sim_car/sim_car/planning/corridor_planner_core.py`: enforce forward progression and candidate shadowing rules.
+- `_build_boundary_chain` in `sim_car/sim_car/planning/corridor_planner_core.py`: thin planner-local wrapper around shared boundary-chain construction, preserving corridor cone-audit rejection reasons.
+- `build_boundary_chain_data`, `candidate_progresses_from_vehicle`, and `candidate_is_shadowed` in `sim_car/sim_car/planning/tracked_cone_planner_geometry.py`: implement the shared chain-growth, forward-progress, and shadowing rules.
 - `CorridorPlannerNode._build_cone_audit_entries` in `sim_car/sim_car/planning/corridor_planner_node.py`: builds debug explanations for why cones were used or rejected.
 
 ### Corridor Sampling
@@ -55,4 +56,4 @@ This page maps the `documentation/corridor_planner.md` behavior to the corridor 
 ## Related Entry Points
 
 - `generate_launch_description` in `sim_car/launch/full_sim_launch.launch.py`: launches this planner when `planner:=corridor`.
-- `update_track_width_estimate` in `sim_car/sim_car/planning/corridor_planner_core.py`: shared width-estimate update used when corridor geometry yields trustworthy width samples.
+- `update_track_width_estimate` and `pair_width_in_range` in `sim_car/sim_car/planning/tracked_cone_planner_geometry.py`: shared width helpers used when corridor geometry yields trustworthy width samples.

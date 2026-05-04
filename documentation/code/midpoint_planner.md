@@ -6,6 +6,7 @@ This page maps the `documentation/midpoint_planner.md` behavior to the midpoint 
 
 - `sim_car/sim_car/planning/midpoint_planner_node.py`
 - `sim_car/sim_car/planning/midpoint_planner_core.py`
+- `sim_car/sim_car/planning/tracked_cone_planner_geometry.py`
 - `sim_car/sim_car/planning/tracked_cone_planner_contract.py`
 
 ## Function Map
@@ -25,12 +26,13 @@ This page maps the `documentation/midpoint_planner.md` behavior to the midpoint 
 ### Boundary Chains
 
 - `_deterministic_order` in `sim_car/sim_car/planning/midpoint_planner_core.py`: sorts cones consistently before chain building.
-- `_build_boundary_chain` in `sim_car/sim_car/planning/midpoint_planner_core.py`: constructs one plausible forward boundary chain for a side.
-- `_candidate_progresses_from_vehicle` and `_candidate_is_shadowed` in `sim_car/sim_car/planning/midpoint_planner_core.py`: implement forward-progress and shadowing checks used during chain construction.
+- `_build_boundary_chain` in `sim_car/sim_car/planning/midpoint_planner_core.py`: thin planner-local wrapper around shared boundary-chain construction.
+- `build_boundary_chain_data`, `candidate_progresses_from_vehicle`, and `candidate_is_shadowed` in `sim_car/sim_car/planning/tracked_cone_planner_geometry.py`: implement the shared chain-growth, forward-progress, and shadowing rules.
 
 ### Pair Creation
 
 - `_pair_boundary_chains` in `sim_car/sim_car/planning/midpoint_planner_core.py`: searches for valid left/right boundary pairs.
+- `pair_width_in_range`, `inward_distance`, `midpoint_outside_pair_span`, `unknown_partner_check`, and `unknown_partner_within_limits` in `sim_car/sim_car/planning/tracked_cone_planner_geometry.py`: shared pair predicates used inside midpoint pair creation.
 - `MidpointPlannerNode._active_pair_memory`, `_pair_geometry_from_memory`, and `_remember_pairs` in `sim_car/sim_car/planning/midpoint_planner_node.py`: stabilize pair choices across frames and avoid rapid reassignment.
 - `_trim_pairs_by_midpoint_step_length` in `sim_car/sim_car/planning/midpoint_planner_core.py`: removes implausible jumps between consecutive pair-derived midpoints.
 
@@ -42,7 +44,7 @@ This page maps the `documentation/midpoint_planner.md` behavior to the midpoint 
 
 ### Width Estimate
 
-- `update_track_width_estimate` in `sim_car/sim_car/planning/midpoint_planner_core.py`: updates the filtered track-width prior from available pair measurements.
+- `update_track_width_estimate` in `sim_car/sim_car/planning/tracked_cone_planner_geometry.py`: updates the filtered track-width prior from available pair measurements.
 
 ### Centerline Finalization
 

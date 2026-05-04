@@ -12,6 +12,8 @@ The planner turns tracked cones into a path:
 
 It still reads both blue and yellow cones, and it can evaluate possible pairs, but its main planned path comes from a selected single boundary chain.
 
+Implementation note: the boundary-chain, tangent/normal, width-filter, and small pair-check helpers are shared with midpoint and corridor through `sim_car/sim_car/planning/tracked_cone_planner_geometry.py`. The single-boundary core keeps the higher-level decisions local: which boundary to trust, how to offset it, and how pair evidence updates the width estimate.
+
 ## Cone Filtering
 
 Filtering is similar to the midpoint planner:
@@ -59,6 +61,8 @@ The planner keeps a track-width estimate with:
 - minimum trustworthy pair count
 
 When both sides are visible, the width estimate can improve. When only one side is visible, the estimate holds steady and the planner offsets the visible chain by that width.
+
+Pair checks are supporting evidence rather than the main path source. The planner evaluates real opposite-side partners and optional unknown partners using width, inward-side, expected-location, previous-partner, and width-jump gates. Accepted pairs can improve the width estimate, but the published candidate path still comes from the selected boundary offset.
 
 ## Validation
 

@@ -9,6 +9,17 @@ from typing import Optional
 import numpy as np
 
 from sim_car.cones.tracking.fusion import normalize_color
+from sim_car.planning.tracked_cone_planner_geometry import (
+    build_boundary_chain_data,
+    estimate_tangents as _estimate_tangents,
+    inward_distance,
+    inward_normal as _inward_normal,
+    midpoint_outside_pair_span,
+    pair_width_in_range,
+    unknown_partner_check,
+    unknown_partner_within_limits,
+    update_track_width_estimate,
+)
 
 _MIDPOINT_CHAIN_BACKTRACK_TOLERANCE_M = 0.25
 
@@ -405,35 +416,6 @@ def compute_midpoint_centerline(
     return result
 
 
-def update_track_width_estimate(
-    previous_width_m: Optional[float],
-    measured_width_m: Optional[float],
-    config: MidpointPlannerConfig,
-) -> float:
-    """Exponential-moving-average update of the running track width estimate.
-
-    The update is rate-limited by ``config.max_width_delta_per_update_m`` and
-    the result is clamped to ``[config.min_width_m, config.max_width_m]``.
-    """
-    width = (
-        config.initial_width_m if previous_width_m is None or not math.isfinite(float(previous_width_m))
-        else float(previous_width_m)
-    )
-    width = _clamp(width, config.min_width_m, config.max_width_m)
-    if measured_width_m is None or not math.isfinite(float(measured_width_m)):
-        return width
-
-    measured = _clamp(float(measured_width_m), config.min_width_m, config.max_width_m)
-    delta = _clamp(
-        measured - width,
-        -float(config.max_width_delta_per_update_m),
-        float(config.max_width_delta_per_update_m),
-    )
-    alpha = _clamp(float(config.width_filter_alpha), 0.0, 1.0)
-    updated = width + (alpha * delta)
-    return _clamp(updated, config.min_width_m, config.max_width_m)
-
-
 def _geometry_filter(local_points: np.ndarray, config: MidpointPlannerConfig) -> np.ndarray:
     distance = np.hypot(local_points[:, 0], local_points[:, 1])
     return (
@@ -474,175 +456,20 @@ def _build_boundary_chain(
     side_indices: np.ndarray,
     config: MidpointPlannerConfig,
 ) -> _BoundaryChain:
-    if side_indices.size == 0:
-        return _BoundaryChain(
-            filtered_indices=np.empty((0,), dtype=np.int64),
-            global_points=np.empty((0, 2), dtype=np.float64),
-            local_points=np.empty((0, 2), dtype=np.float64),
-            tangents_local=np.empty((0, 2), dtype=np.float64),
-            mean_heading_change_rad=float("inf"),
-            forward_extent_m=0.0,
-        )
-
-    side_local = filtered_local[side_indices]
-    seed_pos = _select_seed_index(side_local)
-    if seed_pos < 0:
-        return _BoundaryChain(
-            filtered_indices=np.empty((0,), dtype=np.int64),
-            global_points=np.empty((0, 2), dtype=np.float64),
-            local_points=np.empty((0, 2), dtype=np.float64),
-            tangents_local=np.empty((0, 2), dtype=np.float64),
-            mean_heading_change_rad=float("inf"),
-            forward_extent_m=0.0,
-        )
-
-    chain_positions = [seed_pos]
-    remaining = [idx for idx in range(side_indices.size) if idx != seed_pos]
-    heading = np.asarray([1.0, 0.0], dtype=np.float64)
-    heading_changes: list[float] = []
-
-    while remaining:
-        current_local = side_local[chain_positions[-1]]
-        current_range = float(np.hypot(current_local[0], current_local[1]))
-        best_pos = None
-        best_score: Optional[tuple[float, float, float, float, int]] = None
-        best_heading = heading
-        best_heading_change = 0.0
-        for candidate_pos in remaining:
-            candidate_local = side_local[candidate_pos]
-            candidate_range = float(np.hypot(candidate_local[0], candidate_local[1]))
-            radial_progress = candidate_range - current_range
-            if radial_progress < max(0.05, 0.5 * float(config.min_forward_progress_m)):
-                continue
-            if not _candidate_progresses_from_vehicle(
-                current_local=current_local,
-                candidate_local=candidate_local,
-                min_progress_m=float(config.min_forward_progress_m),
-            ):
-                continue
-            delta = side_local[candidate_pos] - current_local
-            distance = float(np.hypot(delta[0], delta[1]))
-            if distance < float(config.min_step_m) or distance > float(config.max_step_m):
-                continue
-            step_heading = delta / distance
-            forward = float(np.dot(delta, heading))
-            if forward < float(config.min_forward_progress_m):
-                continue
-            heading_change = abs(_angle_between(heading, step_heading))
-            if heading_change > float(config.max_heading_change_rad):
-                continue
-            if _candidate_is_shadowed(
-                current_local=current_local,
-                candidate_pos=candidate_pos,
-                side_local=side_local,
-                remaining=remaining,
-            ):
-                continue
-            score = (
-                distance,
-                heading_change,
-                radial_progress,
-                -forward,
-                candidate_pos,
-            )
-            if best_score is None or score < best_score:
-                best_score = score
-                best_pos = candidate_pos
-                best_heading = step_heading
-                best_heading_change = heading_change
-
-        if best_pos is None:
-            break
-        chain_positions.append(best_pos)
-        remaining.remove(best_pos)
-        heading = best_heading
-        heading_changes.append(best_heading_change)
-
-    filtered_indices = side_indices[chain_positions]
-    global_points = filtered_points[filtered_indices]
-    local_points = filtered_local[filtered_indices]
-    tangents_local = _estimate_tangents(local_points)
-    mean_heading_change = (
-        float(np.mean(heading_changes)) if heading_changes else 0.0
-    )
-    forward_extent = (
-        float(np.max(local_points[:, 0]) - np.min(local_points[:, 0]))
-        if local_points.shape[0] > 0
-        else 0.0
+    chain = build_boundary_chain_data(
+        filtered_points=filtered_points,
+        filtered_local=filtered_local,
+        side_indices=side_indices,
+        config=config,
     )
     return _BoundaryChain(
-        filtered_indices=filtered_indices,
-        global_points=global_points,
-        local_points=local_points,
-        tangents_local=tangents_local,
-        mean_heading_change_rad=mean_heading_change,
-        forward_extent_m=forward_extent,
+        filtered_indices=chain.filtered_indices,
+        global_points=chain.global_points,
+        local_points=chain.local_points,
+        tangents_local=chain.tangents_local,
+        mean_heading_change_rad=chain.mean_heading_change_rad,
+        forward_extent_m=chain.forward_extent_m,
     )
-
-
-def _select_seed_index(side_local: np.ndarray) -> int:
-    candidates = np.flatnonzero(side_local[:, 0] >= 0.0)
-    if candidates.size == 0:
-        return -1
-
-    best_pos = -1
-    best_score = None
-    for pos in candidates:
-        x = float(side_local[pos, 0])
-        y = float(side_local[pos, 1])
-        score = (x, abs(y), math.hypot(x, y), int(pos))
-        if best_score is None or score < best_score:
-            best_score = score
-            best_pos = int(pos)
-    return best_pos
-
-
-def _candidate_progresses_from_vehicle(
-    *,
-    current_local: np.ndarray,
-    candidate_local: np.ndarray,
-    min_progress_m: float,
-) -> bool:
-    x_margin = max(0.05, 0.5 * float(min_progress_m))
-    if float(candidate_local[0]) >= float(current_local[0]) - x_margin:
-        return True
-
-    current_y = float(current_local[1])
-    candidate_y = float(candidate_local[1])
-    if abs(current_y) <= 0.05:
-        return False
-    same_side = current_y * candidate_y >= 0.0
-    outboard_progress = abs(candidate_y) >= abs(current_y) + (0.5 * float(min_progress_m))
-    return bool(same_side and outboard_progress)
-
-
-def _candidate_is_shadowed(
-    *,
-    current_local: np.ndarray,
-    candidate_pos: int,
-    side_local: np.ndarray,
-    remaining: list[int],
-) -> bool:
-    candidate_delta = side_local[candidate_pos] - current_local
-    candidate_distance = float(np.hypot(candidate_delta[0], candidate_delta[1]))
-    if candidate_distance <= 1e-9:
-        return True
-    candidate_dir = candidate_delta / candidate_distance
-
-    for other_pos in remaining:
-        if other_pos == candidate_pos:
-            continue
-        other_delta = side_local[other_pos] - current_local
-        other_distance = float(np.hypot(other_delta[0], other_delta[1]))
-        if other_distance <= 1e-9 or other_distance >= candidate_distance:
-            continue
-        other_dir = other_delta / other_distance
-        if abs(_angle_between(candidate_dir, other_dir)) > 0.30:
-            continue
-        if float(np.dot(other_delta, candidate_dir)) <= 0.0:
-            continue
-        return True
-    return False
 
 
 def _pair_boundary_chains(
@@ -737,26 +564,26 @@ def _pair_boundary_chains(
                     continue
             delta = other_local - anchor_local
             width_m = float(np.hypot(delta[0], delta[1]))
-            if width_m < float(config.min_pair_width_m) or width_m > float(config.max_pair_width_m):
+            if not pair_width_in_range(width_m, config.min_pair_width_m, config.max_pair_width_m):
                 reject_counts["width_range"] += 1
                 continue
 
-            inward_distance = float(np.dot(delta, inward_normal))
+            inward_distance_m = inward_distance(delta, inward_normal)
             midpoint_local = 0.5 * (anchor_local + other_local)
             lateral_progress = float(anchor_local[1] - other_local[1])
             if config.enforce_geometry_pairing_gate:
                 if use_legacy_side_gate:
-                    wrong_side = inward_distance <= -inward_projection_tolerance_m
+                    wrong_side = inward_distance_m <= -inward_projection_tolerance_m
                 else:
                     wrong_side = (
-                        inward_distance <= -inward_projection_tolerance_m
+                        inward_distance_m <= -inward_projection_tolerance_m
                         and lateral_progress <= inward_projection_tolerance_m
                     )
-                midpoint_outside_pair_span = (
-                    abs(float(midpoint_local[1]))
-                    > (0.5 * width_m)
+                outside_pair_span = midpoint_outside_pair_span(
+                    midpoint_local,
+                    width_m,
                 )
-                if wrong_side or midpoint_outside_pair_span:
+                if wrong_side or outside_pair_span:
                     reject_counts["wrong_side"] += 1
                     continue
 
@@ -767,7 +594,7 @@ def _pair_boundary_chains(
                 - float(np.hypot(anchor_local[0], anchor_local[1]))
             )
             width_error = abs(width_m - float(expected_width_m))
-            inward_penalty = max(0.0, -inward_distance)
+            inward_penalty = max(0.0, -inward_distance_m)
             cost = float(width_m)
             anchor_options.append(
                 {
@@ -805,36 +632,41 @@ def _pair_boundary_chains(
                 unknown_local = filtered_local[unknown_idx]
                 delta = unknown_local - anchor_local
                 width_m = float(np.hypot(delta[0], delta[1]))
-                if width_m < float(config.min_pair_width_m) or width_m > float(config.max_pair_width_m):
+                if not pair_width_in_range(width_m, config.min_pair_width_m, config.max_pair_width_m):
                     continue
-                inward_distance = float(np.dot(delta, inward_normal))
+                inward_distance_m = inward_distance(delta, inward_normal)
                 midpoint_local = 0.5 * (anchor_local + unknown_local)
                 if config.enforce_geometry_pairing_gate:
                     if use_legacy_side_gate:
-                        wrong_side = inward_distance <= -inward_projection_tolerance_m
+                        wrong_side = inward_distance_m <= -inward_projection_tolerance_m
                     else:
                         wrong_side = (
-                            inward_distance <= -inward_projection_tolerance_m
+                            inward_distance_m <= -inward_projection_tolerance_m
                             and float(anchor_local[1] - unknown_local[1]) <= inward_projection_tolerance_m
                         )
-                    midpoint_outside_pair_span = (
-                        abs(float(midpoint_local[1]))
-                        > (0.5 * width_m)
+                    outside_pair_span = midpoint_outside_pair_span(
+                        midpoint_local,
+                        width_m,
                     )
-                    if wrong_side or midpoint_outside_pair_span:
+                    if wrong_side or outside_pair_span:
                         reject_counts["wrong_side"] += 1
                         continue
-                longitudinal_error = abs(float(np.dot(unknown_local - expected_partner_local, anchor_tangent)))
-                width_error = abs(width_m - float(expected_width_m))
-                radial_error = float(np.hypot(*(unknown_local - expected_partner_local)))
-                if longitudinal_error > float(config.unknown_pair_max_longitudinal_error_m):
-                    continue
-                if width_error > float(config.unknown_pair_max_width_error_m):
-                    continue
-                if radial_error > float(config.unknown_pair_search_radius_m):
+                unknown_check = unknown_partner_check(
+                    partner_local=unknown_local,
+                    expected_partner_local=expected_partner_local,
+                    anchor_tangent=anchor_tangent,
+                    width_m=width_m,
+                    expected_width_m=expected_width_m,
+                )
+                if not unknown_partner_within_limits(
+                    unknown_check,
+                    max_longitudinal_error_m=config.unknown_pair_max_longitudinal_error_m,
+                    max_width_error_m=config.unknown_pair_max_width_error_m,
+                    search_radius_m=config.unknown_pair_search_radius_m,
+                ):
                     continue
                 candidate_count += 1
-                inward_penalty = max(0.0, -inward_distance)
+                inward_penalty = max(0.0, -inward_distance_m)
                 anchor_options.append(
                     {
                         "use_unknown": True,
@@ -848,16 +680,16 @@ def _pair_boundary_chains(
                         "partner_local": np.asarray(filtered_local[unknown_idx], dtype=np.float64),
                         "width_m": float(width_m),
                         "cost": float(
-                            longitudinal_error + width_error + radial_error + inward_penalty + 0.05
+                            unknown_check.cost + inward_penalty + 0.05
                         ),
                         "selection_cost": float(
-                            longitudinal_error + width_error + radial_error + inward_penalty + 0.05
+                            unknown_check.cost + inward_penalty + 0.05
                         ),
                         "sort_key": (
                             inward_penalty,
-                            longitudinal_error,
-                            width_error,
-                            radial_error,
+                            unknown_check.longitudinal_error_m,
+                            unknown_check.width_error_m,
+                            unknown_check.radial_error_m,
                             unknown_idx,
                         ),
                     }
@@ -1192,40 +1024,6 @@ def _offset_boundary_chain(
     return np.asarray(offset, dtype=np.float64)
 
 
-def _inward_normal(tangent: np.ndarray, side: str) -> np.ndarray:
-    if side == "blue":
-        normal = np.asarray([tangent[1], -tangent[0]], dtype=np.float64)
-    else:
-        normal = np.asarray([-tangent[1], tangent[0]], dtype=np.float64)
-    norm = float(np.hypot(normal[0], normal[1]))
-    if norm <= 1e-9:
-        return np.asarray([0.0, 0.0], dtype=np.float64)
-    return normal / norm
-
-
-def _estimate_tangents(points: np.ndarray) -> np.ndarray:
-    if points.shape[0] == 0:
-        return np.empty((0, 2), dtype=np.float64)
-    if points.shape[0] == 1:
-        return np.asarray([[1.0, 0.0]], dtype=np.float64)
-
-    tangents = np.empty_like(points)
-    for idx in range(points.shape[0]):
-        if idx == 0:
-            delta = points[1] - points[0]
-        elif idx == points.shape[0] - 1:
-            delta = points[-1] - points[-2]
-        else:
-            delta = points[idx + 1] - points[idx - 1]
-        norm = float(np.hypot(delta[0], delta[1]))
-        tangents[idx] = (
-            np.asarray([1.0, 0.0], dtype=np.float64)
-            if norm <= 1e-9
-            else (delta / norm)
-        )
-    return tangents
-
-
 def _finalize_path(points: np.ndarray, config: MidpointPlannerConfig) -> np.ndarray:
     if points.shape[0] == 0:
         return np.empty((0, 2), dtype=np.float64)
@@ -1400,12 +1198,6 @@ def _to_vehicle_frame(
     x_local = (cos_yaw * dx) + (sin_yaw * dy)
     y_local = (-sin_yaw * dx) + (cos_yaw * dy)
     return np.column_stack((x_local, y_local)).astype(np.float64)
-
-
-def _angle_between(vec_a: np.ndarray, vec_b: np.ndarray) -> float:
-    angle_a = math.atan2(float(vec_a[1]), float(vec_a[0]))
-    angle_b = math.atan2(float(vec_b[1]), float(vec_b[0]))
-    return math.atan2(math.sin(angle_b - angle_a), math.cos(angle_b - angle_a))
 
 
 def _merge_reject_counts(target: dict[str, int], source: dict[str, int]) -> None:

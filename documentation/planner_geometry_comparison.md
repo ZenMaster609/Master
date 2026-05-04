@@ -23,6 +23,8 @@ The boundary-chain step is the most important shared piece. In `tracked_cone_pla
 
 Tangents and inward normals are also shared ideas. `estimate_tangents` estimates the local direction of a boundary chain. `inward_normal` rotates that tangent toward the track interior: blue cones offset inward toward the right side of the track, while yellow cones offset inward toward the left side.
 
+Track-width and pair gates now share small predicate helpers too. `update_track_width_estimate` keeps the filtered width prior consistent across the planners. Pairing code in midpoint and single-boundary uses shared checks such as `pair_width_in_range`, `inward_distance`, `unknown_partner_check`, and `unknown_partner_within_limits`, while each planner still owns the control flow that decides how candidates become a path.
+
 Validation is conceptually shared even when exact limits differ. The planners check for enough points, enough forward extent, finite geometry, near-vehicle heading sanity, jumps from the previous accepted path, excessive kinks, and self-intersection. The corridor planner adds corridor-membership and curvature checks because it has an explicit drivable channel.
 
 ## Midpoint Planner Geometry
@@ -50,6 +52,8 @@ The single-boundary planner builds the line by offsetting one reliable boundary 
 `tracked cones -> filtered cones -> best boundary chain -> inward half-width offset -> smoothed/resampled centerline`
 
 In `compute_single_boundary_centerline`, the planner still builds both blue and yellow chains and can evaluate pair information for width estimation. The actual path, however, comes from `_select_fallback_chain`, which chooses the more reliable single boundary using forward extent, chain length, heading smoothness, and deterministic side priority.
+
+The pair-support code is intentionally separate from path generation. `_pair_boundary_chains` gathers pair evidence for width estimation and diagnostics, while `_real_partner_option`, `_unknown_partner_option`, and `_boundary_pair_from_option` keep the individual real-cone, unknown-cone, and pair-construction checks readable.
 
 After a boundary is selected, `_offset_boundary_chain` estimates tangents along that chain and offsets every chain point inward by half of the expected track width:
 

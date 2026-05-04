@@ -21,6 +21,7 @@ Most pages focus on runtime symbols, but some topics are mainly implemented thro
 ## Planning And Control
 
 - [Planner Tuning](planner_tuning.md)
+- [Tracked-Cone Planner Geometry](tracked_cone_planner_geometry.md)
 - [Midpoint Planner](midpoint_planner.md)
 - [Single-Boundary Planner](single_boundary_planner.md)
 - [Corridor Planner](corridor_planner.md)

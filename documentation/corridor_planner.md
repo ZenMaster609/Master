@@ -12,6 +12,8 @@ The planner turns tracked cones into a corridor:
 
 Instead of selecting independent midpoint pairs, the corridor planner reasons about a continuous overlap between the two boundaries.
 
+The low-level boundary-chain, tangent, width-filter, and width-gate helpers are shared with the midpoint and single-boundary planners through `sim_car/sim_car/planning/tracked_cone_planner_geometry.py`. The corridor core keeps the corridor-specific sampling, fitting, and audit behavior local.
+
 ## Cone Filtering
 
 The corridor planner keeps only planner-facing blue/yellow cones after geometry and confidence filtering. Unlike midpoint and single-boundary planning, it does not use unknown cones for pair completion in the core corridor algorithm.

@@ -6,6 +6,7 @@ This page maps the `documentation/single_boundary_planner.md` behavior to the si
 
 - `sim_car/sim_car/planning/single_boundary_planner_node.py`
 - `sim_car/sim_car/planning/single_boundary_planner_core.py`
+- `sim_car/sim_car/planning/tracked_cone_planner_geometry.py`
 - `sim_car/sim_car/planning/tracked_cone_planner_contract.py`
 
 ## Function Map
@@ -24,8 +25,14 @@ This page maps the `documentation/single_boundary_planner.md` behavior to the si
 ### Boundary Chains
 
 - `_deterministic_order` in `sim_car/sim_car/planning/single_boundary_planner_core.py`: creates a stable candidate ordering.
-- `_build_boundary_chain` in `sim_car/sim_car/planning/single_boundary_planner_core.py`: constructs the blue or yellow candidate boundary chain.
-- `_candidate_progresses_from_vehicle` and `_candidate_is_shadowed` in `sim_car/sim_car/planning/single_boundary_planner_core.py`: implement forward-progress and shadowing checks during chain growth.
+- `_build_boundary_chain` in `sim_car/sim_car/planning/single_boundary_planner_core.py`: thin planner-local wrapper around shared boundary-chain construction.
+- `build_boundary_chain_data`, `candidate_progresses_from_vehicle`, and `candidate_is_shadowed` in `sim_car/sim_car/planning/tracked_cone_planner_geometry.py`: implement the shared chain-growth, forward-progress, and shadowing rules.
+
+### Pair Support
+
+- `_pair_boundary_chains` in `sim_car/sim_car/planning/single_boundary_planner_core.py`: evaluates cross-track pair information used for width estimation and diagnostics.
+- `_real_partner_option`, `_unknown_partner_option`, and `_boundary_pair_from_option` in `sim_car/sim_car/planning/single_boundary_planner_core.py`: keep real-partner gates, unknown-cone partner gates, and pair construction readable.
+- `pair_width_in_range`, `inward_distance`, `unknown_partner_check`, `unknown_partner_within_limits`, `prefer_previous_partner_option`, and `width_jump_exceeds` in `sim_car/sim_car/planning/tracked_cone_planner_geometry.py`: shared pair predicates used by the single-boundary pair support code.
 
 ### Fallback Boundary Selection
 
@@ -35,11 +42,11 @@ This page maps the `documentation/single_boundary_planner.md` behavior to the si
 ### Offset Path Generation
 
 - `_offset_boundary_chain` in `sim_car/sim_car/planning/single_boundary_planner_core.py`: offsets the selected boundary inward by the estimated track width.
-- `_inward_normal` and `_estimate_tangents` in `sim_car/sim_car/planning/single_boundary_planner_core.py`: compute the inward offset direction along the boundary chain.
+- `inward_normal` and `estimate_tangents` in `sim_car/sim_car/planning/tracked_cone_planner_geometry.py`: compute the inward offset direction along the boundary chain.
 
 ### Track-Width Use
 
-- `update_track_width_estimate` in `sim_car/sim_car/planning/single_boundary_planner_core.py`: updates the planner’s filtered width estimate from trustworthy pair measurements.
+- `update_track_width_estimate` in `sim_car/sim_car/planning/tracked_cone_planner_geometry.py`: updates the planner's filtered width estimate from trustworthy pair measurements.
 
 ### Validation And Hold Behavior
 
