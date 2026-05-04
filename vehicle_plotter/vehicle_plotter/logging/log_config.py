@@ -6,7 +6,7 @@ output format, signals to log, and performance settings.
 """
 
 from dataclasses import dataclass, field
-from typing import List, Literal, Optional
+from typing import Any, List, Literal, Optional
 from pathlib import Path
 
 
@@ -136,6 +136,140 @@ class LogConfig:
         }
 
         return {signal: type_map.get(signal, float) for signal in self.signals}
+
+
+@dataclass(frozen=True)
+class LoggerNodeConfig:
+    log_format: str
+    compression: str
+    base_path_str: str
+    session_name: str
+    flush_interval_sec: float
+    buffer_size: int
+    state_topic: str
+    enable_logging: bool
+    enable_state_logging: bool
+    wait_for_session: bool
+    session_timeout_sec: float
+    adapter_type: str
+    auto_plot_on_shutdown: bool
+    camera_cone_eval_topic: str
+    lidar_cone_eval_topic: str
+    path_tracking_eval_enabled: bool
+    path_tracking_eval_rate_hz: float
+    path_tracking_eval_gt_track_topic: str
+    path_tracking_eval_odom_topic: str
+    path_tracking_eval_planner_path_topic: str
+    path_tracking_eval_track_name: str
+    path_tracking_eval_tf_timeout_sec: float
+    path_tracking_eval_filename: str
+    path_tracking_eval_summary_json: str
+    path_tracking_eval_summary_txt: str
+    path_tracking_eval_autostop_laps: int
+    off_track_autostop_enabled: bool
+    off_track_autostop_timeout_s: float
+    off_track_autostop_planner_diag_topic: str
+    control_reference_wheelbase_m: float
+
+
+LOGGER_NODE_PARAMETER_DEFAULTS: tuple[tuple[str, Any], ...] = (
+    ('format', 'parquet'),
+    ('compression', 'snappy'),
+    ('base_path', ''),
+    ('session_name', ''),
+    ('flush_interval_sec', 5.0),
+    ('buffer_size', 1000),
+    ('state_topic', 'vehicle_plotter/state'),
+    ('enable_logging', True),
+    ('enable_state_logging', True),
+    ('wait_for_session', True),
+    ('session_timeout_sec', 5.0),
+    ('adapter', 'gazebo'),
+    ('auto_plot_on_shutdown', True),
+    ('camera_cone_eval_topic', '/sim/stereo/eval'),
+    ('lidar_cone_eval_topic', '/sim/lidar/eval'),
+    ('path_tracking_eval_enabled', False),
+    ('path_tracking_eval_rate_hz', 20.0),
+    ('path_tracking_eval_gt_track_topic', '/ground_truth/track'),
+    ('path_tracking_eval_odom_topic', '/sim/odom'),
+    ('path_tracking_eval_planner_path_topic', '/planned_centerline'),
+    ('path_tracking_eval_track_name', ''),
+    ('path_tracking_eval_tf_timeout_sec', 0.05),
+    ('path_tracking_eval_filename', 'path_tracking_eval.csv'),
+    ('path_tracking_eval_summary_json', 'path_tracking_eval_summary.json'),
+    ('path_tracking_eval_summary_txt', 'path_tracking_eval_summary.txt'),
+    ('path_tracking_eval_autostop_laps', 0),
+    ('control_reference_wheelbase_m', 1.65),
+    ('off_track_autostop_enabled', True),
+    ('off_track_autostop_timeout_s', 5.0),
+    ('off_track_autostop_planner_diag_topic', '/midpoint_planner/diagnostics'),
+)
+
+
+def _declare_and_read_parameters(node, defaults: tuple[tuple[str, Any], ...]) -> dict[str, Any]:
+    values: dict[str, Any] = {}
+    for name, default in defaults:
+        node.declare_parameter(name, default)
+        values[name] = node.get_parameter(name).value
+    return values
+
+
+def _nonempty_string(value: Any, fallback: str) -> str:
+    return str(value).strip() or fallback
+
+
+def declare_and_load_config(node) -> LoggerNodeConfig:
+    values = _declare_and_read_parameters(node, LOGGER_NODE_PARAMETER_DEFAULTS)
+    return LoggerNodeConfig(
+        log_format=values['format'],
+        compression=values['compression'],
+        base_path_str=values['base_path'],
+        session_name=values['session_name'],
+        flush_interval_sec=values['flush_interval_sec'],
+        buffer_size=values['buffer_size'],
+        state_topic=values['state_topic'],
+        enable_logging=values['enable_logging'],
+        enable_state_logging=values['enable_state_logging'],
+        wait_for_session=values['wait_for_session'],
+        session_timeout_sec=values['session_timeout_sec'],
+        adapter_type=values['adapter'],
+        auto_plot_on_shutdown=values['auto_plot_on_shutdown'],
+        camera_cone_eval_topic=str(values['camera_cone_eval_topic']).strip(),
+        lidar_cone_eval_topic=str(values['lidar_cone_eval_topic']).strip(),
+        path_tracking_eval_enabled=bool(values['path_tracking_eval_enabled']),
+        path_tracking_eval_rate_hz=max(1.0, float(values['path_tracking_eval_rate_hz'])),
+        path_tracking_eval_gt_track_topic=_nonempty_string(
+            values['path_tracking_eval_gt_track_topic'], '/ground_truth/track'
+        ),
+        path_tracking_eval_odom_topic=_nonempty_string(
+            values['path_tracking_eval_odom_topic'], '/sim/odom'
+        ),
+        path_tracking_eval_planner_path_topic=_nonempty_string(
+            values['path_tracking_eval_planner_path_topic'], '/planned_centerline'
+        ),
+        path_tracking_eval_track_name=str(values['path_tracking_eval_track_name']).strip().lower(),
+        path_tracking_eval_tf_timeout_sec=max(
+            0.0, float(values['path_tracking_eval_tf_timeout_sec'])
+        ),
+        path_tracking_eval_filename=_nonempty_string(
+            values['path_tracking_eval_filename'], 'path_tracking_eval.csv'
+        ),
+        path_tracking_eval_summary_json=_nonempty_string(
+            values['path_tracking_eval_summary_json'], 'path_tracking_eval_summary.json'
+        ),
+        path_tracking_eval_summary_txt=_nonempty_string(
+            values['path_tracking_eval_summary_txt'], 'path_tracking_eval_summary.txt'
+        ),
+        path_tracking_eval_autostop_laps=max(
+            0, int(values['path_tracking_eval_autostop_laps'])
+        ),
+        off_track_autostop_enabled=bool(values['off_track_autostop_enabled']),
+        off_track_autostop_timeout_s=max(1.0, float(values['off_track_autostop_timeout_s'])),
+        off_track_autostop_planner_diag_topic=_nonempty_string(
+            values['off_track_autostop_planner_diag_topic'], '/midpoint_planner/diagnostics'
+        ),
+        control_reference_wheelbase_m=max(0.1, float(values['control_reference_wheelbase_m'])),
+    )
 
 
 def get_minimal_config() -> LogConfig:

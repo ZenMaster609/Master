@@ -11,7 +11,7 @@ import numpy as np
 import rclpy
 from rclpy.executors import ExternalShutdownException
 from rclpy.node import Node
-from vehicle_plotter_msgs.msg import ConeDetection, ConeDetectionArray
+from vehicle_plotter_msgs.msg import ConeDetectionArray
 
 from sim_car.planning.triangulation_planner_core import (
     compute_centerline_jump_max,
@@ -21,6 +21,13 @@ from sim_car.planning.triangulation_planner_core import (
     tracked_cones_frame_delta_p95,
 )
 from sim_car.planning.planner_runtime_types import PlannerIdentity
+from sim_car.planning.planner_constants import (
+    MSG_TRACK_STATE_STALE,
+    VALIDATED_JUMP_ACCEPT_HEADING_DELTA_RAD as _VALIDATED_JUMP_ACCEPT_HEADING_DELTA_RAD,
+    VALIDATED_JUMP_ACCEPT_HORIZON_M as _VALIDATED_JUMP_ACCEPT_HORIZON_M,
+    VALIDATED_JUMP_ACCEPT_LATERAL_MAX_M as _VALIDATED_JUMP_ACCEPT_LATERAL_MAX_M,
+    VALIDATED_JUMP_ACCEPT_LATERAL_MEAN_M as _VALIDATED_JUMP_ACCEPT_LATERAL_MEAN_M,
+)
 from sim_car.planning.tracked_cone_planner_contract import (
     COMMON_MIGRATED_TRACKED_CONE_PLANNER_DEFAULTS,
     apply_common_config_to_node,
@@ -35,14 +42,6 @@ from sim_car.planning.single_boundary_planner_core import (
     update_track_width_estimate,
 )
 from sim_car.planning.tracked_cone_planner_base import TrackedConePlannerBase
-
-MSG_TRACK_STATE_TENTATIVE = int(getattr(ConeDetection, "TRACK_STATE_TENTATIVE", 0))
-MSG_TRACK_STATE_CONFIRMED = int(getattr(ConeDetection, "TRACK_STATE_CONFIRMED", 1))
-MSG_TRACK_STATE_STALE = int(getattr(ConeDetection, "TRACK_STATE_STALE", 2))
-_VALIDATED_JUMP_ACCEPT_HORIZON_M = 3.0
-_VALIDATED_JUMP_ACCEPT_LATERAL_MAX_M = 0.45
-_VALIDATED_JUMP_ACCEPT_LATERAL_MEAN_M = 0.25
-_VALIDATED_JUMP_ACCEPT_HEADING_DELTA_RAD = 0.30
 
 
 @dataclass
@@ -591,13 +590,6 @@ class SingleBoundaryPlannerNode(TrackedConePlannerBase):
             selected_edge_count=int(result.selected_edges.shape[0]),
             status=status,
             control_debug_metrics=control_debug_metrics,
-            thesis_context_metrics={
-                "plan_valid_flag": 1.0 if plan_valid else 0.0,
-                "plan_hold_active_flag": 1.0 if plan_hold_active else 0.0,
-                "plan_fallback_flag": 1.0 if bool(result.used_fallback) else 0.0,
-                "path_length_m": self._path_length_m(centerline),
-                "path_curvature_abs_p95_1pm": self._path_curvature_abs_p95(centerline),
-            },
             planner_metrics={
                 "candidate_diagonal_count": result.candidate_count,
                 "selected_chain_length": result.selected_chain_length,

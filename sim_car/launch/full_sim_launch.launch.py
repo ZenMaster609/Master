@@ -329,18 +329,6 @@ def generate_launch_description():
         description='Optional initial world yaw override for the car model (radians)'
     )
 
-    controller_diagnostics_arg = DeclareLaunchArgument(
-        'controller_diagnostics',
-        default_value='false',
-        description='Enable controller diagnostics CSV logging in the main logger'
-    )
-
-    thesis_controller_diagnostics_arg = DeclareLaunchArgument(
-        'thesis_controller_diagnostics',
-        default_value='false',
-        description='Enable thesis-oriented controller diagnostics logging in the main logger'
-    )
-
     path_tracking_eval_arg = DeclareLaunchArgument(
         'path_tracking_eval',
         default_value='true',
@@ -622,8 +610,6 @@ def generate_launch_description():
         'spawn_y',
         'spawn_z',
         'spawn_yaw',
-        'controller_diagnostics',
-        'thesis_controller_diagnostics',
         'path_tracking_eval',
         'logging',
         'rosbagging',
@@ -845,21 +831,7 @@ def generate_launch_description():
                 LaunchConfiguration('lidar_enabled'),
                 "'.lower() == 'true' else ''"
             ]),
-            'controller_diagnostics_enabled': ParameterValue(
-                LaunchConfiguration('controller_diagnostics'),
-                value_type=bool,
-            ),
-            'controller_diagnostics_rate_hz': 50.0,
-            'controller_diagnostics_cmd_topic': '/cmd',
-            'controller_diagnostics_steering_topic': '/sim/steering_angle',
-            'controller_diagnostics_joint_states_topic': '/sim/joint_states',
-            'controller_diagnostics_odom_topic': '/sim/odom',
-            'controller_diagnostics_path_topic': '/planned_centerline',
-            'controller_diagnostics_planner_diag_topic': resolved_planner_diagnostics_topic,
-            'thesis_controller_diagnostics_enabled': ParameterValue(
-                LaunchConfiguration('thesis_controller_diagnostics'),
-                value_type=bool,
-            ),
+            'off_track_autostop_planner_diag_topic': resolved_planner_diagnostics_topic,
             'path_tracking_eval_enabled': ParameterValue(
                 LaunchConfiguration('path_tracking_eval'),
                 value_type=bool,
@@ -1243,10 +1215,6 @@ def generate_launch_description():
                 ),
                 **_planner_pipeline_parameters(),
                 'lap_tracking.target_laps': resolved_path_tracking_autostop_laps,
-                'diagnostics.publish_thesis_context': ParameterValue(
-                    LaunchConfiguration('thesis_controller_diagnostics'),
-                    value_type=bool,
-                ),
             },
         ],
         condition=_planner_selected_condition('midpoint'),
@@ -1278,10 +1246,6 @@ def generate_launch_description():
                 ),
                 **_planner_pipeline_parameters(),
                 'lap_tracking.target_laps': resolved_path_tracking_autostop_laps,
-                'diagnostics.publish_thesis_context': ParameterValue(
-                    LaunchConfiguration('thesis_controller_diagnostics'),
-                    value_type=bool,
-                ),
             },
         ],
         condition=_planner_selected_condition('single_boundary'),
@@ -1313,10 +1277,6 @@ def generate_launch_description():
                 ),
                 **_planner_pipeline_parameters(),
                 'lap_tracking.target_laps': resolved_path_tracking_autostop_laps,
-                'diagnostics.publish_thesis_context': ParameterValue(
-                    LaunchConfiguration('thesis_controller_diagnostics'),
-                    value_type=bool,
-                ),
                 'debug.enable_cone_audit_markers': ParameterValue(
                     LaunchConfiguration('corridor_debug'),
                     value_type=bool,
@@ -1362,10 +1322,6 @@ def generate_launch_description():
                 'runtime.publish_rate_hz': ParameterValue(
                     LaunchConfiguration('planner_rate_hz'),
                     value_type=float,
-                ),
-                'diagnostics.publish_thesis_context': ParameterValue(
-                    LaunchConfiguration('thesis_controller_diagnostics'),
-                    value_type=bool,
                 ),
             },
         ],
@@ -1461,8 +1417,6 @@ def generate_launch_description():
         spawn_y_arg,
         spawn_z_arg,
         spawn_yaw_arg,
-        controller_diagnostics_arg,
-        thesis_controller_diagnostics_arg,
         path_tracking_eval_arg,
         logging_arg,
         rosbagging_arg,

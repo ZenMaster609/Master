@@ -136,17 +136,6 @@ def test_full_launch_uses_single_perception_node_with_stereo_toggle():
     assert "stereo_perception_node" not in content
 
 
-def test_full_launch_declares_and_passes_thesis_controller_diagnostics():
-    content = FULL_LAUNCH.read_text(encoding='utf-8')
-
-    assert "DeclareLaunchArgument(\n        'thesis_controller_diagnostics'" in content
-    assert "thesis_controller_diagnostics_live_plot_enabled" not in content
-    assert "'thesis_controller_diagnostics'" in content
-    assert "'thesis_controller_diagnostics_enabled': ParameterValue(" in content
-    assert "LaunchConfiguration('thesis_controller_diagnostics')" in content
-    assert "'diagnostics.publish_thesis_context': ParameterValue(" in content
-
-
 def test_full_launch_declares_and_passes_path_tracking_eval():
     content = FULL_LAUNCH.read_text(encoding='utf-8')
 

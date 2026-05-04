@@ -109,7 +109,6 @@ def _make_node() -> TrackedConePlannerRuntime:
     node._viz_pub = _FakePublisher()
     node._diag_pub = _FakePublisher()
     node.publish_control_debug = False
-    node.publish_thesis_context = False
     node._hold_mode_active = False
     node._hold_clean_frame_count = 0
     node._last_operator_state = None

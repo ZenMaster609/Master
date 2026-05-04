@@ -108,7 +108,6 @@ def _make_node() -> LineTestPlannerNode:
     node.publish_points_topic = False
     node.show_lookahead_point = False
     node.publish_control_debug = False
-    node.publish_thesis_context = False
     node.controller_type = 'none'
     node._controller = None
     node.stop_if_no_path = True

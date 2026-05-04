@@ -10,7 +10,6 @@ linetest_planner_node:
     diagnostics:
       topic: /linetest_planner/diagnostics
       publish_control_debug: true
-      publish_thesis_context: false
     line:
       start_x_m: -38.5
       start_y_m: 0.0

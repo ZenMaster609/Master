@@ -61,5 +61,3 @@ def test_plotter_launch_contains_state_plotter_node_and_no_aux_live_plot_nodes()
 
     assert 'executable="plotter_node"' in launch_content
     assert 'cone_rmse_plot_node' not in launch_content
-    assert 'controller_diagnostics_plot_node' not in launch_content
-    assert 'thesis_controller_diagnostics_plot_node' not in launch_content

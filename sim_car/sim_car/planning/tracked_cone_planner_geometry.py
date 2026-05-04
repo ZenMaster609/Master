@@ -376,6 +376,106 @@ def estimate_tangents(points: np.ndarray) -> np.ndarray:
     return tangents
 
 
+def moving_average(points: np.ndarray, window: int) -> np.ndarray:
+    if points.shape[0] <= 2 or window <= 1:
+        return np.asarray(points, dtype=np.float64)
+
+    radius = max(1, int(window)) // 2
+    out = np.empty_like(points)
+    for idx in range(points.shape[0]):
+        start = max(0, idx - radius)
+        stop = min(points.shape[0], idx + radius + 1)
+        out[idx] = np.mean(points[start:stop], axis=0)
+    return out
+
+
+def path_cumulative_lengths(points: np.ndarray) -> np.ndarray:
+    if points.shape[0] <= 1:
+        return np.asarray([0.0], dtype=np.float64)
+    diffs = np.diff(points, axis=0)
+    lengths = np.hypot(diffs[:, 0], diffs[:, 1])
+    return np.concatenate(([0.0], np.cumsum(lengths))).astype(np.float64)
+
+
+def path_heading_delta_max(path_local: np.ndarray) -> float:
+    if path_local.shape[0] < 3:
+        return 0.0
+    diffs = np.diff(path_local, axis=0)
+    headings = np.arctan2(diffs[:, 1], diffs[:, 0])
+    delta = np.arctan2(np.sin(np.diff(headings)), np.cos(np.diff(headings)))
+    return float(np.max(np.abs(delta))) if delta.size else 0.0
+
+
+def path_curvature_abs_max(path_local: np.ndarray) -> float:
+    if path_local.shape[0] < 3:
+        return 0.0
+    diffs = np.diff(path_local, axis=0)
+    seg_len = np.hypot(diffs[:, 0], diffs[:, 1])
+    valid = seg_len > 1e-6
+    if np.count_nonzero(valid) < 2:
+        return 0.0
+    headings = np.arctan2(diffs[valid, 1], diffs[valid, 0])
+    if headings.size < 2:
+        return 0.0
+    delta_heading = np.arctan2(np.sin(np.diff(headings)), np.cos(np.diff(headings)))
+    ds = 0.5 * (seg_len[valid][1:] + seg_len[valid][:-1])
+    valid_ds = ds > 1e-6
+    if not np.any(valid_ds):
+        return 0.0
+    curvature = np.abs(delta_heading[valid_ds] / ds[valid_ds])
+    return float(np.max(curvature)) if curvature.size else 0.0
+
+
+def path_self_intersects(
+    points: np.ndarray,
+    *,
+    skip_closing_segment: bool = True,
+) -> bool:
+    if points.shape[0] < 4:
+        return False
+    for idx in range(points.shape[0] - 1):
+        a0 = points[idx]
+        a1 = points[idx + 1]
+        for jdx in range(idx + 2, points.shape[0] - 1):
+            if skip_closing_segment and idx == 0 and jdx == points.shape[0] - 2:
+                continue
+            b0 = points[jdx]
+            b1 = points[jdx + 1]
+            if segments_intersect(a0, a1, b0, b1):
+                return True
+    return False
+
+
+def segments_intersect(
+    a0: np.ndarray,
+    a1: np.ndarray,
+    b0: np.ndarray,
+    b1: np.ndarray,
+) -> bool:
+    def orient(p: np.ndarray, q: np.ndarray, r: np.ndarray) -> float:
+        return float((q[0] - p[0]) * (r[1] - p[1]) - (q[1] - p[1]) * (r[0] - p[0]))
+
+    o1 = orient(a0, a1, b0)
+    o2 = orient(a0, a1, b1)
+    o3 = orient(b0, b1, a0)
+    o4 = orient(b0, b1, a1)
+    return (o1 * o2 < 0.0) and (o3 * o4 < 0.0)
+
+
+def to_vehicle_frame(
+    points_xy: np.ndarray,
+    vehicle_xy: tuple[float, float],
+    vehicle_yaw: float,
+) -> np.ndarray:
+    dx = points_xy[:, 0] - float(vehicle_xy[0])
+    dy = points_xy[:, 1] - float(vehicle_xy[1])
+    cos_yaw = math.cos(vehicle_yaw)
+    sin_yaw = math.sin(vehicle_yaw)
+    x_local = (cos_yaw * dx) + (sin_yaw * dy)
+    y_local = (-sin_yaw * dx) + (cos_yaw * dy)
+    return np.column_stack((x_local, y_local)).astype(np.float64)
+
+
 def inward_normal(tangent: np.ndarray, side: str) -> np.ndarray:
     if side == "blue":
         normal = np.asarray([tangent[1], -tangent[0]], dtype=np.float64)

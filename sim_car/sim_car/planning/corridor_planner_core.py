@@ -9,35 +9,41 @@ from typing import Optional
 import numpy as np
 
 from sim_car.cones.tracking.fusion import normalize_color
+from sim_car.planning.planner_config_base import BasePlannerConfig
 from sim_car.planning.tracked_cone_planner_geometry import (
     build_boundary_chain_data,
     estimate_tangents as _estimate_tangents,
+    moving_average as _moving_average_points,
     pair_width_in_range,
+    path_cumulative_lengths as _path_cumulative_lengths,
+    path_curvature_abs_max as _path_curvature_abs_max,
+    path_heading_delta_max as _path_heading_delta_max,
+    path_self_intersects,
+    to_vehicle_frame as _to_vehicle_frame,
     update_track_width_estimate,
 )
 
+# Meters; keeps boundary chain growth from accepting near-duplicate corridor points.
+CORRIDOR_CHAIN_MIN_STEP_M = 0.35
+# Meters; prevents zero or near-zero station spacing during boundary resampling.
+MIN_BOUNDARY_RESAMPLE_SPACING_M = 0.05
+# Count; a corridor needs one left/right station pair before and after interpolation.
+MIN_CORRIDOR_STATION_COUNT = 2
+# Samples; closes only one-sample gaps to avoid bridging sustained invalid corridor regions.
+MAX_CORRIDOR_GAP_FILL_SAMPLES = 1
+# Meters; caps prior alignment scoring to the near vehicle path segment.
+PRIOR_ALIGNMENT_HORIZON_M = 4.0
+# Meters; caps continuity checks to the near vehicle path segment.
+NEAR_FIELD_ALIGNMENT_HORIZON_M = 3.0
+
 
 @dataclass
-class CorridorPlannerConfig:
-    max_cone_range_m: float = 25.0
+class CorridorPlannerConfig(BasePlannerConfig):
     planning_horizon_m: float = 25.0
     max_lateral_range_m: float = 8.0
-    behind_drop_m: float = 5.0
-    min_confidence: float = 0.3
-    min_required_cones: int = 4
 
-    min_step_m: float = 0.8
     max_step_m: float = 6.0
-    max_heading_change_rad: float = 1.0
-    min_forward_progress_m: float = 0.2
     min_chain_length: int = 3
-
-    initial_width_m: float = 3.6
-    min_width_m: float = 2.4
-    max_width_m: float = 4.8
-    width_filter_alpha: float = 0.15
-    max_width_delta_per_update_m: float = 0.2
-    min_trustworthy_pairs: int = 3
 
     boundary_resample_dx: float = 0.5
     min_corridor_width_m: float = 2.2
@@ -46,12 +52,8 @@ class CorridorPlannerConfig:
     path_fit_smoothing_window: int = 5
     membership_margin_m: float = 0.15
 
-    path_resolution_m: float = 0.5
-    max_path_length_m: float = 30.0
-
     min_path_points: int = 4
     min_forward_extent_m: float = 2.0
-    jump_check_horizon_m: float = 8.0
     max_near_field_lateral_jump_m: float = 0.8
     max_heading_delta_rad: float = 0.75
     max_initial_heading_error_rad: float = 3.0 * math.pi / 4.0
@@ -153,6 +155,101 @@ class _FilteredCones:
     colored_count: int
 
 
+@dataclass
+class _BoundaryChains:
+    left: _BoundaryChain
+    right: _BoundaryChain
+
+
+@dataclass
+class _CorridorCandidate:
+    left_local: np.ndarray
+    right_local: np.ndarray
+    widths_m: np.ndarray
+    anchors_local: np.ndarray
+    centerline_local: np.ndarray
+    width_std_m: float
+    width_range_m: float
+    centerline_curvature_abs_max_1pm: float
+    centerline_heading_delta_max_rad: float
+    prior_lateral_mean_m: float
+    prior_lateral_max_m: float
+    prior_heading_delta_rad: float
+    audit_left_local: np.ndarray
+    audit_right_local: np.ndarray
+    audit_anchors_local: np.ndarray
+    audit_widths_m: np.ndarray
+    audit_reasons: list[str]
+
+
+@dataclass
+class _CorridorCandidateParts:
+    left_valid: np.ndarray
+    right_valid: np.ndarray
+    widths_valid: np.ndarray
+    anchors_local: np.ndarray
+    centerline_local: np.ndarray
+    audit_left_local: np.ndarray
+    audit_right_local: np.ndarray
+    audit_widths_m: np.ndarray
+    audit_reasons: list[str]
+
+
+@dataclass
+class _BuiltCorridor:
+    anchors_local: np.ndarray
+    widths_m: np.ndarray
+    left_global: np.ndarray
+    right_global: np.ndarray
+    anchors_global: np.ndarray
+    centerline_global: np.ndarray
+    rungs_global: np.ndarray
+    audit_anchors_local: np.ndarray
+    audit_widths_m: np.ndarray
+    audit_reasons: list[str]
+    audit_rungs_global: np.ndarray
+
+
+@dataclass
+class _PathDeltaMetrics:
+    lateral_max_m: float
+    lateral_mean_m: float
+    displacement_max_m: float
+    displacement_mean_m: float
+    heading_delta_rad: float = 0.0
+
+
+@dataclass
+class _CorridorPathMetrics:
+    centerline: np.ndarray
+    centerline_local: np.ndarray
+    prevalidation_centerline: np.ndarray
+    near_field: _PathDeltaMetrics
+    heading_delta_max_rad: float
+    curvature_max_1pm: float
+    seed_distance_m: float
+
+
+@dataclass
+class _CorridorInputs:
+    cones: _FilteredCones
+    chains: _BoundaryChains
+    reject_counts: dict[str, int]
+    expected_width_m: float
+
+
+@dataclass
+class _CorridorRequest:
+    points_xy: np.ndarray
+    colors: list[str]
+    confidences: np.ndarray
+    vehicle_xy: tuple[float, float]
+    vehicle_yaw: float
+    config: CorridorPlannerConfig
+    prior: Optional[CorridorPlannerPrior]
+    track_ids: Optional[np.ndarray]
+
+
 def _filter_and_order_cones(
     points_xy: np.ndarray,
     colors: list[str],
@@ -190,15 +287,40 @@ def _filter_and_order_cones(
 def _validate_corridor_path(
     centerline: np.ndarray,
     centerline_local: np.ndarray,
-    corridor: dict,
-    near_field: dict,
+    corridor: _BuiltCorridor,
+    near_field: _PathDeltaMetrics,
     heading_delta_max: float,
     curvature_max: float,
     corridor_sample_count: int,
     reject_counts: dict[str, int],
     config: CorridorPlannerConfig,
 ) -> str:
-    """Run corridor path quality checks. Returns reject reason (empty string means ok). Mutates reject_counts."""
+    """Run corridor path quality checks."""
+    basic_reject = _basic_corridor_path_rejection(
+        centerline, centerline_local, corridor,
+        corridor_sample_count, reject_counts, config,
+    )
+    if basic_reject:
+        return basic_reject
+    return _corridor_continuity_rejection(
+        centerline=centerline,
+        near_field=near_field,
+        heading_delta_max=heading_delta_max,
+        curvature_max=curvature_max,
+        corridor_sample_count=corridor_sample_count,
+        reject_counts=reject_counts,
+        config=config,
+    )
+
+
+def _basic_corridor_path_rejection(
+    centerline: np.ndarray,
+    centerline_local: np.ndarray,
+    corridor: _BuiltCorridor,
+    corridor_sample_count: int,
+    reject_counts: dict[str, int],
+    config: CorridorPlannerConfig,
+) -> str:
     if corridor_sample_count < int(config.min_required_corridor_samples):
         reject_counts["corridor_samples"] += 1
         return "too few valid corridor samples"
@@ -210,8 +332,8 @@ def _validate_corridor_path(
         return "path forward extent too short"
     if _path_violates_corridor(
         centerline_local=centerline_local,
-        corridor_center_local=np.asarray(corridor["anchors_local"], dtype=np.float64),
-        corridor_widths_m=np.asarray(corridor["widths_m"], dtype=np.float64),
+        corridor_center_local=corridor.anchors_local,
+        corridor_widths_m=corridor.widths_m,
         membership_margin_m=float(config.membership_margin_m),
     ):
         reject_counts["path_outside_corridor"] += 1
@@ -220,7 +342,20 @@ def _validate_corridor_path(
     if initial_heading_error > float(config.max_initial_heading_error_rad):
         reject_counts["heading"] += 1
         return "path heading flip near vehicle"
-    if near_field["lateral_max_m"] > _effective_near_field_jump_limit(
+    return ""
+
+
+def _corridor_continuity_rejection(
+    *,
+    centerline: np.ndarray,
+    near_field: _PathDeltaMetrics,
+    heading_delta_max: float,
+    curvature_max: float,
+    corridor_sample_count: int,
+    reject_counts: dict[str, int],
+    config: CorridorPlannerConfig,
+) -> str:
+    if near_field.lateral_max_m > _effective_near_field_jump_limit(
         config=config,
         corridor_sample_count=corridor_sample_count,
     ):
@@ -236,7 +371,7 @@ def _validate_corridor_path(
     ):
         reject_counts["curvature"] += 1
         return "path curvature exceeded limit"
-    if _path_self_intersects(centerline):
+    if path_self_intersects(centerline, skip_closing_segment=False):
         reject_counts["corridor_geometry"] += 1
         return "path self-crossing detected"
     return ""
@@ -252,133 +387,276 @@ def compute_corridor_centerline(
     prior: Optional[CorridorPlannerPrior] = None,
     track_ids: Optional[np.ndarray] = None,
 ) -> CorridorPlannerResult:
-    """Compute a local centerline using a resampled corridor between left/right boundaries.
+    """Compute a centerline from the valid corridor between left/right boundaries."""
+    request = _CorridorRequest(
+        points_xy, colors, confidences, vehicle_xy,
+        vehicle_yaw, config, prior, track_ids,
+    )
+    return _compute_corridor_centerline_from_request(request)
 
-    Builds boundary chains, resamples them at constant arc-length, extracts the corridor
-    interior, fits a smooth centerline through the corridor anchors, and validates the result.
-    Returns a result with ``status='ok'`` on success or a descriptive failure status.
-    """
-    if points_xy.size == 0:
+
+def _compute_corridor_centerline_from_request(
+    request: _CorridorRequest,
+) -> CorridorPlannerResult:
+    if request.points_xy.size == 0:
         return _empty_result("no cones available")
 
-    if track_ids is None or len(track_ids) != points_xy.shape[0]:
-        track_ids = np.arange(points_xy.shape[0], dtype=np.int64)
-    else:
-        track_ids = np.asarray(track_ids, dtype=np.int64)
+    inputs, input_failure = _prepare_corridor_inputs_from_request(request)
+    if input_failure is not None:
+        return input_failure
+    assert inputs is not None
 
-    # --- Filter & order cone inputs ---
+    corridor, corridor_failure = _build_corridor_or_failure(
+        inputs=inputs,
+        prior=request.prior,
+        vehicle_xy=request.vehicle_xy,
+        vehicle_yaw=request.vehicle_yaw,
+        config=request.config,
+    )
+    if corridor_failure is not None:
+        return corridor_failure
+    assert corridor is not None
+
+    return _corridor_result_from_inputs(request, inputs, corridor)
+
+
+def _prepare_corridor_inputs_from_request(
+    request: _CorridorRequest,
+) -> tuple[Optional[_CorridorInputs], Optional[CorridorPlannerResult]]:
+    return _prepare_corridor_inputs(
+        points_xy=request.points_xy,
+        colors=request.colors,
+        confidences=request.confidences,
+        track_ids=request.track_ids,
+        vehicle_xy=request.vehicle_xy,
+        vehicle_yaw=request.vehicle_yaw,
+        prior=request.prior,
+        config=request.config,
+    )
+
+
+def _corridor_result_from_inputs(
+    request: _CorridorRequest,
+    inputs: _CorridorInputs,
+    corridor: _BuiltCorridor,
+) -> CorridorPlannerResult:
+    metrics = _compute_corridor_path_metrics(
+        corridor=corridor,
+        prior=request.prior,
+        vehicle_xy=request.vehicle_xy,
+        vehicle_yaw=request.vehicle_yaw,
+        config=request.config,
+    )
+    centerline, status, reject_reason = _validate_corridor_metrics(
+        metrics=metrics,
+        corridor=corridor,
+        reject_counts=inputs.reject_counts,
+        config=request.config,
+    )
+
+    return _assemble_corridor_result(
+        cones=inputs.cones,
+        chains=inputs.chains,
+        corridor=corridor,
+        metrics=metrics,
+        centerline=centerline,
+        status=status,
+        reject_reason=reject_reason,
+        reject_counts=inputs.reject_counts,
+        expected_width_m=inputs.expected_width_m,
+        config=request.config,
+    )
+
+
+def _prepare_corridor_inputs(
+    *,
+    points_xy: np.ndarray,
+    colors: list[str],
+    confidences: np.ndarray,
+    track_ids: Optional[np.ndarray],
+    vehicle_xy: tuple[float, float],
+    vehicle_yaw: float,
+    prior: Optional[CorridorPlannerPrior],
+    config: CorridorPlannerConfig,
+) -> tuple[Optional[_CorridorInputs], Optional[CorridorPlannerResult]]:
+    normalized_track_ids = _normalize_track_ids(points_xy, track_ids)
     cones = _filter_and_order_cones(
-        points_xy, colors, confidences, track_ids,
+        points_xy, colors, confidences, normalized_track_ids,
         vehicle_xy, vehicle_yaw, config,
     )
-    if cones.colored_count == 0:
-        return _empty_result(
-            "no colored cones in planning region",
-            reject_counts=_default_reject_counts(),
-        )
-    if cones.colored_count < int(config.min_required_cones):
-        return _empty_result(
-            f"usable colored cones below minimum ({cones.colored_count} < {int(config.min_required_cones)})",
-            filtered_points=cones.points,
-            filtered_colors=cones.colors,
-            reject_counts=_default_reject_counts(),
-        )
+    cone_failure = _cone_filter_failure_result(cones, config)
+    if cone_failure is not None:
+        return None, cone_failure
 
-    # --- Build boundary chains ---
-    left_indices = np.flatnonzero(np.array([c == "blue" for c in cones.colors], dtype=bool))
-    right_indices = np.flatnonzero(np.array([c == "yellow" for c in cones.colors], dtype=bool))
-    left_chain = _build_boundary_chain(cones.points, cones.local, left_indices, config)
-    right_chain = _build_boundary_chain(cones.points, cones.local, right_indices, config)
-
+    chains = _build_boundary_chains(cones, config)
     reject_counts = _default_reject_counts()
-    expected_width = _clamp(
-        prior.previous_width_m if prior and prior.previous_width_m is not None else config.initial_width_m,
-        config.min_width_m,
-        config.max_width_m,
+    expected_width_m = _expected_width_m(prior, config)
+    chain_failure = _boundary_chain_failure_result(
+        cones=cones,
+        chains=chains,
+        reject_counts=reject_counts,
+        expected_width_m=expected_width_m,
+        config=config,
     )
+    if chain_failure is not None:
+        return None, chain_failure
+    return _CorridorInputs(cones, chains, reject_counts, expected_width_m), None
 
-    if (
-        left_chain.filtered_indices.size < int(config.min_chain_length)
-        or right_chain.filtered_indices.size < int(config.min_chain_length)
-    ):
-        return _result_with_metadata(
-            result=_empty_result(
-                "no reliable corridor boundaries",
-                filtered_points=cones.points,
-                filtered_colors=cones.colors,
-                left_boundary=left_chain.global_points,
-                right_boundary=right_chain.global_points,
-                reject_counts=reject_counts,
-                reject_reason="no reliable corridor boundaries",
-            ),
-            left_chain=left_chain,
-            right_chain=right_chain,
-            filtered_track_ids=cones.track_ids,
-            planner_mode="none",
-            filtered_track_width_m=expected_width,
-        )
 
-    # --- Build corridor ---
-    prior_centerline_local = None
-    if prior is not None and prior.previous_centerline is not None:
-        previous_centerline = np.asarray(prior.previous_centerline, dtype=np.float64)
-        if previous_centerline.shape[0] >= 2 and np.all(np.isfinite(previous_centerline)):
-            prior_centerline_local = _to_vehicle_frame(
-                previous_centerline, vehicle_xy, vehicle_yaw,
-            )
-
-    corridor = _build_corridor(
-        left_chain=left_chain,
-        right_chain=right_chain,
+def _build_corridor_or_failure(
+    *,
+    inputs: _CorridorInputs,
+    prior: Optional[CorridorPlannerPrior],
+    vehicle_xy: tuple[float, float],
+    vehicle_yaw: float,
+    config: CorridorPlannerConfig,
+) -> tuple[Optional[_BuiltCorridor], Optional[CorridorPlannerResult]]:
+    prior_centerline_local = _prior_centerline_local(prior, vehicle_xy, vehicle_yaw)
+    corridor, _build_reason = _build_corridor(
+        left_chain=inputs.chains.left,
+        right_chain=inputs.chains.right,
         vehicle_xy=vehicle_xy,
         vehicle_yaw=vehicle_yaw,
         config=config,
         prior_centerline_local=prior_centerline_local,
     )
-    if corridor is None:
-        reject_counts["corridor_geometry"] += 1
-        return _result_with_metadata(
-            result=_empty_result(
-                "no valid corridor overlap",
-                filtered_points=cones.points,
-                filtered_colors=cones.colors,
-                left_boundary=left_chain.global_points,
-                right_boundary=right_chain.global_points,
-                reject_counts=reject_counts,
-                reject_reason="no valid corridor overlap",
-            ),
-            left_chain=left_chain,
-            right_chain=right_chain,
-            filtered_track_ids=cones.track_ids,
-            planner_mode="none",
-            filtered_track_width_m=expected_width,
+    if corridor is not None:
+        return corridor, None
+    inputs.reject_counts["corridor_geometry"] += 1
+    return None, _failure_result_with_chains(
+        status="no valid corridor overlap",
+        cones=inputs.cones,
+        chains=inputs.chains,
+        reject_counts=inputs.reject_counts,
+        expected_width_m=inputs.expected_width_m,
+    )
+
+
+def _normalize_track_ids(
+    points_xy: np.ndarray,
+    track_ids: Optional[np.ndarray],
+) -> np.ndarray:
+    if track_ids is None or len(track_ids) != points_xy.shape[0]:
+        return np.arange(points_xy.shape[0], dtype=np.int64)
+    return np.asarray(track_ids, dtype=np.int64)
+
+
+def _cone_filter_failure_result(
+    cones: _FilteredCones,
+    config: CorridorPlannerConfig,
+) -> Optional[CorridorPlannerResult]:
+    if cones.colored_count == 0:
+        return _empty_result(
+            "no colored cones in planning region",
+            reject_counts=_default_reject_counts(),
         )
-
-    corridor_sample_count = int(np.asarray(corridor["anchors_local"], dtype=np.float64).shape[0])
-    left_boundary = np.asarray(corridor["left_global"], dtype=np.float64)
-    right_boundary = np.asarray(corridor["right_global"], dtype=np.float64)
-    center_anchors = np.asarray(corridor["anchors_global"], dtype=np.float64)
-    raw_centerline = np.asarray(corridor["centerline_global"], dtype=np.float64)
-    corridor_rungs = np.asarray(corridor["rungs_global"], dtype=np.float64)
-    widths = np.asarray(corridor["widths_m"], dtype=np.float64)
-
-    width_min_m = float(np.min(widths)) if widths.size else float("nan")
-    width_max_m = float(np.max(widths)) if widths.size else float("nan")
-    width_median_m = float(np.median(widths)) if widths.size else float("nan")
-    measured_width_m = (
-        width_median_m
-        if corridor_sample_count >= int(config.min_trustworthy_pairs) and math.isfinite(width_median_m)
-        else float("nan")
+    if cones.colored_count >= int(config.min_required_cones):
+        return None
+    return _empty_result(
+        f"usable colored cones below minimum ({cones.colored_count} < {int(config.min_required_cones)})",
+        filtered_points=cones.points,
+        filtered_colors=cones.colors,
+        reject_counts=_default_reject_counts(),
     )
 
-    # --- Compute path metrics ---
-    centerline = _resample_path(
-        raw_centerline,
-        resolution_m=float(config.path_resolution_m),
-        max_length_m=float(config.max_path_length_m),
+
+def _build_boundary_chains(
+    cones: _FilteredCones,
+    config: CorridorPlannerConfig,
+) -> _BoundaryChains:
+    left_indices = np.flatnonzero(np.array([c == "blue" for c in cones.colors], dtype=bool))
+    right_indices = np.flatnonzero(np.array([c == "yellow" for c in cones.colors], dtype=bool))
+    return _BoundaryChains(
+        left=_build_boundary_chain(cones.points, cones.local, left_indices, config),
+        right=_build_boundary_chain(cones.points, cones.local, right_indices, config),
     )
+
+
+def _expected_width_m(
+    prior: Optional[CorridorPlannerPrior],
+    config: CorridorPlannerConfig,
+) -> float:
+    prior_width_m = (
+        prior.previous_width_m
+        if prior is not None and prior.previous_width_m is not None
+        else config.initial_width_m
+    )
+    return _clamp(prior_width_m, config.min_width_m, config.max_width_m)
+
+
+def _boundary_chain_failure_result(
+    *,
+    cones: _FilteredCones,
+    chains: _BoundaryChains,
+    reject_counts: dict[str, int],
+    expected_width_m: float,
+    config: CorridorPlannerConfig,
+) -> Optional[CorridorPlannerResult]:
+    if (
+        chains.left.filtered_indices.size >= int(config.min_chain_length)
+        and chains.right.filtered_indices.size >= int(config.min_chain_length)
+    ):
+        return None
+    return _failure_result_with_chains(
+        status="no reliable corridor boundaries",
+        cones=cones,
+        chains=chains,
+        reject_counts=reject_counts,
+        expected_width_m=expected_width_m,
+    )
+
+
+def _failure_result_with_chains(
+    *,
+    status: str,
+    cones: _FilteredCones,
+    chains: _BoundaryChains,
+    reject_counts: dict[str, int],
+    expected_width_m: float,
+) -> CorridorPlannerResult:
+    return _result_with_metadata(
+        result=_empty_result(
+            status,
+            filtered_points=cones.points,
+            filtered_colors=cones.colors,
+            left_boundary=chains.left.global_points,
+            right_boundary=chains.right.global_points,
+            reject_counts=reject_counts,
+            reject_reason=status,
+        ),
+        left_chain=chains.left,
+        right_chain=chains.right,
+        filtered_track_ids=cones.track_ids,
+        planner_mode="none",
+        filtered_track_width_m=expected_width_m,
+    )
+
+
+def _prior_centerline_local(
+    prior: Optional[CorridorPlannerPrior],
+    vehicle_xy: tuple[float, float],
+    vehicle_yaw: float,
+) -> Optional[np.ndarray]:
+    if prior is None or prior.previous_centerline is None:
+        return None
+    previous_centerline = np.asarray(prior.previous_centerline, dtype=np.float64)
+    if previous_centerline.shape[0] < MIN_CORRIDOR_STATION_COUNT:
+        return None
+    if not np.all(np.isfinite(previous_centerline)):
+        return None
+    return _to_vehicle_frame(previous_centerline, vehicle_xy, vehicle_yaw)
+
+
+def _compute_corridor_path_metrics(
+    *,
+    corridor: _BuiltCorridor,
+    prior: Optional[CorridorPlannerPrior],
+    vehicle_xy: tuple[float, float],
+    vehicle_yaw: float,
+    config: CorridorPlannerConfig,
+) -> _CorridorPathMetrics:
+    centerline = _finalize_path(corridor.centerline_global, config)
     centerline_local = _to_vehicle_frame(centerline, vehicle_xy, vehicle_yaw)
-    seed_distance_m = _first_point_distance(centerline_local)
     near_field = _near_field_delta_metrics(
         current=centerline,
         previous=None if prior is None else prior.previous_centerline,
@@ -386,29 +664,78 @@ def compute_corridor_centerline(
         vehicle_yaw=vehicle_yaw,
         horizon_m=config.jump_check_horizon_m,
     )
-    heading_delta_max = _path_heading_delta_max(centerline_local)
-    curvature_max = _path_curvature_abs_max(centerline_local)
+    return _CorridorPathMetrics(
+        centerline=centerline,
+        centerline_local=centerline_local,
+        prevalidation_centerline=np.array(centerline, copy=True),
+        near_field=near_field,
+        heading_delta_max_rad=_path_heading_delta_max(centerline_local),
+        curvature_max_1pm=_path_curvature_abs_max(centerline_local),
+        seed_distance_m=_first_point_distance(centerline_local),
+    )
 
-    # --- Validate path ---
-    prevalidation_centerline = np.array(centerline, copy=True)
+
+def _validate_corridor_metrics(
+    *,
+    metrics: _CorridorPathMetrics,
+    corridor: _BuiltCorridor,
+    reject_counts: dict[str, int],
+    config: CorridorPlannerConfig,
+) -> tuple[np.ndarray, str, str]:
     reject_reason = _validate_corridor_path(
-        centerline, centerline_local, corridor, near_field,
-        heading_delta_max, curvature_max, corridor_sample_count,
-        reject_counts, config,
+        metrics.centerline,
+        metrics.centerline_local,
+        corridor,
+        metrics.near_field,
+        metrics.heading_delta_max_rad,
+        metrics.curvature_max_1pm,
+        int(corridor.anchors_local.shape[0]),
+        reject_counts,
+        config,
     )
     status = reject_reason if reject_reason else "ok"
-    if status != "ok" and status not in {
+    return _centerline_for_status(metrics.centerline, status), status, reject_reason
+
+
+def _centerline_for_status(centerline: np.ndarray, status: str) -> np.ndarray:
+    if status == "ok" or status in {
         "path has too few points",
         "path forward extent too short",
         "near-field continuity rejected fresh path",
     }:
-        centerline = np.empty((0, 2), dtype=np.float64)
+        return centerline
+    return np.empty((0, 2), dtype=np.float64)
 
-    # --- Assemble result ---
-    filtered_track_width_m = (
-        float(measured_width_m) if status == "ok" and math.isfinite(measured_width_m)
-        else float(expected_width)
+
+def _assemble_corridor_result(
+    *,
+    cones: _FilteredCones,
+    chains: _BoundaryChains,
+    corridor: _BuiltCorridor,
+    metrics: _CorridorPathMetrics,
+    centerline: np.ndarray,
+    status: str,
+    reject_reason: str,
+    reject_counts: dict[str, int],
+    expected_width_m: float,
+    config: CorridorPlannerConfig,
+) -> CorridorPlannerResult:
+    result = _new_corridor_result(cones, corridor, metrics, centerline, status)
+    _apply_corridor_scalar_metadata(
+        result, corridor, metrics, status, reject_reason,
+        reject_counts, expected_width_m, config,
     )
+    _apply_corridor_array_metadata(result, cones, chains, corridor)
+    return result
+
+
+def _new_corridor_result(
+    cones: _FilteredCones,
+    corridor: _BuiltCorridor,
+    metrics: _CorridorPathMetrics,
+    centerline: np.ndarray,
+    status: str,
+) -> CorridorPlannerResult:
     return CorridorPlannerResult(
         filtered_points=cones.points,
         filtered_colors=cones.colors,
@@ -416,59 +743,103 @@ def compute_corridor_centerline(
         candidate_edges=np.empty((0, 2), dtype=np.int64),
         selected_edges=np.empty((0, 2), dtype=np.int64),
         selected_pair_track_ids=np.empty((0, 2), dtype=np.int64),
-        midpoints_raw=center_anchors,
+        midpoints_raw=corridor.anchors_global,
         centerline=centerline,
-        prevalidation_centerline=prevalidation_centerline,
-        left_boundary=left_boundary,
-        right_boundary=right_boundary,
+        prevalidation_centerline=metrics.prevalidation_centerline,
+        left_boundary=corridor.left_global,
+        right_boundary=corridor.right_global,
         used_fallback=False,
         status=status,
-        candidate_count=corridor_sample_count,
-        selected_chain_length=corridor_sample_count,
-        selected_chain_width_median=width_median_m,
-        expected_width_prior_m=float(expected_width),
-        near_field_lateral_max_m=float(near_field["lateral_max_m"]),
-        near_field_lateral_mean_m=float(near_field["lateral_mean_m"]),
-        near_field_displacement_max_m=float(near_field["displacement_max_m"]),
-        near_field_displacement_mean_m=float(near_field["displacement_mean_m"]),
-        near_field_kink_max_rad=float(heading_delta_max),
-        seed_midpoint_distance_m=float(seed_distance_m),
-        seed_temporal_offset_m=float("nan"),
-        reject_reason=reject_reason,
-        reject_counts=reject_counts,
-        planner_mode="corridor" if status == "ok" else "none",
-        active_boundary_side="",
-        raw_offset_path=np.empty((0, 2), dtype=np.float64),
-        pair_segments=corridor_rungs,
-        raw_left_chain_points=left_chain.global_points,
-        raw_right_chain_points=right_chain.global_points,
-        corridor_pair_audit_segments=np.asarray(
-            corridor["audit_rungs_global"], dtype=np.float64,
-        ),
-        corridor_pair_audit_anchors_local=np.asarray(
-            corridor["audit_anchors_local"], dtype=np.float64,
-        ),
-        corridor_pair_audit_widths_m=np.asarray(corridor["audit_widths_m"], dtype=np.float64),
-        corridor_pair_audit_reasons=list(corridor["audit_reasons"]),
-        used_left_track_ids=np.asarray(
-            cones.track_ids[left_chain.filtered_indices], dtype=np.int64,
-        ),
-        used_right_track_ids=np.asarray(
-            cones.track_ids[right_chain.filtered_indices], dtype=np.int64,
-        ),
-        chain_rejection_reasons_by_track_id=_chain_rejection_reasons_by_track_id(
-            filtered_track_ids=cones.track_ids,
-            left_chain=left_chain,
-            right_chain=right_chain,
-        ),
-        accepted_pair_count=corridor_sample_count,
-        left_chain_length=int(left_chain.filtered_indices.size),
-        right_chain_length=int(right_chain.filtered_indices.size),
-        filtered_track_width_m=filtered_track_width_m,
-        unknown_pair_count=0,
-        corridor_width_min_m=width_min_m,
-        corridor_width_max_m=width_max_m,
     )
+
+
+def _apply_corridor_scalar_metadata(
+    result: CorridorPlannerResult,
+    corridor: _BuiltCorridor,
+    metrics: _CorridorPathMetrics,
+    status: str,
+    reject_reason: str,
+    reject_counts: dict[str, int],
+    expected_width_m: float,
+    config: CorridorPlannerConfig,
+) -> None:
+    corridor_sample_count = int(corridor.anchors_local.shape[0])
+    width_median_m = _corridor_width_median(corridor.widths_m)
+    result.candidate_count = corridor_sample_count
+    result.selected_chain_length = corridor_sample_count
+    result.selected_chain_width_median = width_median_m
+    result.expected_width_prior_m = float(expected_width_m)
+    result.near_field_lateral_max_m = float(metrics.near_field.lateral_max_m)
+    result.near_field_lateral_mean_m = float(metrics.near_field.lateral_mean_m)
+    result.near_field_displacement_max_m = float(metrics.near_field.displacement_max_m)
+    result.near_field_displacement_mean_m = float(metrics.near_field.displacement_mean_m)
+    result.near_field_kink_max_rad = float(metrics.heading_delta_max_rad)
+    result.seed_midpoint_distance_m = float(metrics.seed_distance_m)
+    result.reject_reason = reject_reason
+    result.reject_counts = reject_counts
+    result.planner_mode = "corridor" if status == "ok" else "none"
+    result.accepted_pair_count = corridor_sample_count
+    result.filtered_track_width_m = _filtered_track_width_m(
+        status, corridor_sample_count, width_median_m, expected_width_m, config,
+    )
+    result.corridor_width_min_m = _corridor_width_min(corridor.widths_m)
+    result.corridor_width_max_m = _corridor_width_max(corridor.widths_m)
+
+
+def _apply_corridor_array_metadata(
+    result: CorridorPlannerResult,
+    cones: _FilteredCones,
+    chains: _BoundaryChains,
+    corridor: _BuiltCorridor,
+) -> None:
+    result.pair_segments = corridor.rungs_global
+    result.raw_left_chain_points = chains.left.global_points
+    result.raw_right_chain_points = chains.right.global_points
+    result.corridor_pair_audit_segments = corridor.audit_rungs_global
+    result.corridor_pair_audit_anchors_local = corridor.audit_anchors_local
+    result.corridor_pair_audit_widths_m = corridor.audit_widths_m
+    result.corridor_pair_audit_reasons = list(corridor.audit_reasons)
+    result.used_left_track_ids = np.asarray(
+        cones.track_ids[chains.left.filtered_indices], dtype=np.int64,
+    )
+    result.used_right_track_ids = np.asarray(
+        cones.track_ids[chains.right.filtered_indices], dtype=np.int64,
+    )
+    result.chain_rejection_reasons_by_track_id = _chain_rejection_reasons_by_track_id(
+        filtered_track_ids=cones.track_ids,
+        left_chain=chains.left,
+        right_chain=chains.right,
+    )
+    result.left_chain_length = int(chains.left.filtered_indices.size)
+    result.right_chain_length = int(chains.right.filtered_indices.size)
+
+
+def _filtered_track_width_m(
+    status: str,
+    corridor_sample_count: int,
+    width_median_m: float,
+    expected_width_m: float,
+    config: CorridorPlannerConfig,
+) -> float:
+    if (
+        status == "ok"
+        and corridor_sample_count >= int(config.min_trustworthy_pairs)
+        and math.isfinite(width_median_m)
+    ):
+        return float(width_median_m)
+    return float(expected_width_m)
+
+
+def _corridor_width_min(widths_m: np.ndarray) -> float:
+    return float(np.min(widths_m)) if widths_m.size else float("nan")
+
+
+def _corridor_width_max(widths_m: np.ndarray) -> float:
+    return float(np.max(widths_m)) if widths_m.size else float("nan")
+
+
+def _corridor_width_median(widths_m: np.ndarray) -> float:
+    return float(np.median(widths_m)) if widths_m.size else float("nan")
 
 
 def _geometry_filter(local_points: np.ndarray, config: CorridorPlannerConfig) -> np.ndarray:
@@ -516,7 +887,7 @@ def _build_boundary_chain(
         side_indices=side_indices,
         config=config,
         collect_rejection_reasons=True,
-        min_step_m=min(float(config.min_step_m), 0.35),
+        min_step_m=min(float(config.min_step_m), CORRIDOR_CHAIN_MIN_STEP_M),
     )
     return _BoundaryChain(
         filtered_indices=chain.filtered_indices,
@@ -537,63 +908,61 @@ def _build_corridor(
     vehicle_yaw: float,
     config: CorridorPlannerConfig,
     prior_centerline_local: Optional[np.ndarray] = None,
-) -> Optional[dict[str, np.ndarray]]:
-    dx = max(0.05, float(config.boundary_resample_dx))
+) -> tuple[Optional[_BuiltCorridor], str]:
+    dx = max(MIN_BOUNDARY_RESAMPLE_SPACING_M, float(config.boundary_resample_dx))
     left_local = _resample_boundary_by_station(left_chain.local_points, dx)
     right_local = _resample_boundary_by_station(right_chain.local_points, dx)
     if left_local is None or right_local is None:
-        return None
+        return None, "boundary resample failed"
 
     station_count = min(left_local.shape[0], right_local.shape[0])
-    if station_count < 2:
-        return None
+    if station_count < MIN_CORRIDOR_STATION_COUNT:
+        return None, "too few corridor stations"
 
-    chosen = _build_corridor_candidate(
+    chosen, reason = _build_corridor_candidate(
         left_local=np.asarray(left_local[:station_count], dtype=np.float64),
         right_local=np.asarray(right_local[:station_count], dtype=np.float64),
         config=config,
         prior_centerline_local=prior_centerline_local,
     )
     if chosen is None:
-        return None
+        return None, reason
+    return _materialize_built_corridor(
+        chosen, vehicle_xy, vehicle_yaw, config,
+    ), ""
 
-    left_local = np.asarray(chosen["left_local"], dtype=np.float64)
-    right_local = np.asarray(chosen["right_local"], dtype=np.float64)
-    widths = np.asarray(chosen["widths_m"], dtype=np.float64)
-    anchors_local = np.asarray(chosen["anchors_local"], dtype=np.float64)
 
-    centerline_local = _fit_centerline_from_anchors(anchors_local, config)
+def _materialize_built_corridor(
+    candidate: _CorridorCandidate,
+    vehicle_xy: tuple[float, float],
+    vehicle_yaw: float,
+    config: CorridorPlannerConfig,
+) -> _BuiltCorridor:
+    centerline_local = _fit_centerline_from_anchors(candidate.anchors_local, config)
+    left_global = _from_vehicle_frame(candidate.left_local, vehicle_xy, vehicle_yaw)
+    right_global = _from_vehicle_frame(candidate.right_local, vehicle_xy, vehicle_yaw)
+    audit_left_global = _from_vehicle_frame(candidate.audit_left_local, vehicle_xy, vehicle_yaw)
+    audit_right_global = _from_vehicle_frame(candidate.audit_right_local, vehicle_xy, vehicle_yaw)
+    return _BuiltCorridor(
+        anchors_local=candidate.anchors_local,
+        widths_m=candidate.widths_m,
+        left_global=left_global,
+        right_global=right_global,
+        anchors_global=_from_vehicle_frame(candidate.anchors_local, vehicle_xy, vehicle_yaw),
+        centerline_global=_from_vehicle_frame(centerline_local, vehicle_xy, vehicle_yaw),
+        rungs_global=_rungs_from_boundaries(left_global, right_global),
+        audit_anchors_local=candidate.audit_anchors_local,
+        audit_widths_m=candidate.audit_widths_m,
+        audit_reasons=list(candidate.audit_reasons),
+        audit_rungs_global=_rungs_from_boundaries(audit_left_global, audit_right_global),
+    )
 
-    left_global = _from_vehicle_frame(left_local, vehicle_xy, vehicle_yaw)
-    right_global = _from_vehicle_frame(right_local, vehicle_xy, vehicle_yaw)
-    anchors_global = _from_vehicle_frame(anchors_local, vehicle_xy, vehicle_yaw)
-    centerline_global = _from_vehicle_frame(centerline_local, vehicle_xy, vehicle_yaw)
-    rungs_global = np.empty((anchors_local.shape[0], 2, 2), dtype=np.float64)
-    rungs_global[:, 0, :] = left_global
-    rungs_global[:, 1, :] = right_global
-    audit_left_local = np.asarray(chosen["audit_left_local"], dtype=np.float64)
-    audit_right_local = np.asarray(chosen["audit_right_local"], dtype=np.float64)
-    audit_anchors_local = np.asarray(chosen["audit_anchors_local"], dtype=np.float64)
-    audit_left_global = _from_vehicle_frame(audit_left_local, vehicle_xy, vehicle_yaw)
-    audit_right_global = _from_vehicle_frame(audit_right_local, vehicle_xy, vehicle_yaw)
-    audit_rungs_global = np.empty((audit_anchors_local.shape[0], 2, 2), dtype=np.float64)
-    audit_rungs_global[:, 0, :] = audit_left_global
-    audit_rungs_global[:, 1, :] = audit_right_global
 
-    return {
-        "x_local": anchors_local[:, 0].copy(),
-        "anchors_local": anchors_local,
-        "widths_m": widths,
-        "left_global": left_global,
-        "right_global": right_global,
-        "anchors_global": anchors_global,
-        "centerline_global": centerline_global,
-        "rungs_global": rungs_global,
-        "audit_anchors_local": audit_anchors_local,
-        "audit_widths_m": np.asarray(chosen["audit_widths_m"], dtype=np.float64),
-        "audit_reasons": list(chosen["audit_reasons"]),
-        "audit_rungs_global": audit_rungs_global,
-    }
+def _rungs_from_boundaries(left: np.ndarray, right: np.ndarray) -> np.ndarray:
+    rungs = np.empty((left.shape[0], 2, 2), dtype=np.float64)
+    rungs[:, 0, :] = left
+    rungs[:, 1, :] = right
+    return rungs
 
 
 def _build_corridor_candidate(
@@ -602,10 +971,34 @@ def _build_corridor_candidate(
     right_local: np.ndarray,
     config: CorridorPlannerConfig,
     prior_centerline_local: Optional[np.ndarray] = None,
-) -> Optional[dict[str, np.ndarray]]:
-    if left_local.shape[0] < 2 or right_local.shape[0] < 2:
-        return None
+) -> tuple[Optional[_CorridorCandidate], str]:
+    if (
+        left_local.shape[0] < MIN_CORRIDOR_STATION_COUNT
+        or right_local.shape[0] < MIN_CORRIDOR_STATION_COUNT
+    ):
+        return None, "too few boundary samples"
 
+    valid_slice, widths, raw_valid_mask, reason = _corridor_candidate_slice(
+        left_local, right_local, config,
+    )
+    if valid_slice is None:
+        return None, reason
+    return _corridor_candidate_from_slice(
+        left_local=left_local,
+        right_local=right_local,
+        widths=widths,
+        raw_valid_mask=raw_valid_mask,
+        valid_slice=valid_slice,
+        config=config,
+        prior_centerline_local=prior_centerline_local,
+    )
+
+
+def _corridor_candidate_slice(
+    left_local: np.ndarray,
+    right_local: np.ndarray,
+    config: CorridorPlannerConfig,
+) -> tuple[Optional[slice], np.ndarray, np.ndarray, str]:
     widths = np.hypot(left_local[:, 0] - right_local[:, 0], left_local[:, 1] - right_local[:, 1])
     raw_valid_mask = _corridor_valid_mask(
         left_local=left_local,
@@ -613,10 +1006,24 @@ def _build_corridor_candidate(
         widths=widths,
         config=config,
     )
-    valid_mask = _fill_small_invalid_gaps(raw_valid_mask, max_gap=1)
+    valid_mask = _fill_small_invalid_gaps(
+        raw_valid_mask, max_gap=MAX_CORRIDOR_GAP_FILL_SAMPLES,
+    )
     valid_slice = _longest_valid_slice(valid_mask)
-    if valid_slice is None:
-        return None
+    reason = "" if valid_slice is not None else "no valid corridor slice"
+    return valid_slice, widths, raw_valid_mask, reason
+
+
+def _corridor_candidate_from_slice(
+    *,
+    left_local: np.ndarray,
+    right_local: np.ndarray,
+    widths: np.ndarray,
+    raw_valid_mask: np.ndarray,
+    valid_slice: slice,
+    config: CorridorPlannerConfig,
+    prior_centerline_local: Optional[np.ndarray],
+) -> tuple[Optional[_CorridorCandidate], str]:
     audit_reasons = _corridor_pair_audit_reasons(
         left_local=left_local,
         right_local=right_local,
@@ -625,81 +1032,132 @@ def _build_corridor_candidate(
         accepted_slice=valid_slice,
         config=config,
     )
+    parts = _corridor_candidate_parts(
+        left_local, right_local, widths, valid_slice, audit_reasons, config,
+    )
+    if parts is None:
+        return None, "too few valid corridor samples"
+    return _new_corridor_candidate(parts, prior_centerline_local, config), ""
 
+
+def _corridor_candidate_parts(
+    left_local: np.ndarray,
+    right_local: np.ndarray,
+    widths: np.ndarray,
+    valid_slice: slice,
+    audit_reasons: list[str],
+    config: CorridorPlannerConfig,
+) -> Optional[_CorridorCandidateParts]:
     left_valid = np.asarray(left_local[valid_slice], dtype=np.float64)
     right_valid = np.asarray(right_local[valid_slice], dtype=np.float64)
     widths_valid = np.asarray(widths[valid_slice], dtype=np.float64)
     if left_valid.shape[0] < int(config.min_required_corridor_samples):
         return None
-
     anchors_local = 0.5 * (left_valid + right_valid)
     centerline_local = _fit_centerline_from_anchors(anchors_local, config)
-    width_std_m = float(np.std(widths_valid)) if widths_valid.size else float("inf")
-    width_range_m = (
-        float(np.max(widths_valid) - np.min(widths_valid))
-        if widths_valid.size
-        else float("inf")
+    return _CorridorCandidateParts(
+        left_valid=left_valid,
+        right_valid=right_valid,
+        widths_valid=widths_valid,
+        anchors_local=anchors_local,
+        centerline_local=centerline_local,
+        audit_left_local=np.asarray(left_local, dtype=np.float64),
+        audit_right_local=np.asarray(right_local, dtype=np.float64),
+        audit_widths_m=np.asarray(widths, dtype=np.float64),
+        audit_reasons=audit_reasons,
     )
-    centerline_curvature_abs_max = _path_curvature_abs_max(
+
+
+def _new_corridor_candidate(
+    parts: _CorridorCandidateParts,
+    prior_centerline_local: Optional[np.ndarray],
+    config: CorridorPlannerConfig,
+) -> _CorridorCandidate:
+    width_std_m = float(np.std(parts.widths_valid)) if parts.widths_valid.size else float("inf")
+    centerline_heading_delta_max = _path_heading_delta_max(parts.centerline_local)
+    prior_alignment = _candidate_prior_alignment(
+        parts.centerline_local, prior_centerline_local, config,
+    )
+    return _CorridorCandidate(
+        left_local=parts.left_valid,
+        right_local=parts.right_valid,
+        widths_m=parts.widths_valid,
+        anchors_local=parts.anchors_local,
+        centerline_local=parts.centerline_local,
+        width_std_m=width_std_m,
+        width_range_m=_corridor_candidate_width_range_m(parts.widths_valid),
+        centerline_curvature_abs_max_1pm=_corridor_candidate_curvature(parts, config),
+        centerline_heading_delta_max_rad=centerline_heading_delta_max,
+        prior_lateral_mean_m=float(prior_alignment.lateral_mean_m),
+        prior_lateral_max_m=float(prior_alignment.lateral_max_m),
+        prior_heading_delta_rad=float(prior_alignment.heading_delta_rad),
+        audit_left_local=parts.audit_left_local,
+        audit_right_local=parts.audit_right_local,
+        audit_anchors_local=0.5 * (parts.audit_left_local + parts.audit_right_local),
+        audit_widths_m=parts.audit_widths_m,
+        audit_reasons=parts.audit_reasons,
+    )
+
+
+def _corridor_candidate_width_range_m(widths_m: np.ndarray) -> float:
+    if widths_m.size:
+        return float(np.max(widths_m) - np.min(widths_m))
+    return float("inf")
+
+
+def _corridor_candidate_curvature(
+    parts: _CorridorCandidateParts,
+    config: CorridorPlannerConfig,
+) -> float:
+    return _path_curvature_abs_max(
         _resample_path(
-            centerline_local,
+            parts.centerline_local,
             resolution_m=float(config.path_resolution_m),
             max_length_m=float(config.max_path_length_m),
         )
     )
-    centerline_heading_delta_max = _path_heading_delta_max(centerline_local)
-    if prior_centerline_local is not None and prior_centerline_local.shape[0] >= 2:
-        prior_alignment = _path_alignment_metrics(
-            current_local=centerline_local,
-            previous_local=prior_centerline_local,
-            horizon_m=min(float(config.jump_check_horizon_m), 4.0),
-        )
-    else:
-        prior_alignment = {
-            "lateral_max_m": float("nan"),
-            "lateral_mean_m": float("nan"),
-            "displacement_max_m": float("nan"),
-            "displacement_mean_m": float("nan"),
-            "heading_delta_rad": float("nan"),
-        }
-    return {
-        "left_local": left_valid,
-        "right_local": right_valid,
-        "widths_m": widths_valid,
-        "anchors_local": anchors_local,
-        "centerline_local": centerline_local,
-        "width_std_m": width_std_m,
-        "width_range_m": width_range_m,
-        "centerline_curvature_abs_max_1pm": centerline_curvature_abs_max,
-        "centerline_heading_delta_max_rad": centerline_heading_delta_max,
-        "prior_lateral_mean_m": float(prior_alignment["lateral_mean_m"]),
-        "prior_lateral_max_m": float(prior_alignment["lateral_max_m"]),
-        "prior_heading_delta_rad": float(prior_alignment["heading_delta_rad"]),
-        "audit_left_local": np.asarray(left_local, dtype=np.float64),
-        "audit_right_local": np.asarray(right_local, dtype=np.float64),
-        "audit_anchors_local": 0.5
-        * (
-            np.asarray(left_local, dtype=np.float64)
-            + np.asarray(right_local, dtype=np.float64)
-        ),
-        "audit_widths_m": np.asarray(widths, dtype=np.float64),
-        "audit_reasons": audit_reasons,
-    }
+
+
+def _candidate_prior_alignment(
+    centerline_local: np.ndarray,
+    prior_centerline_local: Optional[np.ndarray],
+    config: CorridorPlannerConfig,
+) -> _PathDeltaMetrics:
+    if (
+        prior_centerline_local is None
+        or prior_centerline_local.shape[0] < MIN_CORRIDOR_STATION_COUNT
+    ):
+        return _nan_path_delta_metrics()
+    return _path_alignment_metrics(
+        current_local=centerline_local,
+        previous_local=prior_centerline_local,
+        horizon_m=min(float(config.jump_check_horizon_m), PRIOR_ALIGNMENT_HORIZON_M),
+    )
+
+
+def _nan_path_delta_metrics() -> _PathDeltaMetrics:
+    return _PathDeltaMetrics(
+        lateral_max_m=float("nan"),
+        lateral_mean_m=float("nan"),
+        displacement_max_m=float("nan"),
+        displacement_mean_m=float("nan"),
+        heading_delta_rad=float("nan"),
+    )
 
 
 def _corridor_candidate_score(
-    candidate: dict[str, np.ndarray | float],
+    candidate: _CorridorCandidate,
     config: CorridorPlannerConfig,
 ) -> tuple[float, ...]:
     del config
-    anchor_count = float(np.asarray(candidate["anchors_local"], dtype=np.float64).shape[0])
-    width_std_m = float(candidate.get("width_std_m", float("inf")))
-    width_range_m = float(candidate.get("width_range_m", float("inf")))
-    curvature_abs_max = float(candidate.get("centerline_curvature_abs_max_1pm", float("inf")))
-    heading_delta_max = float(candidate.get("centerline_heading_delta_max_rad", float("inf")))
-    prior_lateral_mean_m = float(candidate.get("prior_lateral_mean_m", float("nan")))
-    prior_lateral_max_m = float(candidate.get("prior_lateral_max_m", float("nan")))
-    prior_heading_delta_rad = float(candidate.get("prior_heading_delta_rad", float("nan")))
+    anchor_count = float(candidate.anchors_local.shape[0])
+    width_std_m = float(candidate.width_std_m)
+    width_range_m = float(candidate.width_range_m)
+    curvature_abs_max = float(candidate.centerline_curvature_abs_max_1pm)
+    heading_delta_max = float(candidate.centerline_heading_delta_max_rad)
+    prior_lateral_mean_m = float(candidate.prior_lateral_mean_m)
+    prior_lateral_max_m = float(candidate.prior_lateral_max_m)
+    prior_heading_delta_rad = float(candidate.prior_heading_delta_rad)
     has_prior_alignment = 1.0 if math.isfinite(prior_lateral_mean_m) else 0.0
     return (
         has_prior_alignment,
@@ -754,32 +1212,47 @@ def _corridor_pair_audit_reasons(
         if bool(accepted[idx]):
             reasons.append("pair_valid")
             continue
-        left = np.asarray(left_local[idx], dtype=np.float64)
-        right = np.asarray(right_local[idx], dtype=np.float64)
-        width = float(widths[idx])
-        if (
-            not math.isfinite(width)
-            or not np.all(np.isfinite(left))
-            or not np.all(np.isfinite(right))
-        ):
-            reasons.append("pair_nonfinite")
-        elif width < float(config.min_corridor_width_m):
-            reasons.append("pair_width_too_narrow")
-        elif width > float(config.max_corridor_width_m):
-            reasons.append("pair_width_too_wide")
-        elif float(left[0]) < -float(config.behind_drop_m):
-            reasons.append("pair_left_behind")
-        elif float(right[0]) < -float(config.behind_drop_m):
-            reasons.append("pair_right_behind")
-        elif float(left[0]) > float(config.planning_horizon_m):
-            reasons.append("pair_left_beyond_horizon")
-        elif float(right[0]) > float(config.planning_horizon_m):
-            reasons.append("pair_right_beyond_horizon")
-        elif bool(raw_valid_mask[idx]):
-            reasons.append("pair_not_in_longest_valid_slice")
-        else:
-            reasons.append("pair_rejected_unknown")
+        reasons.append(
+            _corridor_pair_audit_reason(
+                left=np.asarray(left_local[idx], dtype=np.float64),
+                right=np.asarray(right_local[idx], dtype=np.float64),
+                width_m=float(widths[idx]),
+                is_raw_valid=bool(raw_valid_mask[idx]),
+                config=config,
+            )
+        )
     return reasons
+
+
+def _corridor_pair_audit_reason(
+    *,
+    left: np.ndarray,
+    right: np.ndarray,
+    width_m: float,
+    is_raw_valid: bool,
+    config: CorridorPlannerConfig,
+) -> str:
+    if (
+        not math.isfinite(width_m)
+        or not np.all(np.isfinite(left))
+        or not np.all(np.isfinite(right))
+    ):
+        return "pair_nonfinite"
+    if width_m < float(config.min_corridor_width_m):
+        return "pair_width_too_narrow"
+    if width_m > float(config.max_corridor_width_m):
+        return "pair_width_too_wide"
+    if float(left[0]) < -float(config.behind_drop_m):
+        return "pair_left_behind"
+    if float(right[0]) < -float(config.behind_drop_m):
+        return "pair_right_behind"
+    if float(left[0]) > float(config.planning_horizon_m):
+        return "pair_left_beyond_horizon"
+    if float(right[0]) > float(config.planning_horizon_m):
+        return "pair_right_beyond_horizon"
+    if is_raw_valid:
+        return "pair_not_in_longest_valid_slice"
+    return "pair_rejected_unknown"
 
 
 def _fill_small_invalid_gaps(valid_mask: np.ndarray, max_gap: int) -> np.ndarray:
@@ -865,19 +1338,6 @@ def _longest_valid_slice(valid_mask: np.ndarray) -> Optional[slice]:
     return slice(best_start, best_start + best_len)
 
 
-def _moving_average_1d(values: np.ndarray, window: int) -> np.ndarray:
-    arr = np.asarray(values, dtype=np.float64)
-    if arr.size <= 2 or window <= 1:
-        return arr
-    radius = max(1, int(window)) // 2
-    out = np.empty_like(arr)
-    for idx in range(arr.size):
-        start = max(0, idx - radius)
-        stop = min(arr.size, idx + radius + 1)
-        out[idx] = float(np.mean(arr[start:stop]))
-    return out
-
-
 def _effective_near_field_jump_limit(
     *,
     config: CorridorPlannerConfig,
@@ -905,16 +1365,6 @@ def _effective_curvature_limit(
     elif float(heading_delta_max_rad) >= 0.18:
         limit *= 1.15
     return limit
-
-
-def _moving_average_points(points: np.ndarray, window: int) -> np.ndarray:
-    arr = np.asarray(points, dtype=np.float64)
-    if arr.shape[0] <= 2 or window <= 1:
-        return arr
-    out = np.empty_like(arr)
-    out[:, 0] = _moving_average_1d(arr[:, 0], window)
-    out[:, 1] = _moving_average_1d(arr[:, 1], window)
-    return out
 
 
 def _fit_centerline_from_anchors(
@@ -1043,14 +1493,6 @@ def _finalize_path(points: np.ndarray, config: CorridorPlannerConfig) -> np.ndar
     )
 
 
-def _path_cumulative_lengths(points: np.ndarray) -> np.ndarray:
-    if points.shape[0] <= 1:
-        return np.asarray([0.0], dtype=np.float64)
-    diffs = np.diff(points, axis=0)
-    lengths = np.hypot(diffs[:, 0], diffs[:, 1])
-    return np.concatenate(([0.0], np.cumsum(lengths))).astype(np.float64)
-
-
 def _path_length(points: np.ndarray) -> float:
     cumulative = _path_cumulative_lengths(np.asarray(points, dtype=np.float64))
     return float(cumulative[-1]) if cumulative.size > 0 else 0.0
@@ -1063,28 +1505,17 @@ def _near_field_delta_metrics(
     vehicle_xy: tuple[float, float],
     vehicle_yaw: float,
     horizon_m: float,
-) -> dict[str, float]:
+) -> _PathDeltaMetrics:
     if previous is None or previous.shape[0] < 2 or current.shape[0] < 2:
-        return {
-            "lateral_max_m": 0.0,
-            "lateral_mean_m": 0.0,
-            "displacement_max_m": 0.0,
-            "displacement_mean_m": 0.0,
-        }
+        return _zero_path_delta_metrics()
 
     current_local = _to_vehicle_frame(current, vehicle_xy, vehicle_yaw)
     previous_local = _to_vehicle_frame(previous, vehicle_xy, vehicle_yaw)
-    alignment = _path_alignment_metrics(
+    return _path_alignment_metrics(
         current_local=current_local,
         previous_local=previous_local,
-        horizon_m=min(float(horizon_m), 3.0),
+        horizon_m=min(float(horizon_m), NEAR_FIELD_ALIGNMENT_HORIZON_M),
     )
-    return {
-        "lateral_max_m": float(alignment["lateral_max_m"]),
-        "lateral_mean_m": float(alignment["lateral_mean_m"]),
-        "displacement_max_m": float(alignment["displacement_max_m"]),
-        "displacement_mean_m": float(alignment["displacement_mean_m"]),
-    }
 
 
 def _path_alignment_metrics(
@@ -1092,14 +1523,8 @@ def _path_alignment_metrics(
     current_local: Optional[np.ndarray],
     previous_local: Optional[np.ndarray],
     horizon_m: float,
-) -> dict[str, float]:
-    empty = {
-        "lateral_max_m": 0.0,
-        "lateral_mean_m": 0.0,
-        "displacement_max_m": 0.0,
-        "displacement_mean_m": 0.0,
-        "heading_delta_rad": 0.0,
-    }
+) -> _PathDeltaMetrics:
+    empty = _zero_path_delta_metrics()
     if current_local is None or previous_local is None:
         return empty
     current_prefix = _local_forward_prefix(
@@ -1116,6 +1541,14 @@ def _path_alignment_metrics(
     count = min(current_prefix.shape[0], previous_prefix.shape[0])
     if count < 2:
         return empty
+    return _path_delta_metrics_from_prefixes(current_prefix, previous_prefix, count)
+
+
+def _path_delta_metrics_from_prefixes(
+    current_prefix: np.ndarray,
+    previous_prefix: np.ndarray,
+    count: int,
+) -> _PathDeltaMetrics:
     delta = current_prefix[:count] - previous_prefix[:count]
     lateral = np.abs(delta[:, 1])
     displacement = np.hypot(delta[:, 0], delta[:, 1])
@@ -1129,13 +1562,23 @@ def _path_alignment_metrics(
             )
         )
     )
-    return {
-        "lateral_max_m": float(np.max(lateral)) if lateral.size else 0.0,
-        "lateral_mean_m": float(np.mean(lateral)) if lateral.size else 0.0,
-        "displacement_max_m": float(np.max(displacement)) if displacement.size else 0.0,
-        "displacement_mean_m": float(np.mean(displacement)) if displacement.size else 0.0,
-        "heading_delta_rad": heading_delta,
-    }
+    return _PathDeltaMetrics(
+        lateral_max_m=float(np.max(lateral)) if lateral.size else 0.0,
+        lateral_mean_m=float(np.mean(lateral)) if lateral.size else 0.0,
+        displacement_max_m=float(np.max(displacement)) if displacement.size else 0.0,
+        displacement_mean_m=float(np.mean(displacement)) if displacement.size else 0.0,
+        heading_delta_rad=heading_delta,
+    )
+
+
+def _zero_path_delta_metrics() -> _PathDeltaMetrics:
+    return _PathDeltaMetrics(
+        lateral_max_m=0.0,
+        lateral_mean_m=0.0,
+        displacement_max_m=0.0,
+        displacement_mean_m=0.0,
+        heading_delta_rad=0.0,
+    )
 
 
 def _local_forward_prefix(path_local: np.ndarray, *, horizon_m: float) -> np.ndarray:
@@ -1156,15 +1599,6 @@ def _local_forward_prefix(path_local: np.ndarray, *, horizon_m: float) -> np.nda
     x = np.interp(samples, cumulative, pts[:, 0])
     y = np.interp(samples, cumulative, pts[:, 1])
     return np.column_stack((x, y)).astype(np.float64)
-
-
-def _path_heading_delta_max(path_local: np.ndarray) -> float:
-    if path_local.shape[0] < 3:
-        return 0.0
-    diffs = np.diff(path_local, axis=0)
-    headings = np.arctan2(diffs[:, 1], diffs[:, 0])
-    delta = np.arctan2(np.sin(np.diff(headings)), np.cos(np.diff(headings)))
-    return float(np.max(np.abs(delta))) if delta.size else 0.0
 
 
 def _path_start_heading_error(path_local: np.ndarray) -> float:
@@ -1192,67 +1626,6 @@ def _first_point_distance(path_local: np.ndarray) -> float:
         return float("nan")
     first = np.asarray(path_local[0], dtype=np.float64)
     return float(np.hypot(first[0], first[1]))
-
-
-def _path_curvature_abs_max(path_local: np.ndarray) -> float:
-    if path_local.shape[0] < 3:
-        return 0.0
-    diffs = np.diff(path_local, axis=0)
-    seg_len = np.hypot(diffs[:, 0], diffs[:, 1])
-    valid = seg_len > 1e-6
-    if np.count_nonzero(valid) < 2:
-        return 0.0
-    headings = np.arctan2(diffs[valid, 1], diffs[valid, 0])
-    if headings.size < 2:
-        return 0.0
-    delta_heading = np.arctan2(np.sin(np.diff(headings)), np.cos(np.diff(headings)))
-    ds = 0.5 * (seg_len[valid][1:] + seg_len[valid][:-1])
-    valid_ds = ds > 1e-6
-    if not np.any(valid_ds):
-        return 0.0
-    curvature = np.abs(delta_heading[valid_ds] / ds[valid_ds])
-    return float(np.max(curvature)) if curvature.size else 0.0
-
-
-def _path_self_intersects(path_xy: np.ndarray) -> bool:
-    if path_xy.shape[0] < 4:
-        return False
-    for idx in range(path_xy.shape[0] - 3):
-        a0 = path_xy[idx]
-        a1 = path_xy[idx + 1]
-        for jdx in range(idx + 2, path_xy.shape[0] - 1):
-            if jdx == idx + 1:
-                continue
-            b0 = path_xy[jdx]
-            b1 = path_xy[jdx + 1]
-            if _segments_intersect(a0, a1, b0, b1):
-                return True
-    return False
-
-
-def _segments_intersect(a0: np.ndarray, a1: np.ndarray, b0: np.ndarray, b1: np.ndarray) -> bool:
-    def orient(p: np.ndarray, q: np.ndarray, r: np.ndarray) -> float:
-        return float((q[0] - p[0]) * (r[1] - p[1]) - (q[1] - p[1]) * (r[0] - p[0]))
-
-    o1 = orient(a0, a1, b0)
-    o2 = orient(a0, a1, b1)
-    o3 = orient(b0, b1, a0)
-    o4 = orient(b0, b1, a1)
-    return (o1 * o2 < 0.0) and (o3 * o4 < 0.0)
-
-
-def _to_vehicle_frame(
-    points_xy: np.ndarray,
-    vehicle_xy: tuple[float, float],
-    vehicle_yaw: float,
-) -> np.ndarray:
-    dx = points_xy[:, 0] - float(vehicle_xy[0])
-    dy = points_xy[:, 1] - float(vehicle_xy[1])
-    cos_yaw = math.cos(vehicle_yaw)
-    sin_yaw = math.sin(vehicle_yaw)
-    x_local = (cos_yaw * dx) + (sin_yaw * dy)
-    y_local = (-sin_yaw * dx) + (cos_yaw * dy)
-    return np.column_stack((x_local, y_local)).astype(np.float64)
 
 
 def _from_vehicle_frame(

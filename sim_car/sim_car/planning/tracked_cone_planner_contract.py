@@ -37,7 +37,6 @@ COMMON_MIGRATED_TRACKED_CONE_PLANNER_DEFAULTS: dict[str, object] = {
     'diagnostics.edge_quantization_m': 0.05,
     'diagnostics.jump_warn_threshold_m': 0.8,
     'diagnostics.publish_control_debug': True,
-    'diagnostics.publish_thesis_context': False,
     'filtering.behind_drop_m': 5.0,
     'filtering.infer_orange_by_side': True,
     'filtering.infer_unknown_by_side': True,
@@ -194,7 +193,6 @@ class MigratedTrackedConePlannerCommonConfig:
     jump_warn_threshold_m: float
     edge_churn_warn_threshold: float
     publish_control_debug: bool
-    publish_thesis_context: bool
     enable_debug_markers: bool
     show_raw_cones: bool
     show_boundary_chains: bool
@@ -373,7 +371,6 @@ def read_migrated_tracked_cone_planner_common_config(
         0.0, float(node.get_parameter('diagnostics.edge_churn_warn_threshold').value)
     )
     publish_control_debug = bool(node.get_parameter('diagnostics.publish_control_debug').value)
-    publish_thesis_context = bool(node.get_parameter('diagnostics.publish_thesis_context').value)
 
     # Debug markers
     enable_debug_markers = bool(node.get_parameter('debug.enable_markers').value)
@@ -468,7 +465,6 @@ def read_migrated_tracked_cone_planner_common_config(
         jump_warn_threshold_m=jump_warn_threshold_m,
         edge_churn_warn_threshold=edge_churn_warn_threshold,
         publish_control_debug=publish_control_debug,
-        publish_thesis_context=publish_thesis_context,
         # Debug markers
         enable_debug_markers=enable_debug_markers,
         show_raw_cones=show_raw_cones,

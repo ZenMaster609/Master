@@ -153,13 +153,93 @@ for the same class of failure.
 
 ---
 
+## 13. Timer callbacks are orchestrators, not implementations
+A ROS timer callback (`_on_timer` or equivalent) must be ≤ 50 lines and read as a flat
+sequence of named method calls. It names the stages; private methods implement them.
+
+  Bad:   _on_timer() with 400+ lines of inline planning, transform, diagnostics, and publishing logic
+  Good:  _on_timer() calls _resolve_pose(), _run_planning(), _update_state(),
+         _publish_outputs(), _publish_diagnostics(), _publish_visualization() — each ≤ 40 lines
+
+This applies to every node file: tracked_cone_planner_runtime.py, corridor_planner_node.py,
+midpoint_planner_node.py, single_boundary_planner_node.py, linetest_planner_node.py,
+logger_node.py.
+
+---
+
+## 14. When a mixin method exists, use it — never reimplement it
+If `DiagnosticsMixin`, `VisualizationMixin`, or `StateMachineMixin` already has a method for
+a concern, the host class must call `self.<method>()`. It must NOT contain its own copy of
+that logic inline (e.g. inside `_on_timer`).
+
+  Bad:   _on_timer() contains 80 lines of diagnostic dict-building that duplicates
+         DiagnosticsMixin._publish_diagnostics()
+  Good:  _on_timer() calls self._publish_diagnostics()
+
+Extraction is not complete until the original inline logic is deleted. Creating a new method
+without deleting the original is adding code, not refactoring.
+
+---
+
+## 15. Shared pure utilities belong in one canonical module
+A function that appears identically (or near-identically) in two or more files must be
+moved to one location and deleted everywhere else:
+
+  - Pure geometry / math helpers → `tracked_cone_planner_geometry.py`
+  - Algorithm-pure helpers shared across `*_core.py` files → `planner_utils.py`
+  - ROS instance-method utilities shared across node files → `tracked_cone_planner_base.py`
+
+After moving, verify with:
+  grep -rn "def <function_name>" sim_car/sim_car/planning/
+The function name must appear in exactly one file.
+
+---
+
+## How to verify a batch is actually done
+
+Before declaring a batch complete, run the relevant check:
+
+**Timer callback size:**
+```
+awk '/def _on_timer/,/^    def /' <file> | head -55
+```
+Output must fit in 55 lines. If it does not, the batch is not done.
+
+**No function over 40 lines in a core file:**
+```
+python3 - <<'EOF'
+import ast, sys
+src = open("<file>").read()
+tree = ast.parse(src)
+bad = [(n.name, n.end_lineno - n.lineno) for n in ast.walk(tree)
+       if isinstance(n, ast.FunctionDef) and n.end_lineno - n.lineno > 40]
+if bad:
+    print("OVER 40 LINES:", bad); sys.exit(1)
+print("OK")
+EOF
+```
+
+**No duplicate function definition:**
+```
+grep -rn "def <function_name>" sim_car/sim_car/planning/
+```
+Must appear in exactly one file.
+
+Run these checks. Do not report a batch as done without passing them.
+
+---
+
 ## What NOT to do during refactoring
 - Do not change algorithm logic while restructuring — structure first, logic separately.
 - Do not introduce an abstraction unless at least two existing sites already need it.
 - Do not add error handling for conditions that cannot happen inside this codebase.
 - Do not add comments that explain *what* code does — only *why* a non-obvious decision was made.
 - Do not leave TODO comments — fix it now or open a ticket; TODOs rot and mislead.
-- Do not add backwards-compatibility shims for code you are deleting.# agent.md
+- Do not add backwards-compatibility shims for code you are deleting.
+
+---
+
+# agent.md
 
 This file provides guidance to Codex when working in this repository.
 

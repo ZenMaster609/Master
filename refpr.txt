@@ -1,0 +1,8 @@
+Using the rules in CLAUDE.md and the plan in REFACTOR_PLAN.md, execute Batch 3B.
+
+- Do not change any algorithm logic, only move/consolidate code
+- After each file change, confirm the import chain still resolves
+- When finished, list every file modified and every file created
+- Run `python -m pytest sim_car/tests/ -x -q` and report the result
+- After executing Batch 3B successfully, STOP! do not execute the next batch. 
+"Ignore line numbers in the plan — find the relevant code yourself before moving it."

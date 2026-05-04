@@ -12,7 +12,7 @@ from nav_msgs.msg import Odometry, Path
 from rclpy.duration import Duration
 from rclpy.qos import qos_profile_sensor_data
 from tf2_ros import Buffer, TransformListener
-from vehicle_plotter_msgs.msg import ConeDetection, ConeDetectionArray
+from vehicle_plotter_msgs.msg import ConeDetectionArray
 from visualization_msgs.msg import Marker, MarkerArray
 
 from sim_car.cones.tracking.fusion import normalize_color
@@ -22,12 +22,12 @@ from sim_car.planning.midline_memory import (
     MidlineCandidate,
     MidlineMemoryConfig,
 )
+from sim_car.planning.planner_constants import (
+    MSG_TRACK_STATE_CONFIRMED,
+    MSG_TRACK_STATE_TENTATIVE,
+)
 from sim_car.planning.planner_runtime_types import TrackedConePlanningFrame, TrackedConePlanningMetadata
 from sim_car.planning.tracked_cone_planner_runtime import TrackedConePlannerRuntime
-
-MSG_TRACK_STATE_TENTATIVE = int(getattr(ConeDetection, "TRACK_STATE_TENTATIVE", 0))
-MSG_TRACK_STATE_CONFIRMED = int(getattr(ConeDetection, "TRACK_STATE_CONFIRMED", 1))
-MSG_TRACK_STATE_STALE = int(getattr(ConeDetection, "TRACK_STATE_STALE", 2))
 
 
 class TrackedConePlannerBase(TrackedConePlannerRuntime):
