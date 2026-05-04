@@ -14,6 +14,7 @@ This folder documents the current `sim_car`, `vehicle_plotter`, and `vehicle_plo
 ## Planning And Control
 
 - [Planner Tuning](planner_tuning.md): launch selections, config overlays, shared planner groups, and controller groups.
+- [Planner Geometry Comparison](planner_geometry_comparison.md): shared and planner-specific geometry for midpoint, single-boundary, and corridor centerline construction.
 - [Midpoint Planner](midpoint_planner.md): left/right pairing and midpoint centerline generation.
 - [Single-Boundary Planner](single_boundary_planner.md): one-boundary fallback planning through inward offsets.
 - [Corridor Planner](corridor_planner.md): strict two-boundary corridor sampling.

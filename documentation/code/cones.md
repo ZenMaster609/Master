@@ -17,10 +17,10 @@ This page maps the `documentation/cones.md` behavior to the cone memory node, ev
 
 - `ConeMemoryNode` in `sim_car/sim_car/cones/nodes/memory_node.py`: top-level node owning all subscriptions, the local tracker, the permanent store, and the publication loop.
 - `ConeMemoryNode._declare_parameters` and `ConeMemoryNode._read_parameters` in `sim_car/sim_car/cones/nodes/memory_node.py`: declare and load the full node parameter set at startup.
-- `ConeMemoryNode._on_lidar_cones` and `ConeMemoryNode._on_camera_cones` in `sim_car/sim_car/cones/nodes/memory_node.py`: receive incoming LiDAR and camera detections and queue them for the tracker update.
-- `ConeMemoryNode._update_tracker` in `sim_car/sim_car/cones/nodes/memory_node.py`: drives a single tracker update cycle fusing the latest LiDAR and camera batches.
+- `ConeMemoryNode._lidar_cb` and `ConeMemoryNode._camera_cb` in `sim_car/sim_car/cones/nodes/memory_node.py`: receive incoming LiDAR and camera detections, convert them into `SensorDetection` batches, and cache the latest batch for the next update cycle.
+- `ConeMemoryNode._on_timer` in `sim_car/sim_car/cones/nodes/memory_node.py`: top-level update loop that checks for new sensor batches, builds fused observations, updates the tracker, prunes and merges tracks, and publishes outputs.
 - `ConeMemoryNode._publish_tracked_cones` in `sim_car/sim_car/cones/nodes/memory_node.py`: serializes confirmed tracks into a `ConeDetectionArray` and publishes to `/tracked_cones`.
-- `ConeMemoryNode._publish_visualization` in `sim_car/sim_car/cones/nodes/memory_node.py`: calls the `_memory_viz` builders and publishes all three `MarkerArray` topics.
+- `ConeMemoryNode._publish_local_markers`, `ConeMemoryNode._publish_track_markers`, and `ConeMemoryNode._publish_raw_markers` in `sim_car/sim_car/cones/nodes/memory_node.py`: publish the tracked-cone, believed-track, and optional raw-sensor `MarkerArray` topics using the `_memory_viz` builders.
 
 ### Track Management
 
