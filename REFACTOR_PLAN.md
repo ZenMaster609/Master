@@ -104,3 +104,12 @@ If a session needs more than that, the batch is too big — split it.
 
 Sequencing Rule
 Always do Phase 1 before Phase 3. Splitting large files while they still contain duplicated constants makes the constants harder to find and delete. Clean the duplication first so each file is smaller before you split it.
+
+Using the rules in CLAUDE.md and the plan in REFACTOR_PLAN.md, execute Batch 1A.
+
+- Do not change any algorithm logic, only move/consolidate code
+- After each file change, confirm the import chain still resolves
+- When finished, list every file modified and every file created
+- Run `python -m pytest sim_car/tests/ -x -q` and report the result
+- Stop. Do not start Batch 1B.
+"Ignore line numbers in the plan — find the relevant code yourself before moving it."
