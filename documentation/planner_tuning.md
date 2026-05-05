@@ -10,7 +10,7 @@ Planner parameters are layered in this order:
 2. Shared tracked-cone defaults in `tracked_cone_planner_contract.py`.
 3. Planner-specific defaults in each planner node.
 4. Track and controller YAML overlays selected by `full_sim_launch.launch.py`.
-5. Launch-time overrides such as `planner_rate_hz`, `planner_odom_delay_ms`, and `lidar_pipeline`.
+5. Launch-time overrides such as `planner_rate_hz`, `planner_odom_delay_ms`, and `planner_odom_lag_compensation_ms`.
 
 The most important files are:
 
@@ -29,7 +29,6 @@ Main launch arguments:
 - `planner`: `midpoint`, `single_boundary`, `corridor`, `linetest`, or `none`.
 - `controller`: `stanley`, `pure_pursuit`, or `none`.
 - `track`: `smalltrack`, `skidpad`, or `acceleration`.
-- `lidar_pipeline`: `pointcloud3d` or `scan2d`.
 - `cone_memory_enabled`: whether planners consume `/tracked_cones` or direct camera detections.
 - `planner_rate_hz`: planner/controller timer rate.
 - `planner_odom_delay_ms`: optional fixed delay on the odometry feed.
@@ -40,7 +39,7 @@ Main launch arguments:
 Example:
 
 ```bash
-cd ~/ros2_ws && ros2 launch sim_car full_sim_launch.launch.py track:=smalltrack planner:=corridor controller:=stanley lidar_pipeline:=pointcloud3d
+cd ~/ros2_ws && ros2 launch sim_car full_sim_launch.launch.py track:=smalltrack planner:=corridor controller:=stanley
 ```
 
 ## Track Overlays
@@ -88,7 +87,7 @@ Useful parameters:
 Tuning effect:
 
 - Raising `min_confidence` makes planning cleaner but more likely to drop sparse detections.
-- Lowering it helps with long-range or 3D LiDAR detections but can admit false positives.
+- Lowering it helps sparse detections but can admit false positives.
 - Shortening `max_cone_range_m` reduces unstable far-field geometry.
 
 ### `boundary_chain.*`
@@ -233,20 +232,6 @@ Key parameters:
 - `steering_limit_rad`: final steering clamp.
 - `steering_lowpass_alpha`: steering smoothing.
 - `steering_rate_limit_rad_s`: maximum steering change rate.
-
-## LiDAR Pipeline Effects
-
-`lidar_pipeline:=pointcloud3d` currently changes two launch overlays:
-
-- cone memory confirmation is reduced to one hit
-- planner minimum confidence is reduced to `0.15`
-
-`lidar_pipeline:=scan2d` uses the legacy confirmation/min-confidence values:
-
-- cone memory confirmation is three hits
-- planner minimum confidence is `0.3`
-
-This matters because 3D point-cloud detections are already spatially filtered and should enter planning with less delay.
 
 ## Useful Commands
 

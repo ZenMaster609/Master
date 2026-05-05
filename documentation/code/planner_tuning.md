@@ -39,7 +39,7 @@ This page maps the `documentation/planner_tuning.md` behavior to the launch/conf
 
 ### LiDAR And Measurement Wiring
 
-- `_lidar_pipeline_match_expr` and `_pointcloud3d_lidar_parameters` in `sim_car/launch/full_sim_launch.launch.py`: choose and configure the active LiDAR pipeline.
+- `_lidar_enabled_condition` in `sim_car/launch/full_sim_launch.launch.py`: enables the scan LiDAR node when LiDAR or cone memory is enabled.
 - `_configure_measurement_config` and `_write_rate_adjusted_measurement_config` in `sim_car/launch/full_sim_launch.launch.py`: prepare the measurement config used when planner rate affects sensor timing.
 
 ## Related Entry Points

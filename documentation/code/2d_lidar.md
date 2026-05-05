@@ -49,5 +49,5 @@ This page maps the `documentation/2d_lidar.md` behavior to the scan-processing s
 
 ## Related Entry Points
 
-- `generate_launch_description` in `sim_car/launch/full_sim_launch.launch.py`: selects this pipeline when `lidar_pipeline:=scan2d`.
-- `_lidar_pipeline_match_expr` in `sim_car/launch/full_sim_launch.launch.py`: launch-side switch used to enable the 2D node versus the 3D node.
+- `generate_launch_description` in `sim_car/launch/full_sim_launch.launch.py`: launches the scan-based LiDAR node.
+- `_lidar_enabled_condition` in `sim_car/launch/full_sim_launch.launch.py`: enables the LiDAR node when LiDAR or cone memory is enabled.

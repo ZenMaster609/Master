@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Launch the vehicle_plotter logger, session manager, and rosbag controller."""
+"""Launch the vehicle_plotter logger and session manager."""
 
 from launch import LaunchDescription
 from launch.actions import DeclareLaunchArgument, EmitEvent
@@ -85,11 +85,6 @@ def generate_launch_description():
         "use_sim_time",
         default_value="true",
         description="Use simulation time from /clock topic",
-    )
-    enable_rosbag_arg = DeclareLaunchArgument(
-        "enable_rosbag",
-        default_value="true",
-        description="Enable rosbag recording",
     )
     camera_cone_eval_topic_arg = DeclareLaunchArgument(
         "camera_cone_eval_topic",
@@ -185,20 +180,6 @@ def generate_launch_description():
         ],
     )
 
-    rosbag_controller_node = Node(
-        package="vehicle_plotter",
-        executable="rosbag_controller_node",
-        name="rosbag_controller",
-        output="screen",
-        condition=IfCondition(LaunchConfiguration("enable_rosbag")),
-        parameters=[{
-            "mode": "simulation",
-            "compression": "zstd",
-            "wait_for_session": True,
-            "session_timeout_sec": 5.0,
-        }],
-    )
-
     return LaunchDescription([
         path_tracking_eval_enabled_arg,
         path_tracking_eval_gt_track_topic_arg,
@@ -215,11 +196,9 @@ def generate_launch_description():
         log_path_arg,
         run_id_prefix_arg,
         use_sim_time_arg,
-        enable_rosbag_arg,
         camera_cone_eval_topic_arg,
         lidar_cone_eval_topic_arg,
         session_manager_node,
         plotter_node,
         logger_node,
-        rosbag_controller_node,
     ])

@@ -402,27 +402,25 @@ def test_track_bundle_supports_controller_none_without_controller_config_file():
         'track',
         'planner',
         'controller',
-        'lidar_pipeline',
         'speed_max_mps',
         'expected_prefix',
     ),
     [
-        ('smalltrack', 'midpoint', 'stanley', 'pointcloud3d', 7.0, 'small_7_mid_stan_3d'),
-        ('smalltrack', 'linetest', 'stanley', 'pointcloud3d', 7.0, 'small_7_line_stan_3d'),
-        ('acceleration', 'single_boundary', 'pure_pursuit', 'scan2d', 6.17, 'acc_6_SB_pp_2d'),
-        ('skidpad', 'corridor', 'stanley', 'pointcloud3d', 7.0, 'skid_7_cor_stan_3d'),
+        ('smalltrack', 'midpoint', 'stanley', 7.0, 'small_7_mid_stan_2d'),
+        ('smalltrack', 'linetest', 'stanley', 7.0, 'small_7_line_stan_2d'),
+        ('acceleration', 'single_boundary', 'pure_pursuit', 6.17, 'acc_6_SB_pp_2d'),
+        ('skidpad', 'corridor', 'stanley', 7.0, 'skid_7_cor_stan_2d'),
     ],
 )
 def test_run_id_prefix_uses_abbreviated_launch_selection(
     track: str,
     planner: str,
     controller: str,
-    lidar_pipeline: str,
     speed_max_mps: float,
     expected_prefix: str,
 ):
     assert (
-        full_sim_launch._abbreviated_run_id_prefix(track, planner, controller, lidar_pipeline, speed_max_mps)
+        full_sim_launch._abbreviated_run_id_prefix(track, planner, controller, speed_max_mps)
         == expected_prefix
     )
 

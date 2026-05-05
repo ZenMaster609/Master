@@ -179,7 +179,7 @@ This is a ROS2 multi-package workspace for vehicle simulation, CAN/IMU decoding,
 
 Core packages:
 - `sim_car`: Gazebo Fortress simulation, virtual sensors, the measurement/noise layer, and Ackermann command bridge.
-- `vehicle_plotter`: Aggregates sensor data into `VehicleState`, plots in real time, logs to disk, and controls rosbag.
+- `vehicle_plotter`: Aggregates sensor data into `VehicleState`, plots in real time, and logs to disk.
 - `steering_gui`: RQT GUI for Ackermann commands and brake command.
 - `vehicle_plotter_msgs`: `VehicleState` and `RunSession` messages.
 
@@ -187,7 +187,7 @@ Core packages:
 
 ## Data Output Paths
 
-`vehicle_plotter` uses run sessions under `multidata/` by default. A session directory contains logs, rosbags, plots, and plot data.
+`vehicle_plotter` uses run sessions under `multidata/` by default. A session directory contains logs, plots, and plot data.
 
 ## Common Commands
 

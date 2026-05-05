@@ -1,6 +1,6 @@
 # Vehicle Plotter
 
-`vehicle_plotter` is the run-artifact package for the simulation stack. It creates run sessions, publishes aggregated vehicle state, writes logs, starts rosbag recording, and generates cone, controller, and path-evaluation artifacts under `multidata/`.
+`vehicle_plotter` is the run-artifact package for the simulation stack. It creates run sessions, publishes aggregated vehicle state, writes logs, and generates cone, controller, and path-evaluation artifacts under `multidata/`.
 
 It does not create sensor values. Sensor values come from Gazebo and `sim_car`; `vehicle_plotter` consumes measured simulation topics plus planner/controller outputs.
 
@@ -17,7 +17,6 @@ Default layout:
 Session subdirectories:
 
 - `logs/`: parquet/CSV logs, summaries, and text reports
-- `rosbags/`: rosbag recordings
 - `plots/`: generated plot artifacts
 - `configs/`: copied YAML configs and launch-parameter snapshots
 
@@ -48,23 +47,14 @@ State logging is separate from the logger process:
 
 The logger waits for `/run_session` when available. If no session arrives before timeout, it creates its own session.
 
-### `rosbag_controller_node`
-
-Starts a `ros2 bag record` subprocess for the active run session when `rosbagging:=true`. It waits for `/run_session` by default and writes to:
-
-`multidata/<run_id>/rosbags/bag`
-
-Topic selection comes from `vehicle_plotter/config/rosbag_topics.yaml` unless the node receives an explicit `topics` parameter. The launch include sets the rosbag controller `mode` parameter to `simulation`, so the recorded set is `common` plus `simulation` from that YAML.
-
 ## Full Sim Launch Behavior
 
-`sim_car/launch/full_sim_launch.launch.py` includes `vehicle_plotter/launch/plotter.launch.py` every run. The include starts the session manager, can start `plotter_node`, and can start the rosbag controller.
+`sim_car/launch/full_sim_launch.launch.py` includes `vehicle_plotter/launch/plotter.launch.py` every run. The include starts the session manager and can start `plotter_node`.
 
 Important launch flags:
 
 - `sensor_pipeline:=true`: starts raw sensor nodes, `measurement_node`, and `plotter_node`.
 - `logging:=true`: enables state logging/dashboard support even without the full sensor pipeline.
-- `rosbagging:=true`: enables `rosbag_controller_node`.
 - `controller_diagnostics:=true`: writes steering-tracking CSV, summary, and plot artifacts.
 - `thesis_controller_diagnostics:=true`: writes thesis controller diagnostics and corridor oscillation artifacts when applicable.
 - `path_tracking_eval:=true`: writes path tracking evaluation artifacts; this is the current full-sim default.
@@ -80,10 +70,6 @@ Measured sensor state path:
 Diagnostics/evaluation path:
 
 `planner/controller/cone evaluator topics -> logger_node -> logs + plots`
-
-Rosbag path:
-
-`/run_session -> rosbag_controller_node -> multidata/<run_id>/rosbags/bag`
 
 When `measure:=true` or `sensor_pipeline:=true`, perception and LiDAR prefixes switch to `/sim/raw/...` before measurement. The plotter dashboard consumes measured `/sim/...` values.
 
@@ -165,10 +151,10 @@ Launch the full measured sensor dashboard path:
 cd ~/ros2_ws && ros2 launch sim_car full_sim_launch.launch.py sensor_pipeline:=true
 ```
 
-Launch with state logging and rosbagging:
+Launch with state logging:
 
 ```bash
-cd ~/ros2_ws && ros2 launch sim_car full_sim_launch.launch.py logging:=true rosbagging:=true
+cd ~/ros2_ws && ros2 launch sim_car full_sim_launch.launch.py logging:=true
 ```
 
 Launch with controller diagnostics:

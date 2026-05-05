@@ -4,11 +4,11 @@ This folder documents the current `sim_car`, `vehicle_plotter`, and `vehicle_plo
 
 ## Main Runtime
 
-- [Vehicle Plotter](vehicle_plotter.md): run sessions, `/vehicle_plotter/state`, logging, rosbagging, diagnostics, and generated artifacts.
+- [Autonomous Stack Flowcharts](flowcharts/README.md): layered Draw.io system diagrams and thesis-ready exports.
+- [Vehicle Plotter](vehicle_plotter.md): run sessions, `/vehicle_plotter/state`, logging, diagnostics, and generated artifacts.
 - [Sensors](sensors.md): raw `/sim/raw/...` virtual sensors, `measurement_node`, measured `/sim/...` topics, and plot-only signals.
 - [Perception](perception.md): camera perception, YOLO, monocular/stereo ranging, cone evaluation, and cone memory.
 - [2D LiDAR](2d_lidar.md): `LaserScan` cone clustering.
-- [3D LiDAR](3d_lidar.md): `PointCloud2` cone clustering and debug outputs.
 - [Reproducible Environment](reproducible_environment.md): native ROS 2/Gazebo/perception runtime assumptions.
 
 ## Planning And Control
@@ -53,16 +53,16 @@ Run with the full measured sensor pipeline and live state dashboard:
 cd ~/ros2_ws && ros2 launch sim_car full_sim_launch.launch.py sensor_pipeline:=true
 ```
 
-Run with explicit logging and rosbag recording:
+Run with explicit logging:
 
 ```bash
-cd ~/ros2_ws && ros2 launch sim_car full_sim_launch.launch.py logging:=true rosbagging:=true
+cd ~/ros2_ws && ros2 launch sim_car full_sim_launch.launch.py logging:=true
 ```
 
 Run a planner/controller combination:
 
 ```bash
-cd ~/ros2_ws && ros2 launch sim_car full_sim_launch.launch.py track:=smalltrack planner:=corridor controller:=stanley lidar_pipeline:=pointcloud3d
+cd ~/ros2_ws && ros2 launch sim_car full_sim_launch.launch.py track:=smalltrack planner:=corridor controller:=stanley
 ```
 
 Run focused package tests:

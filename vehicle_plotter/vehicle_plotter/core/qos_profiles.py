@@ -1,8 +1,7 @@
 """
 QoS (Quality of Service) profile definitions for vehicle_plotter.
 
-These profiles ensure reliable communication between nodes and
-compatibility with rosbag2 recording.
+These profiles ensure reliable communication between nodes.
 """
 
 from rclpy.qos import (
@@ -56,16 +55,6 @@ CLOCK_QOS = QoSProfile(
     depth=1,
     durability=QoSDurabilityPolicy.VOLATILE,
 )
-
-# For replay from rosbags recorded with transient_local durability
-# Compatible with bags that used RELIABLE + TRANSIENT_LOCAL
-REPLAY_QOS = QoSProfile(
-    reliability=QoSReliabilityPolicy.RELIABLE,
-    history=QoSHistoryPolicy.KEEP_LAST,
-    depth=10,
-    durability=QoSDurabilityPolicy.TRANSIENT_LOCAL,
-)
-
 
 def get_qos_for_topic(topic_name: str) -> QoSProfile:
     """

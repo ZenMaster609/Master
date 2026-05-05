@@ -105,7 +105,6 @@ setup(
             'perception_node = sim_car.perception.perception_node:main',
             'cone_evaluator_node = sim_car.cones.nodes.evaluator_node:main',
             'lidar_node = sim_car.lidar.lidar_node:main',
-            'pointcloud_lidar_node = sim_car.lidar.pointcloud_lidar_node:main',
             'midpoint_planner_node = sim_car.planning.midpoint_planner_node:main',
             'single_boundary_planner_node = sim_car.planning.single_boundary_planner_node:main',
             'corridor_planner_node = sim_car.planning.corridor_planner_node:main',

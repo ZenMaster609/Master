@@ -1,10 +1,8 @@
 # 2D LiDAR
 
-The 2D LiDAR pipeline consumes `sensor_msgs/LaserScan`, extracts cone-like scan clusters, and publishes planner-facing `ConeDetectionArray` messages with unknown cone color.
+The LiDAR pipeline consumes `sensor_msgs/LaserScan`, extracts cone-like scan clusters, and publishes planner-facing `ConeDetectionArray` messages with unknown cone color.
 
-It is selected with `lidar_pipeline:=scan2d`.
-
-The 2D path is the legacy scan pipeline. The current full-launch default is `lidar_pipeline:=pointcloud3d`.
+This is the only LiDAR path in the current stack.
 
 ## Runtime Flow
 
@@ -92,12 +90,12 @@ Weaknesses:
 - no height information
 - no cone color
 - sensitive to scan resolution and object shape
-- weaker at separating complex nearby objects than the 3D point-cloud pipeline
+- weaker at separating complex nearby objects than a height-aware sensor
 
 ## Useful Commands
 
-Run with 2D LiDAR:
+Run with LiDAR:
 
 ```bash
-cd ~/ros2_ws && ros2 launch sim_car full_sim_launch.launch.py lidar_pipeline:=scan2d
+cd ~/ros2_ws && ros2 launch sim_car full_sim_launch.launch.py
 ```

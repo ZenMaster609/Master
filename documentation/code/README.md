@@ -16,7 +16,6 @@ Most pages focus on runtime symbols, but some topics are mainly implemented thro
 - [Perception](perception.md)
 - [Cones](cones.md)
 - [2D LiDAR](2d_lidar.md)
-- [3D LiDAR](3d_lidar.md)
 
 ## Planning And Control
 

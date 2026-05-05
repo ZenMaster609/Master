@@ -113,7 +113,7 @@ The evaluator publishes range-error samples under the selected eval prefix. The 
 
 ## Cone Memory And Planner Use
 
-`cone_memory_node` fuses camera and LiDAR cone detections into `/tracked_cones` when `cone_memory_enabled:=true`. The camera contributes class/color information and, depending on the configured range split, can also contribute position. With the default `lidar_pipeline:=pointcloud3d`, the launch reduces cone-memory confirmation to one hit so the filtered point-cloud detections can enter planning with less delay.
+`cone_memory_node` fuses camera and scan LiDAR cone detections into `/tracked_cones` when `cone_memory_enabled:=true`. The camera contributes class/color information and, depending on the configured range split, can also contribute position.
 
 Important fusion parameters:
 
