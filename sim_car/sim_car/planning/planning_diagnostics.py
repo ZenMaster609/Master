@@ -110,9 +110,6 @@ class DiagnosticsMixin:
         )
         self._publish_diagnostics(
             frame_id=frame_id,
-            centerline_jump_max_m=0.0,
-            selected_edge_churn_ratio=0.0,
-            tracked_cones_frame_delta_p95_m=0.0,
             centerline_point_count=0,
             selected_edge_count=0,
             status=status,
@@ -137,8 +134,6 @@ class DiagnosticsMixin:
                 'near_field_midpoint_kink_max_rad': float('nan'),
                 'seed_midpoint_distance_m': float('nan'),
                 'seed_temporal_offset_m': float('nan'),
-                'selected_chain_churn_count': 0,
-                'selected_chain_churn_ratio': 0.0,
                 'publish_mode': operator_state if operator_state in {'fresh', 'held'} else 'held',
                 'hold_mode_active_flag': 1 if self._hold_mode_active else 0,
                 'hold_clean_frame_count': self._hold_clean_frame_count,
@@ -182,9 +177,6 @@ class DiagnosticsMixin:
         self,
         *,
         frame_id: str,
-        centerline_jump_max_m: float,
-        selected_edge_churn_ratio: float,
-        tracked_cones_frame_delta_p95_m: float,
         centerline_point_count: int,
         selected_edge_count: int,
         status: str,
@@ -201,9 +193,6 @@ class DiagnosticsMixin:
         diag.level = DiagnosticStatus.OK
         diag.message = status
         diag.values = [
-            KeyValue(key='centerline_jump_max_m', value=f'{centerline_jump_max_m:.6f}'),
-            KeyValue(key='selected_edge_churn_ratio', value=f'{selected_edge_churn_ratio:.6f}'),
-            KeyValue(key='tracked_cones_frame_delta_p95_m', value=f'{tracked_cones_frame_delta_p95_m:.6f}'),
             KeyValue(key='centerline_point_count', value=str(int(centerline_point_count))),
             KeyValue(key='selected_edge_count', value=str(int(selected_edge_count))),
         ]

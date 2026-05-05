@@ -13,7 +13,6 @@ from visualization_msgs.msg import Marker, MarkerArray
 
 from sim_car.cones.tracking.fusion import normalize_color
 from sim_car.planning.planning_state_machine import _OPERATOR_STATE_COLORS
-from sim_car.planning.triangulation_planner_core import CoreResult
 
 
 CORRIDOR_PAIR_AUDIT_REASONS = (
@@ -63,7 +62,7 @@ class VisualizationMixin:
         *,
         now,
         frame_id: str,
-        result: Optional[CoreResult],
+        result: Optional[object],
         centerline: np.ndarray,
         raw_centerline: np.ndarray,
         raw_midpoint_chain: np.ndarray,
@@ -113,7 +112,6 @@ class VisualizationMixin:
         if hasattr(self, 'show_boundary_chains'):
             return marker_id
         edges = (
-            (getattr(self, 'show_triangulation_edges', False), 'triangulation_edges', result.triangulation_edges, (0.3, 0.7, 1.0, 0.35), 0.03),
             (getattr(self, 'show_candidate_edges', False), 'candidate_cross_edges', result.candidate_edges, (1.0, 0.6, 0.1, 0.8), 0.06),
             (getattr(self, 'show_selected_edges', False), 'selected_cross_edges', result.selected_edges, (0.2, 1.0, 0.3, 0.95), 0.08),
         )

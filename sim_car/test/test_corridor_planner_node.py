@@ -179,7 +179,6 @@ def _sample_result() -> CorridorPlannerResult:
     return CorridorPlannerResult(
         filtered_points=np.vstack((left, right)),
         filtered_colors=["blue", "blue", "blue", "yellow", "yellow", "yellow"],
-        triangulation_edges=np.empty((0, 2), dtype=np.int64),
         candidate_edges=np.empty((0, 2), dtype=np.int64),
         selected_edges=np.empty((0, 2), dtype=np.int64),
         selected_pair_track_ids=np.empty((0, 2), dtype=np.int64),
@@ -392,9 +391,6 @@ def test_publish_diagnostics_uses_corridor_identity():
     node = _make_node()
     node._publish_diagnostics(
         frame_id="odom",
-        centerline_jump_max_m=0.1,
-        selected_edge_churn_ratio=0.2,
-        tracked_cones_frame_delta_p95_m=0.3,
         centerline_point_count=3,
         selected_edge_count=3,
         status="ok",

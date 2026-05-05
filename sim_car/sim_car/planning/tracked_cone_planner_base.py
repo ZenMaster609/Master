@@ -7,29 +7,47 @@ from typing import Any, Optional
 import numpy as np
 from ackermann_msgs.msg import AckermannDriveStamped
 from diagnostic_msgs.msg import DiagnosticArray
-from geometry_msgs.msg import PoseArray
+from geometry_msgs.msg import PoseArray, PoseStamped
 from nav_msgs.msg import Odometry, Path
 from rclpy.duration import Duration
+from rclpy.node import Node
 from rclpy.qos import qos_profile_sensor_data
 from rclpy.time import Time
 from tf2_ros import Buffer, TransformException, TransformListener
 from vehicle_plotter_msgs.msg import ConeDetectionArray
 from visualization_msgs.msg import MarkerArray
 
-from sim_car.cones.tracking.fusion import normalize_color
+from sim_car.cones.tracking.fusion import normalize_color, resolve_boundary_colors_for_planning
+from sim_car.cones.tracking.pose import (
+    convert_odom_child_pose_to_base_frame,
+    project_planar_pose_constant_twist,
+)
 from sim_car.planning.controller_config import build_steering_controller
 from sim_car.planning.midline_memory import (
     CommittedMidlineMemory,
     MidlineCandidate,
     MidlineMemoryConfig,
 )
+from sim_car.planning.path_stability import (
+    extract_forward_path_from_pose,
+    resample_to_count,
+    sample_path_at_lengths,
+)
+from sim_car.planning.planning_diagnostics import DiagnosticsMixin
+from sim_car.planning.planning_state_machine import StateMachineMixin
+from sim_car.planning.planning_visualization import VisualizationMixin
 from sim_car.planning.planner_constants import (
     MSG_TRACK_STATE_CONFIRMED,
     MSG_TRACK_STATE_TENTATIVE,
 )
 from sim_car.planning.planner_runtime_types import TrackedConePlanningFrame, TrackedConePlanningMetadata
-from sim_car.planning.tracked_cone_planner_geometry import _base_point_to_odom
-from sim_car.planning.tracked_cone_planner_runtime import TrackedConePlannerRuntime
+from sim_car.planning.tracked_cone_planner_geometry import (
+    _base_point_to_odom,
+    _odom_point_to_base,
+    _transform_point,
+    _yaw_from_quat,
+    path_cumulative_lengths,
+)
 
 
 class PlannerNodeUtilitiesMixin:
@@ -96,7 +114,13 @@ class PlannerNodeUtilitiesMixin:
         return bool(a.intersection(b))
 
 
-class TrackedConePlannerBase(PlannerNodeUtilitiesMixin, TrackedConePlannerRuntime):
+class TrackedConePlannerBase(
+    PlannerNodeUtilitiesMixin,
+    DiagnosticsMixin,
+    VisualizationMixin,
+    StateMachineMixin,
+    Node,
+):
     """Shared tracked-cone planner runtime used by midpoint/single-boundary planners."""
 
     # Width of the planned centerline strip in viz markers.  Subclasses that
@@ -204,6 +228,470 @@ class TrackedConePlannerBase(PlannerNodeUtilitiesMixin, TrackedConePlannerRuntim
             controller_type=self.controller_type,
             publish_rate_hz=self.publish_rate_hz,
         )
+
+    def _cones_cb(self, msg: ConeDetectionArray) -> None:
+        self._latest_cones_msg = msg
+
+    def _odom_cb(self, msg: Odometry) -> None:
+        self._latest_odom_msg = msg
+        vx = float(msg.twist.twist.linear.x)
+        vy = float(msg.twist.twist.linear.y)
+        frame_tokens = f"{msg.header.frame_id}/{msg.child_frame_id}".lower()
+        if "base_link" in frame_tokens or "base_footprint" in frame_tokens:
+            self._latest_speed_mps = abs(vx)
+            self._latest_yaw_rate_rps = float(msg.twist.twist.angular.z)
+        else:
+            self._latest_speed_mps = float(math.hypot(vx, vy))
+            self._latest_yaw_rate_rps = float(msg.twist.twist.angular.z)
+
+    def _centerline_to_vehicle_frame(
+        self,
+        *,
+        centerline: np.ndarray,
+        frame_id: str,
+        vehicle_x: float,
+        vehicle_y: float,
+        vehicle_yaw: float,
+    ) -> np.ndarray:
+        if centerline.shape[0] == 0:
+            return centerline
+        if self._is_alias(frame_id, self.base_frame):
+            return centerline
+        if not self._is_alias(frame_id, self.odom_frame):
+            return np.empty((0, 2), dtype=np.float64)
+        out = np.empty_like(centerline)
+        for idx in range(centerline.shape[0]):
+            xb, yb = _odom_point_to_base(
+                centerline[idx, 0],
+                centerline[idx, 1],
+                vehicle_x,
+                vehicle_y,
+                vehicle_yaw,
+            )
+            out[idx, 0] = xb
+            out[idx, 1] = yb
+        return out
+
+    def _compute_speed_command(self, kappa: float) -> float:
+        v_des = self.speed_max_mps / (1.0 + self.curvature_speed_gain * abs(kappa))
+        v_des = float(np.clip(v_des, self.speed_min_mps, self.speed_max_mps))
+        if self._last_speed_cmd is None:
+            return v_des
+        alpha = self.lowpass_speed_alpha
+        return float((alpha * v_des) + ((1.0 - alpha) * float(self._last_speed_cmd)))
+
+    def _publish_cmd(self, speed_mps: float, steering_rad: float) -> None:
+        msg = AckermannDriveStamped()
+        msg.header.stamp = self.get_clock().now().to_msg()
+        msg.drive.speed = float(speed_mps)
+        msg.drive.steering_angle = float(steering_rad)
+        self._cmd_pub.publish(msg)
+
+    def _resolve_planning_frame(self, source_frame: str, stamp) -> str:
+        requested = self.planning_frame
+        if requested == self.odom_frame:
+            return requested
+
+        has_tf = (
+            self._lookup_transform_with_alias(requested, source_frame, stamp)[0] is not None
+            and self._lookup_transform_with_alias(requested, self.base_frame, stamp)[0] is not None
+        )
+        if has_tf:
+            return requested
+        return self.odom_frame
+
+    def _resolve_vehicle_pose(self, frame_id: str, stamp) -> Optional[tuple[float, float, float]]:
+        tf_msg, _resolved_target, _resolved_source = self._lookup_transform_with_alias(
+            frame_id,
+            self.base_frame,
+            stamp,
+        )
+        if tf_msg is not None:
+            tx = float(tf_msg.transform.translation.x)
+            ty = float(tf_msg.transform.translation.y)
+            q = tf_msg.transform.rotation
+            yaw = _yaw_from_quat(float(q.x), float(q.y), float(q.z), float(q.w))
+            return self._compensate_vehicle_pose(frame_id, (tx, ty, yaw))
+
+        if not self._is_alias(frame_id, self.odom_frame):
+            return None
+
+        odom = self._latest_odom_msg
+        if odom is None:
+            return None
+        if not self._is_alias(odom.header.frame_id, self.odom_frame):
+            return None
+
+        pose = odom.pose.pose
+        tx = float(pose.position.x)
+        ty = float(pose.position.y)
+        q = pose.orientation
+        yaw = _yaw_from_quat(float(q.x), float(q.y), float(q.z), float(q.w))
+        base_pose = self._convert_odom_child_pose_to_base_frame(
+            child_frame=str(odom.child_frame_id).strip(),
+            tx=tx,
+            ty=ty,
+            yaw=yaw,
+        )
+        return self._compensate_vehicle_pose(frame_id, base_pose)
+
+    def _compensate_vehicle_pose(
+        self,
+        frame_id: str,
+        pose: Optional[tuple[float, float, float]],
+    ) -> Optional[tuple[float, float, float]]:
+        if pose is None:
+            return None
+        if self._is_alias(frame_id, self.base_frame):
+            return pose
+        return project_planar_pose_constant_twist(
+            pose,
+            speed_mps=self._latest_speed_mps,
+            yaw_rate_rps=self._latest_yaw_rate_rps,
+            delay_s=float(getattr(self, "odom_lag_compensation_s", 0.0)),
+        )
+
+    def _convert_odom_child_pose_to_base_frame(
+        self,
+        *,
+        child_frame: str,
+        tx: float,
+        ty: float,
+        yaw: float,
+    ) -> Optional[tuple[float, float, float]]:
+        return convert_odom_child_pose_to_base_frame(
+            child_frame=child_frame,
+            base_frame=self.base_frame,
+            tx=tx,
+            ty=ty,
+            yaw=yaw,
+            wheelbase_m=self._configured_wheelbase_m(),
+            is_alias=self._is_alias,
+        )
+
+    def _configured_wheelbase_m(self) -> float:
+        stanley_wheelbase = float(self.get_parameter("stanley.wheelbase_m").value)
+        return max(0.1, stanley_wheelbase)
+
+    def _convert_cones_to_frame(
+        self,
+        msg: ConeDetectionArray,
+        source_frame: str,
+        target_frame: str,
+        *,
+        vehicle_xy: tuple[float, float],
+        vehicle_yaw: float,
+    ) -> tuple[Optional[np.ndarray], list[str], np.ndarray]:
+        tf_msg = None
+        if not self._is_alias(source_frame, target_frame):
+            tf_msg, _resolved_target, _resolved_source = self._lookup_transform_with_alias(
+                target_frame,
+                source_frame,
+                msg.header.stamp,
+            )
+            if tf_msg is None:
+                fallback = self._convert_with_odom_pose_fallback(
+                    msg,
+                    source_frame,
+                    target_frame,
+                    vehicle_xy=vehicle_xy,
+                    vehicle_yaw=vehicle_yaw,
+                )
+                if fallback is None:
+                    return None, [], np.empty((0,), dtype=np.float64)
+                return fallback
+
+        points: list[tuple[float, float]] = []
+        raw_colors: list[str] = []
+        boundary_hints: list[str] = []
+        confs: list[float] = []
+        for cone in msg.cones:
+            x = float(cone.position.x)
+            y = float(cone.position.y)
+            z = float(cone.position.z)
+            if tf_msg is not None:
+                x, y, z = _transform_point(tf_msg, x, y, z)
+            points.append((x, y))
+            raw_colors.append(normalize_color(cone.color))
+            boundary_hints.append(str(getattr(cone, "boundary_color", "")).strip())
+            confs.append(float(np.clip(float(cone.confidence), 0.0, 1.0)))
+
+        if not points:
+            return np.empty((0, 2), dtype=np.float64), [], np.empty((0,), dtype=np.float64)
+        points_xy = np.asarray(points, dtype=np.float64)
+        colors = resolve_boundary_colors_for_planning(
+            points_xy=points_xy,
+            raw_colors=raw_colors,
+            boundary_hints=boundary_hints,
+            vehicle_xy=vehicle_xy,
+            vehicle_yaw=vehicle_yaw,
+            infer_unknown=self.infer_unknown_by_side,
+            infer_orange=self.infer_orange_by_side,
+            orange_min_lateral_m=self.orange_min_lateral_m,
+            orange_neighbor_radius_m=self.orange_neighbor_radius_m,
+            orange_neighbor_margin_m=self.orange_neighbor_margin_m,
+        )
+        return points_xy, colors, np.asarray(confs, dtype=np.float64)
+
+    def _convert_with_odom_pose_fallback(
+        self,
+        msg: ConeDetectionArray,
+        source_frame: str,
+        target_frame: str,
+        *,
+        vehicle_xy: tuple[float, float],
+        vehicle_yaw: float,
+    ) -> Optional[tuple[np.ndarray, list[str], np.ndarray]]:
+        odom_pose = self._resolve_vehicle_pose(self.odom_frame, msg.header.stamp)
+        if odom_pose is None:
+            return None
+
+        odom_x, odom_y, odom_yaw = odom_pose
+        if self._is_alias(source_frame, self.odom_frame) and self._is_alias(target_frame, self.base_frame):
+            return self._convert_odom_cones_to_base(msg, odom_x, odom_y, odom_yaw, vehicle_xy, vehicle_yaw)
+        if self._is_alias(source_frame, self.base_frame) and self._is_alias(target_frame, self.odom_frame):
+            return self._convert_base_cones_to_odom(msg, odom_x, odom_y, odom_yaw, vehicle_xy, vehicle_yaw)
+        return None
+
+    def _convert_odom_cones_to_base(
+        self,
+        msg: ConeDetectionArray,
+        odom_x: float,
+        odom_y: float,
+        odom_yaw: float,
+        vehicle_xy: tuple[float, float],
+        vehicle_yaw: float,
+    ) -> tuple[np.ndarray, list[str], np.ndarray]:
+        points: list[tuple[float, float]] = []
+        raw_colors: list[str] = []
+        boundary_hints: list[str] = []
+        confs: list[float] = []
+        for cone in msg.cones:
+            x_base, y_base = _odom_point_to_base(
+                float(cone.position.x),
+                float(cone.position.y),
+                odom_x,
+                odom_y,
+                odom_yaw,
+            )
+            points.append((x_base, y_base))
+            raw_colors.append(normalize_color(cone.color))
+            boundary_hints.append(str(getattr(cone, "boundary_color", "")).strip())
+            confs.append(float(np.clip(float(cone.confidence), 0.0, 1.0)))
+        return self._resolve_planner_cone_colors(points, raw_colors, boundary_hints, confs, vehicle_xy, vehicle_yaw)
+
+    def _convert_base_cones_to_odom(
+        self,
+        msg: ConeDetectionArray,
+        odom_x: float,
+        odom_y: float,
+        odom_yaw: float,
+        vehicle_xy: tuple[float, float],
+        vehicle_yaw: float,
+    ) -> tuple[np.ndarray, list[str], np.ndarray]:
+        cos_y = math.cos(odom_yaw)
+        sin_y = math.sin(odom_yaw)
+        points: list[tuple[float, float]] = []
+        raw_colors: list[str] = []
+        boundary_hints: list[str] = []
+        confs: list[float] = []
+        for cone in msg.cones:
+            xb = float(cone.position.x)
+            yb = float(cone.position.y)
+            points.append((odom_x + (cos_y * xb) - (sin_y * yb), odom_y + (sin_y * xb) + (cos_y * yb)))
+            raw_colors.append(normalize_color(cone.color))
+            boundary_hints.append(str(getattr(cone, "boundary_color", "")).strip())
+            confs.append(float(np.clip(float(cone.confidence), 0.0, 1.0)))
+        return self._resolve_planner_cone_colors(points, raw_colors, boundary_hints, confs, vehicle_xy, vehicle_yaw)
+
+    def _resolve_planner_cone_colors(
+        self,
+        points: list[tuple[float, float]],
+        raw_colors: list[str],
+        boundary_hints: list[str],
+        confs: list[float],
+        vehicle_xy: tuple[float, float],
+        vehicle_yaw: float,
+    ) -> tuple[np.ndarray, list[str], np.ndarray]:
+        points_xy = np.asarray(points, dtype=np.float64)
+        colors = resolve_boundary_colors_for_planning(
+            points_xy=points_xy,
+            raw_colors=raw_colors,
+            boundary_hints=boundary_hints,
+            vehicle_xy=vehicle_xy,
+            vehicle_yaw=vehicle_yaw,
+            infer_unknown=self.infer_unknown_by_side,
+            infer_orange=self.infer_orange_by_side,
+            orange_min_lateral_m=self.orange_min_lateral_m,
+            orange_neighbor_radius_m=self.orange_neighbor_radius_m,
+            orange_neighbor_margin_m=self.orange_neighbor_margin_m,
+        )
+        return points_xy, colors, np.asarray(confs, dtype=np.float64)
+
+    def _apply_temporal_smoothing(self, centerline: np.ndarray) -> np.ndarray:
+        if centerline.shape[0] == 0:
+            return centerline
+        prev = self._previous_centerline
+        if prev is None or prev.shape[0] < 2 or centerline.shape[0] < 2:
+            return centerline
+
+        count_diff = abs(prev.shape[0] - centerline.shape[0])
+        if count_diff > max(2, int(0.25 * centerline.shape[0])):
+            return centerline
+
+        prev_rs = self._resample_to_count(prev, centerline.shape[0])
+        return (self.smoothing_alpha * centerline) + ((1.0 - self.smoothing_alpha) * prev_rs)
+
+    @staticmethod
+    def _path_cumulative_lengths(points: np.ndarray) -> np.ndarray:
+        return path_cumulative_lengths(points)
+
+    @staticmethod
+    def _sample_path_at_lengths(
+        points: np.ndarray,
+        cum_lengths: np.ndarray,
+        samples: np.ndarray,
+    ) -> np.ndarray:
+        return sample_path_at_lengths(points, cum_lengths, samples)
+
+    @staticmethod
+    def _extract_forward_path_from_pose(
+        *,
+        path: np.ndarray,
+        vehicle_xy: tuple[float, float],
+        resolution_m: float,
+    ) -> Optional[np.ndarray]:
+        return extract_forward_path_from_pose(
+            path=path,
+            vehicle_xy=vehicle_xy,
+            resolution_m=resolution_m,
+        )
+
+    @staticmethod
+    def _resample_to_count(points: np.ndarray, count: int) -> np.ndarray:
+        return resample_to_count(points, count)
+
+    def _publish_outputs(
+        self,
+        *,
+        frame_id: str,
+        centerline: np.ndarray,
+        raw_centerline: np.ndarray,
+        raw_midpoint_chain: np.ndarray,
+        result: Optional[object],
+        status: str,
+        control_target_frame: Optional[np.ndarray],
+        cmd_speed: float,
+        cmd_steering: float,
+        lookahead: float,
+        operator_state: str,
+        operator_reason: str,
+        hold_remaining_s: float,
+        control_path_point_count: int,
+        candidate_diagonal_count: int,
+        selected_chain_length: int,
+        seed_midpoint_distance_m: float,
+        near_field_lateral_max_m: float,
+        near_field_midpoint_kink_max_rad: float,
+    ) -> None:
+        del control_path_point_count
+        now = self.get_clock().now().to_msg()
+        self._publish_path_and_points(frame_id=frame_id, centerline=centerline, now=now)
+        if self.enable_debug_markers:
+            self._publish_viz_markers(
+                now=now,
+                frame_id=frame_id,
+                centerline=centerline,
+                raw_centerline=raw_centerline,
+                raw_midpoint_chain=raw_midpoint_chain,
+                result=result,
+                status=status,
+                control_target_frame=control_target_frame,
+                operator_state=operator_state,
+                operator_reason=operator_reason,
+                cmd_speed=cmd_speed,
+                cmd_steering=cmd_steering,
+                lookahead=lookahead,
+                candidate_diagonal_count=candidate_diagonal_count,
+                selected_chain_length=selected_chain_length,
+                seed_midpoint_distance_m=seed_midpoint_distance_m,
+                near_field_lateral_max_m=near_field_lateral_max_m,
+                near_field_midpoint_kink_max_rad=near_field_midpoint_kink_max_rad,
+                hold_remaining_s=hold_remaining_s,
+            )
+
+    def _publish_path_and_points(self, *, frame_id: str, centerline: np.ndarray, now: object) -> Path:
+        path_msg = Path()
+        path_msg.header.stamp = now
+        path_msg.header.frame_id = frame_id
+        for idx in range(centerline.shape[0]):
+            pose = PoseStamped()
+            pose.header = path_msg.header
+            pose.pose.position.x = float(centerline[idx, 0])
+            pose.pose.position.y = float(centerline[idx, 1])
+            pose.pose.position.z = 0.0
+            yaw = self._path_point_yaw(centerline, idx)
+            pose.pose.orientation.z = math.sin(0.5 * yaw)
+            pose.pose.orientation.w = math.cos(0.5 * yaw)
+            path_msg.poses.append(pose)
+        self._path_pub.publish(path_msg)
+        if self.publish_points_topic:
+            points_msg = PoseArray()
+            points_msg.header = path_msg.header
+            for pose_stamped in path_msg.poses:
+                points_msg.poses.append(pose_stamped.pose)
+            self._points_pub.publish(points_msg)
+        return path_msg
+
+    def _publish_viz_markers(
+        self,
+        *,
+        now: object,
+        frame_id: str,
+        centerline: np.ndarray,
+        raw_centerline: np.ndarray,
+        raw_midpoint_chain: np.ndarray,
+        result: Optional[object],
+        status: str,
+        control_target_frame: Optional[np.ndarray],
+        operator_state: str,
+        operator_reason: str,
+        cmd_speed: float,
+        cmd_steering: float,
+        lookahead: float,
+        candidate_diagonal_count: int,
+        selected_chain_length: int,
+        seed_midpoint_distance_m: float,
+        near_field_lateral_max_m: float,
+        near_field_midpoint_kink_max_rad: float,
+        hold_remaining_s: float,
+    ) -> None:
+        status_text = self._build_operator_status_text(
+            operator_state=operator_state,
+            operator_reason=operator_reason,
+            centerline_point_count=int(centerline.shape[0]),
+            cmd_speed=cmd_speed,
+            cmd_steering=cmd_steering,
+            lookahead=lookahead,
+            candidate_diagonal_count=candidate_diagonal_count,
+            selected_chain_length=selected_chain_length,
+            seed_midpoint_distance_m=seed_midpoint_distance_m,
+            near_field_lateral_max_m=near_field_lateral_max_m,
+            near_field_midpoint_kink_max_rad=near_field_midpoint_kink_max_rad,
+            hold_remaining_s=hold_remaining_s,
+        )
+        markers = self._build_markers(
+            now=now,
+            frame_id=frame_id,
+            result=result,
+            centerline=centerline,
+            raw_centerline=raw_centerline,
+            raw_midpoint_chain=raw_midpoint_chain,
+            status=status_text,
+            operator_state=operator_state,
+            control_target_frame=control_target_frame,
+        )
+        self._viz_pub.publish(markers)
 
     @staticmethod
     def _extract_cone_metadata(msg: ConeDetectionArray) -> TrackedConePlanningMetadata:

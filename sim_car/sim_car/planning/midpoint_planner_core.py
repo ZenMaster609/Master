@@ -90,7 +90,6 @@ class MidpointPlannerPrior:
 class MidpointPlannerResult:
     filtered_points: np.ndarray
     filtered_colors: list[str]
-    triangulation_edges: np.ndarray
     candidate_edges: np.ndarray
     selected_edges: np.ndarray
     selected_pair_track_ids: np.ndarray
@@ -703,7 +702,6 @@ def _base_midpoint_result(
     return MidpointPlannerResult(
         filtered_points=context.cones.points,
         filtered_colors=context.cones.colors,
-        triangulation_edges=np.empty((0, 2), dtype=np.int64),
         candidate_edges=context.pairing.candidate_edges,
         selected_edges=context.pairing.selected_edges,
         selected_pair_track_ids=context.pairing.selected_pair_track_ids,
@@ -1862,7 +1860,6 @@ def _empty_result(
             else np.empty((0, 2), dtype=np.float64)
         ),
         filtered_colors=list(filtered_colors or []),
-        triangulation_edges=np.empty((0, 2), dtype=np.int64),
         candidate_edges=np.empty((0, 2), dtype=np.int64),
         selected_edges=np.empty((0, 2), dtype=np.int64),
         selected_pair_track_ids=np.empty((0, 2), dtype=np.int64),

@@ -807,9 +807,6 @@ class LineTestPlannerNode(PlannerNodeUtilitiesMixin, Node):
             'planner_mode': self._planner_identity.planner_mode,
         }
         stability.values = [
-            KeyValue(key='centerline_jump_max_m', value='0.000000'),
-            KeyValue(key='selected_edge_churn_ratio', value='0.000000'),
-            KeyValue(key='tracked_cones_frame_delta_p95_m', value='nan'),
             KeyValue(key='centerline_point_count', value=str(int(centerline.shape[0]))),
             KeyValue(key='selected_edge_count', value='0'),
         ]

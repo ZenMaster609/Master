@@ -80,7 +80,6 @@ class CorridorPlannerPrior:
 class CorridorPlannerResult:
     filtered_points: np.ndarray
     filtered_colors: list[str]
-    triangulation_edges: np.ndarray
     candidate_edges: np.ndarray
     selected_edges: np.ndarray
     selected_pair_track_ids: np.ndarray
@@ -748,7 +747,6 @@ def _new_corridor_result(
     return CorridorPlannerResult(
         filtered_points=cones.points,
         filtered_colors=cones.colors,
-        triangulation_edges=np.empty((0, 2), dtype=np.int64),
         candidate_edges=np.empty((0, 2), dtype=np.int64),
         selected_edges=np.empty((0, 2), dtype=np.int64),
         selected_pair_track_ids=np.empty((0, 2), dtype=np.int64),
@@ -1674,7 +1672,6 @@ def _empty_result(
             else np.empty((0, 2), dtype=np.float64)
         ),
         filtered_colors=list(filtered_colors or []),
-        triangulation_edges=np.empty((0, 2), dtype=np.int64),
         candidate_edges=np.empty((0, 2), dtype=np.int64),
         selected_edges=np.empty((0, 2), dtype=np.int64),
         selected_pair_track_ids=np.empty((0, 2), dtype=np.int64),

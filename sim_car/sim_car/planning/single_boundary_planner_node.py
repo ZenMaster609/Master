@@ -13,16 +13,10 @@ from rclpy.executors import ExternalShutdownException
 from rclpy.node import Node
 from vehicle_plotter_msgs.msg import ConeDetectionArray
 
-from sim_car.planning.triangulation_planner_core import (
-    compute_centerline_jump_max,
-    edge_churn_count,
-    edge_churn_ratio,
-    selected_edge_keys,
-    tracked_cones_frame_delta_p95,
-)
 from sim_car.planning.planner_runtime_types import PlannerIdentity
 from sim_car.planning.planner_constants import (
     MSG_TRACK_STATE_STALE,
+    MSG_TRACK_STATE_TENTATIVE,
     VALIDATED_JUMP_ACCEPT_HEADING_DELTA_RAD as _VALIDATED_JUMP_ACCEPT_HEADING_DELTA_RAD,
     VALIDATED_JUMP_ACCEPT_HORIZON_M as _VALIDATED_JUMP_ACCEPT_HORIZON_M,
     VALIDATED_JUMP_ACCEPT_LATERAL_MAX_M as _VALIDATED_JUMP_ACCEPT_LATERAL_MAX_M,
@@ -39,10 +33,12 @@ from sim_car.planning.single_boundary_planner_core import (
     SingleBoundaryPlannerResult,
     _finalize_path,
     compute_single_boundary_centerline,
-    update_track_width_estimate,
 )
 from sim_car.planning.tracked_cone_planner_base import TrackedConePlannerBase
-from sim_car.planning.tracked_cone_planner_geometry import _base_point_to_odom
+from sim_car.planning.tracked_cone_planner_geometry import (
+    _base_point_to_odom,
+    update_track_width_estimate,
+)
 
 
 _NANOSECONDS_TO_SECONDS = 1e-9  # ROS clock timestamps are nanoseconds; planner metrics use seconds.
@@ -64,14 +60,6 @@ class _PairMemoryEntry:
 @dataclass
 class _InputMetrics:
     planning_frame: object  # TrackedConePlanningFrame
-
-
-@dataclass
-class _SingleBoundaryChurnMetrics:
-    tracked_delta_p95_m: float
-    selected_edge_churn_count: int
-    selected_edge_churn: float
-    centerline_jump_max_m: float
 
 
 @dataclass
@@ -298,7 +286,7 @@ class SingleBoundaryPlannerNode(TrackedConePlannerBase):
         raw_midpoint_chain = np.array(result.midpoints_raw, copy=True)
         pair_segments_for_viz = np.array(result.pair_segments, copy=True)
         result.planner_mode = self._planner_identity.planner_mode
-        churn = self._compute_churn_and_jump(result, points_xy, raw_centerline)
+        del points_xy
         midline = self._apply_midline_updates(
             result, raw_centerline, candidate_source, raw_midpoint_chain,
             pair_segments_for_viz, target_frame, vehicle_x, vehicle_y, vehicle_yaw, now_sec,
@@ -311,11 +299,11 @@ class SingleBoundaryPlannerNode(TrackedConePlannerBase):
         self._update_active_state_counters(result, midline)
         self._log_cycle_state(operator_state, operator_reason, hold_remaining_s, result)
         diag_metrics = self._build_diagnostics_metrics(
-            result, midline, ctrl, churn, raw_centerline, candidate_source,
+            result, midline, ctrl, raw_centerline, candidate_source,
             operator_state, operator_reason, hold_remaining_s,
         )
         self._publish_cycle_results(
-            target_frame, raw_centerline, result, midline, ctrl, churn,
+            target_frame, raw_centerline, result, midline, ctrl,
             diag_metrics, operator_state, operator_reason, hold_remaining_s,
         )
 
@@ -375,47 +363,6 @@ class SingleBoundaryPlannerNode(TrackedConePlannerBase):
         if self._last_valid_centerline is not None:
             return np.array(self._last_valid_centerline, copy=True)
         return None
-
-    def _compute_churn_and_jump(
-        self,
-        result: SingleBoundaryPlannerResult,
-        points_xy: np.ndarray,
-        raw_centerline: np.ndarray,
-    ) -> _SingleBoundaryChurnMetrics:
-        tracked_delta_p95_m = tracked_cones_frame_delta_p95(self._previous_tracked_points, points_xy)
-        self._previous_tracked_points = np.array(points_xy, copy=True)
-        previous_edge_keys = set(self._previous_edge_keys)
-        selected_keys = selected_edge_keys(
-            points=result.filtered_points, edges=result.selected_edges,
-            quantization_m=self.edge_quantization_m,
-        )
-        churn_count = edge_churn_count(previous_edge_keys, selected_keys)
-        churn_ratio = edge_churn_ratio(previous_edge_keys, selected_keys)
-        self._previous_edge_keys = set(selected_keys)
-        centerline_jump_max_m = compute_centerline_jump_max(
-            raw_centerline, self._previous_raw_centerline, self.centerline_jump_horizon_m,
-        )
-        self._previous_raw_centerline = (
-            np.array(raw_centerline, copy=True) if raw_centerline.shape[0] > 0 else None
-        )
-        self._warn_on_churn_metrics(centerline_jump_max_m, churn_ratio)
-        return _SingleBoundaryChurnMetrics(
-            tracked_delta_p95_m, churn_count, churn_ratio, centerline_jump_max_m,
-        )
-
-    def _warn_on_churn_metrics(self, centerline_jump_max_m: float, churn_ratio: float) -> None:
-        if centerline_jump_max_m > self.jump_warn_threshold_m:
-            self._warn_throttled(
-                "centerline_jump_warn",
-                f"centerline jump {centerline_jump_max_m:.3f} m exceeded threshold "
-                f"{self.jump_warn_threshold_m:.3f} m",
-            )
-        if churn_ratio > self.edge_churn_warn_threshold:
-            self._warn_throttled(
-                "edge_churn_warn",
-                f"selected pair churn {churn_ratio:.3f} exceeded threshold "
-                f"{self.edge_churn_warn_threshold:.3f}",
-            )
 
     def _apply_midline_updates(  # noqa: PLR0913
         self, result, raw_centerline, candidate_source, raw_midpoint_chain,
@@ -757,18 +704,18 @@ class SingleBoundaryPlannerNode(TrackedConePlannerBase):
         )
 
     def _build_diagnostics_metrics(
-        self, result, midline, ctrl, churn, raw_centerline, candidate_source,
+        self, result, midline, ctrl, raw_centerline, candidate_source,
         operator_state, operator_reason, hold_remaining_s,
     ) -> dict:
         return {
-            **self._build_single_boundary_result_metrics(result, churn),
+            **self._build_single_boundary_result_metrics(result),
             **self._build_operator_control_metrics(
                 result, midline, ctrl, raw_centerline, candidate_source,
                 operator_state, operator_reason, hold_remaining_s,
             ),
         }
 
-    def _build_single_boundary_result_metrics(self, result, churn: _SingleBoundaryChurnMetrics) -> dict:
+    def _build_single_boundary_result_metrics(self, result) -> dict:
         return {
             "candidate_diagonal_count": result.candidate_count,
             "selected_chain_length": result.selected_chain_length,
@@ -776,8 +723,6 @@ class SingleBoundaryPlannerNode(TrackedConePlannerBase):
             "expected_width_prior_m": result.expected_width_prior_m,
             **self._build_single_boundary_reject_metrics(result),
             **self._build_single_boundary_path_metrics(result),
-            "selected_chain_churn_count": churn.selected_edge_churn_count,
-            "selected_chain_churn_ratio": churn.selected_edge_churn,
         }
 
     def _build_single_boundary_reject_metrics(self, result) -> dict:
@@ -856,13 +801,11 @@ class SingleBoundaryPlannerNode(TrackedConePlannerBase):
         }
 
     def _publish_cycle_results(
-        self, target_frame, raw_centerline, result, midline, ctrl, churn,
+        self, target_frame, raw_centerline, result, midline, ctrl,
         diag_metrics, operator_state, operator_reason, hold_remaining_s,
     ) -> None:
         self._publish_diagnostics(
-            frame_id=target_frame, centerline_jump_max_m=churn.centerline_jump_max_m,
-            selected_edge_churn_ratio=churn.selected_edge_churn,
-            tracked_cones_frame_delta_p95_m=churn.tracked_delta_p95_m,
+            frame_id=target_frame,
             centerline_point_count=int(midline.centerline.shape[0]),
             selected_edge_count=int(result.selected_edges.shape[0]), status=midline.status,
             control_debug_metrics=ctrl.control_debug_metrics, planner_metrics=diag_metrics,

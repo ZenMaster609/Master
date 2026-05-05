@@ -33,9 +33,6 @@ COMMON_MIGRATED_TRACKED_CONE_PLANNER_DEFAULTS: dict[str, object] = {
     'debug.show_raw_midpoint_chain': True,
     'debug.show_raw_prevalidation_centerline': False,
     'diagnostics.centerline_jump_horizon_m': 8.0,
-    'diagnostics.edge_churn_warn_threshold': 0.4,
-    'diagnostics.edge_quantization_m': 0.05,
-    'diagnostics.jump_warn_threshold_m': 0.8,
     'diagnostics.publish_control_debug': True,
     'filtering.behind_drop_m': 5.0,
     'filtering.infer_orange_by_side': True,
@@ -189,9 +186,6 @@ class MigratedTrackedConePlannerCommonConfig:
     candidate_min_extent_m: float
     diagnostics_topic: str
     centerline_jump_horizon_m: float
-    edge_quantization_m: float
-    jump_warn_threshold_m: float
-    edge_churn_warn_threshold: float
     publish_control_debug: bool
     enable_debug_markers: bool
     show_raw_cones: bool
@@ -201,7 +195,6 @@ class MigratedTrackedConePlannerCommonConfig:
     show_raw_prevalidation_centerline: bool
     publish_points_topic: bool
     show_lookahead_point: bool
-    show_triangulation_edges: bool
     show_candidate_edges: bool
     show_selected_edges: bool
 
@@ -365,11 +358,6 @@ def read_migrated_tracked_cone_planner_common_config(
     centerline_jump_horizon_m = max(
         0.5, float(node.get_parameter('diagnostics.centerline_jump_horizon_m').value)
     )
-    edge_quantization_m = max(1e-6, float(node.get_parameter('diagnostics.edge_quantization_m').value))
-    jump_warn_threshold_m = max(0.0, float(node.get_parameter('diagnostics.jump_warn_threshold_m').value))
-    edge_churn_warn_threshold = max(
-        0.0, float(node.get_parameter('diagnostics.edge_churn_warn_threshold').value)
-    )
     publish_control_debug = bool(node.get_parameter('diagnostics.publish_control_debug').value)
 
     # Debug markers
@@ -461,9 +449,6 @@ def read_migrated_tracked_cone_planner_common_config(
         # Diagnostics
         diagnostics_topic=diagnostics_topic,
         centerline_jump_horizon_m=centerline_jump_horizon_m,
-        edge_quantization_m=edge_quantization_m,
-        jump_warn_threshold_m=jump_warn_threshold_m,
-        edge_churn_warn_threshold=edge_churn_warn_threshold,
         publish_control_debug=publish_control_debug,
         # Debug markers
         enable_debug_markers=enable_debug_markers,
@@ -474,7 +459,6 @@ def read_migrated_tracked_cone_planner_common_config(
         show_raw_prevalidation_centerline=show_raw_prevalidation_centerline,
         publish_points_topic=publish_points_topic,
         show_lookahead_point=show_lookahead_point,
-        show_triangulation_edges=False,
         show_candidate_edges=False,
         show_selected_edges=False,
     )

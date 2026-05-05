@@ -7,7 +7,6 @@ from typing import Optional
 
 import numpy as np
 
-from sim_car.planning.triangulation_planner_core import CoreResult
 from sim_car.planning.planner_constants import (
     OPERATOR_REASON_CODES as _OPERATOR_REASON_CODES,
     OPERATOR_STATE_CODES as _OPERATOR_STATE_CODES,
@@ -154,7 +153,7 @@ class StateMachineMixin:
     def _operator_state_color(state: str) -> tuple[float, float, float]:
         return _OPERATOR_STATE_COLORS.get(state, _OPERATOR_STATE_COLORS['waiting'])
 
-    def _normalize_core_reject_reason(self, result: Optional[CoreResult]) -> str:
+    def _normalize_core_reject_reason(self, result: Optional[object]) -> str:
         if result is None:
             return 'none'
         reject_counts = result.reject_counts or {}

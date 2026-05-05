@@ -14,13 +14,6 @@ from rclpy.node import Node
 from vehicle_plotter_msgs.msg import ConeDetectionArray
 
 from sim_car.cones.tracking.fusion import normalize_color
-from sim_car.planning.triangulation_planner_core import (
-    compute_centerline_jump_max,
-    edge_churn_count,
-    edge_churn_ratio,
-    selected_edge_keys,
-    tracked_cones_frame_delta_p95,
-)
 from sim_car.planning.midpoint_planner_core import (
     MidpointPlannerConfig,
     MidpointPlannerPrior,
@@ -31,6 +24,7 @@ from sim_car.planning.midpoint_planner_core import (
 from sim_car.planning.planner_runtime_types import PlannerIdentity
 from sim_car.planning.planner_constants import (
     CENTERLINE_MARKER_WIDTH_M as _CENTERLINE_MARKER_WIDTH_M,
+    MSG_TRACK_STATE_CONFIRMED,
     MSG_TRACK_STATE_STALE,
     MSG_TRACK_STATE_TENTATIVE,
     PAIR_PASSED_MARGIN_M as _PAIR_PASSED_MARGIN_M,
@@ -285,16 +279,10 @@ class MidpointPlannerNode(TrackedConePlannerBase):
         vehicle_yaw: float,
         now_sec: float,
     ) -> dict:
-        tracked_delta_p95_m, selected_edge_churn, selected_edge_churn_count = (
-            self._compute_stability_metrics(result=result, points_xy=points_xy)
-        )
+        del points_xy
         raw_centerline, candidate_source = self._select_candidate_centerline(
             result=result, support_chain=raw_midpoint_chain, frame_id=target_frame,
             vehicle_x=vehicle_x, vehicle_y=vehicle_y, vehicle_yaw=vehicle_yaw,
-        )
-        centerline_jump_max_m = self._update_centerline_jump_metric(raw_centerline)
-        self._emit_stability_warnings(
-            centerline_jump_max_m=centerline_jump_max_m, selected_edge_churn=selected_edge_churn,
         )
         centerline, candidate_update_ok, candidate_update_reason, status = self._resolve_centerline(
             result=result, raw_centerline=raw_centerline, candidate_source=candidate_source,
@@ -343,9 +331,7 @@ class MidpointPlannerNode(TrackedConePlannerBase):
             control_path=control_path, control_target_frame=control_target_frame,
             control_debug_metrics=control_debug_metrics, cmd_speed=cmd_speed,
             cmd_steering=cmd_steering, lookahead=lookahead, zero_cmd_sent_flag=zero_cmd_sent_flag,
-            controller_failed=controller_failed, selected_edge_churn=selected_edge_churn,
-            selected_edge_churn_count=selected_edge_churn_count,
-            tracked_delta_p95_m=tracked_delta_p95_m, centerline_jump_max_m=centerline_jump_max_m,
+            controller_failed=controller_failed,
         )
 
     @staticmethod
@@ -355,8 +341,7 @@ class MidpointPlannerNode(TrackedConePlannerBase):
         candidate_source, publish_mode, hold_reason, status,
         operator_state, operator_reason, hold_remaining_s, control_path,
         control_target_frame, control_debug_metrics, cmd_speed, cmd_steering,
-        lookahead, zero_cmd_sent_flag, controller_failed, selected_edge_churn,
-        selected_edge_churn_count, tracked_delta_p95_m, centerline_jump_max_m,
+        lookahead, zero_cmd_sent_flag, controller_failed,
     ) -> dict:
         return {
             "centerline": centerline, "raw_centerline": raw_centerline,
@@ -369,9 +354,6 @@ class MidpointPlannerNode(TrackedConePlannerBase):
             "control_debug_metrics": control_debug_metrics,
             "cmd_speed": cmd_speed, "cmd_steering": cmd_steering, "lookahead": lookahead,
             "zero_cmd_sent_flag": zero_cmd_sent_flag, "controller_failed": controller_failed,
-            "selected_edge_churn": selected_edge_churn,
-            "selected_edge_churn_count": selected_edge_churn_count,
-            "tracked_delta_p95_m": tracked_delta_p95_m, "centerline_jump_max_m": centerline_jump_max_m,
         }
 
     def _prepare_planning_inputs(
@@ -421,9 +403,7 @@ class MidpointPlannerNode(TrackedConePlannerBase):
             hold_active=bool(self._active_held_path_flag),
         )
         self._publish_diagnostics(
-            frame_id=target_frame, centerline_jump_max_m=p["centerline_jump_max_m"],
-            selected_edge_churn_ratio=p["selected_edge_churn"],
-            tracked_cones_frame_delta_p95_m=p["tracked_delta_p95_m"],
+            frame_id=target_frame,
             centerline_point_count=int(p["centerline"].shape[0]),
             selected_edge_count=int(result.selected_edges.shape[0]),
             status=p["status"], control_debug_metrics=p["control_debug_metrics"],
@@ -434,8 +414,6 @@ class MidpointPlannerNode(TrackedConePlannerBase):
                 operator_reason=p["operator_reason"], hold_remaining_s=p["hold_remaining_s"],
                 control_path_point_count=control_path_point_count,
                 zero_cmd_sent_flag=p["zero_cmd_sent_flag"],
-                selected_edge_churn=p["selected_edge_churn"],
-                selected_edge_churn_count=p["selected_edge_churn_count"],
             ),
         )
         self._current_pair_segments_for_viz = np.array(p["pair_segments_for_viz"], copy=True)
@@ -573,50 +551,6 @@ class MidpointPlannerNode(TrackedConePlannerBase):
         if combined_midpoint_chain.size > 0:
             raw_midpoint_chain = combined_midpoint_chain
         return pair_segments_for_viz, raw_midpoint_chain
-
-    def _compute_stability_metrics(
-        self,
-        *,
-        result,
-        points_xy: np.ndarray,
-    ) -> tuple:
-        tracked_delta_p95_m = tracked_cones_frame_delta_p95(self._previous_tracked_points, points_xy)
-        self._previous_tracked_points = np.array(points_xy, copy=True)
-        previous_edge_keys = set(self._previous_edge_keys)
-        selected_keys = selected_edge_keys(
-            points=result.filtered_points,
-            edges=result.selected_edges,
-            quantization_m=self.edge_quantization_m,
-        )
-        churn_count = edge_churn_count(previous_edge_keys, selected_keys)
-        churn_ratio = edge_churn_ratio(previous_edge_keys, selected_keys)
-        self._previous_edge_keys = set(selected_keys)
-        return tracked_delta_p95_m, churn_ratio, churn_count
-
-    def _update_centerline_jump_metric(self, raw_centerline: np.ndarray) -> float:
-        jump_max_m = compute_centerline_jump_max(
-            raw_centerline, self._previous_raw_centerline, self.centerline_jump_horizon_m,
-        )
-        self._previous_raw_centerline = (
-            np.array(raw_centerline, copy=True) if raw_centerline.shape[0] > 0 else None
-        )
-        return jump_max_m
-
-    def _emit_stability_warnings(
-        self, *, centerline_jump_max_m: float, selected_edge_churn: float
-    ) -> None:
-        if centerline_jump_max_m > self.jump_warn_threshold_m:
-            self._warn_throttled(
-                "centerline_jump_warn",
-                f"centerline jump {centerline_jump_max_m:.3f} m exceeded threshold "
-                f"{self.jump_warn_threshold_m:.3f} m",
-            )
-        if selected_edge_churn > self.edge_churn_warn_threshold:
-            self._warn_throttled(
-                "edge_churn_warn",
-                f"selected pair churn {selected_edge_churn:.3f} exceeded threshold "
-                f"{self.edge_churn_warn_threshold:.3f}",
-            )
 
     def _resolve_centerline(
         self,
@@ -1009,14 +943,9 @@ class MidpointPlannerNode(TrackedConePlannerBase):
         hold_remaining_s: float,
         control_path_point_count: int,
         zero_cmd_sent_flag: int,
-        selected_edge_churn: float,
-        selected_edge_churn_count: int,
     ) -> dict:
         return {
-            **self._build_result_quality_metrics(
-                result=result, selected_edge_churn=selected_edge_churn,
-                selected_edge_churn_count=selected_edge_churn_count,
-            ),
+            **self._build_result_quality_metrics(result=result),
             **self._build_operator_state_metrics(
                 publish_mode=publish_mode, hold_reason=hold_reason,
                 operator_state=operator_state, operator_reason=operator_reason,
@@ -1034,8 +963,6 @@ class MidpointPlannerNode(TrackedConePlannerBase):
         self,
         *,
         result,
-        selected_edge_churn: float,
-        selected_edge_churn_count: int,
     ) -> dict:
         rc = result.reject_counts
         return {
@@ -1059,8 +986,6 @@ class MidpointPlannerNode(TrackedConePlannerBase):
             "near_field_midpoint_kink_max_rad": result.near_field_kink_max_rad,
             "seed_midpoint_distance_m": result.seed_midpoint_distance_m,
             "seed_temporal_offset_m": result.seed_temporal_offset_m,
-            "selected_chain_churn_count": selected_edge_churn_count,
-            "selected_chain_churn_ratio": selected_edge_churn,
         }
 
     def _build_operator_state_metrics(
