@@ -236,7 +236,7 @@ def build_midline_from_boundaries(
     midpoint_pairs = _dedupe_points(_build_midpoint_chain_from_matched_boundaries(left_xy, right_xy))
     if left_closed and right_closed:
         midpoint_pairs = _close_loop_if_needed(midpoint_pairs)
-    return _resample_path(midpoint_pairs, resolution_m=resolution_m, closed=_is_closed_path(midpoint_pairs))
+    return _resample_midline_path(midpoint_pairs, resolution_m=resolution_m, closed=_is_closed_path(midpoint_pairs))
 
 
 def _build_midline_from_cone_pairs(
@@ -282,10 +282,10 @@ def _build_midline_from_cone_pairs(
 
     midpoint_xy = order_boundary_points(midpoint_xy, start_xy=start_xy, heading_xy=heading_xy)
     midpoint_xy = _close_loop_if_needed(midpoint_xy)
-    return _resample_path(midpoint_xy, resolution_m=resolution_m, closed=_is_closed_path(midpoint_xy))
+    return _resample_midline_path(midpoint_xy, resolution_m=resolution_m, closed=_is_closed_path(midpoint_xy))
 
 
-def _resample_path(points_xy: np.ndarray, *, resolution_m: float, closed: bool) -> np.ndarray:
+def _resample_midline_path(points_xy: np.ndarray, *, resolution_m: float, closed: bool) -> np.ndarray:
     points_xy = as_xy(points_xy)
     if points_xy.shape[0] < 2:
         return points_xy

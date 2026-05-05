@@ -67,7 +67,7 @@ def _planner_node_contract(planner: str) -> tuple[set[str], set[str]]:
 
     def _merge_declared_defaults(module: ast.AST, planner_name: str) -> dict[str, object]:
         defaults = (
-            dict(tracked_cone_planner_contract.COMMON_MIGRATED_TRACKED_CONE_PLANNER_DEFAULTS)
+            dict(tracked_cone_planner_contract.PUBLIC_TRACKED_CONE_PLANNER_DEFAULTS)
             if planner_name in MIGRATED_PLANNERS
             else {}
         )
@@ -105,7 +105,8 @@ def _planner_node_contract(planner: str) -> tuple[set[str], set[str]]:
                     found_defaults_assignment = True
             break
 
-        assert found_defaults_assignment, planner_name
+        if planner_name not in MIGRATED_PLANNERS:
+            assert found_defaults_assignment, planner_name
         return defaults
 
     planner_path = SIM_CAR_SHARE / 'sim_car' / 'planning' / f'{planner}_planner_node.py'
@@ -314,9 +315,7 @@ def test_track_bundle_loads_optional_track_planner_limit_defaults():
         'acceleration': {},
         'smalltrack': {},
         'skidpad': {
-            'filtering.max_cone_range_m': 14.0,
-            'centerline.max_path_length_m': 14.0,
-            'filtering.planning_horizon_m': 14.0,
+            'planner.max_range_m': 14.0,
         },
     }
 
@@ -590,22 +589,54 @@ def test_planner_limit_spawn_configs_only_use_declared_and_read_parameters():
     config_path = SIM_CAR_SHARE / 'config' / 'skidpad' / 'spawn.yaml'
     config = _load_yaml(config_path)
     params = {
-        'filtering.max_cone_range_m': config['planner_limits']['max_planner_length_m'],
-        'centerline.max_path_length_m': config['planner_limits']['max_planner_length_m'],
-        'filtering.planning_horizon_m': config['planner_limits']['max_planner_length_m'],
+        'planner.max_range_m': config['planner_limits']['max_planner_length_m'],
     }
 
     for planner in MIGRATED_PLANNERS:
         declared, read_params = _planner_node_contract(planner)
-        if planner == 'corridor':
-            expected_keys = set(params)
-        else:
-            expected_keys = {
-                'filtering.max_cone_range_m',
-                'centerline.max_path_length_m',
-            }
+        expected_keys = set(params)
         assert expected_keys.issubset(declared)
         assert expected_keys.issubset(read_params)
+
+
+def test_migrated_planners_do_not_expose_low_level_algorithm_parameters():
+    removed_prefixes = (
+        'filtering.',
+        'boundary_chain.',
+        'width_estimation.',
+        'pairing.',
+        'centerline.',
+        'validation.',
+        'midline_memory.',
+    )
+    allowed = {'filtering.min_confidence'}  # Legacy launch configs must use planner.min_confidence instead.
+
+    for planner in MIGRATED_PLANNERS:
+        declared, read_params = _planner_node_contract(planner)
+        exposed = {
+            name for name in declared | read_params
+            if name not in allowed and name.startswith(removed_prefixes)
+        }
+        assert exposed == set()
+
+
+def test_cone_memory_config_uses_namespaced_public_parameters():
+    config = _load_yaml(SIM_CAR_SHARE / 'config' / 'cone_memory.yaml')
+    params = _flatten(config['cone_memory_node']['ros__parameters'])
+    allowed_prefixes = (
+        'frames.',
+        'vehicle.',
+        'memory.',
+        'fusion.',
+        'runtime.',
+        'debug.',
+        'permanent_memory.',
+        'topics.',
+    )
+
+    assert all(name.startswith(allowed_prefixes) for name in params)
+    assert 'memory.confirm_hits' in params
+    assert 'memory.min_seen_count' in params
 
 
 def test_smalltrack_spawn_config_keeps_lap_tracking():

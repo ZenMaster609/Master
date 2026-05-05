@@ -8,15 +8,24 @@ from typing import Optional, cast
 
 import numpy as np
 
-from sim_car.cones.tracking.fusion import normalize_color
 from sim_car.planning.planner_config_base import BasePlannerConfig
-from sim_car.planning.planner_utils import _clamp, _default_reject_counts
+from sim_car.planning.planner_utils import (
+    _build_boundary_chain,
+    _clamp,
+    _default_reject_counts,
+    _empty_result_fields,
+    _filter_and_order_cones,
+    _finalize_path,
+    _first_point_distance,
+    _forward_extent_m,
+    _merge_reject_counts,
+    _path_start_heading_error,
+    _resample_path,
+)
 from sim_car.planning.tracked_cone_planner_geometry import (
-    build_boundary_chain_data,
     estimate_tangents as _estimate_tangents,
     inward_distance,
     inward_normal as _inward_normal,
-    moving_average as _moving_average,
     pair_width_in_range,
     path_cumulative_lengths as _path_cumulative_lengths,
     path_heading_delta_max as _path_heading_delta_max,
@@ -39,12 +48,6 @@ _MAX_NEAR_FIELD_ALIGNMENT_HORIZON_M = 3.0
 _TRACK_HALF_WIDTH_SCALE = 0.5
 # A pair midpoint is the average of its two boundary endpoints.
 _MIDPOINT_ENDPOINT_WEIGHT = 0.5
-# Resampling below this spacing tends to amplify jitter without adding useful path detail.
-_MIN_RESAMPLE_RESOLUTION_M = 0.05
-# Include the exact endpoint when floating-point sampling lands just short of total path length.
-_RESAMPLE_ENDPOINT_EPSILON_M = 1e-9
-# Distances below this tolerance are treated as no movement for heading estimation.
-_MIN_HEADING_DELTA_DISTANCE_M = 1e-9
 # Near-field comparison allows a small behind-vehicle margin for the seed point.
 _LOCAL_FORWARD_BACKTRACK_MARGIN_M = 0.1
 # The near-field prefix must cover at least a short physical segment.
@@ -304,45 +307,6 @@ class _PreparedPlanning:
     pairing: _PairingResult
 
 
-def _filter_and_order_cones(
-    points_xy: np.ndarray,
-    colors: list[str],
-    confidences: np.ndarray,
-    track_ids: np.ndarray,
-    vehicle_xy: tuple[float, float],
-    vehicle_yaw: float,
-    config: SingleBoundaryPlannerConfig,
-) -> "_FilteredCones":
-    normalized = [normalize_color(c) for c in colors]
-    local_points = _to_vehicle_frame(points_xy, vehicle_xy, vehicle_yaw)
-
-    mask_geom = _geometry_filter(local_points, config)
-    mask_conf = confidences >= float(config.min_confidence)
-    colored_mask = np.array([c in {"blue", "yellow"} for c in normalized], dtype=bool)
-    unknown_mask = np.array([c == "unknown" for c in normalized], dtype=bool)
-    selected_mask = mask_geom & mask_conf & (
-        colored_mask | (unknown_mask if config.allow_unknown_pair_completion else False)
-    )
-
-    indices = np.where(selected_mask)[0]
-    filtered_points = points_xy[selected_mask]
-    filtered_local = local_points[selected_mask]
-    filtered_track_ids = track_ids[selected_mask]
-    filtered_colors = [normalized[i] for i in indices]
-    colored_count = int(np.count_nonzero(
-        np.array([c in {"blue", "yellow"} for c in filtered_colors], dtype=bool)
-    ))
-
-    order = _deterministic_order(filtered_local, filtered_points, filtered_colors)
-    return _FilteredCones(
-        points=filtered_points[order],
-        local=filtered_local[order],
-        track_ids=filtered_track_ids[order],
-        colors=[filtered_colors[i] for i in order],
-        colored_count=colored_count,
-    )
-
-
 def _validate_path(
     centerline: np.ndarray,
     centerline_local: np.ndarray,
@@ -447,14 +411,22 @@ def _prepare_planning(
 ) -> _PreparedPlanning | SingleBoundaryPlannerResult:
     track_ids = _coerce_track_ids(request.track_ids, request.points_xy.shape[0])
     cones = _filter_and_order_cones(
-        request.points_xy, request.colors, request.confidences, track_ids,
-        request.vehicle_xy, request.vehicle_yaw, request.config,
+        points_xy=request.points_xy,
+        colors=request.colors,
+        confidences=request.confidences,
+        track_ids=track_ids,
+        vehicle_xy=request.vehicle_xy,
+        vehicle_yaw=request.vehicle_yaw,
+        config=request.config,
+        filtered_cones_type=_FilteredCones,
+        geometry_filter=_geometry_filter,
+        include_unknown=True,
     )
     input_rejection = _reject_insufficient_colored_cones(cones, request.config)
     if input_rejection is not None:
         return input_rejection
 
-    chains = _build_boundary_chains(cones, request.config)
+    chains = _make_boundary_chains(cones, request.config)
     reject_counts = _default_reject_counts(_REJECT_COUNT_KEYS)
     expected_width_m = _expected_width_m(request.prior, request.config)
     pairing = _attempt_pairing(
@@ -493,7 +465,7 @@ def _reject_insufficient_colored_cones(
     )
 
 
-def _build_boundary_chains(
+def _make_boundary_chains(
     cones: _FilteredCones,
     config: SingleBoundaryPlannerConfig,
 ) -> _BoundaryChains:
@@ -501,8 +473,20 @@ def _build_boundary_chains(
     right_indices = np.flatnonzero(np.array([c == "yellow" for c in cones.colors], dtype=bool))
     unknown_indices = np.flatnonzero(np.array([c == "unknown" for c in cones.colors], dtype=bool))
     return _BoundaryChains(
-        left=_build_boundary_chain(cones.points, cones.local, left_indices, config),
-        right=_build_boundary_chain(cones.points, cones.local, right_indices, config),
+        left=_build_boundary_chain(
+            filtered_points=cones.points,
+            filtered_local=cones.local,
+            side_indices=left_indices,
+            config=config,
+            boundary_chain_type=_BoundaryChain,
+        ),
+        right=_build_boundary_chain(
+            filtered_points=cones.points,
+            filtered_local=cones.local,
+            side_indices=right_indices,
+            config=config,
+            boundary_chain_type=_BoundaryChain,
+        ),
         unknown_indices=unknown_indices,
     )
 
@@ -772,52 +756,6 @@ def _geometry_filter(local_points: np.ndarray, config: SingleBoundaryPlannerConf
         & np.isfinite(local_points[:, 1])
         & (distance <= float(config.max_cone_range_m))
         & (local_points[:, 0] >= -float(config.behind_drop_m))
-    )
-
-
-def _deterministic_order(
-    local_points: np.ndarray,
-    global_points: np.ndarray,
-    colors: list[str],
-) -> np.ndarray:
-    color_rank = np.asarray(
-        [
-            0 if color == "blue" else 1 if color == "yellow" else 2
-            for color in colors
-        ],
-        dtype=np.int64,
-    )
-    return np.lexsort(
-        (
-            global_points[:, 1],
-            global_points[:, 0],
-            local_points[:, 1],
-            np.abs(local_points[:, 1]),
-            local_points[:, 0],
-            color_rank,
-        )
-    )
-
-
-def _build_boundary_chain(
-    filtered_points: np.ndarray,
-    filtered_local: np.ndarray,
-    side_indices: np.ndarray,
-    config: SingleBoundaryPlannerConfig,
-) -> _BoundaryChain:
-    chain = build_boundary_chain_data(
-        filtered_points=filtered_points,
-        filtered_local=filtered_local,
-        side_indices=side_indices,
-        config=config,
-    )
-    return _BoundaryChain(
-        filtered_indices=chain.filtered_indices,
-        global_points=chain.global_points,
-        local_points=chain.local_points,
-        tangents_local=chain.tangents_local,
-        mean_heading_change_rad=chain.mean_heading_change_rad,
-        forward_extent_m=chain.forward_extent_m,
     )
 
 
@@ -1393,43 +1331,6 @@ def _offset_boundary_chain(
     return np.asarray(offset, dtype=np.float64)
 
 
-def _finalize_path(points: np.ndarray, config: SingleBoundaryPlannerConfig) -> np.ndarray:
-    if points.shape[0] == 0:
-        return np.empty((0, 2), dtype=np.float64)
-    path = np.asarray(points, dtype=np.float64)
-    if int(config.smoothing_window) > 1:
-        path = _moving_average(path, int(config.smoothing_window))
-    path = _resample_path(
-        path,
-        resolution_m=float(config.path_resolution_m),
-        max_length_m=float(config.max_path_length_m),
-    )
-    return path
-
-
-def _resample_path(points: np.ndarray, resolution_m: float, max_length_m: float) -> np.ndarray:
-    if points.shape[0] <= 1:
-        return np.asarray(points, dtype=np.float64)
-
-    cumulative = _path_cumulative_lengths(points)
-    total = min(float(cumulative[-1]), float(max_length_m))
-    if total <= _MIN_PATH_LENGTH_M:
-        return np.asarray(points[:1], dtype=np.float64)
-
-    step = max(_MIN_RESAMPLE_RESOLUTION_M, float(resolution_m))
-    samples = np.arange(
-        0.0,
-        total + _RESAMPLE_ENDPOINT_EPSILON_M,
-        step,
-        dtype=np.float64,
-    )
-    if samples.size == 0 or samples[-1] < total:
-        samples = np.concatenate((samples, [total]))
-    x = np.interp(samples, cumulative, points[:, 0])
-    y = np.interp(samples, cumulative, points[:, 1])
-    return np.column_stack((x, y)).astype(np.float64)
-
-
 def _near_field_delta_metrics(
     *,
     current: np.ndarray,
@@ -1539,37 +1440,6 @@ def _local_forward_prefix(path_local: np.ndarray, *, horizon_m: float) -> np.nda
     return _resample_path(pts, _MIN_LOCAL_PREFIX_LENGTH_M, total)
 
 
-def _path_start_heading_error(path_local: np.ndarray) -> float:
-    if path_local.shape[0] < 2:
-        return 0.0
-    delta = path_local[1] - path_local[0]
-    if float(np.hypot(delta[0], delta[1])) <= _MIN_HEADING_DELTA_DISTANCE_M:
-        return 0.0
-    return float(math.atan2(delta[1], delta[0]))
-
-
-def _forward_extent_m(path_local: np.ndarray) -> float:
-    if path_local.shape[0] == 0:
-        return 0.0
-    x_span = float(np.max(path_local[:, 0]) - np.min(path_local[:, 0]))
-    if path_local.shape[0] < 2:
-        return x_span
-    diffs = np.diff(path_local, axis=0)
-    path_length = float(np.sum(np.hypot(diffs[:, 0], diffs[:, 1])))
-    return max(x_span, path_length)
-
-
-def _first_point_distance(path_local: np.ndarray) -> float:
-    if path_local.shape[0] == 0:
-        return float("nan")
-    return float(np.hypot(path_local[0, 0], path_local[0, 1]))
-
-
-def _merge_reject_counts(target: dict[str, int], source: dict[str, int]) -> None:
-    for key, value in source.items():
-        target[key] = int(target.get(key, 0)) + int(value)
-
-
 def _empty_result(
     status: str,
     *,
@@ -1581,28 +1451,12 @@ def _empty_result(
     reject_reason: str = "",
 ) -> SingleBoundaryPlannerResult:
     return SingleBoundaryPlannerResult(
-        filtered_points=(
-            np.asarray(filtered_points, dtype=np.float64)
-            if filtered_points is not None
-            else np.empty((0, 2), dtype=np.float64)
+        **_empty_result_fields(
+            filtered_points=filtered_points,
+            filtered_colors=filtered_colors,
+            left_boundary=left_boundary,
+            right_boundary=right_boundary,
         ),
-        filtered_colors=list(filtered_colors or []),
-        candidate_edges=np.empty((0, 2), dtype=np.int64),
-        selected_edges=np.empty((0, 2), dtype=np.int64),
-        selected_pair_track_ids=np.empty((0, 2), dtype=np.int64),
-        midpoints_raw=np.empty((0, 2), dtype=np.float64),
-        centerline=np.empty((0, 2), dtype=np.float64),
-        left_boundary=(
-            np.asarray(left_boundary, dtype=np.float64)
-            if left_boundary is not None
-            else np.empty((0, 2), dtype=np.float64)
-        ),
-        right_boundary=(
-            np.asarray(right_boundary, dtype=np.float64)
-            if right_boundary is not None
-            else np.empty((0, 2), dtype=np.float64)
-        ),
-        used_fallback=False,
         status=status,
         reject_counts=reject_counts or _default_reject_counts(_REJECT_COUNT_KEYS),
         reject_reason=reject_reason,

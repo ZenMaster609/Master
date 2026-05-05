@@ -793,7 +793,7 @@ class LineTestPlannerNode(PlannerNodeUtilitiesMixin, Node):
         stability.message = _OPERATOR_REASON_LABELS.get(operator_reason, operator_reason)
 
         planner_metrics = {
-            'path_length_m': self._path_length_m(centerline),
+            'path_length_m': self._linetest_path_length_m(centerline),
             'path_curvature_abs_p95_1pm': self._path_curvature_abs_p95(centerline),
             'planner_state_code': self._operator_state_code(operator_state),
             'fresh_publish_flag': 1 if operator_state == 'fresh' else 0,
@@ -1063,7 +1063,7 @@ class LineTestPlannerNode(PlannerNodeUtilitiesMixin, Node):
         return float(math.atan2(float(vec[1]), float(vec[0])))
 
     @staticmethod
-    def _path_length_m(centerline: np.ndarray) -> float:
+    def _linetest_path_length_m(centerline: np.ndarray) -> float:
         if centerline.shape[0] < 2:
             return float('nan')
         diffs = np.diff(centerline, axis=0)

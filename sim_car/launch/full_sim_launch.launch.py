@@ -202,7 +202,7 @@ def _pointcloud3d_lidar_parameters(topic_prefix):
 
 def _cone_memory_pipeline_parameters():
     return {
-        'min_seen_count': ParameterValue(
+        'memory.min_seen_count': ParameterValue(
             PythonExpression([
                 f"{POINTCLOUD3D_CONE_MEMORY_CONFIRM_HITS} if ",
                 _lidar_pipeline_match_expr('pointcloud3d'),
@@ -210,7 +210,7 @@ def _cone_memory_pipeline_parameters():
             ]),
             value_type=int,
         ),
-        'confirm_hits': ParameterValue(
+        'memory.confirm_hits': ParameterValue(
             PythonExpression([
                 f"{POINTCLOUD3D_CONE_MEMORY_CONFIRM_HITS} if ",
                 _lidar_pipeline_match_expr('pointcloud3d'),
@@ -223,7 +223,7 @@ def _cone_memory_pipeline_parameters():
 
 def _planner_pipeline_parameters():
     return {
-        'filtering.min_confidence': ParameterValue(
+        'planner.min_confidence': ParameterValue(
             PythonExpression([
                 f"{POINTCLOUD3D_PLANNER_MIN_CONFIDENCE} if ",
                 _lidar_pipeline_match_expr('pointcloud3d'),
@@ -1070,38 +1070,38 @@ def generate_launch_description():
                     LaunchConfiguration('use_sim_time'),
                     value_type=bool,
                 ),
-                'lidar_cones_topic': PythonExpression(["'", topic_prefix, "' + '/lidar/perception/cones_3d'"]),
-                'camera_cones_topic': PythonExpression(["'", topic_prefix, "' + '/stereo/perception/cones_3d'"]),
-                'base_frame': 'front_axle',
-                'camera_range_m': ParameterValue(
+                'topics.lidar_cones_topic': PythonExpression(["'", topic_prefix, "' + '/lidar/perception/cones_3d'"]),
+                'topics.camera_cones_topic': PythonExpression(["'", topic_prefix, "' + '/stereo/perception/cones_3d'"]),
+                'frames.base_frame': 'front_axle',
+                'fusion.camera_range_m': ParameterValue(
                     LaunchConfiguration('camera_range_m'),
                     value_type=float,
                 ),
-                'prefer_lidar_if_camera_missing_far': ParameterValue(
+                'fusion.prefer_lidar_if_camera_missing_far': ParameterValue(
                     LaunchConfiguration('prefer_lidar_if_camera_missing_far'),
                     value_type=bool,
                 ),
-                'allow_camera_fallback_near': ParameterValue(
+                'fusion.allow_camera_fallback_near': ParameterValue(
                     LaunchConfiguration('allow_camera_fallback_near'),
                     value_type=bool,
                 ),
-                'publish_rate_hz': ParameterValue(
+                'runtime.publish_rate_hz': ParameterValue(
                     LaunchConfiguration('perception_rate_hz'),
                     value_type=float,
                 ),
-                'enable_id_text': ParameterValue(
+                'debug.enable_id_text': ParameterValue(
                     LaunchConfiguration('corridor_debug'),
                     value_type=bool,
                 ),
-                'enable_tentative_viz': ParameterValue(
+                'debug.enable_tentative_viz': ParameterValue(
                     LaunchConfiguration('corridor_debug'),
                     value_type=bool,
                 ),
-                'enable_raw_debug_viz': ParameterValue(
+                'debug.enable_raw_debug_viz': ParameterValue(
                     LaunchConfiguration('corridor_debug'),
                     value_type=bool,
                 ),
-                'believed_track_viz_show_cones': ParameterValue(
+                'debug.believed_track_viz_show_cones': ParameterValue(
                     LaunchConfiguration('corridor_debug'),
                     value_type=bool,
                 ),
@@ -1277,22 +1277,6 @@ def generate_launch_description():
                 ),
                 **_planner_pipeline_parameters(),
                 'lap_tracking.target_laps': resolved_path_tracking_autostop_laps,
-                'debug.enable_cone_audit_markers': ParameterValue(
-                    LaunchConfiguration('corridor_debug'),
-                    value_type=bool,
-                ),
-                'debug.show_corridor_pair_audit': ParameterValue(
-                    LaunchConfiguration('corridor_debug'),
-                    value_type=bool,
-                ),
-                'debug.corridor_pair_audit_show_labels': ParameterValue(
-                    LaunchConfiguration('corridor_debug'),
-                    value_type=bool,
-                ),
-                'debug.show_raw_cones': ParameterValue(
-                    LaunchConfiguration('corridor_debug'),
-                    value_type=bool,
-                ),
             },
         ],
         condition=_planner_selected_condition('corridor'),
@@ -1625,10 +1609,7 @@ def _load_planner_limit_overrides(spawn_config_path: str) -> dict[str, float]:
 
     max_planner_length_m = float(max_planner_length)
     return {
-        'filtering.max_cone_range_m': max_planner_length_m,
-        'centerline.max_path_length_m': max_planner_length_m,
-        # Corridor planner also gates forward planning by horizon.
-        'filtering.planning_horizon_m': max_planner_length_m,
+        'planner.max_range_m': max_planner_length_m,
     }
 
 

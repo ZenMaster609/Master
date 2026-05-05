@@ -27,8 +27,8 @@ from sim_car.planning.planner_constants import (
     VALIDATED_JUMP_ACCEPT_LATERAL_MEAN_M as _VALIDATED_JUMP_ACCEPT_LATERAL_MEAN_M,
 )
 from sim_car.planning.tracked_cone_planner_contract import (
-    COMMON_MIGRATED_TRACKED_CONE_PLANNER_DEFAULTS,
     apply_common_config_to_node,
+    declare_tracked_cone_planner_parameters,
     read_migrated_tracked_cone_planner_common_config,
 )
 from sim_car.planning.corridor_planner_core import (
@@ -46,11 +46,38 @@ from sim_car.planning.tracked_cone_planner_geometry import (
 )
 
 _CORRIDOR_MIDPOINT_SOURCE = "corridor_midpoints"
-_CORRIDOR_MIDPOINT_MIN_POINTS = 2
-_CORRIDOR_ANALYSIS_SAMPLE_COUNT = 8
-_CORRIDOR_ANALYSIS_SAMPLE_SPACING_M = 1.0
-_ANCHOR_TAPER_GATE_LATERAL_M = 0.20
-_ANCHOR_TAPER_GATE_HEADING_RAD = 0.18
+_CORRIDOR_MIDPOINT_MIN_POINTS = 2  # Two points are required to form a drawable midpoint path.
+_CORRIDOR_ANALYSIS_SAMPLE_COUNT = 8  # Eight samples keep diagnostics compact while showing near-field shape.
+_CORRIDOR_ANALYSIS_SAMPLE_SPACING_M = 1.0  # One-meter spacing matches the operator-scale path preview.
+_ANCHOR_TAPER_GATE_LATERAL_M = 0.20  # Allows small lateral drift while detecting off-axis starts.
+_ANCHOR_TAPER_GATE_HEADING_RAD = 0.18  # Roughly ten degrees keeps the near-vehicle anchor stable.
+_NANOSECONDS_TO_SECONDS = 1e-9  # ROS clock timestamps are nanoseconds; planner metrics use seconds.
+_CANDIDATE_EXTENT_EPSILON_M = 1e-6  # Treats sub-micrometer forward extent as no usable path.
+_CANDIDATE_EXTENT_TOLERANCE_MIN_M = 0.05  # Five centimeters avoids winner flips from resampling noise.
+_CANDIDATE_EXTENT_TOLERANCE_STATION_FACTOR = 0.5  # Half-station tolerance preserves prior selection behavior.
+_VALIDATED_CANDIDATE_PRIORITY = 30  # Validated core paths win ties when their extent is comparable.
+_SUPPORT_CHAIN_CANDIDATE_PRIORITY = 20  # Live pair midpoints are preferred over stale midpoint fallbacks.
+_PREVALIDATION_CANDIDATE_PRIORITY = 10  # Prevalidation paths are useful only behind live support chains.
+_MEMORY_CHAIN_CANDIDATE_PRIORITY = 5  # Remembered pairs are the weakest fallback source.
+_TRANSITION_MIN_PATH_POINTS = 2  # Two samples are required to measure displacement and heading change.
+_TRANSITION_MIN_HORIZON_M = 0.25  # Keeps the near-field comparison meaningful for very short horizons.
+_PAIR_SEGMENT_ENDPOINT_COUNT = 2  # Pair memory stores left and right cone endpoints only.
+_PAIR_SEGMENT_COORD_COUNT = 2  # Cone endpoints are planar x/y coordinates.
+_PAIR_MIDPOINT_WEIGHT = 0.5  # Midpoint is the average of the left and right endpoints.
+_PAIR_MEMORY_MERGE_DISTANCE_M = 0.35  # Merges remembered/live pairs that describe the same corridor gap.
+_PAIR_SORT_MIN_STEP_M = 1e-6  # Avoids unstable ordering from duplicate midpoint coordinates.
+_PAIR_SORT_RANGE_REGRESSION_TOLERANCE_M = 0.20  # Allows small range regressions on curved paths.
+_PAIR_SORT_BACKWARD_GATE_M = 0.75  # Strongly penalizes steps that move behind the vehicle.
+_PAIR_SORT_INITIAL_HEADING = np.asarray([1.0, 0.0], dtype=np.float64)
+_CONE_AUDIT_MARKER_START_ID = 1  # ID zero is reserved for the DELETEALL marker.
+_CONE_AUDIT_MAIN_Z_M = 0.18  # Raises cone markers above ground enough to remain visible.
+_CONE_AUDIT_HALO_Z_M = 0.03  # Keeps stale halos flat against the ground plane.
+_CONE_AUDIT_HALO_DIAMETER_M = 0.55  # Halo is wider than a cone marker so stale tracks stand out.
+_CONE_AUDIT_HALO_HEIGHT_M = 0.03  # Thin cylinder reads as a ground ring in RViz.
+_CONE_AUDIT_LABEL_Z_M = 0.75  # Labels sit above cones to reduce overlap with markers.
+_CONE_AUDIT_LABEL_HEIGHT_M = 0.16  # Label text remains readable without dominating the view.
+_CONE_AUDIT_HALO_RGBA = (0.1, 0.95, 1.0, 0.55)
+_CONE_AUDIT_LABEL_RGBA = (1.0, 1.0, 1.0, 0.95)
 _CONE_AUDIT_REASONS = (
     "used_left_chain",
     "used_right_chain",
@@ -89,6 +116,15 @@ class _ConeAuditEntry:
     missed_count: int
     last_seen_age_sec: float
     memory_only: bool
+
+
+@dataclass
+class _ConeAuditContext:
+    points: np.ndarray
+    local_points: np.ndarray
+    used_left: set[int]
+    used_right: set[int]
+    chain_rejection_reasons_by_track_id: dict[int, str]
 
 
 @dataclass
@@ -138,6 +174,12 @@ class _ControllerOutput:
     control_path_point_count: int
 
 
+@dataclass
+class _TransitionPaths:
+    stored_path: np.ndarray
+    candidate_path: np.ndarray
+
+
 class CorridorPlannerNode(TrackedConePlannerBase):
     """Tracked-cone corridor planner with shared path-memory stabilization."""
 
@@ -160,40 +202,10 @@ class CorridorPlannerNode(TrackedConePlannerBase):
         self._cone_audit_viz_pub = self.create_publisher(MarkerArray, self.cone_audit_viz_topic, 10)
 
     def _declare_parameters(self) -> None:
-        defaults = dict(COMMON_MIGRATED_TRACKED_CONE_PLANNER_DEFAULTS)
-        defaults.update({
-            "filtering.planning_horizon_m": 20.0,
-            "filtering.max_lateral_range_m": 14.0,
-            "boundary_chain.min_chain_length": 3,
-            'boundary_chain.max_heading_change_rad': 2.35,
-
-            "width_estimation.min_trustworthy_pairs": 3,
-            "corridor.min_corridor_width_m": 2.2,
-            "corridor.max_corridor_width_m": 6.4,
-            "corridor.boundary_resample_dx": 0.5,
-            "corridor.min_required_corridor_samples": 5,
-            "corridor.path_fit_smoothing_window": 5,
-            "corridor.membership_margin_m": 0.15,
-            "midline_memory.pair_memory_retention_s": 12.0,
-            "lap_tracking.target_laps": 0,
-            "validation.candidate_min_points": 2,
-            "validation.candidate_min_extent_m": 0.25,
-            "validation.min_path_points": 4,
-            "validation.min_forward_extent_m": 2.0,
-            "validation.max_heading_delta_rad": 0.75,
-            "validation.max_initial_heading_error_rad": 3.0 * math.pi / 4.0,
-            "validation.max_curvature": 0.45,
-            "debug.enable_cone_audit_markers": False,
-            "debug.cone_audit_viz_topic": "/corridor_planner/cone_audit_viz",
-            "debug.cone_audit_show_labels": True,
-            "debug.cone_audit_max_labels": 80,
-            "debug.show_corridor_pair_audit": False,
-            "debug.corridor_pair_audit_show_labels": True,
-            "debug.corridor_pair_audit_max_labels": 80,
-            "diagnostics.topic": "/corridor_planner/diagnostics",
-        })
-        for name, value in defaults.items():
-            self.declare_parameter(name, value)
+        declare_tracked_cone_planner_parameters(
+            self,
+            diagnostics_topic_default=self._planner_identity.diagnostics_topic,
+        )
 
     def _read_parameters(self) -> None:
         common = read_migrated_tracked_cone_planner_common_config(
@@ -202,94 +214,79 @@ class CorridorPlannerNode(TrackedConePlannerBase):
             diagnostics_topic_fallback=self._planner_identity.diagnostics_topic,
         )
         apply_common_config_to_node(self, common)
-        self.pair_memory_retention_s = max(
-            self.midline_hold_last_valid_duration_s,
-            float(self.get_parameter("midline_memory.pair_memory_retention_s").value),
-        )
-        self.lap_tracking_target_laps = max(
-            0,
-            int(self.get_parameter("lap_tracking.target_laps").value),
-        )
-        self.enable_cone_audit_markers = bool(
-            self.get_parameter("debug.enable_cone_audit_markers").value
-        )
-        self.cone_audit_viz_topic = str(
-            self.get_parameter("debug.cone_audit_viz_topic").value
-        ).strip() or "/corridor_planner/cone_audit_viz"
-        self.cone_audit_show_labels = bool(
-            self.get_parameter("debug.cone_audit_show_labels").value
-        )
-        self.cone_audit_max_labels = max(
-            0,
-            int(self.get_parameter("debug.cone_audit_max_labels").value),
-        )
-        self.show_corridor_pair_audit = bool(
-            self.get_parameter("debug.show_corridor_pair_audit").value
-        )
-        self.corridor_pair_audit_show_labels = bool(
-            self.get_parameter("debug.corridor_pair_audit_show_labels").value
-        )
-        self.corridor_pair_audit_max_labels = max(
-            0,
-            int(self.get_parameter("debug.corridor_pair_audit_max_labels").value),
-        )
-
-        self._core_config = CorridorPlannerConfig(
-            max_cone_range_m=float(self.get_parameter("filtering.max_cone_range_m").value),
-            planning_horizon_m=float(self.get_parameter("filtering.planning_horizon_m").value),
-            max_lateral_range_m=float(self.get_parameter("filtering.max_lateral_range_m").value),
-            behind_drop_m=float(self.get_parameter("filtering.behind_drop_m").value),
-            min_confidence=float(self.get_parameter("filtering.min_confidence").value),
-            min_required_cones=max(2, int(self.get_parameter("filtering.min_required_cones").value)),
-            min_step_m=float(self.get_parameter("boundary_chain.min_step_m").value),
-            max_step_m=float(self.get_parameter("boundary_chain.max_step_m").value),
-            max_heading_change_rad=float(self.get_parameter("boundary_chain.max_heading_change_rad").value),
-            min_forward_progress_m=float(
-                self.get_parameter("boundary_chain.min_forward_progress_m").value
-            ),
-            min_chain_length=max(2, int(self.get_parameter("boundary_chain.min_chain_length").value)),
-            initial_width_m=float(self.get_parameter("width_estimation.initial_width_m").value),
-            min_width_m=float(self.get_parameter("width_estimation.min_width_m").value),
-            max_width_m=float(self.get_parameter("width_estimation.max_width_m").value),
-            width_filter_alpha=float(self.get_parameter("width_estimation.alpha").value),
-            max_width_delta_per_update_m=float(
-                self.get_parameter("width_estimation.max_delta_per_update_m").value
-            ),
-            min_trustworthy_pairs=max(
-                1,
-                int(self.get_parameter("width_estimation.min_trustworthy_pairs").value),
-            ),
-            boundary_resample_dx=float(self.get_parameter("corridor.boundary_resample_dx").value),
-            min_corridor_width_m=float(self.get_parameter("corridor.min_corridor_width_m").value),
-            max_corridor_width_m=float(self.get_parameter("corridor.max_corridor_width_m").value),
-            min_required_corridor_samples=max(
-                2,
-                int(self.get_parameter("corridor.min_required_corridor_samples").value),
-            ),
-            path_fit_smoothing_window=max(
-                1,
-                int(self.get_parameter("corridor.path_fit_smoothing_window").value),
-            ),
-            membership_margin_m=float(self.get_parameter("corridor.membership_margin_m").value),
-            path_resolution_m=float(self.get_parameter("centerline.path_resolution_m").value),
-            max_path_length_m=float(self.get_parameter("centerline.max_path_length_m").value),
-            min_path_points=max(2, int(self.get_parameter("validation.min_path_points").value)),
-            min_forward_extent_m=float(self.get_parameter("validation.min_forward_extent_m").value),
-            jump_check_horizon_m=float(self.get_parameter("validation.jump_check_horizon_m").value),
-            max_near_field_lateral_jump_m=float(
-                self.get_parameter("validation.max_near_field_lateral_jump_m").value
-            ),
-            max_heading_delta_rad=float(
-                self.get_parameter("validation.max_heading_delta_rad").value
-            ),
-            max_initial_heading_error_rad=float(
-                self.get_parameter("validation.max_initial_heading_error_rad").value
-            ),
-            max_curvature=float(
-                self.get_parameter("validation.max_curvature").value
-            ),
-        )
+        self._read_runtime_parameters()
+        self._core_config = self._build_core_config()
         self._filtered_track_width_m = float(self._core_config.initial_width_m)
+
+    def _read_runtime_parameters(self) -> None:
+        self.pair_memory_retention_s = max(self.midline_hold_last_valid_duration_s, 12.0)
+        self.enable_cone_audit_markers = False
+        self.cone_audit_viz_topic = "/corridor_planner/cone_audit_viz"
+        self.cone_audit_show_labels = True
+        self.cone_audit_max_labels = 80
+        self.show_corridor_pair_audit = False
+        self.corridor_pair_audit_show_labels = True
+        self.corridor_pair_audit_max_labels = 80
+
+    def _build_core_config(self) -> CorridorPlannerConfig:
+        values = {}
+        values.update(self._filtering_config_values())
+        values.update(self._boundary_chain_and_width_config_values())
+        values.update(self._corridor_and_centerline_config_values())
+        values.update(self._validation_config_values())
+        return CorridorPlannerConfig(**values)
+
+    def _filtering_config_values(self) -> dict:
+        profile = self._planner_algorithm_profile
+        return {
+            "max_cone_range_m": profile.max_cone_range_m,
+            "planning_horizon_m": profile.max_cone_range_m,
+            "max_lateral_range_m": 14.0,
+            "behind_drop_m": profile.behind_drop_m,
+            "min_confidence": profile.min_confidence,
+            "min_required_cones": max(2, profile.min_required_cones),
+        }
+
+    def _boundary_chain_and_width_config_values(self) -> dict:
+        profile = self._planner_algorithm_profile
+        return {
+            "min_step_m": profile.boundary_min_step_m,
+            "max_step_m": profile.boundary_max_step_m,
+            "max_heading_change_rad": 2.35,
+            "min_forward_progress_m": profile.boundary_min_forward_progress_m,
+            "min_chain_length": 3,
+            "initial_width_m": profile.initial_width_m,
+            "min_width_m": profile.min_width_m,
+            "max_width_m": profile.max_width_m,
+            "width_filter_alpha": profile.width_filter_alpha,
+            "max_width_delta_per_update_m": profile.max_width_delta_per_update_m,
+            "min_trustworthy_pairs": 3,
+        }
+
+    def _corridor_and_centerline_config_values(self) -> dict:
+        profile = self._planner_algorithm_profile
+        return {
+            "boundary_resample_dx": 0.5,
+            "min_corridor_width_m": 2.2,
+            "max_corridor_width_m": 6.4,
+            "min_required_corridor_samples": 5,
+            "path_fit_smoothing_window": 5,
+            "membership_margin_m": 0.15,
+            "path_resolution_m": profile.centerline_path_resolution_m,
+            "max_path_length_m": profile.max_path_length_m,
+        }
+
+    def _validation_config_values(self) -> dict:
+        profile = self._planner_algorithm_profile
+        return {
+            "min_path_points": 4,
+            "min_forward_extent_m": 2.0,
+            "jump_check_horizon_m": profile.jump_check_horizon_m,
+            "max_near_field_lateral_jump_m": 0.6,
+            "max_heading_delta_rad": 0.75,
+            "max_initial_heading_error_rad": 3.0 * math.pi / 4.0,
+            "max_curvature": 0.45,
+        }
 
     def _on_timer(self) -> None:
         if (ctx := self._resolve_cone_planning_context()) is None:
@@ -507,116 +504,6 @@ class CorridorPlannerNode(TrackedConePlannerBase):
             hold_reason=hold_reason, plan_hold_active=plan_hold_active,
         )
 
-    def _buffer_and_anchor_centerline(
-        self,
-        result,
-        raw_centerline: np.ndarray,
-        candidate_source: str,
-        raw_midpoint_chain: np.ndarray,
-        target_frame: str,
-        vehicle_x: float,
-        vehicle_y: float,
-        vehicle_yaw: float,
-        now_sec: float,
-    ) -> tuple:
-        candidate_update_ok, candidate_update_reason = self._candidate_path_is_updateable(
-            candidate_centerline=raw_centerline, vehicle_x=vehicle_x, vehicle_y=vehicle_y,
-            vehicle_yaw=vehicle_yaw, result=result, candidate_source=candidate_source,
-        )
-        centerline = self._update_midline_buffer(
-            candidate_centerline=raw_centerline, candidate_source=candidate_source,
-            candidate_update_ok=candidate_update_ok, candidate_update_reason=candidate_update_reason,
-            frame_id=target_frame, vehicle_x=vehicle_x, vehicle_y=vehicle_y, vehicle_yaw=vehicle_yaw,
-            result=result, now_sec=now_sec, support_centerline=raw_midpoint_chain,
-        )
-        candidate_update_ok = bool(getattr(self, "_last_midline_candidate_update_ok", candidate_update_ok))
-        candidate_update_reason = str(getattr(self, "_last_midline_candidate_update_reason", candidate_update_reason))
-        buffered_centerline = np.array(centerline, copy=True)
-        centerline = self._anchor_centerline_near_vehicle(
-            centerline=centerline, frame_id=target_frame,
-            vehicle_x=vehicle_x, vehicle_y=vehicle_y, vehicle_yaw=vehicle_yaw,
-        )
-        return centerline, buffered_centerline, candidate_update_ok, candidate_update_reason
-
-    def _build_midline_status(
-        self,
-        result,
-        raw_centerline: np.ndarray,
-        centerline: np.ndarray,
-        candidate_source: str,
-        candidate_update_ok: bool,
-        candidate_update_reason: str,
-        pair_segments_for_viz: np.ndarray,
-        raw_midpoint_chain: np.ndarray,
-        target_frame: str,
-        vehicle_x: float,
-        vehicle_y: float,
-        vehicle_yaw: float,
-        now_sec: float,
-    ) -> tuple:
-        status = result.status
-        if not candidate_update_ok and centerline.shape[0] > 0:
-            status = f"{status}; holding stored midline"
-        elif (
-            raw_centerline.shape[0] > 0 and centerline.shape[0] > 0
-            and (raw_centerline.shape != centerline.shape or not np.allclose(raw_centerline, centerline))
-        ):
-            status = f"{status}; publishing stored midline"
-        if candidate_source != "validated" and raw_centerline.shape[0] > 0:
-            status = f"{status}; using {candidate_source}"
-        if result.status == "ok" and result.pair_segments.size > 0:
-            self._remember_pairs(
-                result=result, frame_id=target_frame,
-                vehicle_x=vehicle_x, vehicle_y=vehicle_y, vehicle_yaw=vehicle_yaw, now_sec=now_sec,
-            )
-        if centerline.shape[0] > 0 and raw_centerline.shape[0] > 0:
-            self._last_valid_pair_segments = (
-                pair_segments_for_viz if pair_segments_for_viz.size > 0 else self._last_valid_pair_segments
-            )
-        elif self._last_valid_pair_segments is not None and centerline.shape[0] > 0:
-            pair_segments_for_viz = np.array(self._last_valid_pair_segments, copy=True)
-        return status, pair_segments_for_viz, raw_midpoint_chain
-
-    def _apply_hold_logic(
-        self,
-        result,
-        centerline: np.ndarray,
-        candidate_update_ok: bool,
-        candidate_update_reason: str,
-        status: str,
-        now_sec: float,
-        pair_segments_for_viz: np.ndarray,
-        raw_midpoint_chain: np.ndarray,
-    ) -> tuple:
-        plan_hold_active = False
-        publish_mode = "fresh"
-        hold_reason = result.reject_reason
-        if centerline.shape[0] > 0 and candidate_update_ok:
-            continue_holding = self._advance_hold_hysteresis(plan_ok=True)
-            if continue_holding:
-                held_centerline = self._held_centerline(now_sec)
-                if held_centerline is not None:
-                    centerline = held_centerline
-                    plan_hold_active = True
-                    publish_mode = "held"
-                    status = (
-                        f"{status}; hysteresis holding previous valid centerline "
-                        f"({self._hold_clean_frame_count}/{self.hold_exit_clean_frames})"
-                    )
-        else:
-            self._advance_hold_hysteresis(plan_ok=False)
-            held_centerline = self._held_centerline(now_sec)
-            if held_centerline is not None:
-                centerline = held_centerline
-                plan_hold_active = True
-                publish_mode = "held"
-                status = f"{status}; holding previous valid centerline"
-            else:
-                publish_mode = "held"
-        if plan_hold_active:
-            hold_reason = result.reject_reason or candidate_update_reason or status
-        return centerline, publish_mode, plan_hold_active, hold_reason, status
-
     def _refresh_hold_viz(
         self,
         plan_hold_active: bool,
@@ -699,43 +586,6 @@ class CorridorPlannerNode(TrackedConePlannerBase):
         cmd_steering = float(self._last_steering_cmd) if self._last_steering_cmd is not None else 0.0
         return None, None, cmd_speed, cmd_steering, 0.0, zero_flag, False
 
-    def _execute_controller(
-        self,
-        control_path: np.ndarray,
-        target_frame: str,
-        vehicle_x: float,
-        vehicle_y: float,
-        vehicle_yaw: float,
-    ) -> tuple:
-        try:
-            controller_output = self._controller.compute(
-                control_path=control_path,
-                speed_mps=self._latest_speed_mps,
-                yaw_rate_rps=self._latest_yaw_rate_rps,
-            )
-        except ValueError as exc:
-            self._warn_throttled("controller_compute_error", f"controller compute failed: {exc}")
-            zero_flag = int(self._apply_no_path_behavior())
-            cmd_speed = float(self._last_speed_cmd) if self._last_speed_cmd is not None else 0.0
-            cmd_steering = float(self._last_steering_cmd) if self._last_steering_cmd is not None else 0.0
-            return None, None, cmd_speed, cmd_steering, 0.0, zero_flag, True
-        cmd_steering = float(controller_output.steering_rad)
-        cmd_speed = self._compute_speed_command(float(controller_output.kappa))
-        lookahead = float(controller_output.lookahead_m)
-        control_target_base = np.asarray(controller_output.target_point_base, dtype=np.float64)
-        self._last_speed_cmd = cmd_speed
-        self._last_steering_cmd = cmd_steering
-        self._publish_cmd(cmd_speed, cmd_steering)
-        control_target_frame = self._resolve_control_target_frame(
-            control_target_base, target_frame, vehicle_x, vehicle_y, vehicle_yaw,
-        )
-        ctrl_debug = None
-        if controller_output.stanley_debug is not None:
-            ctrl_debug = self._build_stanley_debug_metrics(
-                controller_output.stanley_debug, control_target_frame,
-            )
-        return control_target_frame, ctrl_debug, cmd_speed, cmd_steering, lookahead, 0, False
-
     def _resolve_control_target_frame(
         self,
         control_target_base: np.ndarray,
@@ -753,34 +603,6 @@ class CorridorPlannerNode(TrackedConePlannerBase):
             )
             return np.array([tx, ty], dtype=np.float64)
         return None
-
-    def _build_stanley_debug_metrics(self, debug, control_target_frame: Optional[np.ndarray]) -> dict:
-        return {
-            "heading_error_rad": float(debug.heading_error_rad),
-            "cross_track_error_m": float(debug.cross_track_error_m),
-            "vehicle_speed_mps": float(debug.vehicle_speed_mps),
-            "speed_term_mps": float(debug.speed_term_mps),
-            "heading_contribution_rad": float(debug.heading_contribution_rad),
-            "cross_track_contribution_rad": float(debug.cross_track_contribution_rad),
-            "yaw_rate_damping_contribution_rad": float(debug.yaw_rate_damping_contribution_rad),
-            "yaw_rate_rps": float(self._latest_yaw_rate_rps),
-            "raw_steering_cmd_rad": float(debug.raw_steering_cmd_rad),
-            "steering_after_clamp_rad": float(debug.steering_after_clamp_rad),
-            "steering_after_filter_rad": float(debug.steering_after_filter_rad),
-            "steering_after_rate_limit_rad": float(debug.steering_after_rate_limit_rad),
-            "final_steering_cmd_rad": float(debug.final_steering_cmd_rad),
-            "steering_saturated_flag": 1.0 if bool(debug.steering_saturated_flag) else 0.0,
-            "nearest_path_index": float(debug.nearest_path_index),
-            "heading_path_index": float(debug.heading_path_index),
-            "target_point_x_base_m": float(debug.target_point_x_base_m),
-            "target_point_y_base_m": float(debug.target_point_y_base_m),
-            "target_point_x_frame_m": (
-                float(control_target_frame[0]) if control_target_frame is not None else float("nan")
-            ),
-            "target_point_y_frame_m": (
-                float(control_target_frame[1]) if control_target_frame is not None else float("nan")
-            ),
-        }
 
     def _determine_operator_state(
         self, result, midline: _MidlineUpdateResult, ctrl: _ControllerOutput,
@@ -1009,75 +831,89 @@ class CorridorPlannerNode(TrackedConePlannerBase):
         vehicle_yaw: float,
         now_sec: float,
     ) -> list[_ConeAuditEntry]:
+        context = self._build_cone_audit_context(
+            planning_frame=planning_frame, result=result,
+            vehicle_xy=vehicle_xy, vehicle_yaw=vehicle_yaw,
+        )
+        return [
+            self._build_single_cone_audit_entry(
+                idx=idx, cone=cone, planning_frame=planning_frame,
+                context=context, now_sec=now_sec,
+            )
+            for idx, cone in enumerate(msg.cones)
+        ]
+
+    def _build_cone_audit_context(
+        self,
+        *,
+        planning_frame,
+        result: CorridorPlannerResult,
+        vehicle_xy: tuple[float, float],
+        vehicle_yaw: float,
+    ) -> _ConeAuditContext:
         points = np.asarray(planning_frame.points_xy, dtype=np.float64)
         if points.ndim != 2 or points.shape[1] != 2:
             points = np.empty((0, 2), dtype=np.float64)
-        local_points = self._audit_points_to_vehicle_frame(points, vehicle_xy, vehicle_yaw)
-        used_left = {int(track_id) for track_id in np.asarray(result.used_left_track_ids, dtype=np.int64)}
-        used_right = {int(track_id) for track_id in np.asarray(result.used_right_track_ids, dtype=np.int64)}
-        entries: list[_ConeAuditEntry] = []
-        for idx, cone in enumerate(msg.cones):
-            point_xy = points[idx] if idx < points.shape[0] else np.asarray([float("nan"), float("nan")])
-            local_xy = (
-                local_points[idx]
-                if idx < local_points.shape[0]
-                else np.asarray([float("nan"), float("nan")], dtype=np.float64)
-            )
-            track_id = self._audit_array_int(planning_frame.track_ids, idx, idx)
-            track_state = self._audit_array_int(planning_frame.track_states, idx, MSG_TRACK_STATE_CONFIRMED)
-            confidence = self._audit_array_float(
-                planning_frame.raw_confidences,
-                idx,
-                float(getattr(cone, "confidence", 0.0)),
-            )
-            planner_confidence = self._audit_array_float(planning_frame.planner_confidences, idx, confidence)
-            track_confidence = self._audit_array_float(
-                planning_frame.track_confidences,
-                idx,
-                float(getattr(cone, "track_confidence", confidence)),
-            )
-            raw_color = (
-                planning_frame.raw_colors[idx]
-                if idx < len(planning_frame.raw_colors)
-                else normalize_color(getattr(cone, "color", ""))
-            )
-            resolved_color = (
-                planning_frame.colors[idx]
-                if idx < len(planning_frame.colors)
-                else normalize_color(getattr(cone, "boundary_color", ""))
-            )
-            missed_count = int(getattr(cone, "missed_count", 0))
-            age_sec = self._stamp_age_sec(getattr(cone, "last_seen", None), now_sec)
-            memory_only = bool(track_state == MSG_TRACK_STATE_STALE or missed_count > 0)
-            reason = self._classify_cone_audit_reason(
-                track_id=track_id,
-                local_xy=local_xy,
-                resolved_color=resolved_color,
-                track_state=track_state,
-                planner_confidence=planner_confidence,
-                used_left=used_left,
-                used_right=used_right,
-                chain_rejection_reasons_by_track_id=result.chain_rejection_reasons_by_track_id,
-            )
-            entries.append(
-                _ConeAuditEntry(
-                    track_id=int(track_id),
-                    reason=reason,
-                    point_xy=np.asarray(point_xy, dtype=np.float64),
-                    local_x_m=float(local_xy[0]),
-                    local_y_m=float(local_xy[1]),
-                    raw_color=str(raw_color),
-                    resolved_color=str(resolved_color),
-                    track_state=int(track_state),
-                    confidence=float(confidence),
-                    track_confidence=float(track_confidence),
-                    color_confidence=float(getattr(cone, "color_confidence", float("nan"))),
-                    missed_count=missed_count,
-                    last_seen_age_sec=float(age_sec),
-                    memory_only=memory_only,
-                )
-            )
-        return entries
+        return _ConeAuditContext(
+            points=points,
+            local_points=self._audit_points_to_vehicle_frame(points, vehicle_xy, vehicle_yaw),
+            used_left={int(track_id) for track_id in np.asarray(result.used_left_track_ids, dtype=np.int64)},
+            used_right={int(track_id) for track_id in np.asarray(result.used_right_track_ids, dtype=np.int64)},
+            chain_rejection_reasons_by_track_id=result.chain_rejection_reasons_by_track_id,
+        )
+
+    def _build_single_cone_audit_entry(
+        self, *,
+        idx: int,
+        cone,
+        planning_frame,
+        context: _ConeAuditContext,
+        now_sec: float,
+    ) -> _ConeAuditEntry:
+        point_xy = self._audit_point_at(context.points, idx)
+        local_xy = self._audit_point_at(context.local_points, idx)
+        track_id = self._audit_array_int(planning_frame.track_ids, idx, idx)
+        track_state = self._audit_array_int(planning_frame.track_states, idx, MSG_TRACK_STATE_CONFIRMED)
+        confidence = self._audit_array_float(
+            planning_frame.raw_confidences, idx, float(getattr(cone, "confidence", 0.0)),
+        )
+        planner_confidence = self._audit_array_float(planning_frame.planner_confidences, idx, confidence)
+        track_confidence = self._audit_array_float(
+            planning_frame.track_confidences, idx, float(getattr(cone, "track_confidence", confidence)),
+        )
+        raw_color = self._audit_color(planning_frame.raw_colors, idx, getattr(cone, "color", ""))
+        resolved_color = self._audit_color(
+            planning_frame.colors, idx, getattr(cone, "boundary_color", ""),
+        )
+        missed_count = int(getattr(cone, "missed_count", 0))
+        reason = self._classify_cone_audit_reason(
+            track_id=track_id, local_xy=local_xy, resolved_color=resolved_color,
+            track_state=track_state, planner_confidence=planner_confidence,
+            used_left=context.used_left, used_right=context.used_right,
+            chain_rejection_reasons_by_track_id=context.chain_rejection_reasons_by_track_id,
+        )
+        return _ConeAuditEntry(
+            track_id=int(track_id), reason=reason, point_xy=np.asarray(point_xy, dtype=np.float64),
+            local_x_m=float(local_xy[0]), local_y_m=float(local_xy[1]), raw_color=str(raw_color),
+            resolved_color=str(resolved_color), track_state=int(track_state),
+            confidence=float(confidence), track_confidence=float(track_confidence),
+            color_confidence=float(getattr(cone, "color_confidence", float("nan"))),
+            missed_count=missed_count,
+            last_seen_age_sec=float(self._stamp_age_sec(getattr(cone, "last_seen", None), now_sec)),
+            memory_only=bool(track_state == MSG_TRACK_STATE_STALE or missed_count > 0),
+        )
+
+    @staticmethod
+    def _audit_point_at(points: np.ndarray, idx: int) -> np.ndarray:
+        if idx < points.shape[0]:
+            return points[idx]
+        return np.asarray([float("nan"), float("nan")], dtype=np.float64)
+
+    @staticmethod
+    def _audit_color(values: list, idx: int, fallback: str) -> str:
+        if idx < len(values):
+            return str(values[idx])
+        return normalize_color(fallback)
 
     def _classify_cone_audit_reason(
         self,
@@ -1229,84 +1065,87 @@ class CorridorPlannerNode(TrackedConePlannerBase):
         entries: list[_ConeAuditEntry],
     ) -> MarkerArray:
         arr = MarkerArray()
-        clear = Marker()
-        clear.header.frame_id = frame_id
-        clear.header.stamp = stamp
-        clear.action = Marker.DELETEALL
-        arr.markers.append(clear)
-
-        marker_id = 1
+        arr.markers.append(self._cone_audit_clear_marker(frame_id=frame_id, stamp=stamp))
         label_count = 0
         for entry in entries:
             if not np.all(np.isfinite(entry.point_xy)):
                 continue
-            main = Marker()
-            main.header.frame_id = frame_id
-            main.header.stamp = stamp
-            main.ns = self._cone_audit_marker_namespace(entry.reason)
-            main.id = marker_id
-            marker_id += 1
-            main.type = Marker.CUBE if entry.reason.startswith("rejected_geometry") else Marker.SPHERE
-            main.action = Marker.ADD
-            main.pose.position.x = float(entry.point_xy[0])
-            main.pose.position.y = float(entry.point_xy[1])
-            main.pose.position.z = 0.18
-            main.pose.orientation.w = 1.0
-            scale = self._cone_audit_marker_scale(entry.reason)
-            main.scale.x = scale
-            main.scale.y = scale
-            main.scale.z = scale
-            r, g, b, a = self._cone_audit_marker_rgba(entry)
-            main.color.r = r
-            main.color.g = g
-            main.color.b = b
-            main.color.a = a
-            arr.markers.append(main)
-
+            arr.markers.append(self._build_cone_audit_main_marker(
+                frame_id=frame_id, stamp=stamp, entry=entry, marker_id=len(arr.markers),
+            ))
             if entry.memory_only:
-                halo = Marker()
-                halo.header.frame_id = frame_id
-                halo.header.stamp = stamp
-                halo.ns = "cone_audit_stale_halo"
-                halo.id = marker_id
-                marker_id += 1
-                halo.type = Marker.CYLINDER
-                halo.action = Marker.ADD
-                halo.pose.position.x = float(entry.point_xy[0])
-                halo.pose.position.y = float(entry.point_xy[1])
-                halo.pose.position.z = 0.03
-                halo.pose.orientation.w = 1.0
-                halo.scale.x = 0.55
-                halo.scale.y = 0.55
-                halo.scale.z = 0.03
-                halo.color.r = 0.1
-                halo.color.g = 0.95
-                halo.color.b = 1.0
-                halo.color.a = 0.55
-                arr.markers.append(halo)
-
+                arr.markers.append(self._build_cone_audit_halo_marker(
+                    frame_id=frame_id, stamp=stamp, entry=entry, marker_id=len(arr.markers),
+                ))
             if self.cone_audit_show_labels and label_count < self.cone_audit_max_labels:
-                label = Marker()
-                label.header.frame_id = frame_id
-                label.header.stamp = stamp
-                label.ns = "cone_audit_labels"
-                label.id = marker_id
-                marker_id += 1
-                label.type = Marker.TEXT_VIEW_FACING
-                label.action = Marker.ADD
-                label.pose.position.x = float(entry.point_xy[0])
-                label.pose.position.y = float(entry.point_xy[1])
-                label.pose.position.z = 0.75
-                label.pose.orientation.w = 1.0
-                label.scale.z = 0.16
-                label.color.r = 1.0
-                label.color.g = 1.0
-                label.color.b = 1.0
-                label.color.a = 0.95
-                label.text = self._cone_audit_label(entry)
-                arr.markers.append(label)
+                arr.markers.append(self._build_cone_audit_label_marker(
+                    frame_id=frame_id, stamp=stamp, entry=entry, marker_id=len(arr.markers),
+                ))
                 label_count += 1
         return arr
+
+    @staticmethod
+    def _cone_audit_clear_marker(*, frame_id: str, stamp) -> Marker:
+        marker = Marker()
+        marker.header.frame_id = frame_id
+        marker.header.stamp = stamp
+        marker.action = Marker.DELETEALL
+        return marker
+
+    def _build_cone_audit_main_marker(
+        self, *, frame_id: str, stamp, entry: _ConeAuditEntry, marker_id: int,
+    ) -> Marker:
+        marker = self._cone_audit_base_marker(frame_id, stamp, entry, marker_id)
+        marker.ns = self._cone_audit_marker_namespace(entry.reason)
+        marker.type = Marker.CUBE if entry.reason.startswith("rejected_geometry") else Marker.SPHERE
+        marker.pose.position.z = _CONE_AUDIT_MAIN_Z_M
+        scale = self._cone_audit_marker_scale(entry.reason)
+        marker.scale.x = scale
+        marker.scale.y = scale
+        marker.scale.z = scale
+        self._apply_marker_rgba(marker, self._cone_audit_marker_rgba(entry))
+        return marker
+
+    def _build_cone_audit_halo_marker(
+        self, *, frame_id: str, stamp, entry: _ConeAuditEntry, marker_id: int,
+    ) -> Marker:
+        marker = self._cone_audit_base_marker(frame_id, stamp, entry, marker_id)
+        marker.ns = "cone_audit_stale_halo"
+        marker.type = Marker.CYLINDER
+        marker.pose.position.z = _CONE_AUDIT_HALO_Z_M
+        marker.scale.x = _CONE_AUDIT_HALO_DIAMETER_M
+        marker.scale.y = _CONE_AUDIT_HALO_DIAMETER_M
+        marker.scale.z = _CONE_AUDIT_HALO_HEIGHT_M
+        self._apply_marker_rgba(marker, _CONE_AUDIT_HALO_RGBA)
+        return marker
+
+    def _build_cone_audit_label_marker(
+        self, *, frame_id: str, stamp, entry: _ConeAuditEntry, marker_id: int,
+    ) -> Marker:
+        marker = self._cone_audit_base_marker(frame_id, stamp, entry, marker_id)
+        marker.ns = "cone_audit_labels"
+        marker.type = Marker.TEXT_VIEW_FACING
+        marker.pose.position.z = _CONE_AUDIT_LABEL_Z_M
+        marker.scale.z = _CONE_AUDIT_LABEL_HEIGHT_M
+        marker.text = self._cone_audit_label(entry)
+        self._apply_marker_rgba(marker, _CONE_AUDIT_LABEL_RGBA)
+        return marker
+
+    @staticmethod
+    def _cone_audit_base_marker(frame_id: str, stamp, entry: _ConeAuditEntry, marker_id: int) -> Marker:
+        marker = Marker()
+        marker.header.frame_id = frame_id
+        marker.header.stamp = stamp
+        marker.id = _CONE_AUDIT_MARKER_START_ID if marker_id < 1 else marker_id
+        marker.action = Marker.ADD
+        marker.pose.position.x = float(entry.point_xy[0])
+        marker.pose.position.y = float(entry.point_xy[1])
+        marker.pose.orientation.w = 1.0
+        return marker
+
+    @staticmethod
+    def _apply_marker_rgba(marker: Marker, rgba: tuple[float, float, float, float]) -> None:
+        marker.color.r, marker.color.g, marker.color.b, marker.color.a = rgba
 
     @staticmethod
     def _cone_audit_marker_namespace(reason: str) -> str:
@@ -1406,41 +1245,46 @@ class CorridorPlannerNode(TrackedConePlannerBase):
             return []
         entries: list[_PairMemoryEntry] = []
         for pair_segment in np.asarray(pair_segments, dtype=np.float64):
-            if pair_segment.shape != (2, 2):
-                continue
-            left_point = np.asarray(pair_segment[0], dtype=np.float64)
-            right_point = np.asarray(pair_segment[1], dtype=np.float64)
-            midpoint = 0.5 * (left_point + right_point)
-            left_x_odom = float(left_point[0])
-            left_y_odom = float(left_point[1])
-            right_x_odom = float(right_point[0])
-            right_y_odom = float(right_point[1])
-            midpoint_x_odom = float(midpoint[0])
-            midpoint_y_odom = float(midpoint[1])
-            if self._is_alias(frame_id, self.base_frame):
-                left_x_odom, left_y_odom = _base_point_to_odom(
-                    left_x_odom, left_y_odom, vehicle_x, vehicle_y, vehicle_yaw
-                )
-                right_x_odom, right_y_odom = _base_point_to_odom(
-                    right_x_odom, right_y_odom, vehicle_x, vehicle_y, vehicle_yaw
-                )
-                midpoint_x_odom, midpoint_y_odom = _base_point_to_odom(
-                    midpoint_x_odom, midpoint_y_odom, vehicle_x, vehicle_y, vehicle_yaw
-                )
-            elif not self._is_alias(frame_id, self.odom_frame):
-                continue
-            entries.append(
-                _PairMemoryEntry(
-                    left_x_odom=left_x_odom,
-                    left_y_odom=left_y_odom,
-                    right_x_odom=right_x_odom,
-                    right_y_odom=right_y_odom,
-                    midpoint_x_odom=midpoint_x_odom,
-                    midpoint_y_odom=midpoint_y_odom,
-                    last_valid_sec=float(now_sec),
-                )
+            entry = self._transform_pair_segment_to_odom(
+                pair_segment=pair_segment, frame_id=frame_id,
+                vehicle_x=vehicle_x, vehicle_y=vehicle_y, vehicle_yaw=vehicle_yaw,
+                now_sec=now_sec,
             )
+            if entry is None:
+                continue
+            entries.append(entry)
         return entries
+
+    def _transform_pair_segment_to_odom(
+        self,
+        *,
+        pair_segment: np.ndarray,
+        frame_id: str,
+        vehicle_x: float,
+        vehicle_y: float,
+        vehicle_yaw: float,
+        now_sec: float,
+    ) -> Optional[_PairMemoryEntry]:
+        if pair_segment.shape != (_PAIR_SEGMENT_ENDPOINT_COUNT, _PAIR_SEGMENT_COORD_COUNT):
+            return None
+        left_point = np.asarray(pair_segment[0], dtype=np.float64)
+        right_point = np.asarray(pair_segment[1], dtype=np.float64)
+        midpoint = _PAIR_MIDPOINT_WEIGHT * (left_point + right_point)
+        left = (float(left_point[0]), float(left_point[1]))
+        right = (float(right_point[0]), float(right_point[1]))
+        middle = (float(midpoint[0]), float(midpoint[1]))
+        if self._is_alias(frame_id, self.base_frame):
+            left = _base_point_to_odom(*left, vehicle_x, vehicle_y, vehicle_yaw)
+            right = _base_point_to_odom(*right, vehicle_x, vehicle_y, vehicle_yaw)
+            middle = _base_point_to_odom(*middle, vehicle_x, vehicle_y, vehicle_yaw)
+        elif not self._is_alias(frame_id, self.odom_frame):
+            return None
+        return _PairMemoryEntry(
+            left_x_odom=float(left[0]), left_y_odom=float(left[1]),
+            right_x_odom=float(right[0]), right_y_odom=float(right[1]),
+            midpoint_x_odom=float(middle[0]), midpoint_y_odom=float(middle[1]),
+            last_valid_sec=float(now_sec),
+        )
 
     @staticmethod
     def _merge_pair_entries(
@@ -1454,7 +1298,7 @@ class CorridorPlannerNode(TrackedConePlannerBase):
             for idx, existing in enumerate(merged):
                 dx = float(existing.midpoint_x_odom - entry.midpoint_x_odom)
                 dy = float(existing.midpoint_y_odom - entry.midpoint_y_odom)
-                if math.hypot(dx, dy) <= 0.35:
+                if math.hypot(dx, dy) <= _PAIR_MEMORY_MERGE_DISTANCE_M:
                     duplicate_idx = idx
                     break
             if duplicate_idx is None:
@@ -1473,78 +1317,109 @@ class CorridorPlannerNode(TrackedConePlannerBase):
     ) -> list[_PairMemoryEntry]:
         if len(entries) <= 1:
             return list(entries)
-        local_midpoints = np.empty((len(entries), 2), dtype=np.float64)
+        local_midpoints = self._project_pair_midpoints_to_local(
+            entries=entries, vehicle_x=vehicle_x, vehicle_y=vehicle_y, vehicle_yaw=vehicle_yaw,
+        )
+        seed_idx = self._select_sort_seed_index(local_midpoints)
+        ordered_indices = self._greedy_chain_sort(local_midpoints, seed_idx)
+        return [entries[idx] for idx in ordered_indices]
+
+    @staticmethod
+    def _project_pair_midpoints_to_local(
+        *,
+        entries: list[_PairMemoryEntry],
+        vehicle_x: float,
+        vehicle_y: float,
+        vehicle_yaw: float,
+    ) -> np.ndarray:
+        local_midpoints = np.empty((len(entries), _PAIR_SEGMENT_COORD_COUNT), dtype=np.float64)
         for idx, entry in enumerate(entries):
             midpoint_x_base, midpoint_y_base = _odom_point_to_base(
-                entry.midpoint_x_odom,
-                entry.midpoint_y_odom,
-                vehicle_x,
-                vehicle_y,
-                vehicle_yaw,
+                entry.midpoint_x_odom, entry.midpoint_y_odom, vehicle_x, vehicle_y, vehicle_yaw,
             )
             local_midpoints[idx, 0] = float(midpoint_x_base)
             local_midpoints[idx, 1] = float(midpoint_y_base)
+        return local_midpoints
 
+    @staticmethod
+    def _select_sort_seed_index(local_midpoints: np.ndarray) -> int:
         seed_candidates = np.flatnonzero(local_midpoints[:, 0] >= -_PAIR_PASSED_MARGIN_M)
         if seed_candidates.size > 0:
-            seed_idx = int(
-                min(
-                    seed_candidates.tolist(),
-                    key=lambda idx: (
-                        max(float(local_midpoints[idx, 0]), 0.0),
-                        abs(float(local_midpoints[idx, 1])),
-                        float(np.hypot(local_midpoints[idx, 0], local_midpoints[idx, 1])),
-                        idx,
-                    ),
-                )
+            return int(
+                min(seed_candidates.tolist(), key=lambda idx: (
+                    max(float(local_midpoints[idx, 0]), 0.0),
+                    abs(float(local_midpoints[idx, 1])),
+                    float(np.hypot(local_midpoints[idx, 0], local_midpoints[idx, 1])),
+                    idx,
+                ))
             )
-        else:
-            seed_idx = int(np.argmin(np.hypot(local_midpoints[:, 0], local_midpoints[:, 1])))
+        return int(np.argmin(np.hypot(local_midpoints[:, 0], local_midpoints[:, 1])))
 
+    @staticmethod
+    def _greedy_chain_sort(local_midpoints: np.ndarray, seed_idx: int) -> list[int]:
         ordered_indices = [seed_idx]
-        remaining = {idx for idx in range(len(entries)) if idx != seed_idx}
-        heading = np.asarray([1.0, 0.0], dtype=np.float64)
+        remaining = {idx for idx in range(local_midpoints.shape[0]) if idx != seed_idx}
+        heading = np.array(_PAIR_SORT_INITIAL_HEADING, copy=True)
         current_range = float(np.hypot(local_midpoints[seed_idx, 0], local_midpoints[seed_idx, 1]))
-
         while remaining:
             current_idx = ordered_indices[-1]
             current_point = local_midpoints[current_idx]
-            best_idx = None
-            best_score = None
-            for candidate_idx in remaining:
-                delta = local_midpoints[candidate_idx] - current_point
-                distance = float(np.hypot(delta[0], delta[1]))
-                if distance <= 1e-6:
-                    continue
-                candidate_range = float(np.hypot(local_midpoints[candidate_idx, 0], local_midpoints[candidate_idx, 1]))
-                if candidate_range < current_range - 0.20:
-                    continue
-                step_dir = delta / distance
-                heading_error = abs(math.atan2(step_dir[1], step_dir[0]) - math.atan2(heading[1], heading[0]))
-                heading_error = abs(math.atan2(math.sin(heading_error), math.cos(heading_error)))
-                backward_m = max(0.0, -float(delta[0]))
-                score = (
-                    backward_m > 0.75,
-                    backward_m,
-                    heading_error,
-                    distance,
-                    abs(float(delta[1])),
-                    candidate_idx,
-                )
-                if best_score is None or score < best_score:
-                    best_score = score
-                    best_idx = candidate_idx
+            best_idx = CorridorPlannerNode._best_chain_sort_candidate(
+                remaining, local_midpoints, current_point, heading, current_range,
+            )
             if best_idx is None:
                 break
             delta = local_midpoints[best_idx] - current_point
             delta_norm = float(np.hypot(delta[0], delta[1]))
-            if delta_norm > 1e-6:
+            if delta_norm > _PAIR_SORT_MIN_STEP_M:
                 heading = delta / delta_norm
             ordered_indices.append(best_idx)
             remaining.remove(best_idx)
             current_range = float(np.hypot(local_midpoints[best_idx, 0], local_midpoints[best_idx, 1]))
+        return ordered_indices
 
-        return [entries[idx] for idx in ordered_indices]
+    @staticmethod
+    def _best_chain_sort_candidate(
+        remaining: set[int],
+        local_midpoints: np.ndarray,
+        current_point: np.ndarray,
+        heading: np.ndarray,
+        current_range: float,
+    ) -> Optional[int]:
+        best_idx = None
+        best_score = None
+        for candidate_idx in remaining:
+            score = CorridorPlannerNode._chain_sort_score(
+                local_midpoints, current_point, heading, current_range, candidate_idx,
+            )
+            if score is not None and (best_score is None or score < best_score):
+                best_score = score
+                best_idx = candidate_idx
+        return best_idx
+
+    @staticmethod
+    def _chain_sort_score(
+        local_midpoints: np.ndarray,
+        current_point: np.ndarray,
+        heading: np.ndarray,
+        current_range: float,
+        candidate_idx: int,
+    ) -> Optional[tuple[bool, float, float, float, float, int]]:
+        delta = local_midpoints[candidate_idx] - current_point
+        distance = float(np.hypot(delta[0], delta[1]))
+        if distance <= _PAIR_SORT_MIN_STEP_M:
+            return None
+        candidate_range = float(np.hypot(local_midpoints[candidate_idx, 0], local_midpoints[candidate_idx, 1]))
+        if candidate_range < current_range - _PAIR_SORT_RANGE_REGRESSION_TOLERANCE_M:
+            return None
+        step_dir = delta / distance
+        heading_error = abs(math.atan2(step_dir[1], step_dir[0]) - math.atan2(heading[1], heading[0]))
+        heading_error = abs(math.atan2(math.sin(heading_error), math.cos(heading_error)))
+        backward_m = max(0.0, -float(delta[0]))
+        return (
+            backward_m > _PAIR_SORT_BACKWARD_GATE_M,
+            backward_m, heading_error, distance, abs(float(delta[1])), candidate_idx,
+        )
 
     @staticmethod
     def _pair_geometry_from_memory(
@@ -1683,7 +1558,23 @@ class CorridorPlannerNode(TrackedConePlannerBase):
         vehicle_yaw: float,
         horizon_m: float,
     ) -> dict[str, float]:
-        empty = {
+        empty = self._empty_candidate_transition_metrics()
+        paths = self._resolve_transition_paths(candidate_centerline, vehicle_x, vehicle_y)
+        if paths is None:
+            return empty
+        stored_samples, candidate_samples = self._sample_transition_paths(paths, horizon_m)
+        if stored_samples is None or candidate_samples is None:
+            return empty
+        stored_local, candidate_local = self._transition_paths_to_vehicle_frame(
+            stored_samples, candidate_samples, vehicle_x, vehicle_y, vehicle_yaw,
+        )
+        if stored_local is None or candidate_local is None:
+            return empty
+        return self._summarize_transition_delta(stored_local, candidate_local)
+
+    @staticmethod
+    def _empty_candidate_transition_metrics() -> dict[str, float]:
+        return {
             "sample_count": 0.0,
             "lateral_max_m": float("inf"),
             "lateral_mean_m": float("inf"),
@@ -1691,8 +1582,17 @@ class CorridorPlannerNode(TrackedConePlannerBase):
             "displacement_mean_m": float("inf"),
             "heading_delta_rad": float("inf"),
         }
-        if self._midline_buffer_path is None or self._midline_buffer_path.shape[0] < 2:
-            return empty
+
+    def _resolve_transition_paths(
+        self,
+        candidate_centerline: np.ndarray,
+        vehicle_x: float,
+        vehicle_y: float,
+    ) -> Optional[_TransitionPaths]:
+        if self._midline_buffer_path is None:
+            return None
+        if self._midline_buffer_path.shape[0] < _TRANSITION_MIN_PATH_POINTS:
+            return None
         stored_forward = self._extract_forward_path_from_pose(
             path=self._midline_buffer_path,
             vehicle_xy=(vehicle_x, vehicle_y),
@@ -1703,61 +1603,111 @@ class CorridorPlannerNode(TrackedConePlannerBase):
             vehicle_xy=(vehicle_x, vehicle_y),
             resolution_m=self.midline_station_spacing_m,
         )
-        stored_path = (
-            np.asarray(stored_forward, dtype=np.float64)
-            if stored_forward is not None and stored_forward.shape[0] >= 2
-            else np.asarray(self._midline_buffer_path, dtype=np.float64)
-        )
-        candidate_path = (
-            np.asarray(candidate_forward, dtype=np.float64)
-            if candidate_forward is not None and candidate_forward.shape[0] >= 2
-            else np.asarray(candidate_centerline, dtype=np.float64)
-        )
-        if stored_path.shape[0] < 2 or candidate_path.shape[0] < 2:
-            return empty
+        return self._select_transition_paths(stored_forward, candidate_forward, candidate_centerline)
 
-        stored_samples = self._resample_midline_stations(stored_path)
-        candidate_samples = self._resample_midline_stations(candidate_path)
+    def _select_transition_paths(
+        self,
+        stored_forward: Optional[np.ndarray],
+        candidate_forward: Optional[np.ndarray],
+        candidate_centerline: np.ndarray,
+    ) -> Optional[_TransitionPaths]:
+        stored_path = self._transition_path_or_fallback(stored_forward, self._midline_buffer_path)
+        candidate_path = self._transition_path_or_fallback(candidate_forward, candidate_centerline)
+        if stored_path.shape[0] < _TRANSITION_MIN_PATH_POINTS:
+            return None
+        if candidate_path.shape[0] < _TRANSITION_MIN_PATH_POINTS:
+            return None
+        return _TransitionPaths(stored_path=stored_path, candidate_path=candidate_path)
+
+    @staticmethod
+    def _transition_path_or_fallback(path: Optional[np.ndarray], fallback: np.ndarray) -> np.ndarray:
+        if path is not None and path.shape[0] >= _TRANSITION_MIN_PATH_POINTS:
+            return np.asarray(path, dtype=np.float64)
+        return np.asarray(fallback, dtype=np.float64)
+
+    def _sample_transition_paths(
+        self,
+        paths: _TransitionPaths,
+        horizon_m: float,
+    ) -> tuple[Optional[np.ndarray], Optional[np.ndarray]]:
+        stored_samples = self._resample_midline_stations(paths.stored_path)
+        candidate_samples = self._resample_midline_stations(paths.candidate_path)
         count = min(stored_samples.shape[0], candidate_samples.shape[0])
-        if count < 2:
-            return empty
+        if count < _TRANSITION_MIN_PATH_POINTS:
+            return None, None
+        count = self._transition_sample_count(stored_samples, candidate_samples, count, horizon_m)
+        return stored_samples[:count], candidate_samples[:count]
 
-        # Use the actual sampled arc length rather than the configured station
-        # spacing so the near-field acceptance gate remains correct even if the
-        # sampled paths are irregular or test doubles bypass the resampler.
-        horizon_limit_m = max(0.25, float(horizon_m))
+    def _transition_sample_count(
+        self,
+        stored_samples: np.ndarray,
+        candidate_samples: np.ndarray,
+        count: int,
+        horizon_m: float,
+    ) -> int:
+        horizon_limit_m = max(_TRANSITION_MIN_HORIZON_M, float(horizon_m))
         stored_limit = max(
-            2,
+            _TRANSITION_MIN_PATH_POINTS,
             int(np.searchsorted(self._path_cumulative_lengths(stored_samples), horizon_limit_m, side="right")),
         )
         candidate_limit = max(
-            2,
+            _TRANSITION_MIN_PATH_POINTS,
             int(np.searchsorted(self._path_cumulative_lengths(candidate_samples), horizon_limit_m, side="right")),
         )
-        count = min(count, stored_limit, candidate_limit)
-        stored_local = self._centerline_to_vehicle_frame(
-            centerline=stored_samples[:count],
-            frame_id=self.odom_frame,
-            vehicle_x=vehicle_x,
-            vehicle_y=vehicle_y,
-            vehicle_yaw=vehicle_yaw,
-        )
-        candidate_local = self._centerline_to_vehicle_frame(
-            centerline=candidate_samples[:count],
-            frame_id=self.odom_frame,
-            vehicle_x=vehicle_x,
-            vehicle_y=vehicle_y,
-            vehicle_yaw=vehicle_yaw,
-        )
-        if stored_local.shape[0] < 2 or candidate_local.shape[0] < 2:
-            return empty
+        return min(count, stored_limit, candidate_limit)
 
+    def _transition_paths_to_vehicle_frame(
+        self,
+        stored_samples: np.ndarray,
+        candidate_samples: np.ndarray,
+        vehicle_x: float,
+        vehicle_y: float,
+        vehicle_yaw: float,
+    ) -> tuple[Optional[np.ndarray], Optional[np.ndarray]]:
+        stored_local = self._transition_path_to_vehicle_frame(stored_samples, vehicle_x, vehicle_y, vehicle_yaw)
+        candidate_local = self._transition_path_to_vehicle_frame(candidate_samples, vehicle_x, vehicle_y, vehicle_yaw)
+        if stored_local.shape[0] < _TRANSITION_MIN_PATH_POINTS:
+            return None, None
+        if candidate_local.shape[0] < _TRANSITION_MIN_PATH_POINTS:
+            return None, None
+        return stored_local, candidate_local
+
+    def _transition_path_to_vehicle_frame(
+        self,
+        path: np.ndarray,
+        vehicle_x: float,
+        vehicle_y: float,
+        vehicle_yaw: float,
+    ) -> np.ndarray:
+        return self._centerline_to_vehicle_frame(
+            centerline=path,
+            frame_id=self.odom_frame,
+            vehicle_x=vehicle_x,
+            vehicle_y=vehicle_y,
+            vehicle_yaw=vehicle_yaw,
+        )
+
+    def _summarize_transition_delta(
+        self,
+        stored_local: np.ndarray,
+        candidate_local: np.ndarray,
+    ) -> dict[str, float]:
         delta = candidate_local - stored_local
         lateral = np.abs(delta[:, 1])
         displacement = np.hypot(delta[:, 0], delta[:, 1])
+        return {
+            "sample_count": float(stored_local.shape[0]),
+            "lateral_max_m": float(np.max(lateral)),
+            "lateral_mean_m": float(np.mean(lateral)),
+            "displacement_max_m": float(np.max(displacement)),
+            "displacement_mean_m": float(np.mean(displacement)),
+            "heading_delta_rad": self._transition_heading_delta(stored_local, candidate_local),
+        }
+
+    def _transition_heading_delta(self, stored_local: np.ndarray, candidate_local: np.ndarray) -> float:
         stored_heading = self._path_start_heading_local(stored_local)
         candidate_heading = self._path_start_heading_local(candidate_local)
-        heading_delta = abs(
+        return abs(
             float(
                 math.atan2(
                     math.sin(candidate_heading - stored_heading),
@@ -1765,14 +1715,6 @@ class CorridorPlannerNode(TrackedConePlannerBase):
                 )
             )
         )
-        return {
-            "sample_count": float(count),
-            "lateral_max_m": float(np.max(lateral)),
-            "lateral_mean_m": float(np.mean(lateral)),
-            "displacement_max_m": float(np.max(displacement)),
-            "displacement_mean_m": float(np.mean(displacement)),
-            "heading_delta_rad": heading_delta,
-        }
 
     def _select_candidate_centerline(
         self,
@@ -1786,44 +1728,65 @@ class CorridorPlannerNode(TrackedConePlannerBase):
         vehicle_yaw: float,
     ) -> tuple[np.ndarray, str]:
         candidates: list[tuple[float, int, str, np.ndarray]] = []
-
-        def add_candidate(path: np.ndarray, source: str, priority: int) -> None:
-            candidate = self._finite_corridor_path(path)
-            if candidate.shape[0] < _CORRIDOR_MIDPOINT_MIN_POINTS:
-                return
-            extent = self._candidate_forward_extent_m(
-                centerline=candidate,
-                frame_id=frame_id,
-                vehicle_x=vehicle_x,
-                vehicle_y=vehicle_y,
-                vehicle_yaw=vehicle_yaw,
-            )
-            if extent <= 1e-6:
-                return
-            candidates.append((extent, priority, source, candidate))
-
         if result.status == "ok" and result.centerline.shape[0] > 0:
-            add_candidate(result.centerline, "validated", 30)
+            candidates.extend(self._candidate_entry(
+                result.centerline, "validated", _VALIDATED_CANDIDATE_PRIORITY,
+                frame_id, vehicle_x, vehicle_y, vehicle_yaw,
+            ))
+        candidates.extend(self._candidate_entry(
+            support_chain, _CORRIDOR_MIDPOINT_SOURCE, _SUPPORT_CHAIN_CANDIDATE_PRIORITY,
+            frame_id, vehicle_x, vehicle_y, vehicle_yaw,
+        ))
+        candidates.extend(self._candidate_entry(
+            result.prevalidation_centerline, _CORRIDOR_MIDPOINT_SOURCE,
+            _PREVALIDATION_CANDIDATE_PRIORITY, frame_id, vehicle_x, vehicle_y, vehicle_yaw,
+        ))
+        candidates.extend(self._candidate_entry(
+            memory_midpoint_chain, _CORRIDOR_MIDPOINT_SOURCE, _MEMORY_CHAIN_CANDIDATE_PRIORITY,
+            frame_id, vehicle_x, vehicle_y, vehicle_yaw,
+        ))
+        path, source = self._pick_best_candidate(candidates, self.midline_station_spacing_m)
+        return np.array(path, copy=True), source
 
-        # The visible corridor anchor chain is the most literal "pair midpoint to
-        # pair midpoint" path. Prefer it when it reaches farther than the fitted
-        # core centerline, including remembered pairs beyond the current live fit.
-        add_candidate(support_chain, _CORRIDOR_MIDPOINT_SOURCE, 20)
-        add_candidate(result.prevalidation_centerline, _CORRIDOR_MIDPOINT_SOURCE, 10)
-        add_candidate(memory_midpoint_chain, _CORRIDOR_MIDPOINT_SOURCE, 5)
+    def _candidate_entry(
+        self,
+        path: np.ndarray,
+        source: str,
+        priority: int,
+        frame_id: str,
+        vehicle_x: float,
+        vehicle_y: float,
+        vehicle_yaw: float,
+    ) -> list[tuple[float, int, str, np.ndarray]]:
+        candidate = self._finite_corridor_path(path)
+        if candidate.shape[0] < _CORRIDOR_MIDPOINT_MIN_POINTS:
+            return []
+        extent = self._candidate_forward_extent_m(
+            centerline=candidate, frame_id=frame_id,
+            vehicle_x=vehicle_x, vehicle_y=vehicle_y, vehicle_yaw=vehicle_yaw,
+        )
+        if extent <= _CANDIDATE_EXTENT_EPSILON_M:
+            return []
+        return [(extent, priority, source, candidate)]
 
+    @staticmethod
+    def _pick_best_candidate(
+        candidates: list[tuple[float, int, str, np.ndarray]],
+        station_spacing_m: float,
+    ) -> tuple[np.ndarray, str]:
         if not candidates:
             return np.empty((0, 2), dtype=np.float64), "none"
-
         best_extent = max(extent for extent, _, _, _ in candidates)
-        extent_tolerance_m = max(0.05, 0.5 * float(self.midline_station_spacing_m))
+        extent_tolerance_m = max(
+            _CANDIDATE_EXTENT_TOLERANCE_MIN_M,
+            _CANDIDATE_EXTENT_TOLERANCE_STATION_FACTOR * float(station_spacing_m),
+        )
         near_best = [
-            candidate
-            for candidate in candidates
+            candidate for candidate in candidates
             if candidate[0] >= (best_extent - extent_tolerance_m)
         ]
         _, _, source, path = max(near_best, key=lambda candidate: (candidate[1], candidate[0]))
-        return np.array(path, copy=True), source
+        return path, source
 
     @staticmethod
     def _finite_corridor_path(path: np.ndarray) -> np.ndarray:
@@ -1896,42 +1859,68 @@ class CorridorPlannerNode(TrackedConePlannerBase):
         vehicle_yaw: float,
     ) -> dict[str, float]:
         metrics: dict[str, float] = {}
-        samples_by_prefix = {
-            "corridor_raw_anchor": self._corridor_analysis_sample_path_in_vehicle_frame(
-                path=raw_anchor_path,
-                frame_id=frame_id,
-                vehicle_x=vehicle_x,
-                vehicle_y=vehicle_y,
-                vehicle_yaw=vehicle_yaw,
+        for prefix, samples in self._corridor_analysis_samples_by_prefix(
+            raw_anchor_path=raw_anchor_path,
+            prevalidation_centerline=prevalidation_centerline,
+            buffered_centerline=buffered_centerline,
+            control_path_local=control_path_local,
+            frame_id=frame_id, vehicle_x=vehicle_x, vehicle_y=vehicle_y, vehicle_yaw=vehicle_yaw,
+        ).items():
+            self._corridor_analysis_fill_prefix_metrics(metrics, prefix, samples)
+        return metrics
+
+    def _corridor_analysis_samples_by_prefix(
+        self,
+        *,
+        raw_anchor_path: np.ndarray,
+        prevalidation_centerline: np.ndarray,
+        buffered_centerline: np.ndarray,
+        control_path_local: np.ndarray,
+        frame_id: str,
+        vehicle_x: float,
+        vehicle_y: float,
+        vehicle_yaw: float,
+    ) -> dict[str, np.ndarray]:
+        return {
+            "corridor_raw_anchor": self._corridor_analysis_frame_path(raw_anchor_path, frame_id, vehicle_x, vehicle_y, vehicle_yaw),
+            "corridor_prevalidation_centerline": self._corridor_analysis_frame_path(
+                prevalidation_centerline, frame_id, vehicle_x, vehicle_y, vehicle_yaw,
             ),
-            "corridor_prevalidation_centerline": self._corridor_analysis_sample_path_in_vehicle_frame(
-                path=prevalidation_centerline,
-                frame_id=frame_id,
-                vehicle_x=vehicle_x,
-                vehicle_y=vehicle_y,
-                vehicle_yaw=vehicle_yaw,
-            ),
-            "corridor_buffer_centerline": self._corridor_analysis_sample_path_in_vehicle_frame(
-                path=buffered_centerline,
-                frame_id=frame_id,
-                vehicle_x=vehicle_x,
-                vehicle_y=vehicle_y,
-                vehicle_yaw=vehicle_yaw,
+            "corridor_buffer_centerline": self._corridor_analysis_frame_path(
+                buffered_centerline, frame_id, vehicle_x, vehicle_y, vehicle_yaw,
             ),
             "corridor_control_path": self._corridor_analysis_sample_local_path(
                 np.asarray(control_path_local, dtype=np.float64)
             ),
         }
-        for prefix, samples in samples_by_prefix.items():
-            metrics[f"{prefix}_point_count"] = float(samples.shape[0])
-            for idx in range(_CORRIDOR_ANALYSIS_SAMPLE_COUNT):
-                if idx < samples.shape[0]:
-                    metrics[f"{prefix}_p{idx}_x_m"] = float(samples[idx, 0])
-                    metrics[f"{prefix}_p{idx}_y_m"] = float(samples[idx, 1])
-                else:
-                    metrics[f"{prefix}_p{idx}_x_m"] = float("nan")
-                    metrics[f"{prefix}_p{idx}_y_m"] = float("nan")
-        return metrics
+
+    def _corridor_analysis_frame_path(
+        self,
+        path: np.ndarray,
+        frame_id: str,
+        vehicle_x: float,
+        vehicle_y: float,
+        vehicle_yaw: float,
+    ) -> np.ndarray:
+        return self._corridor_analysis_sample_path_in_vehicle_frame(
+            path=path, frame_id=frame_id,
+            vehicle_x=vehicle_x, vehicle_y=vehicle_y, vehicle_yaw=vehicle_yaw,
+        )
+
+    @staticmethod
+    def _corridor_analysis_fill_prefix_metrics(
+        metrics: dict[str, float],
+        prefix: str,
+        samples: np.ndarray,
+    ) -> None:
+        metrics[f"{prefix}_point_count"] = float(samples.shape[0])
+        for idx in range(_CORRIDOR_ANALYSIS_SAMPLE_COUNT):
+            if idx < samples.shape[0]:
+                metrics[f"{prefix}_p{idx}_x_m"] = float(samples[idx, 0])
+                metrics[f"{prefix}_p{idx}_y_m"] = float(samples[idx, 1])
+            else:
+                metrics[f"{prefix}_p{idx}_x_m"] = float("nan")
+                metrics[f"{prefix}_p{idx}_y_m"] = float("nan")
 
     def _corridor_analysis_sample_path_in_vehicle_frame(
         self,

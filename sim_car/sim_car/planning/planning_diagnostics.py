@@ -304,7 +304,7 @@ class DiagnosticsMixin:
 
 
     @staticmethod
-    def _path_length_m(centerline: np.ndarray) -> float:
+    def _diagnostic_path_length_m(centerline: np.ndarray) -> float:
         if centerline.shape[0] < 2:
             return float('nan')
         diffs = np.diff(centerline, axis=0)

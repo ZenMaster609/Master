@@ -23,8 +23,8 @@ from sim_car.planning.planner_constants import (
     VALIDATED_JUMP_ACCEPT_LATERAL_MEAN_M as _VALIDATED_JUMP_ACCEPT_LATERAL_MEAN_M,
 )
 from sim_car.planning.tracked_cone_planner_contract import (
-    COMMON_MIGRATED_TRACKED_CONE_PLANNER_DEFAULTS,
     apply_common_config_to_node,
+    declare_tracked_cone_planner_parameters,
     read_migrated_tracked_cone_planner_common_config,
 )
 from sim_car.planning.single_boundary_planner_core import (
@@ -116,33 +116,10 @@ class SingleBoundaryPlannerNode(TrackedConePlannerBase):
         self._init_common_ros_interfaces()
 
     def _declare_parameters(self) -> None:
-        defaults = dict(COMMON_MIGRATED_TRACKED_CONE_PLANNER_DEFAULTS)
-        defaults.update({
-            "filtering.allow_unknown_pair_completion": True,
-            "filtering.unknown_pair_search_radius_m": 1.25,
-            "filtering.unknown_pair_max_longitudinal_error_m": 1.5,
-            "filtering.unknown_pair_max_width_error_m": 0.9,
-            "filtering.max_consecutive_unknown_pairs": 2,
-            "boundary_chain.min_chain_length": 2,
-            "pairing.min_pair_width_m": 2.2,
-            "pairing.max_pair_width_m": 5.4,
-            "pairing.max_width_jump_m": 0.75,
-            "pairing.min_pair_count": 3,
-            "pairing.pair_reassignment_margin": 0.25,
-            "width_estimation.min_trustworthy_pairs": 3,
-            "centerline.smoothing_window": 3,
-            "centerline.max_heading_delta_rad": 0.75,
-            "lap_tracking.target_laps": 0,
-            "validation.min_path_points": 2,
-            "validation.min_forward_extent_m": 1.0,
-            "validation.max_near_field_lateral_jump_m_sparse_pairs": 0.9,
-            "validation.max_near_field_lateral_jump_m_single_boundary": 5.0,
-            "validation.max_start_heading_error_rad": 1.0,
-            "diagnostics.topic": "/single_boundary_planner/diagnostics",
-            "debug.show_raw_offset_path": True,
-        })
-        for name, value in defaults.items():
-            self.declare_parameter(name, value)
+        declare_tracked_cone_planner_parameters(
+            self,
+            diagnostics_topic_default=self._planner_identity.diagnostics_topic,
+        )
 
     def _read_parameters(self) -> None:
         common = read_migrated_tracked_cone_planner_common_config(
@@ -156,13 +133,7 @@ class SingleBoundaryPlannerNode(TrackedConePlannerBase):
         self._filtered_track_width_m = float(self._core_config.initial_width_m)
 
     def _read_runtime_parameters(self) -> None:
-        self.lap_tracking_target_laps = max(
-            0,
-            int(self.get_parameter("lap_tracking.target_laps").value),
-        )
-        self.show_raw_offset_path = bool(
-            self.get_parameter("debug.show_raw_offset_path").value
-        )
+        self.show_raw_offset_path = True
 
     def _build_core_config(self) -> SingleBoundaryPlannerConfig:
         values = {}
@@ -175,91 +146,68 @@ class SingleBoundaryPlannerNode(TrackedConePlannerBase):
         return SingleBoundaryPlannerConfig(**values)
 
     def _filtering_config_values(self) -> dict:
+        profile = self._planner_algorithm_profile
         return {
-            "max_cone_range_m": float(self.get_parameter("filtering.max_cone_range_m").value),
-            "behind_drop_m": float(self.get_parameter("filtering.behind_drop_m").value),
-            "min_confidence": float(self.get_parameter("filtering.min_confidence").value),
-            "min_required_cones": max(2, int(self.get_parameter("filtering.min_required_cones").value)),
-            "allow_unknown_pair_completion": bool(
-                self.get_parameter("filtering.allow_unknown_pair_completion").value
-            ),
-            "unknown_pair_search_radius_m": float(
-                self.get_parameter("filtering.unknown_pair_search_radius_m").value
-            ),
-            "unknown_pair_max_longitudinal_error_m": float(
-                self.get_parameter("filtering.unknown_pair_max_longitudinal_error_m").value
-            ),
-            "unknown_pair_max_width_error_m": float(
-                self.get_parameter("filtering.unknown_pair_max_width_error_m").value
-            ),
-            "max_consecutive_unknown_pairs": max(
-                0,
-                int(self.get_parameter("filtering.max_consecutive_unknown_pairs").value),
-            ),
+            "max_cone_range_m": profile.max_cone_range_m,
+            "behind_drop_m": profile.behind_drop_m,
+            "min_confidence": profile.min_confidence,
+            "min_required_cones": max(2, profile.min_required_cones),
+            "allow_unknown_pair_completion": True,
+            "unknown_pair_search_radius_m": 1.25,
+            "unknown_pair_max_longitudinal_error_m": 1.5,
+            "unknown_pair_max_width_error_m": 0.9,
+            "max_consecutive_unknown_pairs": 2,
         }
 
     def _boundary_chain_config_values(self) -> dict:
+        profile = self._planner_algorithm_profile
         return {
-            "min_step_m": float(self.get_parameter("boundary_chain.min_step_m").value),
-            "max_step_m": float(self.get_parameter("boundary_chain.max_step_m").value),
-            "max_heading_change_rad": float(self.get_parameter("boundary_chain.max_heading_change_rad").value),
-            "min_forward_progress_m": float(
-                self.get_parameter("boundary_chain.min_forward_progress_m").value
-            ),
-            "min_chain_length": max(2, int(self.get_parameter("boundary_chain.min_chain_length").value)),
+            "min_step_m": profile.boundary_min_step_m,
+            "max_step_m": profile.boundary_max_step_m,
+            "max_heading_change_rad": profile.boundary_max_heading_change_rad,
+            "min_forward_progress_m": profile.boundary_min_forward_progress_m,
+            "min_chain_length": 2,
         }
 
     def _pairing_config_values(self) -> dict:
         return {
-            "min_pair_width_m": float(self.get_parameter("pairing.min_pair_width_m").value),
-            "max_pair_width_m": float(self.get_parameter("pairing.max_pair_width_m").value),
-            "max_width_jump_m": float(self.get_parameter("pairing.max_width_jump_m").value),
-            "min_pair_count": max(1, int(self.get_parameter("pairing.min_pair_count").value)),
-            "pair_reassignment_margin": float(
-                self.get_parameter("pairing.pair_reassignment_margin").value
-            ),
+            "min_pair_width_m": 2.2,
+            "max_pair_width_m": 5.4,
+            "max_width_jump_m": 0.75,
+            "min_pair_count": 3,
+            "pair_reassignment_margin": 0.25,
         }
 
     def _width_estimation_config_values(self) -> dict:
+        profile = self._planner_algorithm_profile
         return {
-            "initial_width_m": float(self.get_parameter("width_estimation.initial_width_m").value),
-            "min_width_m": float(self.get_parameter("width_estimation.min_width_m").value),
-            "max_width_m": float(self.get_parameter("width_estimation.max_width_m").value),
-            "width_filter_alpha": float(self.get_parameter("width_estimation.alpha").value),
-            "max_width_delta_per_update_m": float(
-                self.get_parameter("width_estimation.max_delta_per_update_m").value
-            ),
-            "min_trustworthy_pairs": max(
-                1,
-                int(self.get_parameter("width_estimation.min_trustworthy_pairs").value),
-            ),
+            "initial_width_m": profile.initial_width_m,
+            "min_width_m": profile.min_width_m,
+            "max_width_m": profile.max_width_m,
+            "width_filter_alpha": profile.width_filter_alpha,
+            "max_width_delta_per_update_m": profile.max_width_delta_per_update_m,
+            "min_trustworthy_pairs": 3,
         }
 
     def _centerline_config_values(self) -> dict:
+        profile = self._planner_algorithm_profile
         return {
-            "path_resolution_m": float(self.get_parameter("centerline.path_resolution_m").value),
-            "max_path_length_m": float(self.get_parameter("centerline.max_path_length_m").value),
-            "smoothing_window": max(1, int(self.get_parameter("centerline.smoothing_window").value)),
-            "max_heading_delta_rad": float(self.get_parameter("centerline.max_heading_delta_rad").value),
+            "path_resolution_m": profile.centerline_path_resolution_m,
+            "max_path_length_m": profile.max_path_length_m,
+            "smoothing_window": 3,
+            "max_heading_delta_rad": 0.75,
         }
 
     def _validation_config_values(self) -> dict:
+        profile = self._planner_algorithm_profile
         return {
-            "min_path_points": max(2, int(self.get_parameter("validation.min_path_points").value)),
-            "min_forward_extent_m": float(self.get_parameter("validation.min_forward_extent_m").value),
-            "jump_check_horizon_m": float(self.get_parameter("validation.jump_check_horizon_m").value),
-            "max_near_field_lateral_jump_m": float(
-                self.get_parameter("validation.max_near_field_lateral_jump_m").value
-            ),
-            "max_near_field_lateral_jump_m_sparse_pairs": float(
-                self.get_parameter("validation.max_near_field_lateral_jump_m_sparse_pairs").value
-            ),
-            "max_near_field_lateral_jump_m_single_boundary": float(
-                self.get_parameter("validation.max_near_field_lateral_jump_m_single_boundary").value
-            ),
-            "max_start_heading_error_rad": float(
-                self.get_parameter("validation.max_start_heading_error_rad").value
-            ),
+            "min_path_points": 2,
+            "min_forward_extent_m": 1.0,
+            "jump_check_horizon_m": profile.jump_check_horizon_m,
+            "max_near_field_lateral_jump_m": 0.6,
+            "max_near_field_lateral_jump_m_sparse_pairs": 0.9,
+            "max_near_field_lateral_jump_m_single_boundary": 5.0,
+            "max_start_heading_error_rad": 1.0,
         }
 
     def _lap_status_text(self) -> str:
@@ -370,13 +318,13 @@ class SingleBoundaryPlannerNode(TrackedConePlannerBase):
     ) -> _MidlineUpdateResult:
         centerline, buffered_centerline, candidate_update_ok, candidate_update_reason = (
             self._buffer_and_anchor_centerline(
-                result, raw_centerline, candidate_source, target_frame,
+                result, raw_centerline, candidate_source, result.raw_offset_path, target_frame,
                 vehicle_x, vehicle_y, vehicle_yaw, now_sec,
             )
         )
-        status, pair_segments_for_viz = self._build_midline_status(
+        status, pair_segments_for_viz, _raw_midpoint_chain = self._build_midline_status(
             result, raw_centerline, centerline, candidate_source, candidate_update_ok,
-            candidate_update_reason, pair_segments_for_viz, now_sec,
+            candidate_update_reason, pair_segments_for_viz, None, None, None, None, None, now_sec,
         )
         centerline, publish_mode, plan_hold_active, hold_reason, status = self._apply_hold_logic(
             result, centerline, candidate_update_ok, candidate_update_reason, status, now_sec,
@@ -395,54 +343,6 @@ class SingleBoundaryPlannerNode(TrackedConePlannerBase):
             hold_reason, plan_hold_active,
         )
 
-    def _buffer_and_anchor_centerline(
-        self, result, raw_centerline, candidate_source, target_frame,
-        vehicle_x, vehicle_y, vehicle_yaw, now_sec,
-    ) -> tuple:
-        candidate_update_ok, candidate_update_reason = self._candidate_path_is_updateable(
-            candidate_centerline=raw_centerline, vehicle_x=vehicle_x, vehicle_y=vehicle_y,
-            vehicle_yaw=vehicle_yaw, result=result, candidate_source=candidate_source,
-        )
-        centerline = self._update_midline_buffer(
-            candidate_centerline=raw_centerline, candidate_source=candidate_source,
-            candidate_update_ok=candidate_update_ok, candidate_update_reason=candidate_update_reason,
-            frame_id=target_frame, vehicle_x=vehicle_x, vehicle_y=vehicle_y, vehicle_yaw=vehicle_yaw,
-            result=result, now_sec=now_sec, support_centerline=result.raw_offset_path,
-        )
-        candidate_update_ok = bool(getattr(self, "_last_midline_candidate_update_ok", candidate_update_ok))
-        candidate_update_reason = str(getattr(self, "_last_midline_candidate_update_reason", candidate_update_reason))
-        buffered_centerline = np.array(centerline, copy=True)
-        centerline = self._anchor_centerline_near_vehicle(
-            centerline=centerline, frame_id=target_frame,
-            vehicle_x=vehicle_x, vehicle_y=vehicle_y, vehicle_yaw=vehicle_yaw,
-        )
-        return centerline, buffered_centerline, candidate_update_ok, candidate_update_reason
-
-    def _build_midline_status(
-        self, result, raw_centerline, centerline, candidate_source,
-        candidate_update_ok, candidate_update_reason, pair_segments_for_viz, now_sec,
-    ) -> tuple:
-        status = result.status
-        if not candidate_update_ok and centerline.shape[0] > 0:
-            status = f"{status}; holding stored midline"
-        elif self._is_publishing_stored_midline(raw_centerline, centerline):
-            status = f"{status}; publishing stored midline"
-        if candidate_source != "validated" and raw_centerline.shape[0] > 0:
-            status = f"{status}; using {candidate_source}"
-        if centerline.shape[0] > 0 and raw_centerline.shape[0] > 0:
-            self._remember_pairs(result=result, now_sec=now_sec)
-            self._remember_valid_pair_geometry(result, pair_segments_for_viz)
-        elif self._last_valid_pair_segments is not None and centerline.shape[0] > 0:
-            pair_segments_for_viz = np.array(self._last_valid_pair_segments, copy=True)
-        return status, pair_segments_for_viz
-
-    def _is_publishing_stored_midline(self, raw_centerline: np.ndarray, centerline: np.ndarray) -> bool:
-        return (
-            raw_centerline.shape[0] > 0
-            and centerline.shape[0] > 0
-            and (raw_centerline.shape != centerline.shape or not np.allclose(raw_centerline, centerline))
-        )
-
     def _remember_valid_pair_geometry(self, result, pair_segments_for_viz: np.ndarray) -> None:
         self._last_valid_pair_segments = (
             pair_segments_for_viz if pair_segments_for_viz.size > 0 else self._last_valid_pair_segments
@@ -452,45 +352,6 @@ class SingleBoundaryPlannerNode(TrackedConePlannerBase):
             if result.selected_pair_track_ids.size > 0
             else self._last_valid_pair_track_ids
         )
-
-    def _apply_hold_logic(
-        self, result, centerline, candidate_update_ok, candidate_update_reason, status, now_sec,
-    ) -> tuple:
-        plan_hold_active = False
-        publish_mode = "fresh"
-        hold_reason = result.reject_reason
-        if centerline.shape[0] > 0 and candidate_update_ok:
-            centerline, plan_hold_active, publish_mode, status = self._hold_after_valid_plan(
-                centerline, publish_mode, status, now_sec,
-            )
-        else:
-            centerline, plan_hold_active, publish_mode, status = self._hold_after_invalid_plan(
-                centerline, status, now_sec,
-            )
-        if plan_hold_active:
-            hold_reason = result.reject_reason or candidate_update_reason or status
-        return centerline, publish_mode, plan_hold_active, hold_reason, status
-
-    def _hold_after_valid_plan(self, centerline, publish_mode: str, status: str, now_sec: float) -> tuple:
-        continue_holding = self._advance_hold_hysteresis(plan_ok=True)
-        if continue_holding:
-            held_centerline = self._held_centerline(now_sec)
-            if held_centerline is not None:
-                centerline = held_centerline
-                publish_mode = "held"
-                status = (
-                    f"{status}; hysteresis holding previous valid centerline "
-                    f"({self._hold_clean_frame_count}/{self.hold_exit_clean_frames})"
-                )
-                return centerline, True, publish_mode, status
-        return centerline, False, publish_mode, status
-
-    def _hold_after_invalid_plan(self, centerline, status: str, now_sec: float) -> tuple:
-        self._advance_hold_hysteresis(plan_ok=False)
-        held_centerline = self._held_centerline(now_sec)
-        if held_centerline is not None:
-            return held_centerline, True, "held", f"{status}; holding previous valid centerline"
-        return centerline, False, "held", status
 
     def _refresh_hold_viz(self, plan_hold_active: bool, pair_segments_for_viz: np.ndarray) -> np.ndarray:
         if plan_hold_active and self._last_valid_pair_segments is not None:
@@ -544,40 +405,6 @@ class SingleBoundaryPlannerNode(TrackedConePlannerBase):
         cmd_steering = float(self._last_steering_cmd) if self._last_steering_cmd is not None else 0.0
         return None, None, cmd_speed, cmd_steering, 0.0, zero_flag, False
 
-    def _execute_controller(
-        self, control_path: np.ndarray, target_frame: str, vehicle_x: float, vehicle_y: float, vehicle_yaw: float,
-    ) -> tuple:
-        try:
-            controller_output = self._controller.compute(
-                control_path=control_path, speed_mps=self._latest_speed_mps,
-                yaw_rate_rps=self._latest_yaw_rate_rps,
-            )
-        except ValueError as exc:
-            self._warn_throttled("controller_compute_error", f"controller compute failed: {exc}")
-            zero_flag = int(self._apply_no_path_behavior())
-            cmd_speed = float(self._last_speed_cmd) if self._last_speed_cmd is not None else 0.0
-            cmd_steering = float(self._last_steering_cmd) if self._last_steering_cmd is not None else 0.0
-            return None, None, cmd_speed, cmd_steering, 0.0, zero_flag, True
-        return self._controller_success_output(controller_output, target_frame, vehicle_x, vehicle_y, vehicle_yaw)
-
-    def _controller_success_output(self, controller_output, target_frame, vehicle_x, vehicle_y, vehicle_yaw) -> tuple:
-        cmd_steering = float(controller_output.steering_rad)
-        cmd_speed = self._compute_speed_command(float(controller_output.kappa))
-        lookahead = float(controller_output.lookahead_m)
-        control_target_base = np.asarray(controller_output.target_point_base, dtype=np.float64)
-        self._last_speed_cmd = cmd_speed
-        self._last_steering_cmd = cmd_steering
-        self._publish_cmd(cmd_speed, cmd_steering)
-        control_target_frame = self._resolve_control_target_frame(
-            control_target_base, target_frame, vehicle_x, vehicle_y, vehicle_yaw,
-        )
-        ctrl_debug = None
-        if controller_output.stanley_debug is not None:
-            ctrl_debug = self._build_stanley_debug_metrics(
-                controller_output.stanley_debug, control_target_frame,
-            )
-        return control_target_frame, ctrl_debug, cmd_speed, cmd_steering, lookahead, 0, False
-
     def _resolve_control_target_frame(
         self, control_target_base: np.ndarray, target_frame: str,
         vehicle_x: float, vehicle_y: float, vehicle_yaw: float,
@@ -591,39 +418,6 @@ class SingleBoundaryPlannerNode(TrackedConePlannerBase):
             )
             return np.array([tx, ty], dtype=np.float64)
         return None
-
-    def _build_stanley_debug_metrics(self, debug, control_target_frame: Optional[np.ndarray]) -> dict[str, float]:
-        return {
-            "heading_error_rad": float(debug.heading_error_rad),
-            "cross_track_error_m": float(debug.cross_track_error_m),
-            "vehicle_speed_mps": float(debug.vehicle_speed_mps),
-            "speed_term_mps": float(debug.speed_term_mps),
-            "heading_contribution_rad": float(debug.heading_contribution_rad),
-            "cross_track_contribution_rad": float(debug.cross_track_contribution_rad),
-            "yaw_rate_damping_contribution_rad": float(debug.yaw_rate_damping_contribution_rad),
-            "yaw_rate_rps": float(self._latest_yaw_rate_rps),
-            "raw_steering_cmd_rad": float(debug.raw_steering_cmd_rad),
-            "steering_after_clamp_rad": float(debug.steering_after_clamp_rad),
-            "steering_after_filter_rad": float(debug.steering_after_filter_rad),
-            "steering_after_rate_limit_rad": float(debug.steering_after_rate_limit_rad),
-            "final_steering_cmd_rad": float(debug.final_steering_cmd_rad),
-            "steering_saturated_flag": 1.0 if bool(debug.steering_saturated_flag) else 0.0,
-            "nearest_path_index": float(debug.nearest_path_index),
-            "heading_path_index": float(debug.heading_path_index),
-            "target_point_x_base_m": float(debug.target_point_x_base_m),
-            "target_point_y_base_m": float(debug.target_point_y_base_m),
-            **self._stanley_target_frame_metrics(control_target_frame),
-        }
-
-    def _stanley_target_frame_metrics(self, control_target_frame: Optional[np.ndarray]) -> dict[str, float]:
-        return {
-            "target_point_x_frame_m": (
-                float(control_target_frame[0]) if control_target_frame is not None else float("nan")
-            ),
-            "target_point_y_frame_m": (
-                float(control_target_frame[1]) if control_target_frame is not None else float("nan")
-            ),
-        }
 
     def _determine_operator_state(
         self, result, midline: _MidlineUpdateResult, ctrl: _ControllerOutput, hold_remaining_s: float,

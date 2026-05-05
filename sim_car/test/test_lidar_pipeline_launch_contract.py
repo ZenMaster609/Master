@@ -72,6 +72,8 @@ def test_cone_memory_defaults_remain_legacy_and_launch_applies_pointcloud3d_over
     assert "min_seen_count: 3" in config_content
     assert "confirm_hits: 3" in config_content
     assert "POINTCLOUD3D_CONE_MEMORY_CONFIRM_HITS = 1" in launch_content
+    assert "'memory.confirm_hits': ParameterValue(" in launch_content
+    assert "'memory.min_seen_count': ParameterValue(" in launch_content
 
 
 def test_gazebo_launch_bridges_pointcloud_when_requested() -> None:

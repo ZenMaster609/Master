@@ -10,16 +10,25 @@ import numpy as np
 
 from sim_car.cones.tracking.fusion import normalize_color
 from sim_car.planning.planner_config_base import BasePlannerConfig
-from sim_car.planning.planner_utils import _clamp, _default_reject_counts
+from sim_car.planning.planner_utils import (
+    _build_boundary_chain,
+    _clamp,
+    _default_reject_counts,
+    _empty_result_fields,
+    _filter_and_order_cones,
+    _finalize_path,
+    _first_point_distance,
+    _forward_extent_m,
+    _merge_reject_counts,
+    _path_start_heading_error,
+    _resample_path,
+)
 from sim_car.planning.tracked_cone_planner_geometry import (
-    build_boundary_chain_data,
     estimate_tangents as _estimate_tangents,
     inward_distance,
     inward_normal as _inward_normal,
     midpoint_outside_pair_span,
-    moving_average as _moving_average,
     pair_width_in_range,
-    path_cumulative_lengths as _path_cumulative_lengths,
     path_heading_delta_max as _path_heading_delta_max,
     path_self_intersects as _path_self_intersects,
     to_vehicle_frame as _to_vehicle_frame,
@@ -263,67 +272,6 @@ class _MidpointComputationContext:
     right_boundary_count: int
 
 
-def _filter_and_order_cones(
-    points_xy: np.ndarray,
-    colors: list[str],
-    confidences: np.ndarray,
-    track_ids: np.ndarray,
-    vehicle_xy: tuple[float, float],
-    vehicle_yaw: float,
-    config: MidpointPlannerConfig,
-    raw_colors: Optional[list[str]] = None,
-) -> "_FilteredCones":
-    normalized = [normalize_color(c) for c in colors]
-    normalized_raw = _normalized_raw_colors(raw_colors, colors, normalized)
-    local_points = _to_vehicle_frame(points_xy, vehicle_xy, vehicle_yaw)
-    selected_mask = _cone_selection_mask(local_points, confidences, normalized, config)
-
-    indices = np.where(selected_mask)[0]
-    filtered_points = points_xy[selected_mask]
-    filtered_local = local_points[selected_mask]
-    filtered_track_ids = track_ids[selected_mask]
-    filtered_colors = [normalized[i] for i in indices]
-    filtered_raw_colors = [normalized_raw[i] for i in indices]
-    colored_count = int(np.count_nonzero(
-        np.array([c in {"blue", "yellow"} for c in filtered_colors], dtype=bool)
-    ))
-
-    order = _deterministic_order(filtered_local, filtered_points, filtered_colors)
-    return _FilteredCones(
-        points=filtered_points[order],
-        local=filtered_local[order],
-        track_ids=filtered_track_ids[order],
-        colors=[filtered_colors[i] for i in order],
-        raw_colors=[filtered_raw_colors[i] for i in order],
-        colored_count=colored_count,
-    )
-
-
-def _normalized_raw_colors(
-    raw_colors: Optional[list[str]],
-    colors: list[str],
-    normalized_colors: list[str],
-) -> list[str]:
-    if raw_colors is not None and len(raw_colors) == len(colors):
-        return [normalize_color(c) for c in raw_colors]
-    return list(normalized_colors)
-
-
-def _cone_selection_mask(
-    local_points: np.ndarray,
-    confidences: np.ndarray,
-    normalized_colors: list[str],
-    config: MidpointPlannerConfig,
-) -> np.ndarray:
-    mask_geom = _geometry_filter(local_points, config)
-    mask_conf = confidences >= float(config.min_confidence)
-    colored_mask = np.array([c in {"blue", "yellow"} for c in normalized_colors], dtype=bool)
-    unknown_mask = np.array([c == "unknown" for c in normalized_colors], dtype=bool)
-    return mask_geom & mask_conf & (
-        colored_mask | (unknown_mask if config.allow_unknown_pair_completion else False)
-    )
-
-
 def _validate_path(
     centerline: np.ndarray,
     centerline_local: np.ndarray,
@@ -372,8 +320,18 @@ def compute_midpoint_centerline(
 
     track_ids = _normalized_track_ids(track_ids, points_xy.shape[0])
     cones = _filter_and_order_cones(
-        points_xy, colors, confidences, track_ids,
-        vehicle_xy, vehicle_yaw, config, raw_colors,
+        points_xy=points_xy,
+        colors=colors,
+        confidences=confidences,
+        track_ids=track_ids,
+        vehicle_xy=vehicle_xy,
+        vehicle_yaw=vehicle_yaw,
+        config=config,
+        filtered_cones_type=_FilteredCones,
+        geometry_filter=_geometry_filter,
+        include_unknown=True,
+        raw_colors=raw_colors,
+        include_raw_colors=True,
     )
     early_result = _filtered_cones_failure_result(cones, config)
     if early_result is not None:
@@ -474,8 +432,20 @@ def _build_midpoint_boundary_chains(
     config: MidpointPlannerConfig,
 ) -> tuple[_BoundaryChain, _BoundaryChain]:
     return (
-        _build_boundary_chain(cones.points, cones.local, boundary_indices.left, config),
-        _build_boundary_chain(cones.points, cones.local, boundary_indices.right, config),
+        _build_boundary_chain(
+            filtered_points=cones.points,
+            filtered_local=cones.local,
+            side_indices=boundary_indices.left,
+            config=config,
+            boundary_chain_type=_BoundaryChain,
+        ),
+        _build_boundary_chain(
+            filtered_points=cones.points,
+            filtered_local=cones.local,
+            side_indices=boundary_indices.right,
+            config=config,
+            boundary_chain_type=_BoundaryChain,
+        ),
     )
 
 
@@ -760,52 +730,6 @@ def _geometry_filter(local_points: np.ndarray, config: MidpointPlannerConfig) ->
         & np.isfinite(local_points[:, 1])
         & (distance <= float(config.max_cone_range_m))
         & (local_points[:, 0] >= -float(config.behind_drop_m))
-    )
-
-
-def _deterministic_order(
-    local_points: np.ndarray,
-    global_points: np.ndarray,
-    colors: list[str],
-) -> np.ndarray:
-    color_rank = np.asarray(
-        [
-            0 if color == "blue" else 1 if color == "yellow" else 2
-            for color in colors
-        ],
-        dtype=np.int64,
-    )
-    return np.lexsort(
-        (
-            global_points[:, 1],
-            global_points[:, 0],
-            local_points[:, 1],
-            np.abs(local_points[:, 1]),
-            local_points[:, 0],
-            color_rank,
-        )
-    )
-
-
-def _build_boundary_chain(
-    filtered_points: np.ndarray,
-    filtered_local: np.ndarray,
-    side_indices: np.ndarray,
-    config: MidpointPlannerConfig,
-) -> _BoundaryChain:
-    chain = build_boundary_chain_data(
-        filtered_points=filtered_points,
-        filtered_local=filtered_local,
-        side_indices=side_indices,
-        config=config,
-    )
-    return _BoundaryChain(
-        filtered_indices=chain.filtered_indices,
-        global_points=chain.global_points,
-        local_points=chain.local_points,
-        tangents_local=chain.tangents_local,
-        mean_heading_change_rad=chain.mean_heading_change_rad,
-        forward_extent_m=chain.forward_extent_m,
     )
 
 
@@ -1745,43 +1669,6 @@ def _offset_boundary_chain(
     return np.asarray(offset, dtype=np.float64)
 
 
-def _finalize_path(points: np.ndarray, config: MidpointPlannerConfig) -> np.ndarray:
-    if points.shape[0] == 0:
-        return np.empty((0, 2), dtype=np.float64)
-    path = np.asarray(points, dtype=np.float64)
-    if int(config.smoothing_window) > 1:
-        path = _moving_average(path, int(config.smoothing_window))
-    path = _resample_path(
-        path,
-        resolution_m=float(config.path_resolution_m),
-        max_length_m=float(config.max_path_length_m),
-    )
-    return path
-
-
-def _resample_path(points: np.ndarray, resolution_m: float, max_length_m: float) -> np.ndarray:
-    if points.shape[0] <= 1:
-        return np.asarray(points, dtype=np.float64)
-
-    cumulative = _path_cumulative_lengths(points)
-    total = min(float(cumulative[-1]), float(max_length_m))
-    if total <= 1e-6:
-        return np.asarray(points[:1], dtype=np.float64)
-
-    step = max(0.05, float(resolution_m))
-    samples = np.arange(0.0, total + 1e-9, step, dtype=np.float64)
-    if samples.size == 0 or samples[-1] < total:
-        samples = np.concatenate((samples, [total]))
-    x = np.interp(samples, cumulative, points[:, 0])
-    y = np.interp(samples, cumulative, points[:, 1])
-    return np.column_stack((x, y)).astype(np.float64)
-
-
-def _path_length(points: np.ndarray) -> float:
-    cumulative = _path_cumulative_lengths(np.asarray(points, dtype=np.float64))
-    return float(cumulative[-1]) if cumulative.size > 0 else 0.0
-
-
 def _near_field_delta_metrics(
     *,
     current: np.ndarray,
@@ -1812,37 +1699,6 @@ def _near_field_delta_metrics(
     )
 
 
-def _path_start_heading_error(path_local: np.ndarray) -> float:
-    if path_local.shape[0] < 2:
-        return 0.0
-    delta = path_local[1] - path_local[0]
-    if float(np.hypot(delta[0], delta[1])) <= 1e-9:
-        return 0.0
-    return float(math.atan2(delta[1], delta[0]))
-
-
-def _forward_extent_m(path_local: np.ndarray) -> float:
-    if path_local.shape[0] == 0:
-        return 0.0
-    x_span = float(np.max(path_local[:, 0]) - np.min(path_local[:, 0]))
-    if path_local.shape[0] < 2:
-        return x_span
-    diffs = np.diff(path_local, axis=0)
-    path_length = float(np.sum(np.hypot(diffs[:, 0], diffs[:, 1])))
-    return max(x_span, path_length)
-
-
-def _first_point_distance(path_local: np.ndarray) -> float:
-    if path_local.shape[0] == 0:
-        return float("nan")
-    return float(np.hypot(path_local[0, 0], path_local[0, 1]))
-
-
-def _merge_reject_counts(target: dict[str, int], source: dict[str, int]) -> None:
-    for key, value in source.items():
-        target[key] = int(target.get(key, 0)) + int(value)
-
-
 def _empty_result(
     status: str,
     *,
@@ -1854,29 +1710,13 @@ def _empty_result(
     reject_reason: str = "",
 ) -> MidpointPlannerResult:
     return MidpointPlannerResult(
-        filtered_points=(
-            np.asarray(filtered_points, dtype=np.float64)
-            if filtered_points is not None
-            else np.empty((0, 2), dtype=np.float64)
+        **_empty_result_fields(
+            filtered_points=filtered_points,
+            filtered_colors=filtered_colors,
+            left_boundary=left_boundary,
+            right_boundary=right_boundary,
         ),
-        filtered_colors=list(filtered_colors or []),
-        candidate_edges=np.empty((0, 2), dtype=np.int64),
-        selected_edges=np.empty((0, 2), dtype=np.int64),
-        selected_pair_track_ids=np.empty((0, 2), dtype=np.int64),
-        midpoints_raw=np.empty((0, 2), dtype=np.float64),
-        centerline=np.empty((0, 2), dtype=np.float64),
         prevalidation_centerline=np.empty((0, 2), dtype=np.float64),
-        left_boundary=(
-            np.asarray(left_boundary, dtype=np.float64)
-            if left_boundary is not None
-            else np.empty((0, 2), dtype=np.float64)
-        ),
-        right_boundary=(
-            np.asarray(right_boundary, dtype=np.float64)
-            if right_boundary is not None
-            else np.empty((0, 2), dtype=np.float64)
-        ),
-        used_fallback=False,
         status=status,
         reject_counts=reject_counts or _default_reject_counts(_REJECT_COUNT_KEYS),
         reject_reason=reject_reason,

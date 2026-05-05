@@ -287,6 +287,225 @@ class TrackedConePlannerBase(
         msg.drive.steering_angle = float(steering_rad)
         self._cmd_pub.publish(msg)
 
+    def _execute_controller(
+        self,
+        control_path: np.ndarray,
+        target_frame: str,
+        vehicle_x: float,
+        vehicle_y: float,
+        vehicle_yaw: float,
+    ) -> tuple:
+        try:
+            controller_output = self._controller.compute(
+                control_path=control_path,
+                speed_mps=self._latest_speed_mps,
+                yaw_rate_rps=self._latest_yaw_rate_rps,
+            )
+        except ValueError as exc:
+            self._warn_throttled("controller_compute_error", f"controller compute failed: {exc}")
+            zero_flag = int(self._apply_no_path_behavior())
+            cmd_speed = float(self._last_speed_cmd) if self._last_speed_cmd is not None else 0.0
+            cmd_steering = float(self._last_steering_cmd) if self._last_steering_cmd is not None else 0.0
+            return None, None, cmd_speed, cmd_steering, 0.0, zero_flag, True
+        cmd_steering = float(controller_output.steering_rad)
+        cmd_speed = self._compute_speed_command(float(controller_output.kappa))
+        lookahead = float(controller_output.lookahead_m)
+        control_target_base = np.asarray(controller_output.target_point_base, dtype=np.float64)
+        self._last_speed_cmd = cmd_speed
+        self._last_steering_cmd = cmd_steering
+        self._publish_cmd(cmd_speed, cmd_steering)
+        control_target_frame = self._resolve_control_target_frame(
+            control_target_base, target_frame, vehicle_x, vehicle_y, vehicle_yaw,
+        )
+        ctrl_debug = None
+        if controller_output.stanley_debug is not None:
+            ctrl_debug = self._build_stanley_debug_metrics(
+                controller_output.stanley_debug, control_target_frame,
+            )
+        return control_target_frame, ctrl_debug, cmd_speed, cmd_steering, lookahead, 0, False
+
+    def _build_stanley_debug_metrics(
+        self,
+        debug,
+        control_target_frame: Optional[np.ndarray],
+    ) -> dict[str, float]:
+        return {
+            "heading_error_rad": float(debug.heading_error_rad),
+            "cross_track_error_m": float(debug.cross_track_error_m),
+            "vehicle_speed_mps": float(debug.vehicle_speed_mps),
+            "speed_term_mps": float(debug.speed_term_mps),
+            "heading_contribution_rad": float(debug.heading_contribution_rad),
+            "cross_track_contribution_rad": float(debug.cross_track_contribution_rad),
+            "yaw_rate_damping_contribution_rad": float(debug.yaw_rate_damping_contribution_rad),
+            "yaw_rate_rps": float(self._latest_yaw_rate_rps),
+            "raw_steering_cmd_rad": float(debug.raw_steering_cmd_rad),
+            "steering_after_clamp_rad": float(debug.steering_after_clamp_rad),
+            "steering_after_filter_rad": float(debug.steering_after_filter_rad),
+            "steering_after_rate_limit_rad": float(debug.steering_after_rate_limit_rad),
+            "final_steering_cmd_rad": float(debug.final_steering_cmd_rad),
+            "steering_saturated_flag": 1.0 if bool(debug.steering_saturated_flag) else 0.0,
+            "nearest_path_index": float(debug.nearest_path_index),
+            "heading_path_index": float(debug.heading_path_index),
+            "target_point_x_base_m": float(debug.target_point_x_base_m),
+            "target_point_y_base_m": float(debug.target_point_y_base_m),
+            "target_point_x_frame_m": (
+                float(control_target_frame[0]) if control_target_frame is not None else float("nan")
+            ),
+            "target_point_y_frame_m": (
+                float(control_target_frame[1]) if control_target_frame is not None else float("nan")
+            ),
+        }
+
+    def _buffer_and_anchor_centerline(
+        self,
+        result,
+        raw_centerline: np.ndarray,
+        candidate_source: str,
+        raw_midpoint_chain: Optional[np.ndarray],
+        target_frame: str,
+        vehicle_x: float,
+        vehicle_y: float,
+        vehicle_yaw: float,
+        now_sec: float,
+    ) -> tuple:
+        candidate_update_ok, candidate_update_reason = self._candidate_path_is_updateable(
+            candidate_centerline=raw_centerline, vehicle_x=vehicle_x, vehicle_y=vehicle_y,
+            vehicle_yaw=vehicle_yaw, result=result, candidate_source=candidate_source,
+        )
+        support_centerline = (
+            raw_midpoint_chain
+            if raw_midpoint_chain is not None
+            else getattr(result, "raw_offset_path", raw_centerline)
+        )
+        centerline = self._update_midline_buffer(
+            candidate_centerline=raw_centerline, candidate_source=candidate_source,
+            candidate_update_ok=candidate_update_ok, candidate_update_reason=candidate_update_reason,
+            frame_id=target_frame, vehicle_x=vehicle_x, vehicle_y=vehicle_y, vehicle_yaw=vehicle_yaw,
+            result=result, now_sec=now_sec, support_centerline=support_centerline,
+        )
+        candidate_update_ok = bool(getattr(self, "_last_midline_candidate_update_ok", candidate_update_ok))
+        candidate_update_reason = str(getattr(self, "_last_midline_candidate_update_reason", candidate_update_reason))
+        buffered_centerline = np.array(centerline, copy=True)
+        centerline = self._anchor_centerline_near_vehicle(
+            centerline=centerline, frame_id=target_frame,
+            vehicle_x=vehicle_x, vehicle_y=vehicle_y, vehicle_yaw=vehicle_yaw,
+        )
+        return centerline, buffered_centerline, candidate_update_ok, candidate_update_reason
+
+    def _build_midline_status(
+        self,
+        result,
+        raw_centerline: np.ndarray,
+        centerline: np.ndarray,
+        candidate_source: str,
+        candidate_update_ok: bool,
+        candidate_update_reason: str,
+        pair_segments_for_viz: np.ndarray,
+        raw_midpoint_chain: Optional[np.ndarray],
+        target_frame: Optional[str],
+        vehicle_x: Optional[float],
+        vehicle_y: Optional[float],
+        vehicle_yaw: Optional[float],
+        now_sec: float,
+    ) -> tuple:
+        status = result.status
+        if not candidate_update_ok and centerline.shape[0] > 0:
+            status = f"{status}; holding stored midline"
+        elif self._is_publishing_stored_midline(raw_centerline, centerline):
+            status = f"{status}; publishing stored midline"
+        if candidate_source != "validated" and raw_centerline.shape[0] > 0:
+            status = f"{status}; using {candidate_source}"
+        self._update_midline_pair_memory(
+            result=result,
+            raw_centerline=raw_centerline,
+            centerline=centerline,
+            pair_segments_for_viz=pair_segments_for_viz,
+            target_frame=target_frame,
+            vehicle_x=vehicle_x,
+            vehicle_y=vehicle_y,
+            vehicle_yaw=vehicle_yaw,
+            now_sec=now_sec,
+        )
+        if raw_centerline.shape[0] == 0 and self._last_valid_pair_segments is not None and centerline.shape[0] > 0:
+            pair_segments_for_viz = np.array(self._last_valid_pair_segments, copy=True)
+        return status, pair_segments_for_viz, raw_midpoint_chain
+
+    def _update_midline_pair_memory(
+        self,
+        *,
+        result,
+        raw_centerline: np.ndarray,
+        centerline: np.ndarray,
+        pair_segments_for_viz: np.ndarray,
+        target_frame: Optional[str],
+        vehicle_x: Optional[float],
+        vehicle_y: Optional[float],
+        vehicle_yaw: Optional[float],
+        now_sec: float,
+    ) -> None:
+        if target_frame is not None and result.status == "ok" and result.pair_segments.size > 0:
+            self._remember_pairs(
+                result=result, frame_id=target_frame,
+                vehicle_x=vehicle_x, vehicle_y=vehicle_y, vehicle_yaw=vehicle_yaw, now_sec=now_sec,
+            )
+        elif centerline.shape[0] > 0 and raw_centerline.shape[0] > 0:
+            self._remember_pairs(result=result, now_sec=now_sec)
+            remember_valid = getattr(self, "_remember_valid_pair_geometry", None)
+            if remember_valid is not None:
+                remember_valid(result, pair_segments_for_viz)
+        if centerline.shape[0] > 0 and raw_centerline.shape[0] > 0:
+            self._last_valid_pair_segments = (
+                pair_segments_for_viz if pair_segments_for_viz.size > 0 else self._last_valid_pair_segments
+            )
+
+    @staticmethod
+    def _is_publishing_stored_midline(raw_centerline: np.ndarray, centerline: np.ndarray) -> bool:
+        return (
+            raw_centerline.shape[0] > 0
+            and centerline.shape[0] > 0
+            and (raw_centerline.shape != centerline.shape or not np.allclose(raw_centerline, centerline))
+        )
+
+    def _apply_hold_logic(
+        self,
+        result,
+        centerline: np.ndarray,
+        candidate_update_ok: bool,
+        candidate_update_reason: str,
+        status: str,
+        now_sec: float,
+        pair_segments_for_viz: Optional[np.ndarray] = None,
+        raw_midpoint_chain: Optional[np.ndarray] = None,
+    ) -> tuple:
+        plan_hold_active = False
+        publish_mode = "fresh"
+        hold_reason = result.reject_reason
+        if centerline.shape[0] > 0 and candidate_update_ok:
+            continue_holding = self._advance_hold_hysteresis(plan_ok=True)
+            if continue_holding:
+                held_centerline = self._held_centerline(now_sec)
+                if held_centerline is not None:
+                    centerline = held_centerline
+                    plan_hold_active = True
+                    publish_mode = "held"
+                    status = (
+                        f"{status}; hysteresis holding previous valid centerline "
+                        f"({self._hold_clean_frame_count}/{self.hold_exit_clean_frames})"
+                    )
+        else:
+            self._advance_hold_hysteresis(plan_ok=False)
+            held_centerline = self._held_centerline(now_sec)
+            if held_centerline is not None:
+                centerline = held_centerline
+                plan_hold_active = True
+                publish_mode = "held"
+                status = f"{status}; holding previous valid centerline"
+            else:
+                publish_mode = "held"
+        if plan_hold_active:
+            hold_reason = result.reject_reason or candidate_update_reason or status
+        return centerline, publish_mode, plan_hold_active, hold_reason, status
+
     def _resolve_planning_frame(self, source_frame: str, stamp) -> str:
         requested = self.planning_frame
         if requested == self.odom_frame:
@@ -370,8 +589,7 @@ class TrackedConePlannerBase(
         )
 
     def _configured_wheelbase_m(self) -> float:
-        stanley_wheelbase = float(self.get_parameter("stanley.wheelbase_m").value)
-        return max(0.1, stanley_wheelbase)
+        return max(0.1, float(getattr(self, "vehicle_wheelbase_m", 1.65)))
 
     def _convert_cones_to_frame(
         self,
