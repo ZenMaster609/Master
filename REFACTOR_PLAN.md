@@ -14,6 +14,9 @@
   - `planning_state_machine.py` (StateMachineMixin) ✓
   - `planning_diagnostics.py` (DiagnosticsMixin) ✓
   - `planning_visualization.py` (VisualizationMixin) ✓
+- **Batch 3A-fix** — `_on_timer` in `tracked_cone_planner_runtime.py` refactored to 41-line orchestrator; `_publish_outputs` and `_convert_with_odom_pose_fallback` split; all new helpers ≤40 lines ✓
+- **Batch 3B-fix** — `logger_node.py` `__init__` reduced to 42 lines; `_unpack_config()` and `_setup_all_subscriptions()` extracted; `_init_path_eval_state()` moved to `PathEvalRunner` mixin ✓
+- **Batch 3D** — `_on_timer` in `midpoint_planner_node.py` reduced to 34 lines; `_blend_midline_samples` (68→32 lines) split into `_project_samples_to_vehicle_frame`, `_apply_lateral_clip`, `_convert_blended_local_to_odom`; all new helpers ≤ 40 lines ✓
 
 ---
 

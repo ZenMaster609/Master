@@ -44,6 +44,42 @@ from ..utils.transforms import quaternion_to_yaw
 
 class PathEvalRunner:
 
+    def _init_path_eval_state(self) -> None:
+        self._path_eval_tf_buffer = None
+        self._path_eval_tf_listener = None
+        self._path_eval_latest_gt_msg = None
+        self._path_eval_gt_midline_source = None
+        self._path_eval_last_gt_midline_xy = np.empty((0, 2), dtype=np.float64)
+        self._path_eval_last_gt_left_xy = np.empty((0, 2), dtype=np.float64)
+        self._path_eval_last_gt_right_xy = np.empty((0, 2), dtype=np.float64)
+        self._path_eval_last_target_frame = ''
+        self._path_eval_start_xy = None
+        self._path_eval_start_heading_xy = None
+        self._path_eval_vehicle_xy = np.asarray([float('nan'), float('nan')], dtype=np.float64)
+        self._path_eval_vehicle_frame = ''
+        self._path_eval_vehicle_child_frame = ''
+        self._path_eval_vehicle_yaw_rad = float('nan')
+        self._path_eval_vehicle_stamp = None
+        self._path_eval_planner_xy = np.empty((0, 2), dtype=np.float64)
+        self._path_eval_planner_frame = ''
+        self._path_eval_planner_stamp = None
+        self._path_eval_reference_trace_points: list[np.ndarray] = []
+        self._path_eval_file_handle = None
+        self._path_eval_csv_writer = None
+        self._path_eval_flush_counter = 0
+        self._path_eval_flush_stride = max(1, int(self._path_tracking_eval_rate_hz * 2.0))
+        self._path_eval_timer = None
+        self._path_eval_identity_warned_pairs: set[tuple[str, str]] = set()
+        self._path_eval_smalltrack_gate_source = None
+        self._path_eval_smalltrack_lap_counter = None
+        self._path_eval_smalltrack_completed_laps = 0
+        self._path_eval_smalltrack_lap_times_sec: list[float] = []
+        self._path_eval_smalltrack_autostop_triggered = False
+        self._path_eval_run_start_sec = None
+        self._path_eval_run_last_sec = None
+        self._off_track_no_cone_since = None
+        self._off_track_autostop_triggered = False
+
     def _path_tracking_eval_gt_callback(self, msg: ConeArrayWithCovariance) -> None:
         self._path_eval_latest_gt_msg = msg
         self._path_tracking_eval_rebuild_gt_midline()

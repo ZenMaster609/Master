@@ -41,6 +41,12 @@ from sim_car.planning.tracked_cone_planner_contract import (
     log_tracked_cone_controller_mode,
     normalize_tracked_cone_controller_type,
 )
+from sim_car.planning.tracked_cone_planner_base import PlannerNodeUtilitiesMixin
+from sim_car.planning.tracked_cone_planner_geometry import (
+    _base_point_to_odom,
+    _odom_point_to_base,
+    _yaw_from_quat,
+)
 
 _OPERATOR_REASON_LABELS = {
     'none': 'path active',
@@ -60,7 +66,7 @@ _OPERATOR_STATE_COLORS = {
 }
 
 
-class LineTestPlannerNode(Node):
+class LineTestPlannerNode(PlannerNodeUtilitiesMixin, Node):
     """Publishes a fixed straight centerline and optional steering commands."""
 
     def __init__(self) -> None:
@@ -422,7 +428,7 @@ class LineTestPlannerNode(Node):
                     lookahead = float(controller_output.lookahead_m)
                     control_target_base = np.asarray(controller_output.target_point_base, dtype=np.float64)
                     control_target_world = np.asarray(
-                        self._base_point_to_odom(
+                        _base_point_to_odom(
                             float(control_target_base[0]),
                             float(control_target_base[1]),
                             vehicle_x,
@@ -487,7 +493,7 @@ class LineTestPlannerNode(Node):
         tx = float(pose.position.x)
         ty = float(pose.position.y)
         q = pose.orientation
-        yaw = self._yaw_from_quat(float(q.x), float(q.y), float(q.z), float(q.w))
+        yaw = _yaw_from_quat(float(q.x), float(q.y), float(q.z), float(q.w))
         child_frame = str(odom.child_frame_id).strip()
         base_pose = self._convert_odom_child_pose_to_base_frame(
             child_frame=child_frame,
@@ -633,7 +639,7 @@ class LineTestPlannerNode(Node):
             return centerline
         out = np.empty_like(centerline)
         for idx in range(centerline.shape[0]):
-            out[idx, 0], out[idx, 1] = self._odom_point_to_base(
+            out[idx, 0], out[idx, 1] = _odom_point_to_base(
                 float(centerline[idx, 0]),
                 float(centerline[idx, 1]),
                 vehicle_x,
@@ -1093,52 +1099,6 @@ class LineTestPlannerNode(Node):
         if curvature.size == 0:
             return float('nan')
         return float(np.percentile(curvature, 95.0))
-
-    @staticmethod
-    def _frame_aliases(frame: str) -> set[str]:
-        out: set[str] = set()
-
-        def add(token: str) -> None:
-            normalized = str(token).strip().strip('/')
-            if normalized:
-                out.add(normalized)
-
-        add(frame)
-        normalized = str(frame).strip().strip('/').lower()
-        if normalized == 'odom':
-            add('odom')
-        if normalized in {'front_axle', 'base_link', 'base_footprint'}:
-            add('front_axle')
-            add('base_link')
-            add('base_footprint')
-        return out
-
-    def _is_alias(self, frame_a: str, frame_b: str) -> bool:
-        return bool(self._frame_aliases(frame_a).intersection(self._frame_aliases(frame_b)))
-
-    @staticmethod
-    def _yaw_from_quat(qx: float, qy: float, qz: float, qw: float) -> float:
-        siny_cosp = 2.0 * (qw * qz + qx * qy)
-        cosy_cosp = 1.0 - 2.0 * (qy * qy + qz * qz)
-        return math.atan2(siny_cosp, cosy_cosp)
-
-    @staticmethod
-    def _odom_point_to_base(x_odom: float, y_odom: float, tx: float, ty: float, yaw: float) -> tuple[float, float]:
-        dx = x_odom - tx
-        dy = y_odom - ty
-        cos_y = math.cos(yaw)
-        sin_y = math.sin(yaw)
-        x_base = cos_y * dx + sin_y * dy
-        y_base = -sin_y * dx + cos_y * dy
-        return x_base, y_base
-
-    @staticmethod
-    def _base_point_to_odom(x_base: float, y_base: float, tx: float, ty: float, yaw: float) -> tuple[float, float]:
-        cos_y = math.cos(yaw)
-        sin_y = math.sin(yaw)
-        x_odom = tx + (cos_y * x_base) - (sin_y * y_base)
-        y_odom = ty + (sin_y * x_base) + (cos_y * y_base)
-        return x_odom, y_odom
 
     @staticmethod
     def _make_line_strip_marker(

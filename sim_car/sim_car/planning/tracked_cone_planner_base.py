@@ -7,13 +7,14 @@ from typing import Any, Optional
 import numpy as np
 from ackermann_msgs.msg import AckermannDriveStamped
 from diagnostic_msgs.msg import DiagnosticArray
-from geometry_msgs.msg import Point, PoseArray
+from geometry_msgs.msg import PoseArray
 from nav_msgs.msg import Odometry, Path
 from rclpy.duration import Duration
 from rclpy.qos import qos_profile_sensor_data
-from tf2_ros import Buffer, TransformListener
+from rclpy.time import Time
+from tf2_ros import Buffer, TransformException, TransformListener
 from vehicle_plotter_msgs.msg import ConeDetectionArray
-from visualization_msgs.msg import Marker, MarkerArray
+from visualization_msgs.msg import MarkerArray
 
 from sim_car.cones.tracking.fusion import normalize_color
 from sim_car.planning.controller_config import build_steering_controller
@@ -27,10 +28,75 @@ from sim_car.planning.planner_constants import (
     MSG_TRACK_STATE_TENTATIVE,
 )
 from sim_car.planning.planner_runtime_types import TrackedConePlanningFrame, TrackedConePlanningMetadata
+from sim_car.planning.tracked_cone_planner_geometry import _base_point_to_odom
 from sim_car.planning.tracked_cone_planner_runtime import TrackedConePlannerRuntime
 
 
-class TrackedConePlannerBase(TrackedConePlannerRuntime):
+class PlannerNodeUtilitiesMixin:
+    def _warn_throttled(self, key: str, message: str) -> None:
+        now_sec = time.monotonic()
+        last_sec = self._last_throttled_log_sec.get(key, -1.0)
+        if (now_sec - last_sec) >= self.log_throttle_s:
+            self.get_logger().warn(message)
+            self._last_throttled_log_sec[key] = now_sec
+
+    def _lookup_transform(self, target_frame: str, source_frame: str, stamp):
+        timeout = Duration(seconds=self.tf_timeout_s)
+        try:
+            stamp_time = Time.from_msg(stamp)
+            return self._tf_buffer.lookup_transform(
+                target_frame,
+                source_frame,
+                stamp_time,
+                timeout=timeout,
+            )
+        except (TransformException, ValueError):
+            pass
+        try:
+            return self._tf_buffer.lookup_transform(
+                target_frame,
+                source_frame,
+                Time(),
+                timeout=timeout,
+            )
+        except TransformException:
+            return None
+
+    def _lookup_transform_with_alias(self, target_frame: str, source_frame: str, stamp):
+        for target_candidate in self._frame_aliases(target_frame):
+            for source_candidate in self._frame_aliases(source_frame):
+                tf_msg = self._lookup_transform(target_candidate, source_candidate, stamp)
+                if tf_msg is not None:
+                    return tf_msg, target_candidate, source_candidate
+        return None, target_frame, source_frame
+
+    def _frame_aliases(self, frame: str) -> list[str]:
+        token = str(frame).strip()
+        out: list[str] = []
+
+        def add(candidate: str) -> None:
+            normalized = candidate.strip().strip("/")
+            if normalized and normalized not in out:
+                out.append(normalized)
+
+        add(token)
+        leaf = token.strip("/").split("/")[-1] if token else ""
+        add(leaf)
+
+        if leaf in {"front_axle", "base_link", "base_footprint"}:
+            prefix = token.strip("/").rsplit("/", 1)[0] if "/" in token.strip("/") else ""
+            for alias in ("front_axle", "base_link", "base_footprint"):
+                add(f"{prefix}/{alias}" if prefix else alias)
+                add(alias)
+        return out
+
+    def _is_alias(self, frame_a: str, frame_b: str) -> bool:
+        a = set(self._frame_aliases(frame_a))
+        b = set(self._frame_aliases(frame_b))
+        return bool(a.intersection(b))
+
+
+class TrackedConePlannerBase(PlannerNodeUtilitiesMixin, TrackedConePlannerRuntime):
     """Shared tracked-cone planner runtime used by midpoint/single-boundary planners."""
 
     # Width of the planned centerline strip in viz markers.  Subclasses that
@@ -576,7 +642,7 @@ class TrackedConePlannerBase(TrackedConePlannerRuntime):
 
         anchored = np.empty_like(local)
         for idx in range(local.shape[0]):
-            ox, oy = self._base_point_to_odom(
+            ox, oy = _base_point_to_odom(
                 float(local[idx, 0]),
                 float(local[idx, 1]),
                 vehicle_x,
@@ -586,52 +652,6 @@ class TrackedConePlannerBase(TrackedConePlannerRuntime):
             anchored[idx, 0] = ox
             anchored[idx, 1] = oy
         return anchored
-
-    # -----------------------------------------------------------------------
-    # Shared visualization helpers
-    # -----------------------------------------------------------------------
-
-    def _make_pair_segment_marker(
-        self,
-        *,
-        frame_id: str,
-        stamp: Any,
-        marker_id: int,
-        ns: str,
-        pair_segments: Optional[np.ndarray],
-        color: tuple[float, float, float, float],
-        width: float,
-    ) -> Marker:
-        marker = Marker()
-        marker.header.frame_id = frame_id
-        marker.header.stamp = stamp
-        marker.ns = ns
-        marker.id = marker_id
-        marker.type = Marker.LINE_LIST
-        marker.action = Marker.ADD
-        marker.pose.orientation.w = 1.0
-        marker.scale.x = float(width)
-        marker.color.r = float(color[0])
-        marker.color.g = float(color[1])
-        marker.color.b = float(color[2])
-        marker.color.a = float(color[3])
-        if pair_segments is None:
-            return marker
-        for segment in np.asarray(pair_segments, dtype=np.float64):
-            if segment.shape != (2, 2):
-                continue
-            for x, y in segment:
-                point = self._point_msg(float(x), float(y), 0.03)
-                marker.points.append(point)
-        return marker
-
-    @staticmethod
-    def _point_msg(x: float, y: float, z: float) -> Point:
-        point = Point()
-        point.x = x
-        point.y = y
-        point.z = z
-        return point
 
     # -----------------------------------------------------------------------
     # Shared logging helper
@@ -670,270 +690,6 @@ class TrackedConePlannerBase(TrackedConePlannerRuntime):
             )
         )
         self._last_throttled_log_sec["mode_summary"] = now_sec
-
-    # -----------------------------------------------------------------------
-    # Shared marker builder — midpoint and single_boundary planners
-    # -----------------------------------------------------------------------
-
-    def _build_markers(
-        self,
-        *,
-        now,
-        frame_id: str,
-        result: Optional[Any],
-        centerline: np.ndarray,
-        raw_centerline: np.ndarray,
-        raw_midpoint_chain: np.ndarray,
-        status: str,
-        operator_state: str,
-        control_target_frame: Optional[np.ndarray],
-    ) -> MarkerArray:
-        arr = MarkerArray()
-
-        clear = Marker()
-        clear.header.frame_id = frame_id
-        clear.header.stamp = now
-        clear.action = Marker.DELETEALL
-        arr.markers.append(clear)
-
-        marker_id = 1
-        if result is None:
-            self._append_status_marker(
-                arr,
-                marker_id,
-                frame_id,
-                now,
-                status,
-                operator_state=operator_state,
-            )
-            return arr
-
-        if self.show_raw_cones:
-            marker_id = self._append_remembered_cone_marker(
-                arr,
-                marker_id,
-                frame_id,
-                now,
-            )
-
-        left_boundary = np.array(result.left_boundary, copy=True)
-        right_boundary = np.array(result.right_boundary, copy=True)
-        if left_boundary.shape[0] > 0:
-            self._last_viz_left_boundary = np.array(left_boundary, copy=True)
-        elif self._last_viz_left_boundary is not None:
-            left_boundary = np.array(self._last_viz_left_boundary, copy=True)
-        if right_boundary.shape[0] > 0:
-            self._last_viz_right_boundary = np.array(right_boundary, copy=True)
-        elif self._last_viz_right_boundary is not None:
-            right_boundary = np.array(self._last_viz_right_boundary, copy=True)
-
-        if self.show_boundary_chains:
-            arr.markers.append(
-                self._make_line_strip_marker(
-                    frame_id=frame_id,
-                    stamp=now,
-                    marker_id=marker_id,
-                    ns="boundary_left",
-                    points=left_boundary,
-                    color=(0.2, 0.45, 1.0, 0.95),
-                    width=0.10,
-                    z_offset=0.12,
-                )
-            )
-            marker_id += 1
-            left_points_marker = self._make_points_marker(
-                frame_id=frame_id,
-                stamp=now,
-                marker_id=marker_id,
-                ns="boundary_left_points",
-                points=left_boundary,
-                color=(0.2, 0.55, 1.0, 1.0),
-                scale=0.22,
-            )
-            for point in left_points_marker.points:
-                point.z = 0.13
-            arr.markers.append(left_points_marker)
-            marker_id += 1
-            arr.markers.append(
-                self._make_line_strip_marker(
-                    frame_id=frame_id,
-                    stamp=now,
-                    marker_id=marker_id,
-                    ns="boundary_right",
-                    points=right_boundary,
-                    color=(1.0, 0.9, 0.2, 0.95),
-                    width=0.10,
-                    z_offset=0.14,
-                )
-            )
-            marker_id += 1
-            right_points_marker = self._make_points_marker(
-                frame_id=frame_id,
-                stamp=now,
-                marker_id=marker_id,
-                ns="boundary_right_points",
-                points=right_boundary,
-                color=(1.0, 0.92, 0.25, 1.0),
-                scale=0.22,
-            )
-            for point in right_points_marker.points:
-                point.z = 0.15
-            arr.markers.append(right_points_marker)
-            marker_id += 1
-
-        active_boundary = np.empty((0, 2), dtype=np.float64)
-        if result.planner_mode == "single_boundary":
-            if result.active_boundary_side == "blue":
-                active_boundary = left_boundary
-            elif result.active_boundary_side == "yellow":
-                active_boundary = right_boundary
-        if active_boundary.shape[0] > 0:
-            arr.markers.append(
-                self._make_line_strip_marker(
-                    frame_id=frame_id,
-                    stamp=now,
-                    marker_id=marker_id,
-                    ns="single_boundary_active",
-                    points=active_boundary,
-                    color=(0.15, 1.0, 0.2, 1.0),
-                    width=0.16,
-                    z_offset=0.20,
-                )
-            )
-            marker_id += 1
-
-        if self.show_pair_lines:
-            pair_segs = self._current_pair_segments_for_viz
-            if pair_segs is not None and pair_segs.size > 0:
-                self._last_viz_pair_segments = np.array(pair_segs, copy=True)
-            elif self._last_viz_pair_segments is not None:
-                pair_segs = self._last_viz_pair_segments
-            arr.markers.append(
-                self._make_pair_segment_marker(
-                    frame_id=frame_id,
-                    stamp=now,
-                    marker_id=marker_id,
-                    ns="accepted_pairs",
-                    pair_segments=pair_segs,
-                    color=(0.2, 1.0, 0.3, 0.95),
-                    width=0.07,
-                )
-            )
-            marker_id += 1
-
-        if self.show_raw_midpoint_chain:
-            midpoint_chain = raw_midpoint_chain
-            if midpoint_chain.size > 0:
-                self._last_viz_raw_midpoint_chain = np.array(midpoint_chain, copy=True)
-            elif self._last_viz_raw_midpoint_chain is not None:
-                midpoint_chain = np.array(self._last_viz_raw_midpoint_chain, copy=True)
-            arr.markers.append(
-                self._make_line_strip_marker(
-                    frame_id=frame_id,
-                    stamp=now,
-                    marker_id=marker_id,
-                    ns="raw_midpoint_chain",
-                    points=midpoint_chain,
-                    color=(1.0, 1.0, 1.0, 0.95),
-                    width=0.06,
-                    z_offset=0.03,
-                )
-            )
-            marker_id += 1
-
-        if self.show_raw_offset_path:
-            raw_offset_path = np.array(result.raw_offset_path, copy=True)
-            if raw_offset_path.shape[0] > 0:
-                self._last_viz_raw_offset_path = np.array(raw_offset_path, copy=True)
-            elif self._last_viz_raw_offset_path is not None:
-                raw_offset_path = np.array(self._last_viz_raw_offset_path, copy=True)
-            arr.markers.append(
-                self._make_line_strip_marker(
-                    frame_id=frame_id,
-                    stamp=now,
-                    marker_id=marker_id,
-                    ns="raw_offset_path",
-                    points=raw_offset_path,
-                    color=(0.2, 1.0, 1.0, 0.9),
-                    width=0.09,
-                    z_offset=0.18,
-                )
-            )
-            marker_id += 1
-            raw_offset_points_marker = self._make_points_marker(
-                frame_id=frame_id,
-                stamp=now,
-                marker_id=marker_id,
-                ns="raw_offset_path_points",
-                points=raw_offset_path,
-                color=(0.2, 1.0, 1.0, 1.0),
-                scale=0.20,
-            )
-            for point in raw_offset_points_marker.points:
-                point.z = 0.19
-            arr.markers.append(raw_offset_points_marker)
-            marker_id += 1
-
-        if self.show_raw_prevalidation_centerline:
-            arr.markers.append(
-                self._make_line_strip_marker(
-                    frame_id=frame_id,
-                    stamp=now,
-                    marker_id=marker_id,
-                    ns="raw_prevalidation_centerline",
-                    points=raw_centerline,
-                    color=(1.0, 0.15, 0.85, 0.9),
-                    width=0.07,
-                    z_offset=0.05,
-                )
-            )
-            marker_id += 1
-
-        arr.markers.append(
-            self._make_line_strip_marker(
-                frame_id=frame_id,
-                stamp=now,
-                marker_id=marker_id,
-                ns="centerline",
-                points=centerline,
-                color=(0.95, 0.15, 0.15, 1.0),
-                width=self._centerline_marker_width_m,
-                z_offset=0.07,
-            )
-        )
-        marker_id += 1
-
-        if self.show_lookahead_point and control_target_frame is not None:
-            marker = Marker()
-            marker.header.frame_id = frame_id
-            marker.header.stamp = now
-            marker.ns = "lookahead"
-            marker.id = marker_id
-            marker.type = Marker.SPHERE
-            marker.action = Marker.ADD
-            marker.scale.x = 0.25
-            marker.scale.y = 0.25
-            marker.scale.z = 0.25
-            marker.color.r = 1.0
-            marker.color.g = 0.0
-            marker.color.b = 0.0
-            marker.color.a = 1.0
-            marker.pose.position.x = float(control_target_frame[0])
-            marker.pose.position.y = float(control_target_frame[1])
-            marker.pose.position.z = 0.05
-            marker.pose.orientation.w = 1.0
-            arr.markers.append(marker)
-            marker_id += 1
-
-        self._append_status_marker(
-            arr,
-            marker_id,
-            frame_id,
-            now,
-            status,
-            operator_state=operator_state,
-        )
-        return arr
 
     # -----------------------------------------------------------------------
     # Timer preamble — shared by all three planner nodes

@@ -8,6 +8,11 @@ from typing import Optional, Protocol
 
 import numpy as np
 
+from sim_car.planning.planner_utils import _clamp
+
+_QUATERNION_DOUBLE = 2.0  # Quaternion rotation formulas double cross-product terms.
+_ROTATION_IDENTITY_SCALE = 1.0  # Rotation matrices start from an identity diagonal.
+
 
 class BoundaryChainConfig(Protocol):
     min_step_m: float
@@ -573,5 +578,75 @@ def prefer_previous_partner_option(
     return current_option
 
 
-def _clamp(value: float, lower: float, upper: float) -> float:
-    return float(np.clip(float(value), float(lower), float(upper)))
+def _transform_point(transform, x: float, y: float, z: float) -> tuple[float, float, float]:
+    t = transform.transform.translation
+    q = transform.transform.rotation
+    qx = float(q.x)
+    qy = float(q.y)
+    qz = float(q.z)
+    qw = float(q.w)
+
+    xx = qx * qx
+    yy = qy * qy
+    zz = qz * qz
+    xy = qx * qy
+    xz = qx * qz
+    yz = qy * qz
+    wx = qw * qx
+    wy = qw * qy
+    wz = qw * qz
+
+    r00 = _ROTATION_IDENTITY_SCALE - _QUATERNION_DOUBLE * (yy + zz)
+    r01 = _QUATERNION_DOUBLE * (xy - wz)
+    r02 = _QUATERNION_DOUBLE * (xz + wy)
+    r10 = _QUATERNION_DOUBLE * (xy + wz)
+    r11 = _ROTATION_IDENTITY_SCALE - _QUATERNION_DOUBLE * (xx + zz)
+    r12 = _QUATERNION_DOUBLE * (yz - wx)
+    r20 = _QUATERNION_DOUBLE * (xz - wy)
+    r21 = _QUATERNION_DOUBLE * (yz + wx)
+    r22 = _ROTATION_IDENTITY_SCALE - _QUATERNION_DOUBLE * (xx + yy)
+
+    tx = float(t.x)
+    ty = float(t.y)
+    tz = float(t.z)
+
+    px = (r00 * x) + (r01 * y) + (r02 * z) + tx
+    py = (r10 * x) + (r11 * y) + (r12 * z) + ty
+    pz = (r20 * x) + (r21 * y) + (r22 * z) + tz
+    return px, py, pz
+
+
+def _yaw_from_quat(qx: float, qy: float, qz: float, qw: float) -> float:
+    siny_cosp = _QUATERNION_DOUBLE * (qw * qz + qx * qy)
+    cosy_cosp = _ROTATION_IDENTITY_SCALE - _QUATERNION_DOUBLE * (qy * qy + qz * qz)
+    return math.atan2(siny_cosp, cosy_cosp)
+
+
+def _odom_point_to_base(
+    x_odom: float,
+    y_odom: float,
+    tx: float,
+    ty: float,
+    yaw: float,
+) -> tuple[float, float]:
+    dx = x_odom - tx
+    dy = y_odom - ty
+    cos_y = math.cos(yaw)
+    sin_y = math.sin(yaw)
+    x_base = cos_y * dx + sin_y * dy
+    y_base = -sin_y * dx + cos_y * dy
+    return x_base, y_base
+
+
+def _base_point_to_odom(
+    x_base: float,
+    y_base: float,
+    tx: float,
+    ty: float,
+    yaw: float,
+) -> tuple[float, float]:
+    cos_y = math.cos(yaw)
+    sin_y = math.sin(yaw)
+    x_odom = tx + (cos_y * x_base) - (sin_y * y_base)
+    y_odom = ty + (sin_y * x_base) + (cos_y * y_base)
+    return x_odom, y_odom

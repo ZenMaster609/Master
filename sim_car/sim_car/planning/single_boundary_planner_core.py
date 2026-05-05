@@ -10,6 +10,7 @@ import numpy as np
 
 from sim_car.cones.tracking.fusion import normalize_color
 from sim_car.planning.planner_config_base import BasePlannerConfig
+from sim_car.planning.planner_utils import _clamp, _default_reject_counts
 from sim_car.planning.tracked_cone_planner_geometry import (
     build_boundary_chain_data,
     estimate_tangents as _estimate_tangents,
@@ -50,6 +51,17 @@ _LOCAL_FORWARD_BACKTRACK_MARGIN_M = 0.1
 _MIN_LOCAL_PREFIX_LENGTH_M = 0.25
 # Degenerate paths below this length are represented by their first point only.
 _MIN_PATH_LENGTH_M = 1e-6
+_REJECT_COUNT_KEYS = (
+    "wrong_side",
+    "width",
+    "width_range",
+    "width_prior",
+    "orientation",
+    "progress",
+    "near_field_continuity",
+    "midpoint_kink",
+    "seed_distance",
+)
 
 
 @dataclass
@@ -444,7 +456,7 @@ def _prepare_planning(
         return input_rejection
 
     chains = _build_boundary_chains(cones, request.config)
-    reject_counts = _default_reject_counts()
+    reject_counts = _default_reject_counts(_REJECT_COUNT_KEYS)
     expected_width_m = _expected_width_m(request.prior, request.config)
     pairing = _attempt_pairing(
         cones=cones,
@@ -470,7 +482,7 @@ def _reject_insufficient_colored_cones(
     if cones.colored_count == 0:
         return _empty_result(
             "no colored cones in planning region",
-            reject_counts=_default_reject_counts(),
+            reject_counts=_default_reject_counts(_REJECT_COUNT_KEYS),
         )
     if cones.colored_count >= int(config.min_required_cones):
         return None
@@ -478,7 +490,7 @@ def _reject_insufficient_colored_cones(
         f"usable colored cones below minimum ({cones.colored_count} < {int(config.min_required_cones)})",
         filtered_points=cones.points,
         filtered_colors=cones.colors,
-        reject_counts=_default_reject_counts(),
+        reject_counts=_default_reject_counts(_REJECT_COUNT_KEYS),
     )
 
 
@@ -557,7 +569,7 @@ def _empty_pairing_result() -> _PairingResult:
         candidate_count=0,
         unknown_pair_count=0,
         measured_width_m=float("nan"),
-        reject_counts=_default_reject_counts(),
+        reject_counts=_default_reject_counts(_REJECT_COUNT_KEYS),
     )
 
 
@@ -819,7 +831,7 @@ def _pair_boundary_chains(
     config: SingleBoundaryPlannerConfig,
     prior: Optional[SingleBoundaryPlannerPrior],
 ) -> tuple[list[_BoundaryPair], int, int, dict[str, int]]:
-    reject_counts = _default_reject_counts()
+    reject_counts = _default_reject_counts(_REJECT_COUNT_KEYS)
     anchor = _select_pairing_anchor(chains.left, chains.right)
     state = _PairingState()
     previous_partner_by_anchor = _previous_partner_by_anchor(prior, anchor.anchor_side)
@@ -1560,20 +1572,6 @@ def _merge_reject_counts(target: dict[str, int], source: dict[str, int]) -> None
         target[key] = int(target.get(key, 0)) + int(value)
 
 
-def _default_reject_counts() -> dict[str, int]:
-    return {
-        "wrong_side": 0,
-        "width": 0,
-        "width_range": 0,
-        "width_prior": 0,
-        "orientation": 0,
-        "progress": 0,
-        "near_field_continuity": 0,
-        "midpoint_kink": 0,
-        "seed_distance": 0,
-    }
-
-
 def _empty_result(
     status: str,
     *,
@@ -1609,7 +1607,7 @@ def _empty_result(
         ),
         used_fallback=False,
         status=status,
-        reject_counts=reject_counts or _default_reject_counts(),
+        reject_counts=reject_counts or _default_reject_counts(_REJECT_COUNT_KEYS),
         reject_reason=reject_reason,
     )
 
@@ -1629,7 +1627,3 @@ def _result_with_metadata(
     result.planner_mode = planner_mode
     result.filtered_track_width_m = float(filtered_track_width_m)
     return result
-
-
-def _clamp(value: float, lower: float, upper: float) -> float:
-    return float(np.clip(float(value), float(lower), float(upper)))

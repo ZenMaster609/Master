@@ -10,6 +10,7 @@ import numpy as np
 
 from sim_car.cones.tracking.fusion import normalize_color
 from sim_car.planning.planner_config_base import BasePlannerConfig
+from sim_car.planning.planner_utils import _clamp, _default_reject_counts
 from sim_car.planning.tracked_cone_planner_geometry import (
     build_boundary_chain_data,
     estimate_tangents as _estimate_tangents,
@@ -35,6 +36,14 @@ MAX_CORRIDOR_GAP_FILL_SAMPLES = 1
 PRIOR_ALIGNMENT_HORIZON_M = 4.0
 # Meters; caps continuity checks to the near vehicle path segment.
 NEAR_FIELD_ALIGNMENT_HORIZON_M = 3.0
+_REJECT_COUNT_KEYS = (
+    "corridor_geometry",
+    "corridor_samples",
+    "path_outside_corridor",
+    "heading",
+    "curvature",
+    "near_field_continuity",
+)
 
 
 @dataclass
@@ -489,7 +498,7 @@ def _prepare_corridor_inputs(
         return None, cone_failure
 
     chains = _build_boundary_chains(cones, config)
-    reject_counts = _default_reject_counts()
+    reject_counts = _default_reject_counts(_REJECT_COUNT_KEYS)
     expected_width_m = _expected_width_m(prior, config)
     chain_failure = _boundary_chain_failure_result(
         cones=cones,
@@ -548,7 +557,7 @@ def _cone_filter_failure_result(
     if cones.colored_count == 0:
         return _empty_result(
             "no colored cones in planning region",
-            reject_counts=_default_reject_counts(),
+            reject_counts=_default_reject_counts(_REJECT_COUNT_KEYS),
         )
     if cones.colored_count >= int(config.min_required_cones):
         return None
@@ -556,7 +565,7 @@ def _cone_filter_failure_result(
         f"usable colored cones below minimum ({cones.colored_count} < {int(config.min_required_cones)})",
         filtered_points=cones.points,
         filtered_colors=cones.colors,
-        reject_counts=_default_reject_counts(),
+        reject_counts=_default_reject_counts(_REJECT_COUNT_KEYS),
     )
 
 
@@ -1648,17 +1657,6 @@ def _from_vehicle_frame(
     return np.column_stack((x_global, y_global)).astype(np.float64)
 
 
-def _default_reject_counts() -> dict[str, int]:
-    return {
-        "corridor_geometry": 0,
-        "corridor_samples": 0,
-        "path_outside_corridor": 0,
-        "heading": 0,
-        "curvature": 0,
-        "near_field_continuity": 0,
-    }
-
-
 def _empty_result(
     status: str,
     *,
@@ -1695,7 +1693,7 @@ def _empty_result(
         ),
         used_fallback=False,
         status=status,
-        reject_counts=reject_counts or _default_reject_counts(),
+        reject_counts=reject_counts or _default_reject_counts(_REJECT_COUNT_KEYS),
         reject_reason=reject_reason,
     )
 
@@ -1756,7 +1754,3 @@ def _chain_rejection_reasons_by_track_id(
         if 0 <= idx < track_ids.size:
             out[int(track_ids[idx])] = str(reason)
     return out
-
-
-def _clamp(value: float, lower: float, upper: float) -> float:
-    return float(np.clip(float(value), float(lower), float(upper)))

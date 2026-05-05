@@ -41,6 +41,10 @@ from sim_car.planning.tracked_cone_planner_contract import (
     read_migrated_tracked_cone_planner_common_config,
 )
 from sim_car.planning.tracked_cone_planner_base import TrackedConePlannerBase
+from sim_car.planning.tracked_cone_planner_geometry import (
+    _base_point_to_odom,
+    _odom_point_to_base,
+)
 
 _MIDPOINT_CHAIN_SOURCE = "midpoint_chain"
 _MIDPOINT_CHAIN_MIN_POINTS = 2
@@ -236,45 +240,270 @@ class MidpointPlannerNode(TrackedConePlannerBase):
         if ctx is None:
             return
         cones_msg, target_frame, vehicle_x, vehicle_y, vehicle_yaw, points_xy, colors, confidences = ctx
-        self._update_smalltrack_lap_from_orange_cones(
-            cones_msg=cones_msg,
-            points_xy=points_xy,
-            vehicle_x=vehicle_x,
-            vehicle_y=vehicle_y,
-            vehicle_yaw=vehicle_yaw,
-        )
-        control_target_frame: Optional[np.ndarray] = None
-        control_debug_metrics: Optional[dict[str, float]] = None
-        cmd_speed = 0.0
-        cmd_steering = 0.0
-        lookahead = 0.0
-
-        self._update_remembered_cone_viz(points_xy=points_xy, colors=colors)
         now_sec = float(self.get_clock().now().nanoseconds) * 1e-9
-        raw_orange_count = sum(
-            1 for cone in cones_msg.cones if normalize_color(getattr(cone, "color", "")) == "orange"
+        self._update_smalltrack_lap_from_orange_cones(
+            cones_msg=cones_msg, points_xy=points_xy,
+            vehicle_x=vehicle_x, vehicle_y=vehicle_y, vehicle_yaw=vehicle_yaw,
         )
-        boundary_hint_count = sum(
-            1 for cone in cones_msg.cones if str(getattr(cone, "boundary_color", "")).strip()
+        self._update_remembered_cone_viz(points_xy=points_xy, colors=colors)
+        cone_counts = self._count_cone_types(cones_msg=cones_msg, colors=colors)
+        planning_frame, result, pair_segments_for_viz, raw_midpoint_chain = (
+            self._prepare_planning_inputs(
+                cones_msg=cones_msg, points_xy=points_xy, colors=colors,
+                confidences=confidences, target_frame=target_frame,
+                vehicle_x=vehicle_x, vehicle_y=vehicle_y, vehicle_yaw=vehicle_yaw,
+            )
         )
-        resolved_blue_count = sum(1 for color in colors if color == "blue")
-        resolved_yellow_count = sum(1 for color in colors if color == "yellow")
+        result.planner_mode = self._planner_identity.planner_mode
+        pipeline = self._run_planning_pipeline(
+            result=result, planning_frame=planning_frame, points_xy=points_xy,
+            raw_midpoint_chain=raw_midpoint_chain, pair_segments_for_viz=pair_segments_for_viz,
+            target_frame=target_frame,
+            vehicle_x=vehicle_x, vehicle_y=vehicle_y, vehicle_yaw=vehicle_yaw, now_sec=now_sec,
+        )
+        self._update_active_diagnostics_fields(
+            result=result, publish_mode=pipeline["publish_mode"],
+            centerline=pipeline["centerline"],
+            pair_segments_for_viz=pipeline["pair_segments_for_viz"],
+        )
+        self._publish_cycle(
+            target_frame=target_frame, result=result, cone_counts=cone_counts,
+            now_sec=now_sec, pipeline=pipeline,
+        )
+
+    def _run_planning_pipeline(
+        self,
+        *,
+        result,
+        planning_frame,
+        points_xy: np.ndarray,
+        raw_midpoint_chain: np.ndarray,
+        pair_segments_for_viz: np.ndarray,
+        target_frame: str,
+        vehicle_x: float,
+        vehicle_y: float,
+        vehicle_yaw: float,
+        now_sec: float,
+    ) -> dict:
+        tracked_delta_p95_m, selected_edge_churn, selected_edge_churn_count = (
+            self._compute_stability_metrics(result=result, points_xy=points_xy)
+        )
+        raw_centerline, candidate_source = self._select_candidate_centerline(
+            result=result, support_chain=raw_midpoint_chain, frame_id=target_frame,
+            vehicle_x=vehicle_x, vehicle_y=vehicle_y, vehicle_yaw=vehicle_yaw,
+        )
+        centerline_jump_max_m = self._update_centerline_jump_metric(raw_centerline)
+        self._emit_stability_warnings(
+            centerline_jump_max_m=centerline_jump_max_m, selected_edge_churn=selected_edge_churn,
+        )
+        centerline, candidate_update_ok, candidate_update_reason, status = self._resolve_centerline(
+            result=result, raw_centerline=raw_centerline, candidate_source=candidate_source,
+            planning_frame=planning_frame, pair_segments_for_viz=pair_segments_for_viz,
+            raw_midpoint_chain=raw_midpoint_chain, target_frame=target_frame,
+            vehicle_x=vehicle_x, vehicle_y=vehicle_y, vehicle_yaw=vehicle_yaw, now_sec=now_sec,
+        )
+        centerline, publish_mode, hold_reason, pair_segments_for_viz, raw_midpoint_chain = (
+            self._resolve_publish_mode(
+                centerline=centerline, candidate_update_ok=candidate_update_ok,
+                candidate_update_reason=candidate_update_reason, result=result,
+                pair_segments_for_viz=pair_segments_for_viz, raw_midpoint_chain=raw_midpoint_chain,
+                target_frame=target_frame, vehicle_x=vehicle_x, vehicle_y=vehicle_y,
+                vehicle_yaw=vehicle_yaw, now_sec=now_sec, status=status,
+            )
+        )
+        centerline = self._apply_smoothing_and_record(
+            centerline=centerline, publish_mode=publish_mode, now_sec=now_sec,
+            raw_midpoint_chain=raw_midpoint_chain,
+            selected_chain_width_median=result.selected_chain_width_median,
+            pair_segments_for_viz=pair_segments_for_viz,
+            selected_pair_track_ids=result.selected_pair_track_ids,
+        )
+        control_path = self._centerline_to_vehicle_frame(
+            centerline=centerline, frame_id=target_frame,
+            vehicle_x=vehicle_x, vehicle_y=vehicle_y, vehicle_yaw=vehicle_yaw,
+        )
+        cmd_speed, cmd_steering, lookahead, control_target_frame, control_debug_metrics, \
+            zero_cmd_sent_flag, controller_failed = self._run_controller_step(
+                control_path=control_path, target_frame=target_frame,
+                vehicle_x=vehicle_x, vehicle_y=vehicle_y, vehicle_yaw=vehicle_yaw,
+            )
+        hold_remaining_s = self._hold_remaining_s(now_sec)
+        operator_state, operator_reason = self._resolve_operator_state(
+            centerline=centerline, publish_mode=publish_mode, status=status,
+            zero_cmd_sent_flag=zero_cmd_sent_flag, controller_failed=controller_failed,
+            control_path_point_count=int(control_path.shape[0]),
+            hold_remaining_s=hold_remaining_s, result=result,
+        )
+        return self._assemble_pipeline_dict(
+            centerline=centerline, raw_centerline=raw_centerline,
+            raw_midpoint_chain=raw_midpoint_chain, pair_segments_for_viz=pair_segments_for_viz,
+            candidate_source=candidate_source, publish_mode=publish_mode,
+            hold_reason=hold_reason, status=status, operator_state=operator_state,
+            operator_reason=operator_reason, hold_remaining_s=hold_remaining_s,
+            control_path=control_path, control_target_frame=control_target_frame,
+            control_debug_metrics=control_debug_metrics, cmd_speed=cmd_speed,
+            cmd_steering=cmd_steering, lookahead=lookahead, zero_cmd_sent_flag=zero_cmd_sent_flag,
+            controller_failed=controller_failed, selected_edge_churn=selected_edge_churn,
+            selected_edge_churn_count=selected_edge_churn_count,
+            tracked_delta_p95_m=tracked_delta_p95_m, centerline_jump_max_m=centerline_jump_max_m,
+        )
+
+    @staticmethod
+    def _assemble_pipeline_dict(
+        *,
+        centerline, raw_centerline, raw_midpoint_chain, pair_segments_for_viz,
+        candidate_source, publish_mode, hold_reason, status,
+        operator_state, operator_reason, hold_remaining_s, control_path,
+        control_target_frame, control_debug_metrics, cmd_speed, cmd_steering,
+        lookahead, zero_cmd_sent_flag, controller_failed, selected_edge_churn,
+        selected_edge_churn_count, tracked_delta_p95_m, centerline_jump_max_m,
+    ) -> dict:
+        return {
+            "centerline": centerline, "raw_centerline": raw_centerline,
+            "raw_midpoint_chain": raw_midpoint_chain, "pair_segments_for_viz": pair_segments_for_viz,
+            "candidate_source": candidate_source, "publish_mode": publish_mode,
+            "hold_reason": hold_reason, "status": status,
+            "operator_state": operator_state, "operator_reason": operator_reason,
+            "hold_remaining_s": hold_remaining_s, "control_path": control_path,
+            "control_target_frame": control_target_frame,
+            "control_debug_metrics": control_debug_metrics,
+            "cmd_speed": cmd_speed, "cmd_steering": cmd_steering, "lookahead": lookahead,
+            "zero_cmd_sent_flag": zero_cmd_sent_flag, "controller_failed": controller_failed,
+            "selected_edge_churn": selected_edge_churn,
+            "selected_edge_churn_count": selected_edge_churn_count,
+            "tracked_delta_p95_m": tracked_delta_p95_m, "centerline_jump_max_m": centerline_jump_max_m,
+        }
+
+    def _prepare_planning_inputs(
+        self,
+        *,
+        cones_msg,
+        points_xy: np.ndarray,
+        colors,
+        confidences,
+        target_frame: str,
+        vehicle_x: float,
+        vehicle_y: float,
+        vehicle_yaw: float,
+    ) -> tuple:
         planning_frame = self._tracked_cone_planning_frame(
-            msg=cones_msg,
-            points_xy=points_xy,
-            colors=colors,
-            confidences=confidences,
+            msg=cones_msg, points_xy=points_xy, colors=colors, confidences=confidences,
         )
         self._active_remembered_cone_count = int(len(cones_msg.cones))
         self._active_stale_cone_count = int(
             np.count_nonzero(planning_frame.track_states == MSG_TRACK_STATE_STALE)
         )
-        remembered_pair_entries = self._active_pair_memory_entries(
-            vehicle_x=vehicle_x,
-            vehicle_y=vehicle_y,
-            vehicle_yaw=vehicle_yaw,
+        result, pair_segments_for_viz, raw_midpoint_chain = self._run_core_planning(
+            planning_frame=planning_frame, target_frame=target_frame,
+            vehicle_x=vehicle_x, vehicle_y=vehicle_y, vehicle_yaw=vehicle_yaw,
+        )
+        return planning_frame, result, pair_segments_for_viz, raw_midpoint_chain
+
+    def _publish_cycle(
+        self,
+        *,
+        target_frame: str,
+        result,
+        cone_counts: dict,
+        now_sec: float,
+        pipeline: dict,
+    ) -> None:
+        p = pipeline
+        control_path_point_count = int(p["control_path"].shape[0])
+        self._log_operator_state_transition(
+            operator_state=p["operator_state"], operator_reason=p["operator_reason"],
+            hold_remaining_s=p["hold_remaining_s"],
+            selected_chain_length=int(result.selected_chain_length),
+        )
+        self._log_mode_summary(
+            mode=self._active_planner_mode, result=result,
+            operator_state=p["operator_state"], operator_reason=p["operator_reason"],
+            hold_active=bool(self._active_held_path_flag),
+        )
+        self._publish_diagnostics(
+            frame_id=target_frame, centerline_jump_max_m=p["centerline_jump_max_m"],
+            selected_edge_churn_ratio=p["selected_edge_churn"],
+            tracked_cones_frame_delta_p95_m=p["tracked_delta_p95_m"],
+            centerline_point_count=int(p["centerline"].shape[0]),
+            selected_edge_count=int(result.selected_edges.shape[0]),
+            status=p["status"], control_debug_metrics=p["control_debug_metrics"],
+            planner_metrics=self._build_planner_metrics(
+                result=result, raw_centerline=p["raw_centerline"], cone_counts=cone_counts,
+                candidate_source=p["candidate_source"], publish_mode=p["publish_mode"],
+                hold_reason=p["hold_reason"], operator_state=p["operator_state"],
+                operator_reason=p["operator_reason"], hold_remaining_s=p["hold_remaining_s"],
+                control_path_point_count=control_path_point_count,
+                zero_cmd_sent_flag=p["zero_cmd_sent_flag"],
+                selected_edge_churn=p["selected_edge_churn"],
+                selected_edge_churn_count=p["selected_edge_churn_count"],
+            ),
+        )
+        self._current_pair_segments_for_viz = np.array(p["pair_segments_for_viz"], copy=True)
+        self._publish_outputs(
+            frame_id=target_frame, centerline=p["centerline"],
+            raw_centerline=p["raw_centerline"], raw_midpoint_chain=p["raw_midpoint_chain"],
+            result=result, status=p["status"],
+            control_target_frame=p["control_target_frame"], cmd_speed=p["cmd_speed"],
+            cmd_steering=p["cmd_steering"], lookahead=p["lookahead"],
+            operator_state=p["operator_state"], operator_reason=p["operator_reason"],
+            hold_remaining_s=p["hold_remaining_s"],
+            control_path_point_count=control_path_point_count,
+            candidate_diagonal_count=int(result.candidate_count),
+            selected_chain_length=int(result.selected_chain_length),
+            seed_midpoint_distance_m=float(result.seed_midpoint_distance_m),
+            near_field_lateral_max_m=float(result.near_field_lateral_max_m),
+            near_field_midpoint_kink_max_rad=float(result.near_field_kink_max_rad),
         )
 
+    def _count_cone_types(self, *, cones_msg, colors) -> dict:
+        return {
+            "raw_orange_count": sum(
+                1 for cone in cones_msg.cones
+                if normalize_color(getattr(cone, "color", "")) == "orange"
+            ),
+            "boundary_hint_count": sum(
+                1 for cone in cones_msg.cones
+                if str(getattr(cone, "boundary_color", "")).strip()
+            ),
+            "resolved_blue_count": sum(1 for color in colors if color == "blue"),
+            "resolved_yellow_count": sum(1 for color in colors if color == "yellow"),
+        }
+
+    def _run_core_planning(
+        self,
+        *,
+        planning_frame,
+        target_frame: str,
+        vehicle_x: float,
+        vehicle_y: float,
+        vehicle_yaw: float,
+    ) -> tuple:
+        remembered_pair_entries = self._active_pair_memory_entries(
+            vehicle_x=vehicle_x, vehicle_y=vehicle_y, vehicle_yaw=vehicle_yaw,
+        )
+        result = self._call_core_planner(
+            planning_frame=planning_frame, remembered_pair_entries=remembered_pair_entries,
+            vehicle_x=vehicle_x, vehicle_y=vehicle_y, vehicle_yaw=vehicle_yaw,
+        )
+        pair_segments_for_viz, raw_midpoint_chain = self._merge_remembered_pair_geometry(
+            result=result, remembered_pair_entries=remembered_pair_entries,
+            target_frame=target_frame,
+            vehicle_x=vehicle_x, vehicle_y=vehicle_y, vehicle_yaw=vehicle_yaw,
+        )
+        return result, pair_segments_for_viz, raw_midpoint_chain
+
+    def _call_core_planner(
+        self,
+        *,
+        planning_frame,
+        remembered_pair_entries: list,
+        vehicle_x: float,
+        vehicle_y: float,
+        vehicle_yaw: float,
+    ):
+        prior = self._build_midpoint_prior(
+            remembered_pair_entries=remembered_pair_entries,
+        )
         result = compute_midpoint_centerline(
             points_xy=planning_frame.points_xy,
             colors=planning_frame.colors,
@@ -284,131 +513,137 @@ class MidpointPlannerNode(TrackedConePlannerBase):
             vehicle_xy=(vehicle_x, vehicle_y),
             vehicle_yaw=vehicle_yaw,
             config=self._core_config,
-            prior=MidpointPlannerPrior(
-                previous_centerline=(
-                    np.array(self._midline_buffer_path, copy=True)
-                    if self._midline_buffer_path is not None
-                    else (
-                        np.array(self._last_valid_centerline, copy=True)
-                        if self._last_valid_centerline is not None
-                        else None
-                )
-                ),
-                previous_width_m=self._filtered_track_width_m,
-                previous_mode=self._active_planner_mode,
-                previous_pairs=[
-                    (entry.left_track_id, entry.right_track_id)
-                    for entry in remembered_pair_entries
-                ],
-            ),
+            prior=prior,
         )
         if (
             result.accepted_pair_count >= int(self._core_config.min_trustworthy_pairs)
             and math.isfinite(float(result.selected_chain_width_median))
         ):
             self._filtered_track_width_m = update_track_width_estimate(
-                self._filtered_track_width_m,
-                result.selected_chain_width_median,
-                self._core_config,
+                self._filtered_track_width_m, result.selected_chain_width_median, self._core_config,
             )
         result.filtered_track_width_m = float(self._filtered_track_width_m)
+        return result
 
-        live_midpoint_chain = np.array(result.midpoints_raw, copy=True)
-        raw_midpoint_chain = np.array(live_midpoint_chain, copy=True)
-        pair_segments_for_viz = np.array(result.pair_segments, copy=True)
+    def _build_midpoint_prior(self, *, remembered_pair_entries: list) -> MidpointPlannerPrior:
+        previous_centerline = None
+        if self._midline_buffer_path is not None:
+            previous_centerline = np.array(self._midline_buffer_path, copy=True)
+        elif self._last_valid_centerline is not None:
+            previous_centerline = np.array(self._last_valid_centerline, copy=True)
+        return MidpointPlannerPrior(
+            previous_centerline=previous_centerline,
+            previous_width_m=self._filtered_track_width_m,
+            previous_mode=self._active_planner_mode,
+            previous_pairs=[
+                (e.left_track_id, e.right_track_id) for e in remembered_pair_entries
+            ],
+        )
+
+    def _merge_remembered_pair_geometry(
+        self,
+        *,
+        result,
+        remembered_pair_entries: list,
+        target_frame: str,
+        vehicle_x: float,
+        vehicle_y: float,
+        vehicle_yaw: float,
+    ) -> tuple:
         live_pair_entries = self._pair_entries_from_segments(
             pair_track_ids=result.selected_pair_track_ids,
             pair_segments=result.pair_segments,
             frame_id=target_frame,
-            vehicle_x=vehicle_x,
-            vehicle_y=vehicle_y,
-            vehicle_yaw=vehicle_yaw,
+            vehicle_x=vehicle_x, vehicle_y=vehicle_y, vehicle_yaw=vehicle_yaw,
         )
         combined_pair_entries = self._merge_pair_entries(
-            remembered_entries=remembered_pair_entries,
-            live_entries=live_pair_entries,
+            remembered_entries=remembered_pair_entries, live_entries=live_pair_entries,
         )
         combined_pair_entries = self._sort_pair_entries_by_forward_progress(
             entries=combined_pair_entries,
-            vehicle_x=vehicle_x,
-            vehicle_y=vehicle_y,
-            vehicle_yaw=vehicle_yaw,
+            vehicle_x=vehicle_x, vehicle_y=vehicle_y, vehicle_yaw=vehicle_yaw,
         )
         combined_pair_segments, combined_midpoint_chain = self._pair_geometry_from_memory(
             combined_pair_entries
         )
+        pair_segments_for_viz = np.array(result.pair_segments, copy=True)
+        raw_midpoint_chain = np.array(result.midpoints_raw, copy=True)
         if combined_pair_segments.size > 0:
             pair_segments_for_viz = combined_pair_segments
         if combined_midpoint_chain.size > 0:
             raw_midpoint_chain = combined_midpoint_chain
-        raw_centerline, candidate_source = self._select_candidate_centerline(
-            result=result,
-            support_chain=raw_midpoint_chain,
-            frame_id=target_frame,
-            vehicle_x=vehicle_x,
-            vehicle_y=vehicle_y,
-            vehicle_yaw=vehicle_yaw,
-        )
-        result.planner_mode = self._planner_identity.planner_mode
+        return pair_segments_for_viz, raw_midpoint_chain
 
+    def _compute_stability_metrics(
+        self,
+        *,
+        result,
+        points_xy: np.ndarray,
+    ) -> tuple:
         tracked_delta_p95_m = tracked_cones_frame_delta_p95(self._previous_tracked_points, points_xy)
         self._previous_tracked_points = np.array(points_xy, copy=True)
-
         previous_edge_keys = set(self._previous_edge_keys)
         selected_keys = selected_edge_keys(
             points=result.filtered_points,
             edges=result.selected_edges,
             quantization_m=self.edge_quantization_m,
         )
-        selected_edge_churn_count = edge_churn_count(previous_edge_keys, selected_keys)
-        selected_edge_churn = edge_churn_ratio(previous_edge_keys, selected_keys)
+        churn_count = edge_churn_count(previous_edge_keys, selected_keys)
+        churn_ratio = edge_churn_ratio(previous_edge_keys, selected_keys)
         self._previous_edge_keys = set(selected_keys)
+        return tracked_delta_p95_m, churn_ratio, churn_count
 
-        centerline_jump_max_m = compute_centerline_jump_max(
-            raw_centerline,
-            self._previous_raw_centerline,
-            self.centerline_jump_horizon_m,
+    def _update_centerline_jump_metric(self, raw_centerline: np.ndarray) -> float:
+        jump_max_m = compute_centerline_jump_max(
+            raw_centerline, self._previous_raw_centerline, self.centerline_jump_horizon_m,
         )
         self._previous_raw_centerline = (
             np.array(raw_centerline, copy=True) if raw_centerline.shape[0] > 0 else None
         )
+        return jump_max_m
 
+    def _emit_stability_warnings(
+        self, *, centerline_jump_max_m: float, selected_edge_churn: float
+    ) -> None:
         if centerline_jump_max_m > self.jump_warn_threshold_m:
             self._warn_throttled(
                 "centerline_jump_warn",
-                (
-                    f"centerline jump {centerline_jump_max_m:.3f} m exceeded threshold "
-                    f"{self.jump_warn_threshold_m:.3f} m"
-                ),
+                f"centerline jump {centerline_jump_max_m:.3f} m exceeded threshold "
+                f"{self.jump_warn_threshold_m:.3f} m",
             )
         if selected_edge_churn > self.edge_churn_warn_threshold:
             self._warn_throttled(
                 "edge_churn_warn",
-                (
-                    f"selected pair churn {selected_edge_churn:.3f} exceeded threshold "
-                    f"{self.edge_churn_warn_threshold:.3f}"
-                ),
+                f"selected pair churn {selected_edge_churn:.3f} exceeded threshold "
+                f"{self.edge_churn_warn_threshold:.3f}",
             )
 
+    def _resolve_centerline(
+        self,
+        *,
+        result,
+        raw_centerline: np.ndarray,
+        candidate_source: str,
+        planning_frame,
+        pair_segments_for_viz: np.ndarray,
+        raw_midpoint_chain: np.ndarray,
+        target_frame: str,
+        vehicle_x: float,
+        vehicle_y: float,
+        vehicle_yaw: float,
+        now_sec: float,
+    ) -> tuple:
         candidate_update_ok, candidate_update_reason = self._candidate_path_is_updateable(
             candidate_centerline=raw_centerline,
-            vehicle_x=vehicle_x,
-            vehicle_y=vehicle_y,
-            vehicle_yaw=vehicle_yaw,
-            result=result,
-            candidate_source=candidate_source,
+            vehicle_x=vehicle_x, vehicle_y=vehicle_y, vehicle_yaw=vehicle_yaw,
+            result=result, candidate_source=candidate_source,
         )
         centerline = self._update_midline_buffer(
-            candidate_centerline=raw_centerline,
-            candidate_source=candidate_source,
+            candidate_centerline=raw_centerline, candidate_source=candidate_source,
             candidate_update_ok=candidate_update_ok,
             candidate_update_reason=candidate_update_reason,
-            frame_id=target_frame,
-            vehicle_x=vehicle_x,
-            vehicle_y=vehicle_y,
-            vehicle_yaw=vehicle_yaw,
-            result=result,
-            now_sec=now_sec,
+            frame_id=target_frame, vehicle_x=vehicle_x, vehicle_y=vehicle_y,
+            vehicle_yaw=vehicle_yaw, result=result, now_sec=now_sec,
             support_centerline=raw_midpoint_chain,
         )
         candidate_update_ok = bool(
@@ -418,18 +653,35 @@ class MidpointPlannerNode(TrackedConePlannerBase):
             getattr(self, "_last_midline_candidate_update_reason", candidate_update_reason)
         )
         centerline = self._anchor_centerline_near_vehicle(
-            centerline=centerline,
-            frame_id=target_frame,
-            vehicle_x=vehicle_x,
-            vehicle_y=vehicle_y,
-            vehicle_yaw=vehicle_yaw,
+            centerline=centerline, frame_id=target_frame,
+            vehicle_x=vehicle_x, vehicle_y=vehicle_y, vehicle_yaw=vehicle_yaw,
         )
+        status = self._annotate_centerline_status(
+            result=result, raw_centerline=raw_centerline, centerline=centerline,
+            candidate_source=candidate_source, candidate_update_ok=candidate_update_ok,
+        )
+        if centerline.shape[0] > 0 and raw_centerline.shape[0] > 0:
+            self._update_valid_pair_cache(
+                result=result, frame_id=target_frame,
+                vehicle_x=vehicle_x, vehicle_y=vehicle_y, vehicle_yaw=vehicle_yaw,
+                planning_frame=planning_frame, pair_segments_for_viz=pair_segments_for_viz,
+            )
+        return centerline, candidate_update_ok, candidate_update_reason, status
+
+    def _annotate_centerline_status(
+        self,
+        *,
+        result,
+        raw_centerline: np.ndarray,
+        centerline: np.ndarray,
+        candidate_source: str,
+        candidate_update_ok: bool,
+    ) -> str:
         status = result.status
         if not candidate_update_ok and centerline.shape[0] > 0:
             status = f"{status}; holding stored midline"
         elif (
-            raw_centerline.shape[0] > 0
-            and centerline.shape[0] > 0
+            raw_centerline.shape[0] > 0 and centerline.shape[0] > 0
             and (
                 raw_centerline.shape != centerline.shape
                 or not np.allclose(raw_centerline, centerline)
@@ -438,44 +690,60 @@ class MidpointPlannerNode(TrackedConePlannerBase):
             status = f"{status}; publishing stored midline"
         if candidate_source != "validated" and raw_centerline.shape[0] > 0:
             status = f"{status}; using {candidate_source}"
-        if centerline.shape[0] > 0 and raw_centerline.shape[0] > 0:
-            self._remember_pairs(
-                result=result,
-                frame_id=target_frame,
-                vehicle_x=vehicle_x,
-                vehicle_y=vehicle_y,
-                vehicle_yaw=vehicle_yaw,
-                track_ids=planning_frame.track_ids,
-                track_states=planning_frame.track_states,
-                planner_confidences=planning_frame.planner_confidences,
-            )
-            self._last_valid_pair_segments = (
-                np.array(pair_segments_for_viz, copy=True)
-                if pair_segments_for_viz.size > 0
-                else self._last_valid_pair_segments
-            )
-            self._last_valid_pair_track_ids = (
-                np.array(result.selected_pair_track_ids, copy=True)
-                if result.selected_pair_track_ids.size > 0
-                else self._last_valid_pair_track_ids
-            )
+        return status
 
-        plan_valid = False
-        plan_hold_active = False
+    def _update_valid_pair_cache(
+        self,
+        *,
+        result,
+        frame_id: str,
+        vehicle_x: float,
+        vehicle_y: float,
+        vehicle_yaw: float,
+        planning_frame,
+        pair_segments_for_viz: np.ndarray,
+    ) -> None:
+        self._remember_pairs(
+            result=result, frame_id=frame_id,
+            vehicle_x=vehicle_x, vehicle_y=vehicle_y, vehicle_yaw=vehicle_yaw,
+            track_ids=planning_frame.track_ids, track_states=planning_frame.track_states,
+            planner_confidences=planning_frame.planner_confidences,
+        )
+        self._last_valid_pair_segments = (
+            np.array(pair_segments_for_viz, copy=True)
+            if pair_segments_for_viz.size > 0 else self._last_valid_pair_segments
+        )
+        self._last_valid_pair_track_ids = (
+            np.array(result.selected_pair_track_ids, copy=True)
+            if result.selected_pair_track_ids.size > 0 else self._last_valid_pair_track_ids
+        )
+
+    def _resolve_publish_mode(
+        self,
+        *,
+        centerline: np.ndarray,
+        candidate_update_ok: bool,
+        candidate_update_reason: str,
+        result,
+        pair_segments_for_viz: np.ndarray,
+        raw_midpoint_chain: np.ndarray,
+        target_frame: str,
+        vehicle_x: float,
+        vehicle_y: float,
+        vehicle_yaw: float,
+        now_sec: float,
+        status: str,
+    ) -> tuple:
         publish_mode = "fresh"
         hold_reason = result.reject_reason
-        zero_cmd_sent_flag = 0
-        controller_failed = False
-
         if centerline.shape[0] > 0 and candidate_update_ok:
-            plan_valid = True
             continue_holding = self._advance_hold_hysteresis(plan_ok=True)
             if continue_holding:
                 held_centerline = self._held_centerline(now_sec)
                 if held_centerline is not None:
                     centerline = held_centerline
-                    plan_hold_active = True
                     publish_mode = "held"
+                    hold_reason = result.reject_reason or candidate_update_reason or status
                     status = (
                         f"{status}; hysteresis holding previous valid centerline "
                         f"({self._hold_clean_frame_count}/{self.hold_exit_clean_frames})"
@@ -485,55 +753,65 @@ class MidpointPlannerNode(TrackedConePlannerBase):
             held_centerline = self._held_centerline(now_sec)
             if held_centerline is not None:
                 centerline = held_centerline
-                plan_hold_active = True
                 publish_mode = "held"
+                hold_reason = result.reject_reason or candidate_update_reason or status
                 status = f"{status}; holding previous valid centerline"
             else:
                 publish_mode = "held"
-
-        if plan_hold_active:
-            hold_reason = result.reject_reason or candidate_update_reason or status
-
         if publish_mode == "held" and centerline.shape[0] > 0:
             held_pair_segments, held_raw_midpoint_chain = self._held_pair_geometry(now_sec=now_sec)
             if pair_segments_for_viz.size == 0 and held_pair_segments is not None:
                 pair_segments_for_viz = held_pair_segments
             if raw_midpoint_chain.size == 0 and held_raw_midpoint_chain is not None:
                 raw_midpoint_chain = held_raw_midpoint_chain
-
         centerline = self._prepare_centerline_for_current_pose(
-            centerline=centerline,
-            frame_id=target_frame,
-            vehicle_x=vehicle_x,
-            vehicle_y=vehicle_y,
-            vehicle_yaw=vehicle_yaw,
+            centerline=centerline, frame_id=target_frame,
+            vehicle_x=vehicle_x, vehicle_y=vehicle_y, vehicle_yaw=vehicle_yaw,
         )
+        return centerline, publish_mode, hold_reason, pair_segments_for_viz, raw_midpoint_chain
 
+    def _apply_smoothing_and_record(
+        self,
+        *,
+        centerline: np.ndarray,
+        publish_mode: str,
+        now_sec: float,
+        raw_midpoint_chain: np.ndarray,
+        selected_chain_width_median: float,
+        pair_segments_for_viz: np.ndarray,
+        selected_pair_track_ids: np.ndarray,
+    ) -> np.ndarray:
         if self.enable_temporal_smoothing and publish_mode == "fresh":
             centerline = self._apply_temporal_smoothing(centerline)
             self._previous_centerline = np.array(centerline, copy=True)
         elif publish_mode == "held" and centerline.shape[0] > 0:
             self._previous_centerline = np.array(centerline, copy=True)
-
         if publish_mode == "fresh" and centerline.shape[0] > 0:
             self._record_valid_plan(
-                now_sec=now_sec,
-                centerline=centerline,
+                now_sec=now_sec, centerline=centerline,
                 raw_midpoint_chain=raw_midpoint_chain,
-                selected_chain_width_median=result.selected_chain_width_median,
+                selected_chain_width_median=selected_chain_width_median,
             )
             if pair_segments_for_viz.size > 0:
                 self._last_valid_pair_segments = np.array(pair_segments_for_viz, copy=True)
-            if result.selected_pair_track_ids.size > 0:
-                self._last_valid_pair_track_ids = np.array(result.selected_pair_track_ids, copy=True)
+            if selected_pair_track_ids.size > 0:
+                self._last_valid_pair_track_ids = np.array(selected_pair_track_ids, copy=True)
+        return centerline
 
-        control_path = self._centerline_to_vehicle_frame(
-            centerline=centerline,
-            frame_id=target_frame,
-            vehicle_x=vehicle_x,
-            vehicle_y=vehicle_y,
-            vehicle_yaw=vehicle_yaw,
-        )
+    def _run_controller_step(
+        self,
+        *,
+        control_path: np.ndarray,
+        target_frame: str,
+        vehicle_x: float,
+        vehicle_y: float,
+        vehicle_yaw: float,
+    ) -> tuple:
+        cmd_speed, cmd_steering, lookahead = 0.0, 0.0, 0.0
+        control_target_frame: Optional[np.ndarray] = None
+        control_debug_metrics: Optional[dict[str, float]] = None
+        zero_cmd_sent_flag = 0
+        controller_failed = False
         if control_path.shape[0] >= 1 and self._controller is not None:
             try:
                 controller_output = self._controller.compute(
@@ -542,69 +820,16 @@ class MidpointPlannerNode(TrackedConePlannerBase):
                     yaw_rate_rps=self._latest_yaw_rate_rps,
                 )
             except ValueError as exc:
-                self._warn_throttled("controller_compute_error", f"controller compute failed: {exc}")
-                controller_failed = True
-                zero_cmd_sent_flag = int(self._apply_no_path_behavior())
-                if self._last_speed_cmd is not None:
-                    cmd_speed = float(self._last_speed_cmd)
-                if self._last_steering_cmd is not None:
-                    cmd_steering = float(self._last_steering_cmd)
+                controller_failed, zero_cmd_sent_flag, cmd_speed, cmd_steering = (
+                    self._handle_controller_error(exc)
+                )
             else:
-                cmd_steering = float(controller_output.steering_rad)
-                cmd_speed = self._compute_speed_command(float(controller_output.kappa))
-                lookahead = float(controller_output.lookahead_m)
-                control_target_base = np.asarray(controller_output.target_point_base, dtype=np.float64)
-                self._last_speed_cmd = cmd_speed
-                self._last_steering_cmd = cmd_steering
-                self._publish_cmd(cmd_speed, cmd_steering)
-
-                if self._is_alias(target_frame, self.base_frame):
-                    control_target_frame = np.array(control_target_base, copy=True)
-                elif self._is_alias(target_frame, self.odom_frame):
-                    tx, ty = self._base_point_to_odom(
-                        float(control_target_base[0]),
-                        float(control_target_base[1]),
-                        vehicle_x,
-                        vehicle_y,
-                        vehicle_yaw,
+                cmd_speed, cmd_steering, lookahead, control_target_frame, control_debug_metrics = (
+                    self._apply_successful_controller_output(
+                        controller_output=controller_output, target_frame=target_frame,
+                        vehicle_x=vehicle_x, vehicle_y=vehicle_y, vehicle_yaw=vehicle_yaw,
                     )
-                    control_target_frame = np.array([tx, ty], dtype=np.float64)
-                if controller_output.stanley_debug is not None:
-                    debug = controller_output.stanley_debug
-                    control_debug_metrics = {
-                        "heading_error_rad": float(debug.heading_error_rad),
-                        "cross_track_error_m": float(debug.cross_track_error_m),
-                        "vehicle_speed_mps": float(debug.vehicle_speed_mps),
-                        "speed_term_mps": float(debug.speed_term_mps),
-                        "heading_contribution_rad": float(debug.heading_contribution_rad),
-                        "cross_track_contribution_rad": float(debug.cross_track_contribution_rad),
-                        "yaw_rate_damping_contribution_rad": float(
-                            debug.yaw_rate_damping_contribution_rad
-                        ),
-                        "yaw_rate_rps": float(self._latest_yaw_rate_rps),
-                        "raw_steering_cmd_rad": float(debug.raw_steering_cmd_rad),
-                        "steering_after_clamp_rad": float(debug.steering_after_clamp_rad),
-                        "steering_after_filter_rad": float(debug.steering_after_filter_rad),
-                        "steering_after_rate_limit_rad": float(debug.steering_after_rate_limit_rad),
-                        "final_steering_cmd_rad": float(debug.final_steering_cmd_rad),
-                        "steering_saturated_flag": (
-                            1.0 if bool(debug.steering_saturated_flag) else 0.0
-                        ),
-                        "nearest_path_index": float(debug.nearest_path_index),
-                        "heading_path_index": float(debug.heading_path_index),
-                        "target_point_x_base_m": float(debug.target_point_x_base_m),
-                        "target_point_y_base_m": float(debug.target_point_y_base_m),
-                        "target_point_x_frame_m": (
-                            float(control_target_frame[0])
-                            if control_target_frame is not None
-                            else float("nan")
-                        ),
-                        "target_point_y_frame_m": (
-                            float(control_target_frame[1])
-                            if control_target_frame is not None
-                            else float("nan")
-                        ),
-                    }
+                )
         elif control_path.shape[0] >= 1:
             zero_cmd_sent_flag = int(self._apply_controller_disabled_behavior())
         else:
@@ -613,25 +838,117 @@ class MidpointPlannerNode(TrackedConePlannerBase):
                 cmd_speed = float(self._last_speed_cmd)
             if self._last_steering_cmd is not None:
                 cmd_steering = float(self._last_steering_cmd)
+        return (
+            cmd_speed, cmd_steering, lookahead,
+            control_target_frame, control_debug_metrics,
+            zero_cmd_sent_flag, controller_failed,
+        )
 
-        control_path_point_count = int(control_path.shape[0])
-        hold_remaining_s = self._hold_remaining_s(now_sec)
-        operator_state = "fresh"
-        operator_reason = "none"
+    def _handle_controller_error(self, exc: ValueError) -> tuple:
+        self._warn_throttled("controller_compute_error", f"controller compute failed: {exc}")
+        zero_cmd_sent_flag = int(self._apply_no_path_behavior())
+        cmd_speed = float(self._last_speed_cmd) if self._last_speed_cmd is not None else 0.0
+        cmd_steering = float(self._last_steering_cmd) if self._last_steering_cmd is not None else 0.0
+        return True, zero_cmd_sent_flag, cmd_speed, cmd_steering
+
+    def _apply_successful_controller_output(
+        self,
+        *,
+        controller_output,
+        target_frame: str,
+        vehicle_x: float,
+        vehicle_y: float,
+        vehicle_yaw: float,
+    ) -> tuple:
+        cmd_steering = float(controller_output.steering_rad)
+        cmd_speed = self._compute_speed_command(float(controller_output.kappa))
+        lookahead = float(controller_output.lookahead_m)
+        self._last_speed_cmd = cmd_speed
+        self._last_steering_cmd = cmd_steering
+        self._publish_cmd(cmd_speed, cmd_steering)
+        control_target_frame, control_debug_metrics = self._extract_controller_debug(
+            controller_output=controller_output, target_frame=target_frame,
+            vehicle_x=vehicle_x, vehicle_y=vehicle_y, vehicle_yaw=vehicle_yaw,
+        )
+        return cmd_speed, cmd_steering, lookahead, control_target_frame, control_debug_metrics
+
+    def _extract_controller_debug(
+        self,
+        *,
+        controller_output,
+        target_frame: str,
+        vehicle_x: float,
+        vehicle_y: float,
+        vehicle_yaw: float,
+    ) -> tuple:
+        control_target_base = np.asarray(controller_output.target_point_base, dtype=np.float64)
+        control_target_frame: Optional[np.ndarray] = None
+        if self._is_alias(target_frame, self.base_frame):
+            control_target_frame = np.array(control_target_base, copy=True)
+        elif self._is_alias(target_frame, self.odom_frame):
+            tx, ty = _base_point_to_odom(
+                float(control_target_base[0]), float(control_target_base[1]),
+                vehicle_x, vehicle_y, vehicle_yaw,
+            )
+            control_target_frame = np.array([tx, ty], dtype=np.float64)
+        control_debug_metrics: Optional[dict[str, float]] = None
+        if controller_output.stanley_debug is not None:
+            control_debug_metrics = self._build_stanley_debug_metrics(
+                debug=controller_output.stanley_debug,
+                control_target_frame=control_target_frame,
+            )
+        return control_target_frame, control_debug_metrics
+
+    def _build_stanley_debug_metrics(self, *, debug, control_target_frame) -> dict:
+        return {
+            "heading_error_rad": float(debug.heading_error_rad),
+            "cross_track_error_m": float(debug.cross_track_error_m),
+            "vehicle_speed_mps": float(debug.vehicle_speed_mps),
+            "speed_term_mps": float(debug.speed_term_mps),
+            "heading_contribution_rad": float(debug.heading_contribution_rad),
+            "cross_track_contribution_rad": float(debug.cross_track_contribution_rad),
+            "yaw_rate_damping_contribution_rad": float(debug.yaw_rate_damping_contribution_rad),
+            "yaw_rate_rps": float(self._latest_yaw_rate_rps),
+            "raw_steering_cmd_rad": float(debug.raw_steering_cmd_rad),
+            "steering_after_clamp_rad": float(debug.steering_after_clamp_rad),
+            "steering_after_filter_rad": float(debug.steering_after_filter_rad),
+            "steering_after_rate_limit_rad": float(debug.steering_after_rate_limit_rad),
+            "final_steering_cmd_rad": float(debug.final_steering_cmd_rad),
+            "steering_saturated_flag": 1.0 if bool(debug.steering_saturated_flag) else 0.0,
+            "nearest_path_index": float(debug.nearest_path_index),
+            "heading_path_index": float(debug.heading_path_index),
+            "target_point_x_base_m": float(debug.target_point_x_base_m),
+            "target_point_y_base_m": float(debug.target_point_y_base_m),
+            "target_point_x_frame_m": (
+                float(control_target_frame[0]) if control_target_frame is not None else float("nan")
+            ),
+            "target_point_y_frame_m": (
+                float(control_target_frame[1]) if control_target_frame is not None else float("nan")
+            ),
+        }
+
+    def _resolve_operator_state(
+        self,
+        *,
+        centerline: np.ndarray,
+        publish_mode: str,
+        status: str,
+        zero_cmd_sent_flag: int,
+        controller_failed: bool,
+        control_path_point_count: int,
+        hold_remaining_s: float,
+        result,
+    ) -> tuple:
         core_reject_reason = self._normalize_core_reject_reason(result)
         if centerline.shape[0] == 0:
             if self._last_valid_centerline is not None and hold_remaining_s <= 0.0:
-                operator_state = "stopped"
-                operator_reason = "hold_expired_no_path"
+                operator_state, operator_reason = "stopped", "hold_expired_no_path"
             elif core_reject_reason != "none":
-                operator_state = "stopped"
-                operator_reason = core_reject_reason
+                operator_state, operator_reason = "stopped", core_reject_reason
             elif zero_cmd_sent_flag:
-                operator_state = "stopped"
-                operator_reason = "stop_if_no_path"
+                operator_state, operator_reason = "stopped", "stop_if_no_path"
             else:
-                operator_state = "held"
-                operator_reason = "holding_previous_valid"
+                operator_state, operator_reason = "held", "holding_previous_valid"
         elif publish_mode == "held":
             operator_state = "held"
             if centerline.shape[0] > 0 and "hysteresis holding previous valid centerline" in status:
@@ -641,29 +958,25 @@ class MidpointPlannerNode(TrackedConePlannerBase):
             else:
                 operator_reason = "holding_previous_valid"
         else:
-            operator_state = "fresh"
-            operator_reason = "none"
-
+            operator_state, operator_reason = "fresh", "none"
         if controller_failed:
-            operator_state = "stopped"
-            operator_reason = "controller_compute_failed"
+            operator_state, operator_reason = "stopped", "controller_compute_failed"
         elif self._controller is None and centerline.shape[0] > 0:
-            operator_state = "stopped"
-            operator_reason = "controller_disabled"
+            operator_state, operator_reason = "stopped", "controller_disabled"
         elif centerline.shape[0] > 0 and control_path_point_count <= 0 and operator_state != "waiting":
-            operator_state = "stopped"
-            operator_reason = "no_control_path"
+            operator_state, operator_reason = "stopped", "no_control_path"
         if zero_cmd_sent_flag and operator_reason == "none":
-            operator_state = "stopped"
-            operator_reason = "stop_if_no_path"
+            operator_state, operator_reason = "stopped", "stop_if_no_path"
         if (
-            control_path_point_count > 0
-            and centerline.shape[0] > 0
-            and zero_cmd_sent_flag == 0
-            and publish_mode == "fresh"
+            control_path_point_count > 0 and centerline.shape[0] > 0
+            and zero_cmd_sent_flag == 0 and publish_mode == "fresh"
         ):
             operator_state = "fresh"
+        return operator_state, operator_reason
 
+    def _update_active_diagnostics_fields(
+        self, *, result, publish_mode: str, centerline: np.ndarray, pair_segments_for_viz: np.ndarray
+    ) -> None:
         self._active_planner_mode = (
             "holding_last_valid"
             if publish_mode == "held" and centerline.shape[0] > 0
@@ -682,123 +995,131 @@ class MidpointPlannerNode(TrackedConePlannerBase):
         self._active_reject_progress_count = int(result.reject_counts.get("progress", 0))
         self._active_reject_orientation_count = int(result.reject_counts.get("orientation", 0))
 
-        self._log_operator_state_transition(
-            operator_state=operator_state,
-            operator_reason=operator_reason,
-            hold_remaining_s=hold_remaining_s,
-            selected_chain_length=int(result.selected_chain_length),
-        )
-        self._log_mode_summary(
-            mode=self._active_planner_mode,
-            result=result,
-            operator_state=operator_state,
-            operator_reason=operator_reason,
-            hold_active=bool(self._active_held_path_flag),
-        )
+    def _build_planner_metrics(
+        self,
+        *,
+        result,
+        raw_centerline: np.ndarray,
+        cone_counts: dict,
+        candidate_source: str,
+        publish_mode: str,
+        hold_reason,
+        operator_state: str,
+        operator_reason: str,
+        hold_remaining_s: float,
+        control_path_point_count: int,
+        zero_cmd_sent_flag: int,
+        selected_edge_churn: float,
+        selected_edge_churn_count: int,
+    ) -> dict:
+        return {
+            **self._build_result_quality_metrics(
+                result=result, selected_edge_churn=selected_edge_churn,
+                selected_edge_churn_count=selected_edge_churn_count,
+            ),
+            **self._build_operator_state_metrics(
+                publish_mode=publish_mode, hold_reason=hold_reason,
+                operator_state=operator_state, operator_reason=operator_reason,
+                hold_remaining_s=hold_remaining_s, control_path_point_count=control_path_point_count,
+                zero_cmd_sent_flag=zero_cmd_sent_flag,
+            ),
+            **self._build_chain_count_metrics(result=result),
+            "raw_candidate_point_count": int(raw_centerline.shape[0]),
+            **cone_counts,
+            "candidate_source": candidate_source,
+            **self._build_midline_buffer_metrics(publish_mode=publish_mode),
+        }
 
-        self._publish_diagnostics(
-            frame_id=target_frame,
-            centerline_jump_max_m=centerline_jump_max_m,
-            selected_edge_churn_ratio=selected_edge_churn,
-            tracked_cones_frame_delta_p95_m=tracked_delta_p95_m,
-            centerline_point_count=int(centerline.shape[0]),
-            selected_edge_count=int(result.selected_edges.shape[0]),
-            status=status,
-            control_debug_metrics=control_debug_metrics,
-            planner_metrics={
-                "candidate_diagonal_count": result.candidate_count,
-                "selected_chain_length": result.selected_chain_length,
-                "selected_chain_median_width_m": result.selected_chain_width_median,
-                "expected_width_prior_m": result.expected_width_prior_m,
-                "reject_wrong_side_count": result.reject_counts.get("wrong_side", 0),
-                "reject_width_count": result.reject_counts.get("width", 0),
-                "reject_width_range_count": result.reject_counts.get("width_range", 0),
-                "reject_width_prior_count": result.reject_counts.get("width_prior", 0),
-                "reject_orientation_count": result.reject_counts.get("orientation", 0),
-                "reject_progress_count": result.reject_counts.get("progress", 0),
-                "reject_near_field_continuity_count": result.reject_counts.get("near_field_continuity", 0),
-                "reject_midpoint_kink_count": result.reject_counts.get("midpoint_kink", 0),
-                "reject_seed_distance_count": result.reject_counts.get("seed_distance", 0),
-                "near_field_lateral_max_m": result.near_field_lateral_max_m,
-                "near_field_lateral_mean_m": result.near_field_lateral_mean_m,
-                "near_field_displacement_max_m": result.near_field_displacement_max_m,
-                "near_field_displacement_mean_m": result.near_field_displacement_mean_m,
-                "near_field_midpoint_kink_max_rad": result.near_field_kink_max_rad,
-                "seed_midpoint_distance_m": result.seed_midpoint_distance_m,
-                "seed_temporal_offset_m": result.seed_temporal_offset_m,
-                "selected_chain_churn_count": selected_edge_churn_count,
-                "selected_chain_churn_ratio": selected_edge_churn,
-                "publish_mode": publish_mode,
-                "hold_mode_active_flag": 1 if self._hold_mode_active else 0,
-                "hold_clean_frame_count": self._hold_clean_frame_count,
-                "hold_reason": hold_reason or "",
-                "planner_state_code": self._operator_state_code(operator_state),
-                "fresh_publish_flag": 1 if operator_state == "fresh" else 0,
-                "held_publish_flag": 1 if operator_state == "held" else 0,
-                "stopped_flag": 1 if operator_state == "stopped" else 0,
-                "waiting_flag": 1 if operator_state == "waiting" else 0,
-                "operator_reason_code": self._operator_reason_code(operator_reason),
-                "operator_reason": operator_reason,
-                "hold_remaining_s": hold_remaining_s,
-                "control_path_point_count": control_path_point_count,
-                "zero_cmd_sent_flag": zero_cmd_sent_flag,
-                "planner_mode": self._active_planner_mode,
-                "remembered_cone_count": self._active_remembered_cone_count,
-                "remembered_stale_cone_count": self._active_stale_cone_count,
-                "left_chain_length": result.left_chain_length,
-                "right_chain_length": result.right_chain_length,
-                "accepted_pair_count": result.accepted_pair_count,
-                "unknown_pair_count": result.unknown_pair_count,
-                "filtered_track_width_m": self._filtered_track_width_m,
-                "held_path_flag": self._active_held_path_flag,
-                "raw_candidate_point_count": int(raw_centerline.shape[0]),
-                "raw_orange_count": raw_orange_count,
-                "resolved_blue_count": resolved_blue_count,
-                "resolved_yellow_count": resolved_yellow_count,
-                "boundary_hint_count": boundary_hint_count,
-                "candidate_source": candidate_source,
-                "midline_update_mode": (
-                    "hold" if publish_mode == "held" else self._last_midline_update_mode
-                ),
-                "midline_update_reason": getattr(self, "_last_midline_candidate_update_reason", ""),
-                "midline_candidate_jump_m": getattr(self, "_last_midline_candidate_jump_m", float("nan")),
-                "midline_near_lateral_delta_max_m": getattr(
-                    self,
-                    "_last_midline_near_lateral_delta_max_m",
-                    float("nan"),
-                ),
-                "midline_buffer_confidence": getattr(
-                    self,
-                    "_last_midline_buffer_confidence",
-                    float("nan"),
-                ),
-                "midline_recovery_count": getattr(self, "_midline_recovery_count", 0),
-                **self._midline_estimation_metrics_for_diagnostics(),
-            },
-        )
+    def _build_result_quality_metrics(
+        self,
+        *,
+        result,
+        selected_edge_churn: float,
+        selected_edge_churn_count: int,
+    ) -> dict:
+        rc = result.reject_counts
+        return {
+            "candidate_diagonal_count": result.candidate_count,
+            "selected_chain_length": result.selected_chain_length,
+            "selected_chain_median_width_m": result.selected_chain_width_median,
+            "expected_width_prior_m": result.expected_width_prior_m,
+            "reject_wrong_side_count": rc.get("wrong_side", 0),
+            "reject_width_count": rc.get("width", 0),
+            "reject_width_range_count": rc.get("width_range", 0),
+            "reject_width_prior_count": rc.get("width_prior", 0),
+            "reject_orientation_count": rc.get("orientation", 0),
+            "reject_progress_count": rc.get("progress", 0),
+            "reject_near_field_continuity_count": rc.get("near_field_continuity", 0),
+            "reject_midpoint_kink_count": rc.get("midpoint_kink", 0),
+            "reject_seed_distance_count": rc.get("seed_distance", 0),
+            "near_field_lateral_max_m": result.near_field_lateral_max_m,
+            "near_field_lateral_mean_m": result.near_field_lateral_mean_m,
+            "near_field_displacement_max_m": result.near_field_displacement_max_m,
+            "near_field_displacement_mean_m": result.near_field_displacement_mean_m,
+            "near_field_midpoint_kink_max_rad": result.near_field_kink_max_rad,
+            "seed_midpoint_distance_m": result.seed_midpoint_distance_m,
+            "seed_temporal_offset_m": result.seed_temporal_offset_m,
+            "selected_chain_churn_count": selected_edge_churn_count,
+            "selected_chain_churn_ratio": selected_edge_churn,
+        }
 
-        self._current_pair_segments_for_viz = np.array(pair_segments_for_viz, copy=True)
-        self._publish_outputs(
-            frame_id=target_frame,
-            centerline=centerline,
-            raw_centerline=raw_centerline,
-            raw_midpoint_chain=raw_midpoint_chain,
-            result=result,
-            status=status,
-            control_target_frame=control_target_frame,
-            cmd_speed=cmd_speed,
-            cmd_steering=cmd_steering,
-            lookahead=lookahead,
-            operator_state=operator_state,
-            operator_reason=operator_reason,
-            hold_remaining_s=hold_remaining_s,
-            control_path_point_count=control_path_point_count,
-            candidate_diagonal_count=int(result.candidate_count),
-            selected_chain_length=int(result.selected_chain_length),
-            seed_midpoint_distance_m=float(result.seed_midpoint_distance_m),
-            near_field_lateral_max_m=float(result.near_field_lateral_max_m),
-            near_field_midpoint_kink_max_rad=float(result.near_field_kink_max_rad),
-        )
+    def _build_operator_state_metrics(
+        self,
+        *,
+        publish_mode: str,
+        hold_reason,
+        operator_state: str,
+        operator_reason: str,
+        hold_remaining_s: float,
+        control_path_point_count: int,
+        zero_cmd_sent_flag: int,
+    ) -> dict:
+        return {
+            "publish_mode": publish_mode,
+            "hold_mode_active_flag": 1 if self._hold_mode_active else 0,
+            "hold_clean_frame_count": self._hold_clean_frame_count,
+            "hold_reason": hold_reason or "",
+            "planner_state_code": self._operator_state_code(operator_state),
+            "fresh_publish_flag": 1 if operator_state == "fresh" else 0,
+            "held_publish_flag": 1 if operator_state == "held" else 0,
+            "stopped_flag": 1 if operator_state == "stopped" else 0,
+            "waiting_flag": 1 if operator_state == "waiting" else 0,
+            "operator_reason_code": self._operator_reason_code(operator_reason),
+            "operator_reason": operator_reason,
+            "hold_remaining_s": hold_remaining_s,
+            "control_path_point_count": control_path_point_count,
+            "zero_cmd_sent_flag": zero_cmd_sent_flag,
+            "planner_mode": self._active_planner_mode,
+            "remembered_cone_count": self._active_remembered_cone_count,
+            "remembered_stale_cone_count": self._active_stale_cone_count,
+        }
+
+    def _build_chain_count_metrics(self, *, result) -> dict:
+        return {
+            "left_chain_length": result.left_chain_length,
+            "right_chain_length": result.right_chain_length,
+            "accepted_pair_count": result.accepted_pair_count,
+            "unknown_pair_count": result.unknown_pair_count,
+            "filtered_track_width_m": self._filtered_track_width_m,
+            "held_path_flag": self._active_held_path_flag,
+        }
+
+    def _build_midline_buffer_metrics(self, *, publish_mode: str) -> dict:
+        return {
+            "midline_update_mode": (
+                "hold" if publish_mode == "held" else self._last_midline_update_mode
+            ),
+            "midline_update_reason": getattr(self, "_last_midline_candidate_update_reason", ""),
+            "midline_candidate_jump_m": getattr(self, "_last_midline_candidate_jump_m", float("nan")),
+            "midline_near_lateral_delta_max_m": getattr(
+                self, "_last_midline_near_lateral_delta_max_m", float("nan"),
+            ),
+            "midline_buffer_confidence": getattr(
+                self, "_last_midline_buffer_confidence", float("nan"),
+            ),
+            "midline_recovery_count": getattr(self, "_midline_recovery_count", 0),
+            **self._midline_estimation_metrics_for_diagnostics(),
+        }
 
     @staticmethod
     def _tentative_cone_is_usable_for_planning(
@@ -820,7 +1141,7 @@ class MidpointPlannerNode(TrackedConePlannerBase):
     ) -> list[_PairMemoryEntry]:
         keep: list[_PairMemoryEntry] = []
         for entry in self._pair_memory:
-            midpoint_x_base, midpoint_y_base = self._odom_point_to_base(
+            midpoint_x_base, midpoint_y_base = _odom_point_to_base(
                 entry.midpoint_x_odom,
                 entry.midpoint_y_odom,
                 vehicle_x,
@@ -881,7 +1202,7 @@ class MidpointPlannerNode(TrackedConePlannerBase):
             return list(entries)
 
         local = [
-            self._odom_point_to_base(
+            _odom_point_to_base(
                 e.midpoint_x_odom, e.midpoint_y_odom, vehicle_x, vehicle_y, vehicle_yaw
             )
             for e in entries
@@ -972,21 +1293,21 @@ class MidpointPlannerNode(TrackedConePlannerBase):
             midpoint_x_odom = float(midpoint[0])
             midpoint_y_odom = float(midpoint[1])
             if self._is_alias(frame_id, self.base_frame):
-                left_x_odom, left_y_odom = self._base_point_to_odom(
+                left_x_odom, left_y_odom = _base_point_to_odom(
                     left_x_odom,
                     left_y_odom,
                     vehicle_x,
                     vehicle_y,
                     vehicle_yaw,
                 )
-                right_x_odom, right_y_odom = self._base_point_to_odom(
+                right_x_odom, right_y_odom = _base_point_to_odom(
                     right_x_odom,
                     right_y_odom,
                     vehicle_x,
                     vehicle_y,
                     vehicle_yaw,
                 )
-                midpoint_x_odom, midpoint_y_odom = self._base_point_to_odom(
+                midpoint_x_odom, midpoint_y_odom = _base_point_to_odom(
                     midpoint_x_odom,
                     midpoint_y_odom,
                     vehicle_x,
@@ -1066,21 +1387,21 @@ class MidpointPlannerNode(TrackedConePlannerBase):
             midpoint_x_odom = float(midpoint[0])
             midpoint_y_odom = float(midpoint[1])
             if self._is_alias(frame_id, self.base_frame):
-                left_x_odom, left_y_odom = self._base_point_to_odom(
+                left_x_odom, left_y_odom = _base_point_to_odom(
                     left_x_odom,
                     left_y_odom,
                     vehicle_x,
                     vehicle_y,
                     vehicle_yaw,
                 )
-                right_x_odom, right_y_odom = self._base_point_to_odom(
+                right_x_odom, right_y_odom = _base_point_to_odom(
                     right_x_odom,
                     right_y_odom,
                     vehicle_x,
                     vehicle_y,
                     vehicle_yaw,
                 )
-                midpoint_x_odom, midpoint_y_odom = self._base_point_to_odom(
+                midpoint_x_odom, midpoint_y_odom = _base_point_to_odom(
                     midpoint_x_odom,
                     midpoint_y_odom,
                     vehicle_x,
@@ -1440,27 +1761,58 @@ class MidpointPlannerNode(TrackedConePlannerBase):
         if candidate_samples.shape[0] == 0:
             return np.array(stored_samples, copy=True)
         count = min(stored_samples.shape[0], candidate_samples.shape[0])
+        stored_local, candidate_local = self._project_samples_to_vehicle_frame(
+            stored_samples=stored_samples, candidate_samples=candidate_samples,
+            count=count, vehicle_x=vehicle_x, vehicle_y=vehicle_y, vehicle_yaw=vehicle_yaw,
+        )
+        updated_local = self._apply_lateral_clip(
+            stored_local=stored_local, candidate_local=candidate_local,
+            count=count,
+            direct_prefix_distance_m=direct_prefix_distance_m,
+        )
+        updated = self._convert_blended_local_to_odom(
+            updated_local=updated_local, count=count,
+            vehicle_x=vehicle_x, vehicle_y=vehicle_y, vehicle_yaw=vehicle_yaw,
+        )
+        if candidate_samples.shape[0] > count:
+            updated = np.vstack((updated, candidate_samples[count:]))
+        elif stored_samples.shape[0] > count:
+            updated = np.vstack((updated, stored_samples[count:]))
+        return updated
+
+    def _project_samples_to_vehicle_frame(
+        self,
+        *,
+        stored_samples: np.ndarray,
+        candidate_samples: np.ndarray,
+        count: int,
+        vehicle_x: float,
+        vehicle_y: float,
+        vehicle_yaw: float,
+    ) -> tuple:
         stored_local = self._centerline_to_vehicle_frame(
-            centerline=stored_samples[:count],
-            frame_id=self.odom_frame,
-            vehicle_x=vehicle_x,
-            vehicle_y=vehicle_y,
-            vehicle_yaw=vehicle_yaw,
+            centerline=stored_samples[:count], frame_id=self.odom_frame,
+            vehicle_x=vehicle_x, vehicle_y=vehicle_y, vehicle_yaw=vehicle_yaw,
         )
         candidate_local = self._centerline_to_vehicle_frame(
-            centerline=candidate_samples[:count],
-            frame_id=self.odom_frame,
-            vehicle_x=vehicle_x,
-            vehicle_y=vehicle_y,
-            vehicle_yaw=vehicle_yaw,
+            centerline=candidate_samples[:count], frame_id=self.odom_frame,
+            vehicle_x=vehicle_x, vehicle_y=vehicle_y, vehicle_yaw=vehicle_yaw,
         )
-        updated_local = np.array(stored_local, copy=True)
+        return stored_local, candidate_local
+
+    def _apply_lateral_clip(
+        self,
+        *,
+        stored_local: np.ndarray,
+        candidate_local: np.ndarray,
+        count: int,
+        direct_prefix_distance_m: Optional[float],
+    ) -> np.ndarray:
         step = max(0.05, float(self.midline_station_spacing_m))
         direct_prefix_distance = (
-            0.0
-            if direct_prefix_distance_m is None
-            else float(direct_prefix_distance_m)
+            0.0 if direct_prefix_distance_m is None else float(direct_prefix_distance_m)
         )
+        updated_local = np.array(stored_local, copy=True)
         for idx in range(count):
             distance_ahead = float(idx) * step
             alpha, max_shift = self._midline_blend_params(distance_ahead)
@@ -1478,21 +1830,25 @@ class MidpointPlannerNode(TrackedConePlannerBase):
                 )
             if idx > 0:
                 updated_local[idx, 0] = max(updated_local[idx, 0], updated_local[idx - 1, 0] + 0.05)
+        return updated_local
+
+    def _convert_blended_local_to_odom(
+        self,
+        *,
+        updated_local: np.ndarray,
+        count: int,
+        vehicle_x: float,
+        vehicle_y: float,
+        vehicle_yaw: float,
+    ) -> np.ndarray:
         updated = np.empty((count, 2), dtype=np.float64)
         for idx in range(count):
-            ox, oy = self._base_point_to_odom(
-                float(updated_local[idx, 0]),
-                float(updated_local[idx, 1]),
-                vehicle_x,
-                vehicle_y,
-                vehicle_yaw,
+            ox, oy = _base_point_to_odom(
+                float(updated_local[idx, 0]), float(updated_local[idx, 1]),
+                vehicle_x, vehicle_y, vehicle_yaw,
             )
             updated[idx, 0] = ox
             updated[idx, 1] = oy
-        if candidate_samples.shape[0] > count:
-            updated = np.vstack((updated, candidate_samples[count:]))
-        elif stored_samples.shape[0] > count:
-            updated = np.vstack((updated, stored_samples[count:]))
         return updated
 
 

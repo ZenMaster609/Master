@@ -40,7 +40,6 @@ from ..core.run_session import RunSession
 from ..core.qos_profiles import PLOTTER_QOS, RELIABLE_SENSOR_QOS
 from ..logging.log_writer import LogWriter
 from ..logging.log_config import LogConfig, declare_and_load_config
-from ..logging.path_tracking_eval import GateLapCounter, GTMidline
 from .path_eval_runner import PathEvalRunner
 from .plot_runner import PlotRunner
 
@@ -79,17 +78,55 @@ class LoggerNode(Node, PathEvalRunner, PlotRunner):
 
     def __init__(self):
         super().__init__('logger_node')
-
         self._cfg = declare_and_load_config(self)
+        self._unpack_config()
+
+        if self._cfg.base_path_str:
+            self._base_path = Path(self._cfg.base_path_str).expanduser()
+        else:
+            self._base_path = None
+
+        self.get_logger().info('LoggerNode starting...')
+        self.get_logger().info(f'  Format: {self._log_format}')
+        self.get_logger().info(f'  Logging enabled: {self._enable_logging}')
+        self.get_logger().info(f'  Wait for session: {self._wait_for_session}')
+
+        self._run_session: Optional[RunSession] = None
+        self.log_writer: Optional[LogWriter] = None
+        self._session_initialized = False
+        self._buffered_states: list = []
+        self._shutdown_called = False
+        self._cone_range_rmse_samples_by_source: Dict[str, List[Dict[str, object]]] = {
+            'monocular': [], 'stereo': [], 'lidar': [],
+        }
+
+        self._init_path_eval_state()
+
+        if self._path_tracking_eval_enabled:
+            self._path_eval_tf_buffer = Buffer(cache_time=Duration(seconds=10.0))
+            self._path_eval_tf_listener = TransformListener(self._path_eval_tf_buffer, self)
+
+        self._setup_all_subscriptions()
+
+        self._flush_timer = None
+        self.status_timer = self.create_timer(10.0, self.status_callback)
+
+        if self._enable_state_logging:
+            self.get_logger().info(f'LoggerNode started, subscribed to {self._cfg.state_topic}')
+        else:
+            self.get_logger().info('LoggerNode started without vehicle state subscription')
+
+        # NOTE: rclpy.on_shutdown / Node.add_on_shutdown are not available in Humble
+        rclpy.get_default_context().on_shutdown(self.shutdown)
+
+    def _unpack_config(self) -> None:
         self._log_format = self._cfg.log_format
         self._compression = self._cfg.compression
-        base_path_str = self._cfg.base_path_str
         self._session_name = self._cfg.session_name
         self._flush_interval = self._cfg.flush_interval_sec
         self._buffer_size = self._cfg.buffer_size
-        state_topic = self._cfg.state_topic
-        enable_logging = self._cfg.enable_logging
-        enable_state_logging = self._cfg.enable_state_logging
+        self._enable_logging = self._cfg.enable_logging
+        self._enable_state_logging = bool(self._cfg.enable_state_logging)
         self._wait_for_session = self._cfg.wait_for_session
         self._session_timeout = self._cfg.session_timeout_sec
         self._adapter_type = self._cfg.adapter_type
@@ -112,118 +149,29 @@ class LoggerNode(Node, PathEvalRunner, PlotRunner):
         self._off_track_autostop_planner_diag_topic = self._cfg.off_track_autostop_planner_diag_topic
         self._control_reference_wheelbase_m = self._cfg.control_reference_wheelbase_m
 
-        # Parse base path
-        if base_path_str:
-            self._base_path = Path(base_path_str).expanduser()
-        else:
-            self._base_path = None  # Will be determined by RunSession
-
-        self.get_logger().info(f'LoggerNode starting...')
-        self.get_logger().info(f'  Format: {self._log_format}')
-        self.get_logger().info(f'  Logging enabled: {enable_logging}')
-        self.get_logger().info(f'  Wait for session: {self._wait_for_session}')
-
-        self._enable_logging = enable_logging
-        self._enable_state_logging = bool(enable_state_logging)
-        self._run_session: Optional[RunSession] = None
-        self.log_writer: Optional[LogWriter] = None
-        self._session_initialized = False
-        self._buffered_states = []  # Buffer states until session is ready
-        self._shutdown_called = False
-        self._cone_range_rmse_samples_by_source: Dict[str, List[Dict[str, object]]] = {
-            'monocular': [],
-            'stereo': [],
-            'lidar': [],
-        }
-        self._path_eval_tf_buffer = None
-        self._path_eval_tf_listener = None
-        self._path_eval_latest_gt_msg: Optional[ConeArrayWithCovariance] = None
-        self._path_eval_gt_midline_source: Optional[GTMidline] = None
-        self._path_eval_last_gt_midline_xy = np.empty((0, 2), dtype=np.float64)
-        self._path_eval_last_gt_left_xy = np.empty((0, 2), dtype=np.float64)
-        self._path_eval_last_gt_right_xy = np.empty((0, 2), dtype=np.float64)
-        self._path_eval_last_target_frame = ''
-        self._path_eval_start_xy: Optional[np.ndarray] = None
-        self._path_eval_start_heading_xy: Optional[np.ndarray] = None
-        self._path_eval_vehicle_xy = np.asarray([float('nan'), float('nan')], dtype=np.float64)
-        self._path_eval_vehicle_frame = ''
-        self._path_eval_vehicle_child_frame = ''
-        self._path_eval_vehicle_yaw_rad = float('nan')
-        self._path_eval_vehicle_stamp = None
-        self._path_eval_planner_xy = np.empty((0, 2), dtype=np.float64)
-        self._path_eval_planner_frame = ''
-        self._path_eval_planner_stamp = None
-        self._path_eval_reference_trace_points: list[np.ndarray] = []
-        self._path_eval_file_handle = None
-        self._path_eval_csv_writer: Optional[csv.DictWriter] = None
-        self._path_eval_flush_counter = 0
-        self._path_eval_flush_stride = max(1, int(self._path_tracking_eval_rate_hz * 2.0))
-        self._path_eval_timer = None
-        self._path_eval_identity_warned_pairs: set[tuple[str, str]] = set()
-        self._path_eval_smalltrack_gate_source = None
-        self._path_eval_smalltrack_lap_counter: Optional[GateLapCounter] = None
-        self._path_eval_smalltrack_completed_laps = 0
-        self._path_eval_smalltrack_lap_times_sec: list[float] = []
-        self._path_eval_smalltrack_autostop_triggered = False
-        self._path_eval_run_start_sec: Optional[float] = None
-        self._path_eval_run_last_sec: Optional[float] = None
-        self._off_track_no_cone_since: Optional[float] = None
-        self._off_track_autostop_triggered = False
-
-        if self._path_tracking_eval_enabled:
-            self._path_eval_tf_buffer = Buffer(cache_time=Duration(seconds=10.0))
-            self._path_eval_tf_listener = TransformListener(self._path_eval_tf_buffer, self)
-
-        if enable_logging:
-            # Subscribe to run session for multi-machine sync
+    def _setup_all_subscriptions(self) -> None:
+        if self._enable_logging:
             self.session_sub = self.create_subscription(
-                RunSessionMsg,
-                '/run_session',
-                self.session_callback,
-                RELIABLE_SENSOR_QOS,
+                RunSessionMsg, '/run_session', self.session_callback, RELIABLE_SENSOR_QOS,
             )
-
-            # Set timeout to create own session if not received
             if self._wait_for_session:
                 self.session_timer = self.create_timer(
-                    self._session_timeout,
-                    self.session_timeout_callback
+                    self._session_timeout, self.session_timeout_callback,
                 )
                 self.get_logger().info(
                     f'  Waiting up to {self._session_timeout}s for /run_session...'
                 )
             else:
-                # Create session immediately
                 self._initialize_session(None)
-
         self._setup_cone_subscriptions()
         self._setup_path_tracking_eval_subscriptions()
         self._setup_off_track_autostop_subscription()
-
         if self._enable_state_logging:
             self.state_sub = self.create_subscription(
-                VehicleStateMsg,
-                state_topic,
-                self.state_callback,
-                PLOTTER_QOS,
+                VehicleStateMsg, self._cfg.state_topic, self.state_callback, PLOTTER_QOS,
             )
         else:
             self.state_sub = None
-
-        # Flush timer (will be created after session init)
-        self._flush_timer = None
-
-        # Status timer
-        self.status_timer = self.create_timer(10.0, self.status_callback)
-
-        if self._enable_state_logging:
-            self.get_logger().info(f'LoggerNode started, subscribed to {state_topic}')
-        else:
-            self.get_logger().info('LoggerNode started without vehicle state subscription')
-
-        # Ensure shutdown handler runs on ROS shutdown as well
-        # NOTE: rclpy.on_shutdown / Node.add_on_shutdown are not available in Humble
-        rclpy.get_default_context().on_shutdown(self.shutdown)
 
     def _setup_cone_subscriptions(self) -> None:
         self._cone_subscriptions = []

@@ -10,6 +10,7 @@ import numpy as np
 
 from sim_car.cones.tracking.fusion import normalize_color
 from sim_car.planning.planner_config_base import BasePlannerConfig
+from sim_car.planning.planner_utils import _clamp, _default_reject_counts
 from sim_car.planning.tracked_cone_planner_geometry import (
     build_boundary_chain_data,
     estimate_tangents as _estimate_tangents,
@@ -28,6 +29,18 @@ from sim_car.planning.tracked_cone_planner_geometry import (
 )
 
 _MIDPOINT_CHAIN_BACKTRACK_TOLERANCE_M = 0.25
+_REJECT_COUNT_KEYS = (
+    "color",
+    "wrong_side",
+    "width",
+    "width_range",
+    "width_prior",
+    "orientation",
+    "progress",
+    "near_field_continuity",
+    "midpoint_kink",
+    "seed_distance",
+)
 
 
 @dataclass
@@ -393,7 +406,7 @@ def _midpoint_computation_context(
 ) -> _MidpointComputationContext:
     boundary_indices = _boundary_indices_from_colors(cones.colors)
     left_chain, right_chain = _build_midpoint_boundary_chains(cones, boundary_indices, config)
-    reject_counts = _default_reject_counts()
+    reject_counts = _default_reject_counts(_REJECT_COUNT_KEYS)
     expected_width = _expected_width_m(prior, config)
 
     pairing = _compute_midpoint_pairing(
@@ -434,7 +447,7 @@ def _filtered_cones_failure_result(
     if cones.colored_count == 0:
         return _empty_result(
             "no colored cones in planning region",
-            reject_counts=_default_reject_counts(),
+            reject_counts=_default_reject_counts(_REJECT_COUNT_KEYS),
         )
     minimum = int(config.min_required_cones)
     if cones.colored_count >= minimum:
@@ -443,7 +456,7 @@ def _filtered_cones_failure_result(
         f"usable colored cones below minimum ({cones.colored_count} < {minimum})",
         filtered_points=cones.points,
         filtered_colors=cones.colors,
-        reject_counts=_default_reject_counts(),
+        reject_counts=_default_reject_counts(_REJECT_COUNT_KEYS),
     )
 
 
@@ -512,7 +525,7 @@ def _build_boundary_pairing(
     right_chain: _BoundaryChain,
 ) -> _PairingOutcome:
     if not _has_pairing_inputs(boundary_indices):
-        return _PairingOutcome([], 0, 0, _default_reject_counts())
+        return _PairingOutcome([], 0, 0, _default_reject_counts(_REJECT_COUNT_KEYS))
     pairs, candidate_count, unknown_pair_count, reject_counts = _pair_boundary_chains(
         filtered_points=cones.points,
         filtered_local=cones.local,
@@ -813,7 +826,7 @@ def _pair_boundary_chains(
     left_chain: Optional[_BoundaryChain] = None,
     right_chain: Optional[_BoundaryChain] = None,
 ) -> tuple[list[_BoundaryPair], int, int, dict[str, int]]:
-    reject_counts = _default_reject_counts()
+    reject_counts = _default_reject_counts(_REJECT_COUNT_KEYS)
     pairing_indices = _resolve_pairing_indices(left_indices, right_indices, left_chain, right_chain)
     if _pairing_indices_empty(pairing_indices, unknown_indices):
         return [], 0, 0, reject_counts
@@ -1832,21 +1845,6 @@ def _merge_reject_counts(target: dict[str, int], source: dict[str, int]) -> None
         target[key] = int(target.get(key, 0)) + int(value)
 
 
-def _default_reject_counts() -> dict[str, int]:
-    return {
-        "color": 0,
-        "wrong_side": 0,
-        "width": 0,
-        "width_range": 0,
-        "width_prior": 0,
-        "orientation": 0,
-        "progress": 0,
-        "near_field_continuity": 0,
-        "midpoint_kink": 0,
-        "seed_distance": 0,
-    }
-
-
 def _empty_result(
     status: str,
     *,
@@ -1883,7 +1881,7 @@ def _empty_result(
         ),
         used_fallback=False,
         status=status,
-        reject_counts=reject_counts or _default_reject_counts(),
+        reject_counts=reject_counts or _default_reject_counts(_REJECT_COUNT_KEYS),
         reject_reason=reject_reason,
     )
 
@@ -1913,7 +1911,3 @@ def _result_with_metadata(
     result.planner_mode = planner_mode
     result.filtered_track_width_m = float(filtered_track_width_m)
     return result
-
-
-def _clamp(value: float, lower: float, upper: float) -> float:
-    return float(np.clip(float(value), float(lower), float(upper)))
