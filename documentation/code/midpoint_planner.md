@@ -6,6 +6,11 @@ This page maps the `documentation/midpoint_planner.md` behavior to the midpoint 
 
 - `sim_car/sim_car/planning/midpoint_planner_node.py`
 - `sim_car/sim_car/planning/midpoint_planner_core.py`
+- `sim_car/sim_car/planning/planner_utils.py`
+- `sim_car/sim_car/planning/tracked_cone_planner_base.py`
+- `sim_car/sim_car/planning/planning_diagnostics.py`
+- `sim_car/sim_car/planning/planning_state_machine.py`
+- `sim_car/sim_car/planning/planning_visualization.py`
 - `sim_car/sim_car/planning/tracked_cone_planner_geometry.py`
 - `sim_car/sim_car/planning/tracked_cone_planner_contract.py`
 
@@ -16,6 +21,8 @@ This page maps the `documentation/midpoint_planner.md` behavior to the midpoint 
 - `MidpointPlannerNode._on_timer` in `sim_car/sim_car/planning/midpoint_planner_node.py`: top-level planning cycle that reads tracked cones, runs the core planner, manages hold/update logic, and publishes outputs.
 - `compute_midpoint_centerline` in `sim_car/sim_car/planning/midpoint_planner_core.py`: main midpoint-planning algorithm from filtered boundary cones to centerline candidate.
 - `MidpointPlannerNode._select_candidate_centerline` in `sim_car/sim_car/planning/midpoint_planner_node.py`: chooses between fresh, held, and fallback candidate paths before publication.
+- `TrackedConePlannerBase` in `sim_car/sim_car/planning/tracked_cone_planner_base.py`: shared tracked-cone node runtime used for callbacks, TF utilities, controller execution, publishing, and path-memory support.
+- `DiagnosticsMixin`, `StateMachineMixin`, and `VisualizationMixin`: shared diagnostic, hold/operator-state, and RViz marker helpers inherited by the base runtime.
 
 ### Cone Filtering
 
@@ -25,8 +32,8 @@ This page maps the `documentation/midpoint_planner.md` behavior to the midpoint 
 
 ### Boundary Chains
 
-- `_deterministic_order` in `sim_car/sim_car/planning/midpoint_planner_core.py`: sorts cones consistently before chain building.
-- `_build_boundary_chain` in `sim_car/sim_car/planning/midpoint_planner_core.py`: thin planner-local wrapper around shared boundary-chain construction.
+- `_deterministic_order` in `sim_car/sim_car/planning/planner_utils.py`: sorts cones consistently before chain building.
+- `_build_boundary_chain` in `sim_car/sim_car/planning/planner_utils.py`: shared wrapper around boundary-chain construction.
 - `build_boundary_chain_data`, `candidate_progresses_from_vehicle`, and `candidate_is_shadowed` in `sim_car/sim_car/planning/tracked_cone_planner_geometry.py`: implement the shared chain-growth, forward-progress, and shadowing rules.
 
 ### Pair Creation
@@ -48,11 +55,11 @@ This page maps the `documentation/midpoint_planner.md` behavior to the midpoint 
 
 ### Centerline Finalization
 
-- `_finalize_path` in `sim_car/sim_car/planning/midpoint_planner_core.py`: smooths, resamples, and trims the midpoint chain into the published centerline.
-- `_resample_path` and `_moving_average` in `sim_car/sim_car/planning/midpoint_planner_core.py`: implement the main path-shaping steps used by `_finalize_path`.
+- `_finalize_path` in `sim_car/sim_car/planning/planner_utils.py`: smooths, resamples, and trims the midpoint chain into the published centerline.
+- `_resample_path` in `sim_car/sim_car/planning/planner_utils.py` and `moving_average` in `tracked_cone_planner_geometry.py`: implement the main path-shaping steps used by `_finalize_path`.
 - `MidpointPlannerNode._candidate_path_is_updateable` in `sim_car/sim_car/planning/midpoint_planner_node.py`: decides whether a candidate path is stable enough to replace the held path.
 
 ## Related Entry Points
 
-- `MidpointPlannerNode._publish_empty_cycle` in `sim_car/sim_car/planning/midpoint_planner_node.py`: publishes the planner’s no-path/hold behavior.
+- `DiagnosticsMixin._publish_empty_cycle` in `sim_car/sim_car/planning/planning_diagnostics.py`: publishes the planner's no-path/hold behavior.
 - `generate_launch_description` in `sim_car/launch/full_sim_launch.launch.py`: launches this planner when `planner:=midpoint`.

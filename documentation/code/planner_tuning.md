@@ -6,6 +6,9 @@ This page maps the `documentation/planner_tuning.md` behavior to the launch/conf
 
 - `sim_car/launch/full_sim_launch.launch.py`
 - `sim_car/sim_car/planning/tracked_cone_planner_contract.py`
+- `sim_car/sim_car/planning/planner_config_base.py`
+- `sim_car/sim_car/planning/planner_constants.py`
+- `sim_car/sim_car/planning/pipeline_defaults.py`
 - `sim_car/sim_car/planning/controller_config.py`
 - `sim_car/config/`
 
@@ -26,6 +29,9 @@ This page maps the `documentation/planner_tuning.md` behavior to the launch/conf
 
 ### Planner/Controller Shared Defaults
 
+- `BasePlannerConfig` in `sim_car/sim_car/planning/planner_config_base.py`: shared algorithm config fields inherited by midpoint, single-boundary, and corridor core configs.
+- `planner_constants.py`: shared runtime constants such as operator state/reason codes, cone track-state codes, validated-jump thresholds, and marker widths.
+- `pipeline_defaults.py`: shared topic names, frame names, planner range/confidence defaults, wheelbase, and TF timeout defaults.
 - `read_migrated_tracked_cone_planner_common_config` in `sim_car/sim_car/planning/tracked_cone_planner_contract.py`: reads the shared tracked-cone planner parameters.
 - `apply_common_config_to_node` in `sim_car/sim_car/planning/tracked_cone_planner_contract.py`: applies those shared values to each planner node instance.
 - `MigratedTrackedConePlannerCommonConfig` in `sim_car/sim_car/planning/tracked_cone_planner_contract.py`: defines the common tracked-cone planner parameter surface.

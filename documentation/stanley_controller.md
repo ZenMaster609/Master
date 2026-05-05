@@ -130,8 +130,8 @@ Run Stanley on smalltrack:
 cd ~/ros2_ws && ros2 launch sim_car full_sim_launch.launch.py track:=smalltrack planner:=midpoint controller:=stanley
 ```
 
-Run Stanley diagnostics:
+Run Stanley with path tracking evaluation:
 
 ```bash
-cd ~/ros2_ws && ros2 launch sim_car full_sim_launch.launch.py controller:=stanley controller_diagnostics:=true logging:=true
+cd ~/ros2_ws && ros2 launch sim_car full_sim_launch.launch.py controller:=stanley logging:=true path_tracking_eval:=true
 ```

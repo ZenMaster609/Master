@@ -11,6 +11,7 @@ Most pages focus on runtime symbols, but some topics are mainly implemented thro
 
 ## Runtime
 
+- [Refactored Architecture](refactored_architecture.md)
 - [Vehicle Plotter](vehicle_plotter.md)
 - [Sensors](sensors.md)
 - [Perception](perception.md)

@@ -12,7 +12,7 @@ The planner turns a cloud of tracked cones into a path:
 
 The planner does not need every cone. It needs enough reliable, forward-visible cones to build a sequence of plausible track-width pairs.
 
-The low-level boundary-chain, tangent/normal, width-filter, and pair-predicate helpers are shared with the single-boundary and corridor planners through `sim_car/sim_car/planning/tracked_cone_planner_geometry.py`. The midpoint core still owns the midpoint-specific pairing and ordering decisions.
+The low-level geometry helpers are shared with the single-boundary and corridor planners through `tracked_cone_planner_geometry.py`, while shared filtering, ordering, boundary-chain wrapping, and path finalization live in `planner_utils.py`. The midpoint core still owns the midpoint-specific pairing and ordering decisions.
 
 ## Cone Filtering
 

@@ -1,6 +1,6 @@
 # Vehicle Plotter
 
-`vehicle_plotter` is the run-artifact package for the simulation stack. It creates run sessions, publishes aggregated vehicle state, writes logs, and generates cone, controller, and path-evaluation artifacts under `multidata/`.
+`vehicle_plotter` is the run-artifact package for the simulation stack. It creates run sessions, publishes aggregated vehicle state, writes logs, and generates cone and path-evaluation artifacts under `multidata/`.
 
 It does not create sensor values. Sensor values come from Gazebo and `sim_car`; `vehicle_plotter` consumes measured simulation topics plus planner/controller outputs.
 
@@ -20,9 +20,9 @@ Session subdirectories:
 - `plots/`: generated plot artifacts
 - `configs/`: copied YAML configs and launch-parameter snapshots
 
-`full_sim_launch.launch.py` passes a compact run-id prefix built from track, planner, controller, and LiDAR pipeline. Example:
+`full_sim_launch.launch.py` passes a compact run-id prefix built from track, planner, controller, and LiDAR/cone-memory selections. Example:
 
-`small_mid_pp_3d_YYYY-MM-DD_HH-MM-SS`
+`small_mid_pp_lidar_mem_YYYY-MM-DD_HH-MM-SS`
 
 ### `plotter_node`
 
@@ -36,16 +36,16 @@ In the full sim launch, `plotter_node` starts when state logging/dashboard suppo
 
 ### `logger_node`
 
-Writes run artifacts. In `full_sim_launch.launch.py`, the direct `logger_node` is always launched so path tracking evaluation and diagnostics can run even when the live sensor dashboard is disabled.
+Writes run artifacts. In `full_sim_launch.launch.py`, the direct `logger_node` is always launched so path tracking evaluation, cone metrics, and off-track autostop can run even when the live sensor dashboard is disabled.
 
 State logging is separate from the logger process:
 
 - `sensor_pipeline:=true` or `logging:=true` enables `/vehicle_plotter/state` subscription and vehicle-state chunks.
-- `controller_diagnostics:=true` enables steering-tracking diagnostics.
-- `thesis_controller_diagnostics:=true` enables the wider thesis-oriented controller diagnostics.
 - `path_tracking_eval:=true` enables path-vs-ground-truth evaluation and is true by default.
 
 The logger waits for `/run_session` when available. If no session arrives before timeout, it creates its own session.
+
+The refactored logger keeps parameter declaration/loading in `logging/log_config.py`, path-evaluation logic in `nodes/path_eval_runner.py`, and offline plotting in `nodes/plot_runner.py`. `logger_node.py` wires those pieces to ROS topics and session shutdown.
 
 ## Full Sim Launch Behavior
 
@@ -55,11 +55,10 @@ Important launch flags:
 
 - `sensor_pipeline:=true`: starts raw sensor nodes, `measurement_node`, and `plotter_node`.
 - `logging:=true`: enables state logging/dashboard support even without the full sensor pipeline.
-- `controller_diagnostics:=true`: writes steering-tracking CSV, summary, and plot artifacts.
-- `thesis_controller_diagnostics:=true`: writes thesis controller diagnostics and corridor oscillation artifacts when applicable.
 - `path_tracking_eval:=true`: writes path tracking evaluation artifacts; this is the current full-sim default.
+- off-track autostop uses planner diagnostics and can stop long runs cleanly when no usable cones remain.
 
-The old standalone live cone RMSE and controller-diagnostics windows are not current console scripts. Cone RMSE and controller diagnostics are now logger outputs and generated plots.
+The old standalone live cone RMSE and controller-diagnostics windows are not current console scripts. Cone RMSE and path tracking evaluation are now logger outputs and generated plots.
 
 ## Data Flow
 
@@ -106,21 +105,6 @@ Cone RMSE logging can write source-specific files:
 
 Only sources with received samples produce files.
 
-Controller diagnostics can write:
-
-- `logs/steering_tracking_diagnostics.csv`
-- `logs/steering_tracking_summary.json`
-- `logs/steering_tracking_summary.txt`
-- `plots/stanley_debug_plots.png`
-
-Thesis controller diagnostics can write:
-
-- `logs/thesis_controller_diagnostics.csv`
-- `logs/thesis_controller_diagnostics_summary.json`
-- `logs/thesis_controller_diagnostics_summary.txt`
-- `plots/thesis_controller_diagnostics.png`
-- corridor oscillation summaries and plots when corridor diagnostics are present
-
 Path tracking evaluation can write:
 
 - `logs/path_tracking_eval.csv`
@@ -128,7 +112,7 @@ Path tracking evaluation can write:
 - `logs/path_tracking_eval_summary.txt`
 - `logs/path_tracking_eval_track_metrics.json`
 - `logs/path_tracking_eval_track_metrics.txt`
-- `plots/path_tracking_eval_cte.png`
+- `plots/path_tracking_eval_cte.pdf`
 - `plots/path_tracking_eval_overlay.pdf`
 
 ## Useful Commands
@@ -157,10 +141,10 @@ Launch with state logging:
 cd ~/ros2_ws && ros2 launch sim_car full_sim_launch.launch.py logging:=true
 ```
 
-Launch with controller diagnostics:
+Launch with path tracking evaluation:
 
 ```bash
-cd ~/ros2_ws && ros2 launch sim_car full_sim_launch.launch.py logging:=true controller_diagnostics:=true
+cd ~/ros2_ws && ros2 launch sim_car full_sim_launch.launch.py logging:=true path_tracking_eval:=true
 ```
 
 Run vehicle_plotter tests:

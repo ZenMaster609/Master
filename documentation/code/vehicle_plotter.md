@@ -7,7 +7,13 @@ This page maps the `documentation/vehicle_plotter.md` behavior to the nodes and 
 - `vehicle_plotter/vehicle_plotter/nodes/session_manager_node.py`
 - `vehicle_plotter/vehicle_plotter/nodes/plotter_node.py`
 - `vehicle_plotter/vehicle_plotter/nodes/logger_node.py`
+- `vehicle_plotter/vehicle_plotter/nodes/path_eval_runner.py`
+- `vehicle_plotter/vehicle_plotter/nodes/plot_runner.py`
 - `vehicle_plotter/vehicle_plotter/core/run_session.py`
+- `vehicle_plotter/vehicle_plotter/logging/log_config.py`
+- `vehicle_plotter/vehicle_plotter/logging/path_tracking_eval.py`
+- `vehicle_plotter/vehicle_plotter/logging/path_tracking_eval_plots.py`
+- `vehicle_plotter/vehicle_plotter/logging/track_metrics_report.py`
 
 ## Function Map
 
@@ -28,12 +34,17 @@ This page maps the `documentation/vehicle_plotter.md` behavior to the nodes and 
 
 ### Logging And Evaluation Artifacts
 
-- `LoggerNode` in `vehicle_plotter/vehicle_plotter/nodes/logger_node.py`: central run-artifact writer for state logs, diagnostics, path-eval outputs, and offline plots.
+- `LoggerNode` in `vehicle_plotter/vehicle_plotter/nodes/logger_node.py`: run-artifact node that wires state logs, cone metrics, path-eval outputs, off-track autostop, and shutdown.
+- `declare_and_load_config` and `LoggerNodeConfig` in `vehicle_plotter/vehicle_plotter/logging/log_config.py`: declare logger parameters once and build the typed logger config.
 - `LoggerNode.state_callback` in `vehicle_plotter/vehicle_plotter/nodes/logger_node.py`: consumes `VehicleState` messages for logged state data.
 - `LoggerNode._initialize_session` in `vehicle_plotter/vehicle_plotter/nodes/logger_node.py`: resolves or creates the active session directory before writing artifacts.
-- `LoggerNode._setup_steering_diag_subscriptions` and `_steering_diag_sample` in `vehicle_plotter/vehicle_plotter/nodes/logger_node.py`: collect controller-tracking diagnostics.
-- `LoggerNode._setup_path_tracking_eval_subscriptions`, `_path_tracking_eval_sample`, and `_finalize_path_tracking_eval_outputs` in `vehicle_plotter/vehicle_plotter/nodes/logger_node.py`: implement path-vs-ground-truth evaluation.
-- `LoggerNode._generate_offline_plots` in `vehicle_plotter/vehicle_plotter/nodes/logger_node.py`: renders end-of-run plot artifacts.
+- `LoggerNode._setup_cone_subscriptions` in `vehicle_plotter/vehicle_plotter/nodes/logger_node.py`: subscribes to cone range RMSE sample streams.
+- `LoggerNode._setup_path_tracking_eval_subscriptions` in `vehicle_plotter/vehicle_plotter/nodes/logger_node.py`: wires path-evaluation topics to the path-eval runner.
+- `PathEvalRunner._path_tracking_eval_sample` and `_finalize_path_tracking_eval_outputs` in `vehicle_plotter/vehicle_plotter/nodes/path_eval_runner.py`: implement path-vs-ground-truth sampling and final reports/plots.
+- `PlotRunner._generate_offline_plots` in `vehicle_plotter/vehicle_plotter/nodes/plot_runner.py`: renders end-of-run vehicle plot artifacts.
+- `compare_planner_path_to_gt` and `analyze_path_tracking_csv` in `vehicle_plotter/vehicle_plotter/logging/path_tracking_eval.py`: compute path-evaluation metrics and summaries.
+- `generate_path_tracking_cte_plot` and `generate_path_tracking_overlay_plot` in `vehicle_plotter/vehicle_plotter/logging/path_tracking_eval_plots.py`: render path tracking plots.
+- `write_track_metrics_report` in `vehicle_plotter/vehicle_plotter/logging/track_metrics_report.py`: writes session-level track metrics records.
 
 ### Config Snapshots
 

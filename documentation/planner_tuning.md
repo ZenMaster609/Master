@@ -7,15 +7,20 @@ This document explains where planner and controller parameters live, what the ma
 Planner parameters are layered in this order:
 
 1. Node-declared defaults in the planner/controller Python code.
-2. Shared tracked-cone defaults in `tracked_cone_planner_contract.py`.
-3. Planner-specific defaults in each planner node.
-4. Track and controller YAML overlays selected by `full_sim_launch.launch.py`.
-5. Launch-time overrides such as `planner_rate_hz`, `planner_odom_delay_ms`, and `planner_odom_lag_compensation_ms`.
+2. Shared public tracked-cone defaults in `tracked_cone_planner_contract.py`.
+3. Shared core dataclass defaults in `BasePlannerConfig`.
+4. Planner-specific core dataclass fields and node parameter groups.
+5. Track and controller YAML overlays selected by `full_sim_launch.launch.py`.
+6. Launch-time overrides such as `planner_rate_hz`, `planner_odom_delay_ms`, and `planner_odom_lag_compensation_ms`.
 
 The most important files are:
 
 - `sim_car/sim_car/planning/tracked_cone_planner_contract.py`: shared defaults for midpoint, single-boundary, and corridor planners.
+- `sim_car/sim_car/planning/planner_config_base.py`: shared inherited core config fields for tracked-cone planner algorithms.
+- `sim_car/sim_car/planning/planner_constants.py`: shared planner runtime constants, operator state codes, cone track-state codes, and marker widths.
+- `sim_car/sim_car/planning/pipeline_defaults.py`: shared topic, frame, and planner input defaults.
 - `sim_car/sim_car/planning/*_planner_node.py`: planner-specific defaults and parameter reading.
+- `sim_car/sim_car/planning/*_planner_core.py`: typed planner config dataclasses consumed by the algorithm cores.
 - `sim_car/sim_car/controllers/*.py`: controller behavior and config dataclasses.
 - `sim_car/config/<track>/stanley_controller.yaml`: Stanley tuning overlay per track.
 - `sim_car/config/<track>/pure_pursuit_controller.yaml`: pure-pursuit tuning overlay per track.
@@ -34,7 +39,7 @@ Main launch arguments:
 - `planner_odom_delay_ms`: optional fixed delay on the odometry feed.
 - `planner_odom_lag_compensation_ms`: forward pose projection inside planner/controller transforms.
 - `logging`: enable vehicle-state logging/dashboard support.
-- `controller_diagnostics`, `thesis_controller_diagnostics`, and `path_tracking_eval`: enable logger-side evaluation artifacts.
+- `path_tracking_eval`: enables logger-side path-vs-ground-truth evaluation artifacts.
 
 Example:
 
@@ -68,6 +73,8 @@ The selected `spawn.yaml` provides:
 This is how skidpad shortens the planning horizon without requiring a separate planner YAML.
 
 Planner config selection is registry-based. `midpoint`, `single_boundary`, and `corridor` are the migrated tracked-cone planners and use the shared tracked-cone runtime. `linetest` is configured separately and is allowed on `acceleration` and `smalltrack`. `none` disables planner node launch while keeping the rest of the stack available for sensor/perception checks.
+
+The migrated tracked-cone cores inherit their shared fields from `BasePlannerConfig`. The node-specific `_read_parameters()` methods now assemble typed core configs from grouped helpers such as filtering, boundary-chain, pairing, centerline, and validation config sections instead of keeping one long flat parameter block.
 
 ## Shared Planner Groups
 
