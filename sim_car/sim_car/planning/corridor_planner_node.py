@@ -24,7 +24,6 @@ from sim_car.planning.triangulation_planner_core import (
 )
 from sim_car.planning.planner_runtime_types import PlannerIdentity
 from sim_car.planning.planner_constants import (
-    CENTERLINE_MARKER_WIDTH_M as _CENTERLINE_MARKER_WIDTH_M,
     MSG_TRACK_STATE_CONFIRMED,
     MSG_TRACK_STATE_STALE,
     MSG_TRACK_STATE_TENTATIVE,
@@ -46,6 +45,7 @@ from sim_car.planning.corridor_planner_core import (
     compute_corridor_centerline,
     update_track_width_estimate,
 )
+from sim_car.planning.planning_visualization import CORRIDOR_PAIR_AUDIT_REASONS
 from sim_car.planning.tracked_cone_planner_base import TrackedConePlannerBase
 from sim_car.planning.tracked_cone_planner_geometry import (
     _base_point_to_odom,
@@ -80,20 +80,6 @@ _CONE_AUDIT_REASONS = (
     "rejected_color",
     "rejected_nonfinite",
 )
-_CORRIDOR_PAIR_AUDIT_REASONS = (
-    "pair_valid",
-    "pair_width_too_narrow",
-    "pair_width_too_wide",
-    "pair_left_behind",
-    "pair_right_behind",
-    "pair_left_beyond_horizon",
-    "pair_right_beyond_horizon",
-    "pair_not_in_longest_valid_slice",
-    "pair_nonfinite",
-    "pair_rejected_unknown",
-)
-
-
 @dataclass
 class _ConeAuditEntry:
     track_id: int
@@ -321,8 +307,7 @@ class CorridorPlannerNode(TrackedConePlannerBase):
         self._filtered_track_width_m = float(self._core_config.initial_width_m)
 
     def _on_timer(self) -> None:
-        ctx = self._resolve_cone_planning_context()
-        if ctx is None:
+        if (ctx := self._resolve_cone_planning_context()) is None:
             return
         cones_msg, target_frame, vehicle_x, vehicle_y, vehicle_yaw, points_xy, colors, confidences = ctx
         now_sec = float(self.get_clock().now().nanoseconds) * 1e-9
@@ -1276,7 +1261,7 @@ class CorridorPlannerNode(TrackedConePlannerBase):
             "corridor_pair_audit_total_count": 0,
             "corridor_pair_audit_rejected_count": 0,
         }
-        for reason in _CORRIDOR_PAIR_AUDIT_REASONS:
+        for reason in CORRIDOR_PAIR_AUDIT_REASONS:
             counts[f"corridor_pair_audit_{reason}_count"] = 0
         for reason in result.corridor_pair_audit_reasons:
             key = f"corridor_pair_audit_{reason}_count"
@@ -2177,360 +2162,6 @@ class CorridorPlannerNode(TrackedConePlannerBase):
         if self.lap_tracking_target_laps > 0:
             return f"LAPS: {int(self._lap_tracking_completed_laps)}/{int(self.lap_tracking_target_laps)}"
         return f"LAPS: {int(self._lap_tracking_completed_laps)}/off"
-
-    def _build_markers(
-        self,
-        *,
-        now,
-        frame_id: str,
-        result: Optional[CorridorPlannerResult],
-        centerline: np.ndarray,
-        raw_centerline: np.ndarray,
-        raw_midpoint_chain: np.ndarray,
-        status: str,
-        operator_state: str,
-        control_target_frame: Optional[np.ndarray],
-    ) -> MarkerArray:
-        arr = MarkerArray()
-
-        clear = Marker()
-        clear.header.frame_id = frame_id
-        clear.header.stamp = now
-        clear.action = Marker.DELETEALL
-        arr.markers.append(clear)
-
-        marker_id = 1
-        if result is None:
-            self._append_status_marker(
-                arr,
-                marker_id,
-                frame_id,
-                now,
-                status,
-                operator_state=operator_state,
-            )
-            return arr
-
-        if self.show_raw_cones:
-            marker_id = self._append_remembered_cone_marker(
-                arr,
-                marker_id,
-                frame_id,
-                now,
-            )
-
-        left_boundary = np.array(result.left_boundary, copy=True)
-        right_boundary = np.array(result.right_boundary, copy=True)
-        raw_left_chain = np.asarray(result.raw_left_chain_points, dtype=np.float64)
-        raw_right_chain = np.asarray(result.raw_right_chain_points, dtype=np.float64)
-        if left_boundary.shape[0] > 0:
-            self._last_viz_left_boundary = np.array(left_boundary, copy=True)
-        elif self._last_viz_left_boundary is not None:
-            left_boundary = np.array(self._last_viz_left_boundary, copy=True)
-        if right_boundary.shape[0] > 0:
-            self._last_viz_right_boundary = np.array(right_boundary, copy=True)
-        elif self._last_viz_right_boundary is not None:
-            right_boundary = np.array(self._last_viz_right_boundary, copy=True)
-
-        if self.show_boundary_chains:
-            arr.markers.append(
-                self._make_line_strip_marker(
-                    frame_id=frame_id,
-                    stamp=now,
-                    marker_id=marker_id,
-                    ns="boundary_left",
-                    points=left_boundary,
-                    color=(0.2, 0.45, 1.0, 0.95),
-                    width=0.10,
-                    z_offset=0.12,
-                )
-            )
-            marker_id += 1
-            left_points_marker = self._make_points_marker(
-                frame_id=frame_id,
-                stamp=now,
-                marker_id=marker_id,
-                ns="boundary_left_points",
-                points=left_boundary,
-                color=(0.2, 0.55, 1.0, 1.0),
-                scale=0.22,
-            )
-            for point in left_points_marker.points:
-                point.z = 0.13
-            arr.markers.append(left_points_marker)
-            marker_id += 1
-            arr.markers.append(
-                self._make_line_strip_marker(
-                    frame_id=frame_id,
-                    stamp=now,
-                    marker_id=marker_id,
-                    ns="raw_chain_left",
-                    points=raw_left_chain,
-                    color=(0.05, 0.25, 1.0, 0.95),
-                    width=0.06,
-                    z_offset=0.22,
-                )
-            )
-            marker_id += 1
-            raw_left_points_marker = self._make_points_marker(
-                frame_id=frame_id,
-                stamp=now,
-                marker_id=marker_id,
-                ns="raw_chain_left_points",
-                points=raw_left_chain,
-                color=(0.05, 0.25, 1.0, 1.0),
-                scale=0.34,
-            )
-            for point in raw_left_points_marker.points:
-                point.z = 0.23
-            arr.markers.append(raw_left_points_marker)
-            marker_id += 1
-            arr.markers.append(
-                self._make_line_strip_marker(
-                    frame_id=frame_id,
-                    stamp=now,
-                    marker_id=marker_id,
-                    ns="boundary_right",
-                    points=right_boundary,
-                    color=(1.0, 0.9, 0.2, 0.95),
-                    width=0.10,
-                    z_offset=0.14,
-                )
-            )
-            marker_id += 1
-            right_points_marker = self._make_points_marker(
-                frame_id=frame_id,
-                stamp=now,
-                marker_id=marker_id,
-                ns="boundary_right_points",
-                points=right_boundary,
-                color=(1.0, 0.92, 0.25, 1.0),
-                scale=0.22,
-            )
-            for point in right_points_marker.points:
-                point.z = 0.15
-            arr.markers.append(right_points_marker)
-            marker_id += 1
-            arr.markers.append(
-                self._make_line_strip_marker(
-                    frame_id=frame_id,
-                    stamp=now,
-                    marker_id=marker_id,
-                    ns="raw_chain_right",
-                    points=raw_right_chain,
-                    color=(1.0, 0.82, 0.0, 0.95),
-                    width=0.06,
-                    z_offset=0.24,
-                )
-            )
-            marker_id += 1
-            raw_right_points_marker = self._make_points_marker(
-                frame_id=frame_id,
-                stamp=now,
-                marker_id=marker_id,
-                ns="raw_chain_right_points",
-                points=raw_right_chain,
-                color=(1.0, 0.82, 0.0, 1.0),
-                scale=0.34,
-            )
-            for point in raw_right_points_marker.points:
-                point.z = 0.25
-            arr.markers.append(raw_right_points_marker)
-            marker_id += 1
-
-        if self.show_pair_lines:
-            arr.markers.append(
-                self._make_pair_segment_marker(
-                    frame_id=frame_id,
-                    stamp=now,
-                    marker_id=marker_id,
-                    ns="corridor_rungs",
-                    pair_segments=self._current_pair_segments_for_viz,
-                    color=(0.2, 1.0, 0.3, 0.95),
-                    width=0.07,
-                )
-            )
-            marker_id += 1
-
-        if self.show_corridor_pair_audit:
-            marker_id = self._append_corridor_pair_audit_markers(
-                arr=arr,
-                marker_id=marker_id,
-                frame_id=frame_id,
-                stamp=now,
-                result=result,
-            )
-
-        if self.show_raw_midpoint_chain:
-            arr.markers.append(
-                self._make_line_strip_marker(
-                    frame_id=frame_id,
-                    stamp=now,
-                    marker_id=marker_id,
-                    ns="corridor_center_anchors",
-                    points=raw_midpoint_chain,
-                    color=(1.0, 1.0, 1.0, 0.95),
-                    width=0.06,
-                    z_offset=0.03,
-                )
-            )
-            marker_id += 1
-
-        if self.show_raw_prevalidation_centerline:
-            arr.markers.append(
-                self._make_line_strip_marker(
-                    frame_id=frame_id,
-                    stamp=now,
-                    marker_id=marker_id,
-                    ns="raw_prevalidation_centerline",
-                    points=raw_centerline,
-                    color=(1.0, 0.15, 0.85, 0.9),
-                    width=0.07,
-                    z_offset=0.05,
-                )
-            )
-            marker_id += 1
-
-        arr.markers.append(
-            self._make_line_strip_marker(
-                frame_id=frame_id,
-                stamp=now,
-                marker_id=marker_id,
-                ns="centerline",
-                points=centerline,
-                color=(0.95, 0.15, 0.15, 1.0),
-                width=_CENTERLINE_MARKER_WIDTH_M,
-                z_offset=0.07,
-            )
-        )
-        marker_id += 1
-
-        if self.show_lookahead_point and control_target_frame is not None:
-            marker = Marker()
-            marker.header.frame_id = frame_id
-            marker.header.stamp = now
-            marker.ns = "lookahead"
-            marker.id = marker_id
-            marker.type = Marker.SPHERE
-            marker.action = Marker.ADD
-            marker.scale.x = 0.25
-            marker.scale.y = 0.25
-            marker.scale.z = 0.25
-            marker.color.r = 1.0
-            marker.color.g = 0.0
-            marker.color.b = 0.0
-            marker.color.a = 1.0
-            marker.pose.position.x = float(control_target_frame[0])
-            marker.pose.position.y = float(control_target_frame[1])
-            marker.pose.position.z = 0.05
-            marker.pose.orientation.w = 1.0
-            arr.markers.append(marker)
-            marker_id += 1
-
-        self._append_status_marker(
-            arr,
-            marker_id,
-            frame_id,
-            now,
-            status,
-            operator_state=operator_state,
-        )
-        return arr
-
-    def _append_corridor_pair_audit_markers(
-        self,
-        *,
-        arr: MarkerArray,
-        marker_id: int,
-        frame_id: str,
-        stamp,
-        result: CorridorPlannerResult,
-    ) -> int:
-        segments = np.asarray(result.corridor_pair_audit_segments, dtype=np.float64)
-        reasons = list(result.corridor_pair_audit_reasons)
-        widths = np.asarray(result.corridor_pair_audit_widths_m, dtype=np.float64)
-        anchors_local = np.asarray(result.corridor_pair_audit_anchors_local, dtype=np.float64)
-        count = min(len(reasons), segments.shape[0], widths.size, anchors_local.shape[0])
-        if count <= 0:
-            return marker_id
-
-        for reason in _CORRIDOR_PAIR_AUDIT_REASONS:
-            if reason == "pair_valid":
-                continue
-            reason_indices = [
-                idx
-                for idx in range(count)
-                if reasons[idx] == reason and np.all(np.isfinite(segments[idx]))
-            ]
-            if not reason_indices:
-                continue
-            arr.markers.append(
-                self._make_pair_segment_marker(
-                    frame_id=frame_id,
-                    stamp=stamp,
-                    marker_id=marker_id,
-                    ns=f"corridor_pair_audit_{reason}",
-                    pair_segments=segments[reason_indices],
-                    color=self._corridor_pair_audit_rgba(reason),
-                    width=0.05,
-                )
-            )
-            marker_id += 1
-
-        if not self.corridor_pair_audit_show_labels:
-            return marker_id
-
-        label_count = 0
-        for idx in range(count):
-            reason = reasons[idx]
-            if reason == "pair_valid" or not np.all(np.isfinite(segments[idx])):
-                continue
-            midpoint = 0.5 * (segments[idx, 0, :] + segments[idx, 1, :])
-            if not np.all(np.isfinite(midpoint)):
-                continue
-            label = Marker()
-            label.header.frame_id = frame_id
-            label.header.stamp = stamp
-            label.ns = "corridor_pair_audit_labels"
-            label.id = marker_id
-            marker_id += 1
-            label.type = Marker.TEXT_VIEW_FACING
-            label.action = Marker.ADD
-            label.pose.position.x = float(midpoint[0])
-            label.pose.position.y = float(midpoint[1])
-            label.pose.position.z = 0.85
-            label.pose.orientation.w = 1.0
-            label.scale.z = 0.14
-            label.color.r = 1.0
-            label.color.g = 1.0
-            label.color.b = 1.0
-            label.color.a = 0.95
-            label.text = (
-                f"pair[{idx}] {reason}\n"
-                f"w={float(widths[idx]):.2f}m "
-                f"local=({float(anchors_local[idx, 0]):.1f},"
-                f"{float(anchors_local[idx, 1]):.1f})"
-            )
-            arr.markers.append(label)
-            label_count += 1
-            if label_count >= self.corridor_pair_audit_max_labels:
-                break
-        return marker_id
-
-    @staticmethod
-    def _corridor_pair_audit_rgba(reason: str) -> tuple[float, float, float, float]:
-        if reason == "pair_width_too_narrow":
-            return 1.0, 0.05, 0.05, 0.9
-        if reason == "pair_width_too_wide":
-            return 1.0, 0.45, 0.05, 0.9
-        if reason in {"pair_left_beyond_horizon", "pair_right_beyond_horizon"}:
-            return 0.0, 0.85, 1.0, 0.9
-        if reason in {"pair_left_behind", "pair_right_behind"}:
-            return 1.0, 0.0, 0.85, 0.9
-        if reason == "pair_not_in_longest_valid_slice":
-            return 0.85, 0.85, 0.85, 0.75
-        return 0.65, 0.2, 1.0, 0.9
-
 
 def main(args=None) -> None:
     rclpy.init(args=args)
