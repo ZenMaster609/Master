@@ -14,7 +14,7 @@ This page maps the shared geometry helpers used by the migrated tracked-cone pla
 - `build_boundary_chain_data`: shared boundary-chain construction used by the midpoint, single-boundary, and corridor cores.
 - `grow_boundary_chain_positions`: grows a one-side cone sequence from the nearest useful forward seed.
 - `select_seed_index`: chooses the first forward cone for a boundary chain.
-- `candidate_progresses_from_vehicle`: forward/outboard progress gate for candidate chain steps.
+- `candidate_progresses_from_vehicle`: standalone forward/outboard progress predicate retained for geometry checks.
 - `candidate_is_shadowed`: rejects a farther candidate when a closer cone sits in nearly the same direction.
 - `materialize_boundary_chain_data`: converts selected chain positions into points, tangents, forward extent, and optional rejection reasons.
 - `empty_boundary_chain_data`: creates a consistent empty chain result.

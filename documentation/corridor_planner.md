@@ -35,9 +35,8 @@ The planner builds one chain for blue cones and one chain for yellow cones. Each
 Chain construction checks:
 
 - step distance
-- forward progress
+- forward projection along the current chain heading
 - heading change
-- radial/forward consistency
 - shadowing by better candidates
 
 The corridor planner can publish cone-audit markers that explain why each cone was used or rejected. This is useful when debugging why a boundary chain stops early.
@@ -96,7 +95,7 @@ The corridor planner has extra debug machinery because failures can come from mu
 - corridor valid but centerline validation failed
 - midline memory held a previous path
 
-Cone-audit and corridor-pair-audit markers expose these reasons in RViz. They are controlled by the `corridor_debug` launch argument and planner debug parameters.
+Cone-audit and corridor-pair-audit markers expose these reasons in RViz. Raw cones, boundary chains, and accepted rungs are visible by default; the heavier audit-label views are controlled by planner debug parameters.
 
 ## Path Stabilization
 

@@ -68,13 +68,23 @@ The selected `spawn.yaml` provides:
 
 - `filtering.max_cone_range_m`
 - `centerline.max_path_length_m`
-- `filtering.planning_horizon_m` for the corridor planner
+- `filtering.planning_horizon_m`
 
-This is how skidpad shortens the planning horizon without requiring a separate planner YAML.
+This is how skidpad shortens the planning horizon without requiring a separate planner YAML. All migrated tracked-cone planners declare these overlay parameters; `filtering.planning_horizon_m` is consumed by the corridor core.
 
 Planner config selection is registry-based. `midpoint`, `single_boundary`, and `corridor` are the migrated tracked-cone planners and use the shared tracked-cone runtime. `linetest` is configured separately and is allowed on `acceleration` and `smalltrack`. `none` disables planner node launch while keeping the rest of the stack available for sensor/perception checks.
 
-The migrated tracked-cone cores inherit their shared fields from `BasePlannerConfig`. The node-specific `_read_parameters()` methods now assemble typed core configs from grouped helpers such as filtering, boundary-chain, pairing, centerline, and validation config sections instead of keeping one long flat parameter block.
+The migrated tracked-cone cores inherit their shared fields from `BasePlannerConfig`. The node-specific `_read_parameters()` methods assemble typed core configs from grouped helpers such as filtering, boundary-chain, pairing, centerline, and validation config sections. The old grouped planner parameters remain the canonical tuning surface; the refactor changed where they are read, not the public contract.
+
+## Compatibility Aliases
+
+The tracked-cone planners still declare the compact `planner.*` parameters, but the detailed grouped parameters are canonical:
+
+- `planner.profile`: accepted for profile selection. The current supported profile is `default`.
+- `planner.max_range_m`: compatibility alias. When set away from its default, it overrides `filtering.max_cone_range_m`, `centerline.max_path_length_m`, and `filtering.planning_horizon_m`.
+- `planner.min_confidence`: compatibility alias. When set away from its default, it overrides `filtering.min_confidence`.
+
+Prefer the grouped names in YAML and launch overlays unless an old config already uses the aliases.
 
 ## Shared Planner Groups
 
@@ -85,6 +95,7 @@ Controls which cones are allowed into planning.
 Useful parameters:
 
 - `filtering.max_cone_range_m`: farthest usable cone range.
+- `filtering.planning_horizon_m`: corridor planning horizon; also targeted by track-level planner-limit overlays.
 - `filtering.behind_drop_m`: how far behind the car cones may remain usable.
 - `filtering.min_confidence`: minimum planner-facing confidence.
 - `filtering.min_required_cones`: minimum usable colored cones.
@@ -189,6 +200,8 @@ Useful parameters:
 - `min_path_points`
 - `min_forward_extent_m`
 - `max_near_field_lateral_jump_m`
+- `max_near_field_lateral_jump_m_sparse_pairs` for midpoint and single-boundary sparse-pair operation
+- `max_near_field_lateral_jump_m_single_boundary` for one-boundary offset operation
 - `candidate_jump_reject_threshold_m`
 - `candidate_jump_recover_frames`
 - planner-specific heading/curvature limits
@@ -226,6 +239,7 @@ Key parameters:
 - `steering_limit_rad`: final steering clamp.
 - `steering_lowpass_alpha`: steering smoothing.
 - `steering_rate_limit_rad_s`: maximum steering change rate.
+- `wheelbase_m`: wheelbase used for curvature conversion.
 - `use_yaw_rate_damping` and `yaw_rate_damping_gain`: yaw-rate damping.
 - `cross_track_deadband_m`: ignore small lateral errors.
 
@@ -239,6 +253,18 @@ Key parameters:
 - `steering_limit_rad`: final steering clamp.
 - `steering_lowpass_alpha`: steering smoothing.
 - `steering_rate_limit_rad_s`: maximum steering change rate.
+- `wheelbase_m`: wheelbase used when converting pursuit curvature to steering.
+
+## Debug Visualization Defaults
+
+The migrated tracked-cone planners default to visible RViz debug output for the main geometry:
+
+- `debug.show_raw_cones: true`
+- `debug.show_boundary_chains: true`
+- `debug.show_pair_lines: true`
+- `debug.show_raw_midpoint_chain: true`
+
+This means accepted midpoint pairs and corridor rungs should be visible without adding launch-time debug flags. More expensive or noisy overlays, such as candidate/selected graph edges and corridor cone/pair audit labels, remain opt-in.
 
 ## Useful Commands
 

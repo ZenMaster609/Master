@@ -33,7 +33,7 @@ This page maps the `documentation/corridor_planner.md` behavior to the corridor 
 
 - `_deterministic_order` in `sim_car/sim_car/planning/planner_utils.py`: creates a stable cone ordering before chain construction.
 - `_build_boundary_chain` in `sim_car/sim_car/planning/planner_utils.py`: shared wrapper around boundary-chain construction.
-- `build_boundary_chain_data`, `candidate_progresses_from_vehicle`, and `candidate_is_shadowed` in `sim_car/sim_car/planning/tracked_cone_planner_geometry.py`: implement the shared chain-growth, forward-progress, and shadowing rules.
+- `build_boundary_chain_data`, `grow_boundary_chain_positions`, and `candidate_is_shadowed` in `sim_car/sim_car/planning/tracked_cone_planner_geometry.py`: implement the shared chain-growth, chain-heading progress, and shadowing rules.
 - `CorridorPlannerNode._build_cone_audit_entries` in `sim_car/sim_car/planning/corridor_planner_node.py`: builds debug explanations for why cones were used or rejected.
 
 ### Corridor Sampling

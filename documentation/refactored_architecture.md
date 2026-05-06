@@ -17,6 +17,8 @@ Shared planner config fields now live in `BasePlannerConfig` in `planner_config_
 
 Common default topics and frame names live in `pipeline_defaults.py`. Controller parameter builders live in `controller_config.py`.
 
+The refactor keeps the old grouped planner parameter contract as the public tuning surface. `tracked_cone_planner_contract.py` declares shared groups such as `filtering.*`, `boundary_chain.*`, `width_estimation.*`, `centerline.*`, `validation.*`, `midline_memory.*`, controller groups, and debug flags, while each planner node reads its planner-specific groups into its typed core config.
+
 ## Planner Runtime Mixins
 
 The shared tracked-cone runtime is split by concern:

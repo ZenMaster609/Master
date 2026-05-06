@@ -24,7 +24,7 @@ This page maps the `documentation/planner_tuning.md` behavior to the launch/conf
 ### Track And Overlay Resolution
 
 - `_resolve_track_bundle` in `sim_car/launch/full_sim_launch.launch.py`: maps track, planner, and controller names to YAML overlay files.
-- `_load_spawn_defaults`, `_load_speed_control_defaults`, and `_load_planner_limit_overrides` in `sim_car/launch/full_sim_launch.launch.py`: pull track-level defaults from `spawn.yaml`.
+- `_load_spawn_defaults`, `_load_speed_control_defaults`, and `_load_planner_limit_overrides` in `sim_car/launch/full_sim_launch.launch.py`: pull track-level defaults from `spawn.yaml`; planner-limit overlays target `filtering.max_cone_range_m`, `centerline.max_path_length_m`, and `filtering.planning_horizon_m`.
 - `_write_parameter_overlay` in `sim_car/launch/full_sim_launch.launch.py`: materializes merged parameter overlays for launched nodes.
 
 ### Planner/Controller Shared Defaults
@@ -33,6 +33,7 @@ This page maps the `documentation/planner_tuning.md` behavior to the launch/conf
 - `planner_constants.py`: shared runtime constants such as operator state/reason codes, cone track-state codes, validated-jump thresholds, and marker widths.
 - `pipeline_defaults.py`: shared topic names, frame names, planner range/confidence defaults, wheelbase, and TF timeout defaults.
 - `read_migrated_tracked_cone_planner_common_config` in `sim_car/sim_car/planning/tracked_cone_planner_contract.py`: reads the shared tracked-cone planner parameters.
+- `planner_algorithm_profile` in `sim_car/sim_car/planning/tracked_cone_planner_contract.py`: maps the restored grouped planner parameters into the shared algorithm profile and applies the `planner.max_range_m` / `planner.min_confidence` compatibility aliases.
 - `apply_common_config_to_node` in `sim_car/sim_car/planning/tracked_cone_planner_contract.py`: applies those shared values to each planner node instance.
 - `MigratedTrackedConePlannerCommonConfig` in `sim_car/sim_car/planning/tracked_cone_planner_contract.py`: defines the common tracked-cone planner parameter surface.
 - `normalize_tracked_cone_controller_type` and `build_tracked_cone_controller` in `sim_car/sim_car/planning/tracked_cone_planner_contract.py`: normalize controller choice and create the active steering controller.

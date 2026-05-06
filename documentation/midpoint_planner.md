@@ -36,8 +36,9 @@ The chain builder rejects steps that are:
 
 - too short
 - too long
-- not making enough forward progress
+- not projecting forward along the current chain heading
 - changing heading too sharply
+- shadowed by a closer candidate in nearly the same direction
 
 This avoids connecting cones that are close in space but implausible as neighboring track-boundary cones.
 

@@ -34,8 +34,9 @@ Chain gates reject:
 
 - steps that are too close
 - steps that are too far
-- steps with too little forward progress
+- steps that do not project forward along the current chain heading
 - sharp heading changes
+- candidates shadowed by a closer cone in nearly the same direction
 
 The planner then chooses a fallback chain. "Fallback" here means one-boundary planning, not failure. If either boundary has enough cones and enough forward extent, the planner can generate a centerline.
 

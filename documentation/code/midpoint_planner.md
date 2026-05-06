@@ -34,7 +34,7 @@ This page maps the `documentation/midpoint_planner.md` behavior to the midpoint 
 
 - `_deterministic_order` in `sim_car/sim_car/planning/planner_utils.py`: sorts cones consistently before chain building.
 - `_build_boundary_chain` in `sim_car/sim_car/planning/planner_utils.py`: shared wrapper around boundary-chain construction.
-- `build_boundary_chain_data`, `candidate_progresses_from_vehicle`, and `candidate_is_shadowed` in `sim_car/sim_car/planning/tracked_cone_planner_geometry.py`: implement the shared chain-growth, forward-progress, and shadowing rules.
+- `build_boundary_chain_data`, `grow_boundary_chain_positions`, and `candidate_is_shadowed` in `sim_car/sim_car/planning/tracked_cone_planner_geometry.py`: implement the shared chain-growth, chain-heading progress, and shadowing rules.
 
 ### Pair Creation
 

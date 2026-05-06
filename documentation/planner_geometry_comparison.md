@@ -19,7 +19,7 @@ The common geometric stages are:
 7. Smooth and/or resample that raw line into evenly spaced path points.
 8. Validate the result before it can become a fresh centerline.
 
-The boundary-chain step is the most important shared geometry piece. In `tracked_cone_planner_geometry.py`, `build_boundary_chain_data` starts from the closest useful forward cone on one side, then repeatedly chooses the next plausible cone. A candidate step must be far enough away, not too far away, make forward/radial progress, avoid sharp heading changes, and avoid being shadowed by a better nearer cone.
+The boundary-chain step is the most important shared geometry piece. In `tracked_cone_planner_geometry.py`, `build_boundary_chain_data` starts from the closest useful forward cone on one side, then repeatedly chooses the next plausible cone. A candidate step must be far enough away, not too far away, project forward along the current chain heading, avoid sharp heading changes, and avoid being shadowed by a better nearer cone.
 
 Tangents and inward normals are also shared ideas. `estimate_tangents` estimates the local direction of a boundary chain. `inward_normal` rotates that tangent toward the track interior: blue cones offset inward toward the right side of the track, while yellow cones offset inward toward the left side.
 
@@ -87,7 +87,7 @@ Corridor validation includes the shared checks plus two corridor-specific checks
 | --- | --- | --- | --- | --- |
 | Input geometry | Uses tracked cone positions, colors, confidences, vehicle pose, and previous path/width prior. | Can use unknown cones for pair completion. | Can use unknown cones for pair completion and width support. | Uses only planner-facing blue/yellow cones in the core corridor geometry. |
 | Vehicle frame | Local `x` is forward and local `y` is lateral. | Same transform idea. | Same transform idea. | Same transform idea, plus stricter horizon/lateral range filtering. |
-| Boundary chains | Blue and yellow cones are grown into plausible forward chains with step, progress, heading, and shadowing gates. | Chains support pairing but raw path comes from accepted pair midpoints. | Chains support side selection; raw path comes from one selected boundary. | Both chains are required and become the corridor edges. |
+| Boundary chains | Blue and yellow cones are grown into plausible chains with step, chain-heading progress, heading-change, and shadowing gates. | Chains support pairing but raw path comes from accepted pair midpoints. | Chains support side selection; raw path comes from one selected boundary. | Both chains are required and become the corridor edges. |
 | Raw line source | All planners create a raw geometric line before final resampling. | Average each accepted left/right pair. | Offset one boundary inward by half expected width. | Sample a continuous left/right corridor and use rung centers as anchors. |
 | Width usage | Width limits reject implausible geometry and previous width can act as a prior. | Pair widths directly create and validate midpoints. | Expected width is critical because it sets the offset distance. | Corridor sample widths define the valid drivable channel. |
 | Ordering | Output path must progress forward from near vehicle to far field. | Explicitly orders accepted midpoint pairs and trims large jumps. | Boundary chain order becomes offset path order. | Corridor samples are taken from the best continuous overlap. |

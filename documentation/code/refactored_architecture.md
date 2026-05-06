@@ -20,6 +20,7 @@ This page maps the architecture summary in `documentation/refactored_architectur
 - `sim_car/sim_car/planning/planning_visualization.py`: RViz markers for centerlines, boundaries, pairs, corridor audit data, and planner status.
 - `sim_car/sim_car/planning/controller_config.py`: Stanley and pure-pursuit config builders used by tracked-cone planners.
 - `sim_car/sim_car/planning/pipeline_defaults.py`: shared topic, frame, QoS timeout, and planner input defaults.
+- `sim_car/sim_car/planning/tracked_cone_planner_contract.py`: shared tracked-cone parameter declarations, old grouped planner defaults, compatibility aliases, and common config loading.
 
 ## Planner Node Files
 
