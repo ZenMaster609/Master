@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Callable, Iterable
+import math
 from typing import Any, Optional
 
 import numpy as np
@@ -258,7 +259,7 @@ def _path_start_heading_error(path_local: np.ndarray) -> float:
     delta = path_local[1] - path_local[0]
     if float(np.hypot(delta[0], delta[1])) <= _MIN_HEADING_DELTA_DISTANCE_M:
         return 0.0
-    return float(np.atan2(delta[1], delta[0]))
+    return float(math.atan2(float(delta[1]), float(delta[0])))
 
 
 def _forward_extent_m(path_local: np.ndarray) -> float:
