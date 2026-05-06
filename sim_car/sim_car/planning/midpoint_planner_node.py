@@ -99,6 +99,39 @@ class MidpointPlannerNode(TrackedConePlannerBase):
             self,
             diagnostics_topic_default=self._planner_identity.diagnostics_topic,
         )
+        defaults = {}
+        defaults.update({
+            "filtering.allow_unknown_pair_completion": True,
+            "filtering.unknown_pair_search_radius_m": 1.25,
+            "filtering.unknown_pair_max_longitudinal_error_m": 1.5,
+            "filtering.unknown_pair_max_width_error_m": 0.9,
+            "filtering.max_consecutive_unknown_pairs": 2,
+            "boundary_chain.min_chain_length": 2,
+            "pairing.min_pair_width_m": 2.2,
+            "pairing.max_pair_width_m": 8.0,
+            "pairing.max_width_jump_m": 2.0,
+            "pairing.min_pair_count": 2,
+            "pairing.pair_hold_time_s": 1.25,
+            "pairing.pair_reassignment_margin": 0.25,
+            "pairing.pair_inward_projection_tolerance_m": 0.15,
+            "pairing.tangent_neighbor_count": 4,
+            "pairing.enforce_opposite_color_pairing": True,
+            "pairing.enforce_geometry_pairing_gate": False,
+            "width_estimation.min_trustworthy_pairs": 2,
+            "centerline.smoothing_window": 3,
+            "centerline.max_heading_delta_rad": 0.75,
+            "centerline.max_midpoint_segment_length_m": 10.0,
+            "centerline.midpoint_order_reference_handoff_m": 6.0,
+            "centerline.midpoint_order_history_size": 3,
+            "centerline.midpoint_order_backtrack_tolerance_m": 0.35,
+            "validation.min_path_points": 4,
+            "validation.min_forward_extent_m": 2.0,
+            "validation.max_near_field_lateral_jump_m_sparse_pairs": 0.9,
+            "validation.max_start_heading_error_rad": 1.0,
+            "debug.show_raw_offset_path": True,
+        })
+        for name, value in defaults.items():
+            self.declare_parameter(name, value)
 
     def _read_parameters(self) -> None:
         common = read_migrated_tracked_cone_planner_common_config(
@@ -112,7 +145,7 @@ class MidpointPlannerNode(TrackedConePlannerBase):
         self._filtered_track_width_m = float(self._core_config.initial_width_m)
 
     def _read_runtime_parameters(self) -> None:
-        self.show_raw_offset_path = True
+        self.show_raw_offset_path = bool(self.get_parameter("debug.show_raw_offset_path").value)
 
     def _build_core_config(self) -> MidpointPlannerConfig:
         values = {}
@@ -129,11 +162,22 @@ class MidpointPlannerNode(TrackedConePlannerBase):
             "behind_drop_m": profile.behind_drop_m,
             "min_confidence": profile.min_confidence,
             "min_required_cones": max(2, profile.min_required_cones),
-            "allow_unknown_pair_completion": True,
-            "unknown_pair_search_radius_m": 1.25,
-            "unknown_pair_max_longitudinal_error_m": 1.5,
-            "unknown_pair_max_width_error_m": 0.9,
-            "max_consecutive_unknown_pairs": 2,
+            "allow_unknown_pair_completion": bool(
+                self.get_parameter("filtering.allow_unknown_pair_completion").value
+            ),
+            "unknown_pair_search_radius_m": float(
+                self.get_parameter("filtering.unknown_pair_search_radius_m").value
+            ),
+            "unknown_pair_max_longitudinal_error_m": float(
+                self.get_parameter("filtering.unknown_pair_max_longitudinal_error_m").value
+            ),
+            "unknown_pair_max_width_error_m": float(
+                self.get_parameter("filtering.unknown_pair_max_width_error_m").value
+            ),
+            "max_consecutive_unknown_pairs": max(
+                0,
+                int(self.get_parameter("filtering.max_consecutive_unknown_pairs").value),
+            ),
         }
 
     def _boundary_chain_config_values(self) -> dict:
@@ -143,7 +187,7 @@ class MidpointPlannerNode(TrackedConePlannerBase):
             "max_step_m": profile.boundary_max_step_m,
             "max_heading_change_rad": profile.boundary_max_heading_change_rad,
             "min_forward_progress_m": profile.boundary_min_forward_progress_m,
-            "min_chain_length": 2,
+            "min_chain_length": max(2, int(self.get_parameter("boundary_chain.min_chain_length").value)),
         }
 
     def _pairing_and_width_config_values(self) -> dict:
@@ -155,32 +199,39 @@ class MidpointPlannerNode(TrackedConePlannerBase):
             "max_width_m": profile.max_width_m,
             "width_filter_alpha": profile.width_filter_alpha,
             "max_width_delta_per_update_m": profile.max_width_delta_per_update_m,
-            "min_trustworthy_pairs": 2,
+            "min_trustworthy_pairs": max(1, int(self.get_parameter("width_estimation.min_trustworthy_pairs").value)),
         }
 
     def _pairing_config_values(self) -> dict:
         return {
-            "min_pair_width_m": 2.2,
-            "max_pair_width_m": 8.0,
-            "max_width_jump_m": 2.0,
-            "min_pair_count": 2,
-            "pair_reassignment_margin": 0.25,
-            "pair_inward_projection_tolerance_m": 0.15,
-            "pairing_tangent_neighbor_count": 4,
-            "enforce_opposite_color_pairing": True,
-            "enforce_geometry_pairing_gate": False,
+            "min_pair_width_m": float(self.get_parameter("pairing.min_pair_width_m").value),
+            "max_pair_width_m": float(self.get_parameter("pairing.max_pair_width_m").value),
+            "max_width_jump_m": float(self.get_parameter("pairing.max_width_jump_m").value),
+            "min_pair_count": max(1, int(self.get_parameter("pairing.min_pair_count").value)),
+            "pair_reassignment_margin": float(self.get_parameter("pairing.pair_reassignment_margin").value),
+            "pair_inward_projection_tolerance_m": max(
+                0.0,
+                float(self.get_parameter("pairing.pair_inward_projection_tolerance_m").value),
+            ),
+            "pairing_tangent_neighbor_count": max(2, int(self.get_parameter("pairing.tangent_neighbor_count").value)),
+            "enforce_opposite_color_pairing": bool(
+                self.get_parameter("pairing.enforce_opposite_color_pairing").value
+            ),
+            "enforce_geometry_pairing_gate": bool(self.get_parameter("pairing.enforce_geometry_pairing_gate").value),
         }
 
     def _centerline_and_validation_config_values(self) -> dict:
         profile = self._planner_algorithm_profile
         return {
             **self._centerline_config_values(),
-            "min_path_points": 4,
-            "min_forward_extent_m": 2.0,
+            "min_path_points": max(2, int(self.get_parameter("validation.min_path_points").value)),
+            "min_forward_extent_m": float(self.get_parameter("validation.min_forward_extent_m").value),
             "jump_check_horizon_m": profile.jump_check_horizon_m,
-            "max_near_field_lateral_jump_m": 0.6,
-            "max_near_field_lateral_jump_m_sparse_pairs": 0.9,
-            "max_start_heading_error_rad": 1.0,
+            "max_near_field_lateral_jump_m": profile.max_near_field_lateral_jump_m,
+            "max_near_field_lateral_jump_m_sparse_pairs": float(
+                self.get_parameter("validation.max_near_field_lateral_jump_m_sparse_pairs").value
+            ),
+            "max_start_heading_error_rad": float(self.get_parameter("validation.max_start_heading_error_rad").value),
         }
 
     def _centerline_config_values(self) -> dict:
@@ -188,12 +239,21 @@ class MidpointPlannerNode(TrackedConePlannerBase):
         return {
             "path_resolution_m": profile.centerline_path_resolution_m,
             "max_path_length_m": profile.max_path_length_m,
-            "smoothing_window": 3,
-            "max_heading_delta_rad": 0.75,
-            "max_midpoint_segment_length_m": max(self.centerline_path_resolution_m, 10.0),
-            "midpoint_order_reference_handoff_m": max(self.centerline_path_resolution_m, 6.0),
-            "midpoint_order_history_size": 3,
-            "midpoint_order_backtrack_tolerance_m": 0.35,
+            "smoothing_window": max(1, int(self.get_parameter("centerline.smoothing_window").value)),
+            "max_heading_delta_rad": float(self.get_parameter("centerline.max_heading_delta_rad").value),
+            "max_midpoint_segment_length_m": max(
+                self.centerline_path_resolution_m,
+                float(self.get_parameter("centerline.max_midpoint_segment_length_m").value),
+            ),
+            "midpoint_order_reference_handoff_m": max(
+                self.centerline_path_resolution_m,
+                float(self.get_parameter("centerline.midpoint_order_reference_handoff_m").value),
+            ),
+            "midpoint_order_history_size": max(2, int(self.get_parameter("centerline.midpoint_order_history_size").value)),
+            "midpoint_order_backtrack_tolerance_m": max(
+                0.0,
+                float(self.get_parameter("centerline.midpoint_order_backtrack_tolerance_m").value),
+            ),
         }
 
     def _on_timer(self) -> None:

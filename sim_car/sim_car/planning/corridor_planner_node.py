@@ -205,7 +205,35 @@ class CorridorPlannerNode(TrackedConePlannerBase):
         declare_tracked_cone_planner_parameters(
             self,
             diagnostics_topic_default=self._planner_identity.diagnostics_topic,
+            defaults_override={"boundary_chain.max_heading_change_rad": 2.35},
         )
+        defaults = {}
+        defaults.update({
+            "filtering.max_lateral_range_m": 14.0,
+            "boundary_chain.min_chain_length": 3,
+            "width_estimation.min_trustworthy_pairs": 3,
+            "corridor.min_corridor_width_m": 2.2,
+            "corridor.max_corridor_width_m": 6.4,
+            "corridor.boundary_resample_dx": 0.5,
+            "corridor.min_required_corridor_samples": 5,
+            "corridor.path_fit_smoothing_window": 5,
+            "corridor.membership_margin_m": 0.15,
+            "midline_memory.pair_memory_retention_s": 12.0,
+            "validation.min_path_points": 4,
+            "validation.min_forward_extent_m": 2.0,
+            "validation.max_heading_delta_rad": 0.75,
+            "validation.max_initial_heading_error_rad": 3.0 * math.pi / 4.0,
+            "validation.max_curvature": 0.45,
+            "debug.enable_cone_audit_markers": False,
+            "debug.cone_audit_viz_topic": "/corridor_planner/cone_audit_viz",
+            "debug.cone_audit_show_labels": True,
+            "debug.cone_audit_max_labels": 80,
+            "debug.show_corridor_pair_audit": False,
+            "debug.corridor_pair_audit_show_labels": True,
+            "debug.corridor_pair_audit_max_labels": 80,
+        })
+        for name, value in defaults.items():
+            self.declare_parameter(name, value)
 
     def _read_parameters(self) -> None:
         common = read_migrated_tracked_cone_planner_common_config(
@@ -219,14 +247,25 @@ class CorridorPlannerNode(TrackedConePlannerBase):
         self._filtered_track_width_m = float(self._core_config.initial_width_m)
 
     def _read_runtime_parameters(self) -> None:
-        self.pair_memory_retention_s = max(self.midline_hold_last_valid_duration_s, 12.0)
-        self.enable_cone_audit_markers = False
-        self.cone_audit_viz_topic = "/corridor_planner/cone_audit_viz"
-        self.cone_audit_show_labels = True
-        self.cone_audit_max_labels = 80
-        self.show_corridor_pair_audit = False
-        self.corridor_pair_audit_show_labels = True
-        self.corridor_pair_audit_max_labels = 80
+        self.pair_memory_retention_s = max(
+            self.midline_hold_last_valid_duration_s,
+            float(self.get_parameter("midline_memory.pair_memory_retention_s").value),
+        )
+        self.enable_cone_audit_markers = bool(self.get_parameter("debug.enable_cone_audit_markers").value)
+        self.cone_audit_viz_topic = (
+            str(self.get_parameter("debug.cone_audit_viz_topic").value).strip()
+            or "/corridor_planner/cone_audit_viz"
+        )
+        self.cone_audit_show_labels = bool(self.get_parameter("debug.cone_audit_show_labels").value)
+        self.cone_audit_max_labels = max(0, int(self.get_parameter("debug.cone_audit_max_labels").value))
+        self.show_corridor_pair_audit = bool(self.get_parameter("debug.show_corridor_pair_audit").value)
+        self.corridor_pair_audit_show_labels = bool(
+            self.get_parameter("debug.corridor_pair_audit_show_labels").value
+        )
+        self.corridor_pair_audit_max_labels = max(
+            0,
+            int(self.get_parameter("debug.corridor_pair_audit_max_labels").value),
+        )
 
     def _build_core_config(self) -> CorridorPlannerConfig:
         values = {}
@@ -240,8 +279,8 @@ class CorridorPlannerNode(TrackedConePlannerBase):
         profile = self._planner_algorithm_profile
         return {
             "max_cone_range_m": profile.max_cone_range_m,
-            "planning_horizon_m": profile.max_cone_range_m,
-            "max_lateral_range_m": 14.0,
+            "planning_horizon_m": profile.planning_horizon_m,
+            "max_lateral_range_m": float(self.get_parameter("filtering.max_lateral_range_m").value),
             "behind_drop_m": profile.behind_drop_m,
             "min_confidence": profile.min_confidence,
             "min_required_cones": max(2, profile.min_required_cones),
@@ -252,26 +291,29 @@ class CorridorPlannerNode(TrackedConePlannerBase):
         return {
             "min_step_m": profile.boundary_min_step_m,
             "max_step_m": profile.boundary_max_step_m,
-            "max_heading_change_rad": 2.35,
+            "max_heading_change_rad": float(self.get_parameter("boundary_chain.max_heading_change_rad").value),
             "min_forward_progress_m": profile.boundary_min_forward_progress_m,
-            "min_chain_length": 3,
+            "min_chain_length": max(2, int(self.get_parameter("boundary_chain.min_chain_length").value)),
             "initial_width_m": profile.initial_width_m,
             "min_width_m": profile.min_width_m,
             "max_width_m": profile.max_width_m,
             "width_filter_alpha": profile.width_filter_alpha,
             "max_width_delta_per_update_m": profile.max_width_delta_per_update_m,
-            "min_trustworthy_pairs": 3,
+            "min_trustworthy_pairs": max(1, int(self.get_parameter("width_estimation.min_trustworthy_pairs").value)),
         }
 
     def _corridor_and_centerline_config_values(self) -> dict:
         profile = self._planner_algorithm_profile
         return {
-            "boundary_resample_dx": 0.5,
-            "min_corridor_width_m": 2.2,
-            "max_corridor_width_m": 6.4,
-            "min_required_corridor_samples": 5,
-            "path_fit_smoothing_window": 5,
-            "membership_margin_m": 0.15,
+            "boundary_resample_dx": float(self.get_parameter("corridor.boundary_resample_dx").value),
+            "min_corridor_width_m": float(self.get_parameter("corridor.min_corridor_width_m").value),
+            "max_corridor_width_m": float(self.get_parameter("corridor.max_corridor_width_m").value),
+            "min_required_corridor_samples": max(
+                2,
+                int(self.get_parameter("corridor.min_required_corridor_samples").value),
+            ),
+            "path_fit_smoothing_window": max(1, int(self.get_parameter("corridor.path_fit_smoothing_window").value)),
+            "membership_margin_m": float(self.get_parameter("corridor.membership_margin_m").value),
             "path_resolution_m": profile.centerline_path_resolution_m,
             "max_path_length_m": profile.max_path_length_m,
         }
@@ -279,13 +321,15 @@ class CorridorPlannerNode(TrackedConePlannerBase):
     def _validation_config_values(self) -> dict:
         profile = self._planner_algorithm_profile
         return {
-            "min_path_points": 4,
-            "min_forward_extent_m": 2.0,
+            "min_path_points": max(2, int(self.get_parameter("validation.min_path_points").value)),
+            "min_forward_extent_m": float(self.get_parameter("validation.min_forward_extent_m").value),
             "jump_check_horizon_m": profile.jump_check_horizon_m,
-            "max_near_field_lateral_jump_m": 0.6,
-            "max_heading_delta_rad": 0.75,
-            "max_initial_heading_error_rad": 3.0 * math.pi / 4.0,
-            "max_curvature": 0.45,
+            "max_near_field_lateral_jump_m": profile.max_near_field_lateral_jump_m,
+            "max_heading_delta_rad": float(self.get_parameter("validation.max_heading_delta_rad").value),
+            "max_initial_heading_error_rad": float(
+                self.get_parameter("validation.max_initial_heading_error_rad").value
+            ),
+            "max_curvature": float(self.get_parameter("validation.max_curvature").value),
         }
 
     def _on_timer(self) -> None:
@@ -1445,12 +1489,14 @@ class CorridorPlannerNode(TrackedConePlannerBase):
         self,
         *,
         result: CorridorPlannerResult,
-        frame_id: str,
-        vehicle_x: float,
-        vehicle_y: float,
-        vehicle_yaw: float,
+        frame_id: Optional[str] = None,
+        vehicle_x: Optional[float] = None,
+        vehicle_y: Optional[float] = None,
+        vehicle_yaw: Optional[float] = None,
         now_sec: float,
     ) -> None:
+        if frame_id is None or vehicle_x is None or vehicle_y is None or vehicle_yaw is None:
+            return
         live_entries = self._pair_entries_from_segments(
             pair_segments=result.pair_segments,
             frame_id=frame_id,

@@ -12,6 +12,7 @@ from sim_car.planning.planner_utils import _clamp
 
 _QUATERNION_DOUBLE = 2.0  # Quaternion rotation formulas double cross-product terms.
 _ROTATION_IDENTITY_SCALE = 1.0  # Rotation matrices start from an identity diagonal.
+_MIN_CHAIN_FORWARD_PROJECTION_M = 0.05  # Meters; rejects sideways zigzags while allowing tight turns.
 
 
 class BoundaryChainConfig(Protocol):
@@ -155,18 +156,14 @@ def grow_boundary_chain_positions(
 
     while remaining:
         current_local = side_local[chain_positions[-1]]
-        current_range = float(np.hypot(current_local[0], current_local[1]))
         best_pos = None
-        best_score: Optional[tuple[float, float, float, float, int]] = None
+        best_score: Optional[tuple[float, float, float, int]] = None
         best_heading = heading
         best_heading_change = 0.0
         iteration_reasons: dict[int, str] = {}
 
         for candidate_pos in remaining:
             candidate_local = side_local[candidate_pos]
-            candidate_range = float(np.hypot(candidate_local[0], candidate_local[1]))
-            radial_progress = candidate_range - current_range
-            min_radial_progress = max(0.05, 0.5 * float(config.min_forward_progress_m))
             delta = candidate_local - current_local
             distance = float(np.hypot(delta[0], delta[1]))
 
@@ -176,20 +173,14 @@ def grow_boundary_chain_positions(
             if distance > float(config.max_step_m):
                 iteration_reasons[candidate_pos] = "chain_step_too_far"
                 continue
-            if not candidate_progresses_from_vehicle(
-                current_local=current_local,
-                candidate_local=candidate_local,
-                min_progress_m=float(config.min_forward_progress_m),
-            ):
-                iteration_reasons[candidate_pos] = "chain_no_forward_progress"
-                continue
-            if radial_progress < min_radial_progress:
-                iteration_reasons[candidate_pos] = "chain_radial_regression"
-                continue
 
             step_heading = delta / distance
             forward = float(np.dot(delta, heading))
-            if forward < float(config.min_forward_progress_m):
+            min_forward_projection_m = max(
+                _MIN_CHAIN_FORWARD_PROJECTION_M,
+                0.5 * float(config.min_forward_progress_m),
+            )
+            if forward < min_forward_projection_m:
                 iteration_reasons[candidate_pos] = "chain_forward_projection"
                 continue
 
@@ -210,7 +201,6 @@ def grow_boundary_chain_positions(
             score = (
                 distance,
                 heading_change,
-                radial_progress,
                 -forward,
                 candidate_pos,
             )

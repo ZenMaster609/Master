@@ -262,11 +262,6 @@ def generate_launch_description():
         description='Enable data logging'
     )
 
-    rosbagging_arg = DeclareLaunchArgument(
-        'rosbagging',
-        default_value='false',
-        description='Enable rosbag recording'
-    )
 
     steering_arg = DeclareLaunchArgument(
         'steering',
@@ -515,7 +510,6 @@ def generate_launch_description():
         'spawn_yaw',
         'path_tracking_eval',
         'logging',
-        'rosbagging',
         'steering',
         'bridge',
         'ackermann_steering_sign',
@@ -691,7 +685,6 @@ def generate_launch_description():
                 "'.lower() == 'true') else 'false'"
             ]),
             'use_sim_time': LaunchConfiguration('use_sim_time'),
-            'enable_rosbag': LaunchConfiguration('rosbagging'),
             'run_id_prefix': resolved_run_id_prefix,
         }.items(),
     )
@@ -1270,7 +1263,6 @@ def generate_launch_description():
         spawn_yaw_arg,
         path_tracking_eval_arg,
         logging_arg,
-        rosbagging_arg,
         steering_arg,
         control_bridge_arg,
         ackermann_steering_sign_arg,
@@ -1471,7 +1463,9 @@ def _load_planner_limit_overrides(spawn_config_path: str) -> dict[str, float]:
 
     max_planner_length_m = float(max_planner_length)
     return {
-        'planner.max_range_m': max_planner_length_m,
+        'filtering.max_cone_range_m': max_planner_length_m,
+        'centerline.max_path_length_m': max_planner_length_m,
+        'filtering.planning_horizon_m': max_planner_length_m,
     }
 
 

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, fields
+import math
 from typing import Any
 
 from sim_car.planning.controller_config import build_steering_controller
@@ -74,11 +75,50 @@ PUBLIC_TRACKED_CONE_PLANNER_DEFAULTS: dict[str, object] = {
     "planner.profile": "default",
     "planner.max_range_m": PLANNER_MAX_RANGE_M_DEFAULT,
     "planner.min_confidence": PLANNER_MIN_CONFIDENCE_DEFAULT,
+    "boundary_chain.max_heading_change_rad": 0.95,
+    "boundary_chain.max_step_m": 10.5,
+    "boundary_chain.min_forward_progress_m": 0.0002,
+    "boundary_chain.min_step_m": 0.8,
+    "centerline.max_path_length_m": 30.0,
+    "centerline.path_resolution_m": 0.5,
+    "centerline.temporal_alpha": 0.25,
     "frames.planning_frame": ODOM_FRAME_DEFAULT,
     "frames.odom_frame": ODOM_FRAME_DEFAULT,
     "frames.base_frame": BASE_FRAME_DEFAULT,
     "frames.tf_timeout_s": TF_TIMEOUT_S_DEFAULT,
     "vehicle.wheelbase_m": WHEELBASE_M_DEFAULT,
+    "diagnostics.centerline_jump_horizon_m": 8.0,
+    "diagnostics.publish_control_debug": True,
+    "diagnostics.topic": "",
+    "filtering.behind_drop_m": 5.0,
+    "filtering.infer_orange_by_side": True,
+    "filtering.infer_unknown_by_side": True,
+    "filtering.max_cone_range_m": PLANNER_MAX_RANGE_M_DEFAULT,
+    "filtering.min_confidence": PLANNER_MIN_CONFIDENCE_DEFAULT,
+    "filtering.min_required_cones": 4,
+    "filtering.orange_min_lateral_m": 0.9,
+    "filtering.orange_neighbor_margin_m": 0.75,
+    "filtering.orange_neighbor_radius_m": 3.5,
+    "filtering.planning_horizon_m": 20.0,
+    "midline_memory.control_handoff_distance_m": 1.5,
+    "midline_memory.far_alpha": 0.30,
+    "midline_memory.far_max_lateral_shift_m": 0.35,
+    "midline_memory.hold_last_valid_duration_s": 3.0,
+    "midline_memory.horizon_m": 30.0,
+    "midline_memory.mid_alpha": 0.12,
+    "midline_memory.mid_distance_m": 12.0,
+    "midline_memory.mid_max_lateral_shift_m": 0.18,
+    "midline_memory.min_buffer_confidence": 0.2,
+    "midline_memory.min_estimated_extent_m": 6.0,
+    "midline_memory.near_alpha": 0.04,
+    "midline_memory.near_distance_m": 4.0,
+    "midline_memory.near_max_lateral_shift_m": 0.07,
+    "midline_memory.station_spacing_m": 0.5,
+    "midline_memory.max_estimation_extension_m": 4.0,
+    "midline_memory.max_estimation_join_lateral_m": 0.5,
+    "midline_memory.max_estimation_join_heading_rad": 0.45,
+    "midline_memory.allow_tangent_estimate_without_memory": True,
+    "midline_memory.max_tangent_estimation_extension_m": 2.0,
     "topics.tracked_cones_topic": TRACKED_CONES_TOPIC_DEFAULT,
     "topics.cmd_topic": "/cmd",
     "topics.centerline_topic": "/planned_centerline",
@@ -96,15 +136,48 @@ PUBLIC_TRACKED_CONE_PLANNER_DEFAULTS: dict[str, object] = {
     "speed_control.curvature_speed_gain": 4.0,
     "speed_control.lowpass_speed_alpha": 0.15,
     "stanley.k_gain": 1.2,
+    "stanley.softening_speed_mps": 0.0,
     "stanley.heading_gain": 1.6,
     "stanley.lookahead_idx_offset": 0,
+    "stanley.steering_limit_rad": 0.52,
+    "stanley.steering_lowpass_alpha": 1.0,
+    "stanley.steering_rate_limit_rad_s": 10.0,
+    "stanley.use_yaw_rate_damping": True,
+    "stanley.yaw_rate_damping_gain": 0.0,
+    "stanley.wheelbase_m": WHEELBASE_M_DEFAULT,
+    "stanley.cross_track_deadband_m": 0.0,
     "pure_pursuit.lookahead_m": 3.0,
     "pure_pursuit.min_lookahead_m": 1.5,
     "pure_pursuit.max_lookahead_m": 8.0,
+    "pure_pursuit.lookahead_gain": 0.0,
+    "pure_pursuit.steering_limit_rad": 0.52,
+    "pure_pursuit.steering_lowpass_alpha": 1.0,
+    "pure_pursuit.steering_rate_limit_rad_s": 10.0,
+    "pure_pursuit.wheelbase_m": WHEELBASE_M_DEFAULT,
     "debug.enable_markers": True,
     "debug.publish_points_topic": False,
+    "debug.show_boundary_chains": True,
     "debug.show_lookahead_point": True,
+    "debug.show_pair_lines": True,
+    "debug.show_raw_cones": True,
+    "debug.show_raw_midpoint_chain": True,
+    "debug.show_raw_prevalidation_centerline": False,
+    "debug.show_candidate_edges": False,
+    "debug.show_selected_edges": False,
     "lap_tracking.target_laps": 0,
+    "validation.candidate_jump_recover_frames": 3,
+    "validation.candidate_jump_reject_threshold_m": 0.45,
+    "validation.candidate_min_extent_m": 2.0,
+    "validation.candidate_min_points": 4,
+    "validation.hold_exit_clean_frames": 2,
+    "validation.hold_last_valid_s": 2.5,
+    "validation.jump_check_horizon_m": 8.0,
+    "validation.max_near_field_lateral_jump_m": 0.6,
+    "width_estimation.alpha": 0.18,
+    "width_estimation.initial_width_m": 3.6,
+    "width_estimation.max_delta_per_update_m": 0.2,
+    "width_estimation.max_width_m": 4.8,
+    "width_estimation.min_width_m": 2.4,
 }
 
 # Kept as an import alias during the refactor; it is no longer the public ROS
@@ -120,6 +193,7 @@ class PlannerAlgorithmProfile:
     min_required_cones: int = 4
     centerline_path_resolution_m: float = 0.5
     max_path_length_m: float = 30.0
+    planning_horizon_m: float = 20.0
     jump_check_horizon_m: float = 8.0
 
     infer_unknown_by_side: bool = True
@@ -145,13 +219,14 @@ class PlannerAlgorithmProfile:
     candidate_jump_recover_frames: int = 3
     candidate_min_points: int = 4
     candidate_min_extent_m: float = 2.0
+    max_near_field_lateral_jump_m: float = 0.6
     centerline_jump_horizon_m: float = 8.0
     publish_control_debug: bool = True
 
-    show_raw_cones: bool = False
-    show_boundary_chains: bool = False
-    show_pair_lines: bool = False
-    show_raw_midpoint_chain: bool = False
+    show_raw_cones: bool = True
+    show_boundary_chains: bool = True
+    show_pair_lines: bool = True
+    show_raw_midpoint_chain: bool = True
     show_raw_prevalidation_centerline: bool = False
     show_candidate_edges: bool = False
     show_selected_edges: bool = False
@@ -243,8 +318,16 @@ class MigratedTrackedConePlannerCommonConfig:
     lap_tracking_target_laps: int
 
 
-def declare_tracked_cone_planner_parameters(node: Any, *, diagnostics_topic_default: str) -> None:
-    for name, value in PUBLIC_TRACKED_CONE_PLANNER_DEFAULTS.items():
+def declare_tracked_cone_planner_parameters(
+    node: Any,
+    *,
+    diagnostics_topic_default: str,
+    defaults_override: dict[str, object] | None = None,
+) -> None:
+    defaults = dict(PUBLIC_TRACKED_CONE_PLANNER_DEFAULTS)
+    if defaults_override:
+        defaults.update(defaults_override)
+    for name, value in defaults.items():
         default = diagnostics_topic_default if name == "topics.diagnostics_topic" else value
         node.declare_parameter(name, default)
 
@@ -268,10 +351,12 @@ def _normalize_profile(profile: str) -> str:
 
 def _read_public_config(node: Any, *, diagnostics_topic_fallback: str) -> PlannerPublicConfig:
     profile = _normalize_profile(node.get_parameter("planner.profile").value)
-    diagnostics_topic = (
-        str(node.get_parameter("topics.diagnostics_topic").value).strip()
-        or diagnostics_topic_fallback
-    )
+    diagnostics_topic = str(node.get_parameter("topics.diagnostics_topic").value).strip()
+    if node.has_parameter("diagnostics.topic"):
+        legacy_diagnostics_topic = str(node.get_parameter("diagnostics.topic").value).strip()
+        if legacy_diagnostics_topic:
+            diagnostics_topic = legacy_diagnostics_topic
+    diagnostics_topic = diagnostics_topic or diagnostics_topic_fallback
     return PlannerPublicConfig(
         profile=profile,
         max_range_m=max(1.0, float(node.get_parameter("planner.max_range_m").value)),
@@ -327,46 +412,195 @@ def _read_public_config(node: Any, *, diagnostics_topic_fallback: str) -> Planne
     )
 
 
-def planner_algorithm_profile(public: PlannerPublicConfig) -> PlannerAlgorithmProfile:
+def _read_float_parameter(node: Any, name: str, default: float) -> float:
+    return float(node.get_parameter(name).value if node.has_parameter(name) else default)
+
+
+def _read_int_parameter(node: Any, name: str, default: int) -> int:
+    return int(node.get_parameter(name).value if node.has_parameter(name) else default)
+
+
+def _read_bool_parameter(node: Any, name: str, default: bool) -> bool:
+    return bool(node.get_parameter(name).value if node.has_parameter(name) else default)
+
+
+def _read_midline_memory_config(node: Any) -> MidlineMemoryConfig:
+    return MidlineMemoryConfig(
+        horizon_m=_read_float_parameter(node, "midline_memory.horizon_m", 30.0),
+        station_spacing_m=_read_float_parameter(node, "midline_memory.station_spacing_m", 0.5),
+        near_distance_m=_read_float_parameter(node, "midline_memory.near_distance_m", 4.0),
+        mid_distance_m=_read_float_parameter(node, "midline_memory.mid_distance_m", 12.0),
+        near_alpha=_read_float_parameter(node, "midline_memory.near_alpha", 0.04),
+        mid_alpha=_read_float_parameter(node, "midline_memory.mid_alpha", 0.12),
+        far_alpha=_read_float_parameter(node, "midline_memory.far_alpha", 0.30),
+        near_max_lateral_shift_m=_read_float_parameter(
+            node, "midline_memory.near_max_lateral_shift_m", 0.07
+        ),
+        mid_max_lateral_shift_m=_read_float_parameter(
+            node, "midline_memory.mid_max_lateral_shift_m", 0.18
+        ),
+        far_max_lateral_shift_m=_read_float_parameter(
+            node, "midline_memory.far_max_lateral_shift_m", 0.35
+        ),
+        min_buffer_confidence=_read_float_parameter(node, "midline_memory.min_buffer_confidence", 0.2),
+        hold_last_valid_duration_s=_read_float_parameter(
+            node, "midline_memory.hold_last_valid_duration_s", 3.0
+        ),
+        min_estimated_extent_m=_read_float_parameter(
+            node, "midline_memory.min_estimated_extent_m", 6.0
+        ),
+        max_estimation_extension_m=_read_float_parameter(
+            node, "midline_memory.max_estimation_extension_m", 4.0
+        ),
+        max_estimation_join_lateral_m=_read_float_parameter(
+            node, "midline_memory.max_estimation_join_lateral_m", 0.5
+        ),
+        max_estimation_join_heading_rad=_read_float_parameter(
+            node, "midline_memory.max_estimation_join_heading_rad", 0.45
+        ),
+        allow_tangent_estimate_without_memory=_read_bool_parameter(
+            node, "midline_memory.allow_tangent_estimate_without_memory", True
+        ),
+        max_tangent_estimation_extension_m=_read_float_parameter(
+            node, "midline_memory.max_tangent_estimation_extension_m", 2.0
+        ),
+    )
+
+
+def planner_algorithm_profile(public: PlannerPublicConfig, node: Any | None = None) -> PlannerAlgorithmProfile:
     base = PROFILE_BY_NAME[public.profile]
+    if node is None:
+        return PlannerAlgorithmProfile(
+            max_cone_range_m=public.max_range_m,
+            min_confidence=public.min_confidence,
+            behind_drop_m=base.behind_drop_m,
+            min_required_cones=base.min_required_cones,
+            centerline_path_resolution_m=base.centerline_path_resolution_m,
+            max_path_length_m=public.max_range_m,
+            jump_check_horizon_m=base.jump_check_horizon_m,
+            infer_unknown_by_side=base.infer_unknown_by_side,
+            infer_orange_by_side=base.infer_orange_by_side,
+            orange_min_lateral_m=base.orange_min_lateral_m,
+            orange_neighbor_radius_m=base.orange_neighbor_radius_m,
+            orange_neighbor_margin_m=base.orange_neighbor_margin_m,
+            boundary_min_step_m=base.boundary_min_step_m,
+            boundary_max_step_m=base.boundary_max_step_m,
+            boundary_max_heading_change_rad=base.boundary_max_heading_change_rad,
+            boundary_min_forward_progress_m=base.boundary_min_forward_progress_m,
+            initial_width_m=base.initial_width_m,
+            min_width_m=base.min_width_m,
+            max_width_m=base.max_width_m,
+            width_filter_alpha=base.width_filter_alpha,
+            max_width_delta_per_update_m=base.max_width_delta_per_update_m,
+            validation_hold_last_valid_s=base.validation_hold_last_valid_s,
+            validation_hold_exit_clean_frames=base.validation_hold_exit_clean_frames,
+            candidate_jump_reject_threshold_m=base.candidate_jump_reject_threshold_m,
+            candidate_jump_recover_frames=base.candidate_jump_recover_frames,
+            candidate_min_points=base.candidate_min_points,
+            candidate_min_extent_m=base.candidate_min_extent_m,
+            max_near_field_lateral_jump_m=base.max_near_field_lateral_jump_m,
+            centerline_jump_horizon_m=base.centerline_jump_horizon_m,
+            publish_control_debug=base.publish_control_debug,
+            show_raw_cones=base.show_raw_cones,
+            show_boundary_chains=base.show_boundary_chains,
+            show_pair_lines=base.show_pair_lines,
+            show_raw_midpoint_chain=base.show_raw_midpoint_chain,
+            show_raw_prevalidation_centerline=base.show_raw_prevalidation_centerline,
+            show_candidate_edges=base.show_candidate_edges,
+            show_selected_edges=base.show_selected_edges,
+            midline_memory=base.midline_memory,
+        )
+
+    max_cone_range_m = max(1.0, _read_float_parameter(node, "filtering.max_cone_range_m", base.max_cone_range_m))
+    max_path_length_m = max(1.0, _read_float_parameter(node, "centerline.max_path_length_m", base.max_path_length_m))
+    planning_horizon_m = max(
+        1.0,
+        _read_float_parameter(node, "filtering.planning_horizon_m", base.planning_horizon_m),
+    )
+    planner_max_range_m = public.max_range_m
+    if not math.isclose(planner_max_range_m, PLANNER_MAX_RANGE_M_DEFAULT, rel_tol=0.0, abs_tol=1e-9):
+        max_cone_range_m = max(1.0, planner_max_range_m)
+        max_path_length_m = max(1.0, planner_max_range_m)
+        planning_horizon_m = max(1.0, planner_max_range_m)
+
+    min_confidence = max(0.0, min(1.0, _read_float_parameter(node, "filtering.min_confidence", base.min_confidence)))
+    if not math.isclose(public.min_confidence, PLANNER_MIN_CONFIDENCE_DEFAULT, rel_tol=0.0, abs_tol=1e-9):
+        min_confidence = max(0.0, min(1.0, public.min_confidence))
+
     return PlannerAlgorithmProfile(
-        max_cone_range_m=public.max_range_m,
-        min_confidence=public.min_confidence,
-        behind_drop_m=base.behind_drop_m,
-        min_required_cones=base.min_required_cones,
-        centerline_path_resolution_m=base.centerline_path_resolution_m,
-        max_path_length_m=public.max_range_m,
-        jump_check_horizon_m=base.jump_check_horizon_m,
-        infer_unknown_by_side=base.infer_unknown_by_side,
-        infer_orange_by_side=base.infer_orange_by_side,
-        orange_min_lateral_m=base.orange_min_lateral_m,
-        orange_neighbor_radius_m=base.orange_neighbor_radius_m,
-        orange_neighbor_margin_m=base.orange_neighbor_margin_m,
-        boundary_min_step_m=base.boundary_min_step_m,
-        boundary_max_step_m=base.boundary_max_step_m,
-        boundary_max_heading_change_rad=base.boundary_max_heading_change_rad,
-        boundary_min_forward_progress_m=base.boundary_min_forward_progress_m,
-        initial_width_m=base.initial_width_m,
-        min_width_m=base.min_width_m,
-        max_width_m=base.max_width_m,
-        width_filter_alpha=base.width_filter_alpha,
-        max_width_delta_per_update_m=base.max_width_delta_per_update_m,
-        validation_hold_last_valid_s=base.validation_hold_last_valid_s,
-        validation_hold_exit_clean_frames=base.validation_hold_exit_clean_frames,
-        candidate_jump_reject_threshold_m=base.candidate_jump_reject_threshold_m,
-        candidate_jump_recover_frames=base.candidate_jump_recover_frames,
-        candidate_min_points=base.candidate_min_points,
-        candidate_min_extent_m=base.candidate_min_extent_m,
-        centerline_jump_horizon_m=base.centerline_jump_horizon_m,
-        publish_control_debug=base.publish_control_debug,
-        show_raw_cones=base.show_raw_cones,
-        show_boundary_chains=base.show_boundary_chains,
-        show_pair_lines=base.show_pair_lines,
-        show_raw_midpoint_chain=base.show_raw_midpoint_chain,
-        show_raw_prevalidation_centerline=base.show_raw_prevalidation_centerline,
-        show_candidate_edges=base.show_candidate_edges,
-        show_selected_edges=base.show_selected_edges,
-        midline_memory=base.midline_memory,
+        max_cone_range_m=max_cone_range_m,
+        min_confidence=min_confidence,
+        behind_drop_m=_read_float_parameter(node, "filtering.behind_drop_m", base.behind_drop_m),
+        min_required_cones=_read_int_parameter(node, "filtering.min_required_cones", base.min_required_cones),
+        centerline_path_resolution_m=_read_float_parameter(
+            node, "centerline.path_resolution_m", base.centerline_path_resolution_m
+        ),
+        max_path_length_m=max_path_length_m,
+        planning_horizon_m=planning_horizon_m,
+        jump_check_horizon_m=_read_float_parameter(node, "validation.jump_check_horizon_m", base.jump_check_horizon_m),
+        infer_unknown_by_side=_read_bool_parameter(node, "filtering.infer_unknown_by_side", base.infer_unknown_by_side),
+        infer_orange_by_side=_read_bool_parameter(node, "filtering.infer_orange_by_side", base.infer_orange_by_side),
+        orange_min_lateral_m=_read_float_parameter(node, "filtering.orange_min_lateral_m", base.orange_min_lateral_m),
+        orange_neighbor_radius_m=_read_float_parameter(
+            node, "filtering.orange_neighbor_radius_m", base.orange_neighbor_radius_m
+        ),
+        orange_neighbor_margin_m=_read_float_parameter(
+            node, "filtering.orange_neighbor_margin_m", base.orange_neighbor_margin_m
+        ),
+        boundary_min_step_m=_read_float_parameter(node, "boundary_chain.min_step_m", base.boundary_min_step_m),
+        boundary_max_step_m=_read_float_parameter(node, "boundary_chain.max_step_m", base.boundary_max_step_m),
+        boundary_max_heading_change_rad=_read_float_parameter(
+            node, "boundary_chain.max_heading_change_rad", base.boundary_max_heading_change_rad
+        ),
+        boundary_min_forward_progress_m=_read_float_parameter(
+            node, "boundary_chain.min_forward_progress_m", base.boundary_min_forward_progress_m
+        ),
+        initial_width_m=_read_float_parameter(node, "width_estimation.initial_width_m", base.initial_width_m),
+        min_width_m=_read_float_parameter(node, "width_estimation.min_width_m", base.min_width_m),
+        max_width_m=_read_float_parameter(node, "width_estimation.max_width_m", base.max_width_m),
+        width_filter_alpha=_read_float_parameter(node, "width_estimation.alpha", base.width_filter_alpha),
+        max_width_delta_per_update_m=_read_float_parameter(
+            node, "width_estimation.max_delta_per_update_m", base.max_width_delta_per_update_m
+        ),
+        validation_hold_last_valid_s=_read_float_parameter(
+            node, "validation.hold_last_valid_s", base.validation_hold_last_valid_s
+        ),
+        validation_hold_exit_clean_frames=_read_int_parameter(
+            node, "validation.hold_exit_clean_frames", base.validation_hold_exit_clean_frames
+        ),
+        candidate_jump_reject_threshold_m=_read_float_parameter(
+            node, "validation.candidate_jump_reject_threshold_m", base.candidate_jump_reject_threshold_m
+        ),
+        candidate_jump_recover_frames=_read_int_parameter(
+            node, "validation.candidate_jump_recover_frames", base.candidate_jump_recover_frames
+        ),
+        candidate_min_points=_read_int_parameter(node, "validation.candidate_min_points", base.candidate_min_points),
+        candidate_min_extent_m=_read_float_parameter(
+            node, "validation.candidate_min_extent_m", base.candidate_min_extent_m
+        ),
+        max_near_field_lateral_jump_m=_read_float_parameter(
+            node,
+            "validation.max_near_field_lateral_jump_m",
+            base.max_near_field_lateral_jump_m,
+        ),
+        centerline_jump_horizon_m=_read_float_parameter(
+            node, "diagnostics.centerline_jump_horizon_m", base.centerline_jump_horizon_m
+        ),
+        publish_control_debug=_read_bool_parameter(
+            node, "diagnostics.publish_control_debug", base.publish_control_debug
+        ),
+        show_raw_cones=_read_bool_parameter(node, "debug.show_raw_cones", base.show_raw_cones),
+        show_boundary_chains=_read_bool_parameter(node, "debug.show_boundary_chains", base.show_boundary_chains),
+        show_pair_lines=_read_bool_parameter(node, "debug.show_pair_lines", base.show_pair_lines),
+        show_raw_midpoint_chain=_read_bool_parameter(
+            node, "debug.show_raw_midpoint_chain", base.show_raw_midpoint_chain
+        ),
+        show_raw_prevalidation_centerline=_read_bool_parameter(
+            node, "debug.show_raw_prevalidation_centerline", base.show_raw_prevalidation_centerline
+        ),
+        show_candidate_edges=_read_bool_parameter(node, "debug.show_candidate_edges", base.show_candidate_edges),
+        show_selected_edges=_read_bool_parameter(node, "debug.show_selected_edges", base.show_selected_edges),
+        midline_memory=_read_midline_memory_config(node),
     )
 
 
@@ -413,7 +647,7 @@ def read_migrated_tracked_cone_planner_common_config(
     del planner_label
     public = _read_public_config(node, diagnostics_topic_fallback=diagnostics_topic_fallback)
     _expose_controller_overrides(node, public)
-    profile = planner_algorithm_profile(public)
+    profile = planner_algorithm_profile(public, node=node)
     node._planner_public_config = public
     node._planner_algorithm_profile = profile
     speed_max = max(public.speed_min_mps, public.speed_max_mps)

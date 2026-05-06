@@ -25,27 +25,41 @@ def build_stanley_config(node: Any) -> StanleyConfig:
     defaults = StanleyConfig(wheelbase_m=_node_wheelbase_m(node))
     return StanleyConfig(
         k_gain=max(0.0, float(_read_param(node, 'stanley.k_gain', defaults.k_gain))),
-        softening_speed_mps=max(0.0, defaults.softening_speed_mps),
+        softening_speed_mps=max(
+            0.0,
+            float(_read_param(node, 'stanley.softening_speed_mps', defaults.softening_speed_mps)),
+        ),
         heading_gain=float(_read_param(node, 'stanley.heading_gain', defaults.heading_gain)),
         lookahead_idx_offset=max(
             0,
             int(_read_param(node, 'stanley.lookahead_idx_offset', defaults.lookahead_idx_offset)),
         ),
-        steering_limit_rad=max(0.01, defaults.steering_limit_rad),
-        steering_lowpass_alpha=float(np.clip(defaults.steering_lowpass_alpha, 0.0, 1.0)),
+        steering_limit_rad=max(
+            0.01,
+            float(_read_param(node, 'stanley.steering_limit_rad', defaults.steering_limit_rad)),
+        ),
+        steering_lowpass_alpha=float(
+            np.clip(
+                float(_read_param(node, 'stanley.steering_lowpass_alpha', defaults.steering_lowpass_alpha)),
+                0.0,
+                1.0,
+            )
+        ),
         steering_rate_limit_rad_s=max(
             0.0,
-            defaults.steering_rate_limit_rad_s,
+            float(_read_param(node, 'stanley.steering_rate_limit_rad_s', defaults.steering_rate_limit_rad_s)),
         ),
-        use_yaw_rate_damping=defaults.use_yaw_rate_damping,
+        use_yaw_rate_damping=bool(
+            _read_param(node, 'stanley.use_yaw_rate_damping', defaults.use_yaw_rate_damping)
+        ),
         yaw_rate_damping_gain=max(
             0.0,
-            defaults.yaw_rate_damping_gain,
+            float(_read_param(node, 'stanley.yaw_rate_damping_gain', defaults.yaw_rate_damping_gain)),
         ),
-        wheelbase_m=defaults.wheelbase_m,
+        wheelbase_m=max(0.1, float(_read_param(node, 'stanley.wheelbase_m', defaults.wheelbase_m))),
         cross_track_deadband_m=max(
             0.0,
-            defaults.cross_track_deadband_m,
+            float(_read_param(node, 'stanley.cross_track_deadband_m', defaults.cross_track_deadband_m)),
         ),
     )
 
@@ -62,14 +76,26 @@ def build_pure_pursuit_config(node: Any) -> PurePursuitConfig:
             0.01,
             float(_read_param(node, 'pure_pursuit.max_lookahead_m', defaults.max_lookahead_m)),
         ),
-        lookahead_gain=defaults.lookahead_gain,
-        steering_limit_rad=max(0.01, defaults.steering_limit_rad),
-        steering_lowpass_alpha=float(np.clip(defaults.steering_lowpass_alpha, 0.0, 1.0)),
+        lookahead_gain=max(
+            0.0,
+            float(_read_param(node, 'pure_pursuit.lookahead_gain', defaults.lookahead_gain)),
+        ),
+        steering_limit_rad=max(
+            0.01,
+            float(_read_param(node, 'pure_pursuit.steering_limit_rad', defaults.steering_limit_rad)),
+        ),
+        steering_lowpass_alpha=float(
+            np.clip(
+                float(_read_param(node, 'pure_pursuit.steering_lowpass_alpha', defaults.steering_lowpass_alpha)),
+                0.0,
+                1.0,
+            )
+        ),
         steering_rate_limit_rad_s=max(
             0.0,
-            defaults.steering_rate_limit_rad_s,
+            float(_read_param(node, 'pure_pursuit.steering_rate_limit_rad_s', defaults.steering_rate_limit_rad_s)),
         ),
-        wheelbase_m=defaults.wheelbase_m,
+        wheelbase_m=max(0.1, float(_read_param(node, 'pure_pursuit.wheelbase_m', defaults.wheelbase_m))),
     )
     if config.max_lookahead_m < config.min_lookahead_m:
         return PurePursuitConfig(

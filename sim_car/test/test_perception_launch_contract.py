@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import ast
 import importlib.util
+import math
 import pathlib
 import sys
 
@@ -57,12 +58,53 @@ def _flatten(data, prefix: str = '') -> dict[str, object]:
 
 
 def _planner_node_contract(planner: str) -> tuple[set[str], set[str]]:
+    def _literal_eval_parameter_default(node: ast.AST) -> object:
+        if isinstance(node, ast.Dict):
+            return {
+                _literal_eval_parameter_default(key): _literal_eval_parameter_default(value)
+                for key, value in zip(node.keys, node.values)
+            }
+        if isinstance(node, ast.UnaryOp):
+            value = _literal_eval_parameter_default(node.operand)
+            if isinstance(node.op, ast.USub):
+                return -value
+            if isinstance(node.op, ast.UAdd):
+                return value
+        if isinstance(node, ast.BinOp):
+            left = _literal_eval_parameter_default(node.left)
+            right = _literal_eval_parameter_default(node.right)
+            if isinstance(node.op, ast.Add):
+                return left + right
+            if isinstance(node.op, ast.Sub):
+                return left - right
+            if isinstance(node.op, ast.Mult):
+                return left * right
+            if isinstance(node.op, ast.Div):
+                return left / right
+        if (
+            isinstance(node, ast.Attribute)
+            and isinstance(node.value, ast.Name)
+            and node.value.id == 'math'
+            and node.attr == 'pi'
+        ):
+            return math.pi
+        return ast.literal_eval(node)
+
     def _parameter_reads(module: ast.AST) -> set[str]:
         read_parameters: set[str] = set()
         for node in ast.walk(module):
             if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute) and node.func.attr == 'get_parameter':
                 if node.args and isinstance(node.args[0], ast.Constant) and isinstance(node.args[0].value, str):
                     read_parameters.add(node.args[0].value)
+            if isinstance(node, ast.Call) and isinstance(node.func, ast.Name):
+                if node.func.id in {'_read_float_parameter', '_read_int_parameter', '_read_bool_parameter'}:
+                    if len(node.args) >= 2 and isinstance(node.args[1], ast.Constant):
+                        if isinstance(node.args[1].value, str):
+                            read_parameters.add(node.args[1].value)
+                if node.func.id == '_read_param':
+                    if len(node.args) >= 2 and isinstance(node.args[1], ast.Constant):
+                        if isinstance(node.args[1].value, str):
+                            read_parameters.add(node.args[1].value)
         return read_parameters
 
     def _merge_declared_defaults(module: ast.AST, planner_name: str) -> dict[str, object]:
@@ -82,11 +124,11 @@ def _planner_node_contract(planner: str) -> tuple[set[str], set[str]]:
                         if not isinstance(target, ast.Name) or target.id != 'defaults':
                             continue
                         if isinstance(stmt.value, ast.Dict):
-                            defaults.update(ast.literal_eval(stmt.value))
+                            defaults.update(_literal_eval_parameter_default(stmt.value))
                             found_defaults_assignment = True
                             break
                         if planner_name not in MIGRATED_PLANNERS:
-                            defaults.update(ast.literal_eval(stmt.value))
+                            defaults.update(_literal_eval_parameter_default(stmt.value))
                             found_defaults_assignment = True
                             break
                     if found_defaults_assignment and planner_name not in MIGRATED_PLANNERS:
@@ -101,7 +143,7 @@ def _planner_node_contract(planner: str) -> tuple[set[str], set[str]]:
                     and stmt.value.func.attr == 'update'
                     and stmt.value.args
                 ):
-                    defaults.update(ast.literal_eval(stmt.value.args[0]))
+                    defaults.update(_literal_eval_parameter_default(stmt.value.args[0]))
                     found_defaults_assignment = True
             break
 
@@ -315,7 +357,9 @@ def test_track_bundle_loads_optional_track_planner_limit_defaults():
         'acceleration': {},
         'smalltrack': {},
         'skidpad': {
-            'planner.max_range_m': 14.0,
+            'filtering.max_cone_range_m': 14.0,
+            'centerline.max_path_length_m': 14.0,
+            'filtering.planning_horizon_m': 14.0,
         },
     }
 
@@ -587,7 +631,9 @@ def test_planner_limit_spawn_configs_only_use_declared_and_read_parameters():
     config_path = SIM_CAR_SHARE / 'config' / 'skidpad' / 'spawn.yaml'
     config = _load_yaml(config_path)
     params = {
-        'planner.max_range_m': config['planner_limits']['max_planner_length_m'],
+        'filtering.max_cone_range_m': config['planner_limits']['max_planner_length_m'],
+        'centerline.max_path_length_m': config['planner_limits']['max_planner_length_m'],
+        'filtering.planning_horizon_m': config['planner_limits']['max_planner_length_m'],
     }
 
     for planner in MIGRATED_PLANNERS:
@@ -597,25 +643,22 @@ def test_planner_limit_spawn_configs_only_use_declared_and_read_parameters():
         assert expected_keys.issubset(read_params)
 
 
-def test_migrated_planners_do_not_expose_low_level_algorithm_parameters():
-    removed_prefixes = (
-        'filtering.',
-        'boundary_chain.',
-        'width_estimation.',
-        'pairing.',
-        'centerline.',
-        'validation.',
-        'midline_memory.',
-    )
-    allowed = {'filtering.min_confidence'}  # Legacy launch configs must use planner.min_confidence instead.
-
+def test_migrated_planners_expose_restored_low_level_algorithm_parameters():
+    expected_shared = {
+        'filtering.max_cone_range_m',
+        'filtering.min_confidence',
+        'boundary_chain.min_step_m',
+        'boundary_chain.max_step_m',
+        'width_estimation.initial_width_m',
+        'centerline.max_path_length_m',
+        'validation.hold_last_valid_s',
+        'midline_memory.horizon_m',
+        'debug.show_pair_lines',
+    }
     for planner in MIGRATED_PLANNERS:
         declared, read_params = _planner_node_contract(planner)
-        exposed = {
-            name for name in declared | read_params
-            if name not in allowed and name.startswith(removed_prefixes)
-        }
-        assert exposed == set()
+        assert expected_shared.issubset(declared)
+        assert expected_shared.issubset(read_params)
 
 
 def test_cone_memory_config_uses_namespaced_public_parameters():

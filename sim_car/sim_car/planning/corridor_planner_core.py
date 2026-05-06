@@ -45,6 +45,20 @@ MAX_CORRIDOR_GAP_FILL_SAMPLES = 1
 PRIOR_ALIGNMENT_HORIZON_M = 4.0
 # Meters; caps continuity checks to the near vehicle path segment.
 NEAR_FIELD_ALIGNMENT_HORIZON_M = 3.0
+# Unitless; dense corridor samples support a more curved but still bounded path.
+CURVATURE_DENSE_SAMPLE_RELAXATION = 1.75
+# Radians; tight turns need extra curvature headroom after chain continuation.
+CURVATURE_SHARP_TURN_HEADING_DELTA_RAD = 0.45
+# Unitless; sharp but coherent turns should not be rejected as discontinuities.
+CURVATURE_SHARP_TURN_RELAXATION = 1.75
+# Radians; moderate turns receive the legacy curvature relaxation.
+CURVATURE_MODERATE_TURN_HEADING_DELTA_RAD = 0.28
+# Unitless; moderate-turn curvature relaxation used by the old corridor gate.
+CURVATURE_MODERATE_TURN_RELAXATION = 1.35
+# Radians; shallow turns receive a small relaxation for resampling jitter.
+CURVATURE_SHALLOW_TURN_HEADING_DELTA_RAD = 0.18
+# Unitless; shallow-turn curvature relaxation used by the old corridor gate.
+CURVATURE_SHALLOW_TURN_RELAXATION = 1.15
 _REJECT_COUNT_KEYS = (
     "corridor_geometry",
     "corridor_samples",
@@ -61,11 +75,12 @@ class CorridorPlannerConfig(BasePlannerConfig):
     max_lateral_range_m: float = 8.0
 
     max_step_m: float = 6.0
+    max_heading_change_rad: float = 2.35
     min_chain_length: int = 3
 
     boundary_resample_dx: float = 0.5
     min_corridor_width_m: float = 2.2
-    max_corridor_width_m: float = 5.5
+    max_corridor_width_m: float = 8.0
     min_required_corridor_samples: int = 5
     path_fit_smoothing_window: int = 5
     membership_margin_m: float = 0.15
@@ -1319,11 +1334,13 @@ def _effective_curvature_limit(
     if limit < 0.2:
         return limit
     if corridor_sample_count >= int(config.min_required_corridor_samples) + 2:
-        limit *= 1.75
-    if float(heading_delta_max_rad) >= 0.28:
-        limit *= 1.35
-    elif float(heading_delta_max_rad) >= 0.18:
-        limit *= 1.15
+        limit *= CURVATURE_DENSE_SAMPLE_RELAXATION
+    if float(heading_delta_max_rad) >= CURVATURE_SHARP_TURN_HEADING_DELTA_RAD:
+        limit *= CURVATURE_SHARP_TURN_RELAXATION
+    elif float(heading_delta_max_rad) >= CURVATURE_MODERATE_TURN_HEADING_DELTA_RAD:
+        limit *= CURVATURE_MODERATE_TURN_RELAXATION
+    elif float(heading_delta_max_rad) >= CURVATURE_SHALLOW_TURN_HEADING_DELTA_RAD:
+        limit *= CURVATURE_SHALLOW_TURN_RELAXATION
     return limit
 
 

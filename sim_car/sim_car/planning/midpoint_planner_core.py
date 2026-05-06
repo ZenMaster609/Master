@@ -1496,11 +1496,9 @@ def _midpoint_progress_reference(
         return vehicle_forward, True
 
     handoff_distance_m = max(0.5, float(handoff_distance_m))
-    if ordered_path_length_m >= handoff_distance_m:
-        return trend_direction, False
-    return _blended_midpoint_reference(
-        vehicle_forward, trend_direction, ordered_path_length_m, handoff_distance_m,
-    )
+    if ordered_path_length_m < handoff_distance_m:
+        return vehicle_forward, True
+    return trend_direction, False
 
 
 def _initial_midpoint_reference(
