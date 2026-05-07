@@ -16,13 +16,15 @@ if str(PACKAGE_ROOT) not in sys.path:
 try:
     from vehicle_plotter_msgs.msg import ConeDetection, ConeDetectionArray  # noqa: E402
     from sim_car.planning.midpoint_planner_core import MidpointPlannerResult  # noqa: E402
-    from sim_car.planning.midpoint_planner_node import (  # noqa: E402
+    from sim_car.planning.planner_constants import (  # noqa: E402
         MSG_TRACK_STATE_CONFIRMED,
         MSG_TRACK_STATE_STALE,
         MSG_TRACK_STATE_TENTATIVE,
-        _PairMemoryEntry,
     )
-    from sim_car.planning.midpoint_planner_node import MidpointPlannerNode  # noqa: E402
+    from sim_car.planning.tracked_cone_planner_node import (  # noqa: E402
+        _MidpointPairMemoryEntry as _PairMemoryEntry,
+    )
+    from sim_car.planning.tracked_cone_planner_node import MidpointPlannerNode  # noqa: E402
     from sim_car.planning.planner_runtime_types import PlannerIdentity  # noqa: E402
     from sim_car.controllers.pure_pursuit_controller import PurePursuitController  # noqa: E402
 except ImportError as exc:  # pragma: no cover - depends on generated ROS interfaces

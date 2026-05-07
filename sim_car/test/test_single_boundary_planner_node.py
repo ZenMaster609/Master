@@ -16,8 +16,8 @@ try:
     from vehicle_plotter_msgs.msg import ConeDetection, ConeDetectionArray  # noqa: E402
     from sim_car.planning.planner_runtime_types import PlannerIdentity  # noqa: E402
     from sim_car.planning.single_boundary_planner_core import SingleBoundaryPlannerResult  # noqa: E402
-    from sim_car.planning.single_boundary_planner_node import MSG_TRACK_STATE_TENTATIVE  # noqa: E402
-    from sim_car.planning.single_boundary_planner_node import SingleBoundaryPlannerNode  # noqa: E402
+    from sim_car.planning.planner_constants import MSG_TRACK_STATE_TENTATIVE  # noqa: E402
+    from sim_car.planning.tracked_cone_planner_node import SingleBoundaryPlannerNode  # noqa: E402
 except ImportError as exc:  # pragma: no cover - depends on generated ROS interfaces
     pytest.skip(f"ROS planner node imports unavailable: {exc}", allow_module_level=True)
 

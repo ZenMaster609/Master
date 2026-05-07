@@ -9,7 +9,7 @@ from typing import Optional
 import numpy as np
 
 from sim_car.planning.planner_config_base import BasePlannerConfig
-from sim_car.planning.planner_utils import (
+from sim_car.planning.tracked_cone_planner_geometry import (
     _build_boundary_chain,
     _clamp,
     _default_reject_counts,
@@ -20,8 +20,6 @@ from sim_car.planning.planner_utils import (
     _forward_extent_m,
     _path_start_heading_error,
     _resample_path,
-)
-from sim_car.planning.tracked_cone_planner_geometry import (
     estimate_tangents as _estimate_tangents,
     moving_average as _moving_average_points,
     pair_width_in_range,

@@ -16,7 +16,7 @@ if str(PACKAGE_ROOT) not in sys.path:
 try:
     from vehicle_plotter_msgs.msg import ConeDetection, ConeDetectionArray  # noqa: E402
     from sim_car.planning.corridor_planner_core import CorridorPlannerResult  # noqa: E402
-    from sim_car.planning.corridor_planner_node import CorridorPlannerNode  # noqa: E402
+    from sim_car.planning.tracked_cone_planner_node import CorridorPlannerNode  # noqa: E402
     from sim_car.planning.planner_constants import MSG_TRACK_STATE_TENTATIVE  # noqa: E402
     from sim_car.planning.planner_runtime_types import PlannerIdentity  # noqa: E402
 except ImportError as exc:  # pragma: no cover - depends on generated ROS interfaces

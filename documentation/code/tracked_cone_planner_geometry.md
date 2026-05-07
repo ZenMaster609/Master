@@ -5,7 +5,6 @@ This page maps the shared geometry helpers used by the migrated tracked-cone pla
 ## Primary Files
 
 - `sim_car/sim_car/planning/tracked_cone_planner_geometry.py`
-- `sim_car/sim_car/planning/planner_utils.py`
 
 ## Function Map
 
@@ -47,9 +46,16 @@ This page maps the shared geometry helpers used by the migrated tracked-cone pla
 - `unknown_partner_check` and `unknown_partner_within_limits`: shared unknown-cone partner plausibility checks.
 - `prefer_previous_partner_option`: chooses a previous track-ID partner when its cost stays within reassignment margin.
 
+### Shared Algorithm Helpers
+
+- `_deterministic_order`: creates stable cone ordering before chain construction.
+- `_filter_and_order_cones`: applies planner geometry, confidence, and color filtering, then returns deterministic filtered cone data.
+- `_build_boundary_chain`: wraps `build_boundary_chain_data` for planner-core chain dataclasses.
+- `_finalize_path` and `_resample_path`: smooth, trim, and resample raw planner lines before validation.
+- `_path_length`, `_forward_extent_m`, `_path_start_heading_error`, and `_empty_result_fields`: shared path metrics and empty-result fields used by the cores.
+
 ## Planner Usage
 
-- `planner_utils.py`: owns shared cone filtering/order extraction, `_build_boundary_chain`, `_finalize_path`, `_resample_path`, path-length helpers, and empty-result field filling.
 - `midpoint_planner_core.py`: uses shared filtering, boundary-chain, path finalization, width/tangent/normal helpers, and pair predicates inside midpoint-specific pair creation and ordering.
 - `single_boundary_planner_core.py`: uses shared filtering, boundary-chain, path finalization, offset math, width update, and pair predicates while keeping one-boundary selection local.
 - `corridor_planner_core.py`: uses shared filtering, boundary-chain, path finalization, width-range, width-update, and path-shape helpers while preserving corridor audit and membership logic locally.

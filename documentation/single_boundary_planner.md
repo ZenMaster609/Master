@@ -12,7 +12,7 @@ The planner turns tracked cones into a path:
 
 It still reads both blue and yellow cones, and it can evaluate possible pairs, but its main planned path comes from a selected single boundary chain.
 
-Implementation note: geometry helpers are shared with midpoint and corridor through `tracked_cone_planner_geometry.py`, while common filtering, ordering, boundary-chain wrapping, and path finalization live in `planner_utils.py`. The single-boundary core keeps the higher-level decisions local: which boundary to trust, how to offset it, and how pair evidence updates the width estimate.
+Implementation note: geometry helpers, common filtering, ordering, boundary-chain wrapping, and path finalization are shared with midpoint and corridor through `tracked_cone_planner_geometry.py`. The single-boundary core keeps the higher-level decisions local: which boundary to trust, how to offset it, and how pair evidence updates the width estimate. The ROS node wrapper now lives with the other tracked-cone planner nodes in `tracked_cone_planner_node.py`.
 
 ## Cone Filtering
 

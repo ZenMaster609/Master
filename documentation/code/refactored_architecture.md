@@ -6,8 +6,7 @@ This page maps the architecture summary in `documentation/refactored_architectur
 
 - `sim_car/sim_car/planning/planner_config_base.py`: `BasePlannerConfig`, shared config fields inherited by the tracked-cone planner cores.
 - `sim_car/sim_car/planning/planner_constants.py`: shared planner constants and operator state/reason code tables.
-- `sim_car/sim_car/planning/planner_utils.py`: shared filtering, deterministic ordering, boundary-chain wrappers, path finalization, path metrics, and result-field helpers.
-- `sim_car/sim_car/planning/tracked_cone_planner_geometry.py`: reusable geometric primitives such as vehicle-frame transforms, path cumulative lengths, curvature/heading checks, self-intersection checks, boundary-chain growth, tangents, inward normals, and pair predicates.
+- `sim_car/sim_car/planning/tracked_cone_planner_geometry.py`: reusable geometric primitives such as vehicle-frame transforms, path cumulative lengths, curvature/heading checks, self-intersection checks, boundary-chain growth, tangents, inward normals, pair predicates, shared filtering/order extraction, path finalization, path metrics, and result-field helpers.
 - `sim_car/sim_car/planning/midpoint_planner_core.py`: midpoint-specific pair search, midpoint ordering, and validation.
 - `sim_car/sim_car/planning/single_boundary_planner_core.py`: one-boundary chain selection, inward offset path generation, pair support, and validation.
 - `sim_car/sim_car/planning/corridor_planner_core.py`: corridor sampling, rung validation, center-anchor fitting, corridor membership checks, and validation.
@@ -24,9 +23,7 @@ This page maps the architecture summary in `documentation/refactored_architectur
 
 ## Planner Node Files
 
-- `sim_car/sim_car/planning/midpoint_planner_node.py`: midpoint parameter loading, candidate selection, pair memory, and planner-cycle orchestration.
-- `sim_car/sim_car/planning/single_boundary_planner_node.py`: single-boundary parameter loading, candidate selection, pair memory, and planner-cycle orchestration.
-- `sim_car/sim_car/planning/corridor_planner_node.py`: corridor parameter loading, candidate selection, pair/corridor audit publishing, and planner-cycle orchestration.
+- `sim_car/sim_car/planning/tracked_cone_planner_node.py`: shared tracked-cone node module containing `MidpointPlannerNode`, `SingleBoundaryPlannerNode`, and `CorridorPlannerNode`, plus the `main_midpoint`, `main_single_boundary`, and `main_corridor` console-script targets.
 - `sim_car/sim_car/planning/linetest_planner_node.py`: fixed-line controller test planner.
 
 ## Vehicle Plotter Files

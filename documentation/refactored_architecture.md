@@ -7,9 +7,9 @@ This page summarizes the current refactoring boundaries in `sim_car` and `vehicl
 The tracked-cone planners are split into four layers:
 
 - Planner cores: `midpoint_planner_core.py`, `single_boundary_planner_core.py`, and `corridor_planner_core.py` contain the algorithm-specific centerline construction. They do not own ROS subscriptions, publishers, or timers.
-- Shared algorithm helpers: `tracked_cone_planner_geometry.py` contains reusable geometry primitives, and `planner_utils.py` contains shared cone filtering, deterministic ordering, boundary-chain wrappers, path finalization, and result-field helpers.
+- Shared geometry and algorithm helpers: `tracked_cone_planner_geometry.py` contains reusable geometry primitives plus the shared cone filtering, deterministic ordering, boundary-chain wrappers, path finalization, and result-field helpers used by the planner cores.
 - Shared runtime: `tracked_cone_planner_base.py` owns ROS-facing planner utilities and inherits `DiagnosticsMixin`, `VisualizationMixin`, and `StateMachineMixin`.
-- Planner nodes: `*_planner_node.py` files read parameters, build the core config dataclass, run one planner cycle, and delegate common publishing, diagnostics, visualization, hold, and controller behavior to the shared runtime.
+- Planner node entry points: `tracked_cone_planner_node.py` now contains `MidpointPlannerNode`, `CorridorPlannerNode`, and `SingleBoundaryPlannerNode`. The installed console scripts keep their old executable names (`midpoint_planner_node`, `corridor_planner_node`, and `single_boundary_planner_node`) but dispatch to this shared module.
 
 Shared planner constants now live in `planner_constants.py`. This includes cone track-state message codes, validated-jump acceptance limits, shared marker widths, pair-pass margins, and operator state/reason codes.
 

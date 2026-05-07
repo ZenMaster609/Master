@@ -25,9 +25,9 @@ Tangents and inward normals are also shared ideas. `estimate_tangents` estimates
 
 Track-width and pair gates now share small predicate helpers too. `update_track_width_estimate` keeps the filtered width prior consistent across the planners. Pairing code in midpoint and single-boundary uses shared checks such as `pair_width_in_range`, `inward_distance`, `unknown_partner_check`, and `unknown_partner_within_limits`, while each planner still owns the control flow that decides how candidates become a path.
 
-Shared algorithm utilities that are not pure geometry live in `planner_utils.py`. This includes deterministic cone ordering, common filtering/order extraction, the boundary-chain wrapper used by the cores, moving-average/resampling finalization, path length/forward-extent helpers, and empty-result field filling.
+Shared algorithm utilities also live in `tracked_cone_planner_geometry.py`. This includes deterministic cone ordering, common filtering/order extraction, the boundary-chain wrapper used by the cores, moving-average/resampling finalization, path length/forward-extent helpers, and empty-result field filling.
 
-Validation is conceptually shared even when exact limits differ. The planners check for enough points, enough forward extent, finite geometry, near-vehicle heading sanity, jumps from the previous accepted path, excessive kinks, and self-intersection. The path-shape primitives live in `tracked_cone_planner_geometry.py` and `planner_utils.py`; each core still decides which rejection thresholds apply. The corridor planner adds corridor-membership and curvature checks because it has an explicit drivable channel.
+Validation is conceptually shared even when exact limits differ. The planners check for enough points, enough forward extent, finite geometry, near-vehicle heading sanity, jumps from the previous accepted path, excessive kinks, and self-intersection. The path-shape primitives live in `tracked_cone_planner_geometry.py`; each core still decides which rejection thresholds apply. The corridor planner adds corridor-membership and curvature checks because it has an explicit drivable channel.
 
 ## Midpoint Planner Geometry
 
@@ -43,7 +43,7 @@ Each accepted pair creates one raw midpoint:
 
 Those midpoints are not automatically in driving order. `_order_pairs_into_midpoint_chain` starts near the vehicle and connects nearby midpoints while discouraging backwards progress. This matters on curves and in sparse cone layouts, where the closest pair in Euclidean distance is not always the next pair along the track. `_trim_pairs_by_midpoint_step_length` then cuts the chain if a segment jumps too far.
 
-The raw midpoint chain is finalized through the shared `_finalize_path` helper in `planner_utils.py`. It applies a moving-average smoothing window when enabled, then resamples the curve at `centerline.path_resolution_m` up to `centerline.max_path_length_m`.
+The raw midpoint chain is finalized through the shared `_finalize_path` helper in `tracked_cone_planner_geometry.py`. It applies a moving-average smoothing window when enabled, then resamples the curve at `centerline.path_resolution_m` up to `centerline.max_path_length_m`.
 
 Midpoint validation rejects paths that are too short, not forward enough, non-finite, heading-flipped near the vehicle, too different from the previous near-field path, too kinked, or self-crossing. If validation fails, the fresh path is rejected instead of publishing arbitrary pair geometry.
 

@@ -4,9 +4,8 @@ This page maps the `documentation/corridor_planner.md` behavior to the corridor 
 
 ## Primary Files
 
-- `sim_car/sim_car/planning/corridor_planner_node.py`
+- `sim_car/sim_car/planning/tracked_cone_planner_node.py`
 - `sim_car/sim_car/planning/corridor_planner_core.py`
-- `sim_car/sim_car/planning/planner_utils.py`
 - `sim_car/sim_car/planning/tracked_cone_planner_base.py`
 - `sim_car/sim_car/planning/planning_diagnostics.py`
 - `sim_car/sim_car/planning/planning_state_machine.py`
@@ -18,9 +17,9 @@ This page maps the `documentation/corridor_planner.md` behavior to the corridor 
 
 ### Runtime Flow
 
-- `CorridorPlannerNode._on_timer` in `sim_car/sim_car/planning/corridor_planner_node.py`: top-level planning cycle that runs the corridor core, applies hold/update rules, and publishes outputs.
+- `CorridorPlannerNode._on_timer` in `sim_car/sim_car/planning/tracked_cone_planner_node.py`: top-level planning cycle that runs the corridor core, applies hold/update rules, and publishes outputs.
 - `compute_corridor_centerline` in `sim_car/sim_car/planning/corridor_planner_core.py`: main algorithm that builds boundary chains, corridor samples, and a final centerline.
-- `CorridorPlannerNode._select_candidate_centerline` in `sim_car/sim_car/planning/corridor_planner_node.py`: chooses the path that will actually be published when fresh and remembered geometry compete.
+- `CorridorPlannerNode._select_candidate_centerline` in `sim_car/sim_car/planning/tracked_cone_planner_node.py`: chooses the path that will actually be published when fresh and remembered geometry compete.
 - `TrackedConePlannerBase` in `sim_car/sim_car/planning/tracked_cone_planner_base.py`: shared tracked-cone node runtime used for callbacks, TF utilities, controller execution, publishing, and path-memory support.
 - `DiagnosticsMixin`, `StateMachineMixin`, and `VisualizationMixin`: shared diagnostic, hold/operator-state, and RViz marker helpers inherited by the base runtime.
 
@@ -31,8 +30,8 @@ This page maps the `documentation/corridor_planner.md` behavior to the corridor 
 
 ### Boundary Chain Construction
 
-- `_deterministic_order` in `sim_car/sim_car/planning/planner_utils.py`: creates a stable cone ordering before chain construction.
-- `_build_boundary_chain` in `sim_car/sim_car/planning/planner_utils.py`: shared wrapper around boundary-chain construction.
+- `_deterministic_order` in `sim_car/sim_car/planning/tracked_cone_planner_geometry.py`: creates a stable cone ordering before chain construction.
+- `_build_boundary_chain` in `sim_car/sim_car/planning/tracked_cone_planner_geometry.py`: shared wrapper around boundary-chain construction.
 - `build_boundary_chain_data`, `grow_boundary_chain_positions`, and `candidate_is_shadowed` in `sim_car/sim_car/planning/tracked_cone_planner_geometry.py`: implement the shared chain-growth, chain-heading progress, and shadowing rules.
 
 ### Corridor Sampling
@@ -45,13 +44,13 @@ This page maps the `documentation/corridor_planner.md` behavior to the corridor 
 
 - `_fit_centerline_from_anchors` in `sim_car/sim_car/planning/corridor_planner_core.py`: converts accepted corridor center anchors into a continuous centerline.
 - `_moving_average_points` and `_resample_boundary_by_station` in `sim_car/sim_car/planning/corridor_planner_core.py`: implement the smoothing and resampling used during centerline fitting.
-- `_finalize_path` in `sim_car/sim_car/planning/planner_utils.py`: produces the final publishable path from the anchor-derived centerline.
+- `_finalize_path` in `sim_car/sim_car/planning/tracked_cone_planner_geometry.py`: produces the final publishable path from the anchor-derived centerline.
 
 ### Corridor Membership And Validation
 
 - `_path_violates_corridor` in `sim_car/sim_car/planning/corridor_planner_core.py`: rejects fitted paths that leave the sampled corridor.
 - `_near_field_delta_metrics` and `_path_alignment_metrics` in `sim_car/sim_car/planning/corridor_planner_core.py`, plus `path_heading_delta_max` and `path_self_intersects` in `tracked_cone_planner_geometry.py`: implement the main path validation checks.
-- `CorridorPlannerNode._candidate_path_is_updateable` and `_candidate_transition_metrics` in `sim_car/sim_car/planning/corridor_planner_node.py`: decide whether a fresh corridor path can replace the stored path.
+- `CorridorPlannerNode._candidate_path_is_updateable` and `_candidate_transition_metrics` in `sim_car/sim_car/planning/tracked_cone_planner_node.py`: decide whether a fresh corridor path can replace the stored path.
 
 ### Visualization Output
 

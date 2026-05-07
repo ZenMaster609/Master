@@ -9,7 +9,7 @@ from typing import Optional, cast
 import numpy as np
 
 from sim_car.planning.planner_config_base import BasePlannerConfig
-from sim_car.planning.planner_utils import (
+from sim_car.planning.tracked_cone_planner_geometry import (
     _build_boundary_chain,
     _clamp,
     _default_reject_counts,
@@ -21,8 +21,6 @@ from sim_car.planning.planner_utils import (
     _merge_reject_counts,
     _path_start_heading_error,
     _resample_path,
-)
-from sim_car.planning.tracked_cone_planner_geometry import (
     estimate_tangents as _estimate_tangents,
     inward_distance,
     inward_normal as _inward_normal,
