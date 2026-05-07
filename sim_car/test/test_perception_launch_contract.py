@@ -179,14 +179,13 @@ def test_full_launch_uses_single_perception_node_with_stereo_toggle():
     assert "stereo_perception_node" not in content
 
 
-def test_full_launch_declares_and_passes_path_tracking_eval():
+def test_full_launch_always_enables_path_tracking_eval():
     content = FULL_LAUNCH.read_text(encoding='utf-8')
 
-    assert "DeclareLaunchArgument(\n        'path_tracking_eval'" in content
-    assert "'path_tracking_eval'" in content
     assert "logger_node = Node(" in content
-    assert "'path_tracking_eval_enabled': ParameterValue(" in content
-    assert "LaunchConfiguration('path_tracking_eval')" in content
+    assert "DeclareLaunchArgument(\n        'path_tracking_eval'" not in content
+    assert "LaunchConfiguration('path_tracking_eval')" not in content
+    assert "'path_tracking_eval_enabled': True" in content
     assert "'path_tracking_eval_gt_track_topic': '/ground_truth/track'" in content
     assert "'path_tracking_eval_odom_topic': '/sim/odom'" in content
     assert "'path_tracking_eval_planner_path_topic': '/planned_centerline'" in content

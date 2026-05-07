@@ -84,6 +84,9 @@ RUN_ID_CONTROLLER_ABBREVIATIONS = {
 }
 SCAN2D_LIDAR_PIPELINE_NAME = 'scan2d'
 SCAN2D_RUN_ID_SUFFIX = '2d'
+DEFAULT_ACKERMANN_STEERING_SIGN = 1.0  # Existing default preserves the configured steering direction.
+DEFAULT_USE_SIM_TIME = True  # Full sim nodes use the Gazebo /clock timeline by default.
+DEFAULT_USE_SIM_TIME_LAUNCH = 'true'  # Included launch files receive launch arguments as strings.
 
 
 @dataclass(frozen=True)
@@ -250,47 +253,16 @@ def generate_launch_description():
         description='Optional initial world yaw override for the car model (radians)'
     )
 
-    path_tracking_eval_arg = DeclareLaunchArgument(
-        'path_tracking_eval',
-        default_value='true',
-        description='Enable GT midline planner/controller path evaluation logging in the main logger'
-    )
-
-    logging_arg = DeclareLaunchArgument(
-        'logging',
-        default_value='false',
-        description='Enable data logging'
-    )
-
-
     steering_arg = DeclareLaunchArgument(
         'steering',
         default_value='false',
         description='Enable the EUFS steering GUI'
     )
 
-    control_bridge_arg = DeclareLaunchArgument(
-        'bridge',
-        default_value='ackermann',
-        description="Control bridge to use. Supported value today: 'ackermann'"
-    )
-
-    ackermann_steering_sign_arg = DeclareLaunchArgument(
-        'ackermann_steering_sign',
-        default_value='1.0',
-        description='Sign applied to Ackermann steering before cmd_vel conversion (+1 or -1)'
-    )
-
     physics_model_arg = DeclareLaunchArgument(
         'physics_model',
         default_value='bicycle',
         description="Physics model for Gazebo dynamics: 'pointmass' or 'bicycle'"
-    )
-
-    use_sim_time_arg = DeclareLaunchArgument(
-        'use_sim_time',
-        default_value='true',
-        description='Use simulation time from /clock topic'
     )
 
     sensor_pipeline_arg = DeclareLaunchArgument(
@@ -303,12 +275,6 @@ def generate_launch_description():
         'measure',
         default_value='false',
         description='Enable measurement_node and use /sim/raw topics'
-    )
-
-    sensor_nodes_arg = DeclareLaunchArgument(
-        'sensor_nodes',
-        default_value='false',
-        description='Enable sim_car sensor nodes launch include'
     )
 
     planner_arg = DeclareLaunchArgument(
@@ -327,12 +293,6 @@ def generate_launch_description():
         'rviz',
         default_value='true',
         description='Launch RViz (disabled when headless=true)'
-    )
-
-    use_rviz_arg = DeclareLaunchArgument(
-        'use_rviz',
-        default_value='true',
-        description='Alias switch for RViz launch (must also satisfy rviz:=true)'
     )
 
     rviz_profile_arg = DeclareLaunchArgument(
@@ -389,7 +349,7 @@ def generate_launch_description():
 
     camera_range_arg = DeclareLaunchArgument(
         'camera_range_m',
-        default_value='10.0',
+        default_value='0.0',
         description='Far-band range (m) where camera overrides lidar for position (0..20)'
     )
 
@@ -508,19 +468,12 @@ def generate_launch_description():
         'spawn_y',
         'spawn_z',
         'spawn_yaw',
-        'path_tracking_eval',
-        'logging',
         'steering',
-        'bridge',
-        'ackermann_steering_sign',
-        'use_sim_time',
         'sensor_pipeline',
         'measure',
-        'sensor_nodes',
         'planner',
         'controller',
         'rviz',
-        'use_rviz',
         'rviz_profile',
         'rviz_config',
         'corridor_debug',
@@ -570,10 +523,6 @@ def generate_launch_description():
     measurement_config_setup = OpaqueFunction(function=_configure_measurement_config)
     rviz_config_setup = OpaqueFunction(function=_configure_rviz_config)
 
-    sensor_nodes_enabled = PythonExpression([
-        "('", LaunchConfiguration('sensor_pipeline'), "'.lower() == 'true') or ('",
-        LaunchConfiguration('sensor_nodes'), "'.lower() == 'true')"
-    ])
     measurement_enabled = PythonExpression([
         "('", LaunchConfiguration('sensor_pipeline'), "'.lower() == 'true') or ('",
         LaunchConfiguration('measure'), "'.lower() == 'true')"
@@ -612,7 +561,7 @@ def generate_launch_description():
         launch_arguments={
             'headless': LaunchConfiguration('headless'),
             'world': resolved_world,
-            'use_sim_time': LaunchConfiguration('use_sim_time'),
+            'use_sim_time': DEFAULT_USE_SIM_TIME_LAUNCH,
             'update_rate_hz': LaunchConfiguration('update_rate_hz'),
             'camera_rate_hz': LaunchConfiguration('camera_rate_hz'),
             'perception_rate_hz': LaunchConfiguration('perception_rate_hz'),
@@ -634,8 +583,9 @@ def generate_launch_description():
         launch_arguments={
             'topic_prefix': topic_prefix,
             'sensor_config': resolved_measurement_config,
+            'use_sim_time': DEFAULT_USE_SIM_TIME_LAUNCH,
         }.items(),
-        condition=IfCondition(sensor_nodes_enabled),
+        condition=IfCondition(LaunchConfiguration('sensor_pipeline')),
     )
 
     measurement_node = Node(
@@ -645,7 +595,7 @@ def generate_launch_description():
         output='screen',
         condition=IfCondition(measurement_enabled),
         parameters=[{
-            'use_sim_time': LaunchConfiguration('use_sim_time'),
+            'use_sim_time': DEFAULT_USE_SIM_TIME,
             'config_path': resolved_measurement_config,
         }],
     )
@@ -657,7 +607,7 @@ def generate_launch_description():
         output='screen',
         parameters=[{
             'use_sim_time': ParameterValue(
-                LaunchConfiguration('use_sim_time'),
+                DEFAULT_USE_SIM_TIME,
                 value_type=bool,
             ),
             'input_topic': '/sim/odom',
@@ -677,14 +627,8 @@ def generate_launch_description():
         ),
         launch_arguments={
             'enable_log': 'false',
-            'enable_state_logging': PythonExpression([
-                "'true' if ('",
-                LaunchConfiguration('sensor_pipeline'),
-                "'.lower() == 'true' or '",
-                LaunchConfiguration('logging'),
-                "'.lower() == 'true') else 'false'"
-            ]),
-            'use_sim_time': LaunchConfiguration('use_sim_time'),
+            'enable_state_logging': LaunchConfiguration('sensor_pipeline'),
+            'use_sim_time': DEFAULT_USE_SIM_TIME_LAUNCH,
             'run_id_prefix': resolved_run_id_prefix,
         }.items(),
     )
@@ -702,13 +646,7 @@ def generate_launch_description():
             'enable_logging': True,
             'state_topic': '/vehicle_plotter/state',
             'enable_state_logging': ParameterValue(
-                PythonExpression([
-                    "'true' if ('",
-                    LaunchConfiguration('sensor_pipeline'),
-                    "'.lower() == 'true' or '",
-                    LaunchConfiguration('logging'),
-                    "'.lower() == 'true') else 'false'"
-                ]),
+                LaunchConfiguration('sensor_pipeline'),
                 value_type=bool,
             ),
             'auto_plot_on_shutdown': True,
@@ -725,10 +663,7 @@ def generate_launch_description():
                 "'.lower() == 'true' else ''"
             ]),
             'off_track_autostop_planner_diag_topic': resolved_planner_diagnostics_topic,
-            'path_tracking_eval_enabled': ParameterValue(
-                LaunchConfiguration('path_tracking_eval'),
-                value_type=bool,
-            ),
+            'path_tracking_eval_enabled': True,
             'path_tracking_eval_gt_track_topic': '/ground_truth/track',
             'path_tracking_eval_odom_topic': '/sim/odom',
             'path_tracking_eval_planner_path_topic': '/planned_centerline',
@@ -775,7 +710,7 @@ def generate_launch_description():
             'wheelbase': 1.65,
             'command_mode': 'velocity',
             'steering_sign': ParameterValue(
-                LaunchConfiguration('ackermann_steering_sign'),
+                DEFAULT_ACKERMANN_STEERING_SIGN,
                 value_type=float,
             ),
             'max_speed': control_config['max_speed'],
@@ -786,9 +721,6 @@ def generate_launch_description():
                 value_type=float,
             ),
         }],
-        condition=IfCondition(PythonExpression([
-            "'", LaunchConfiguration('bridge'), "'.lower() == 'ackermann'"
-        ]))
     )
 
     perception_node = Node(
@@ -815,7 +747,7 @@ def generate_launch_description():
         },
         parameters=[{
             'use_sim_time': ParameterValue(
-                LaunchConfiguration('use_sim_time'),
+                DEFAULT_USE_SIM_TIME,
                 value_type=bool,
             ),
             'stereo_enabled': ParameterValue(
@@ -889,7 +821,7 @@ def generate_launch_description():
         output='screen',
         parameters=[{
             'use_sim_time': ParameterValue(
-                LaunchConfiguration('use_sim_time'),
+                DEFAULT_USE_SIM_TIME,
                 value_type=bool,
             ),
             'predicted_cones_topic': PythonExpression(["'", topic_prefix, "' + '/stereo/perception/cones_3d'"]),
@@ -907,7 +839,7 @@ def generate_launch_description():
         condition=_lidar_enabled_condition(),
         parameters=[{
             'use_sim_time': ParameterValue(
-                LaunchConfiguration('use_sim_time'),
+                DEFAULT_USE_SIM_TIME,
                 value_type=bool,
             ),
             'scan_topic': PythonExpression(["'", topic_prefix, "' + '/lidar'"]),
@@ -925,7 +857,7 @@ def generate_launch_description():
         condition=IfCondition(LaunchConfiguration('lidar_enabled')),
         parameters=[{
             'use_sim_time': ParameterValue(
-                LaunchConfiguration('use_sim_time'),
+                DEFAULT_USE_SIM_TIME,
                 value_type=bool,
             ),
             'predicted_cones_topic': PythonExpression(["'", topic_prefix, "' + '/lidar/perception/cones_3d'"]),
@@ -945,7 +877,7 @@ def generate_launch_description():
             PathJoinSubstitution([sim_car_share, 'config', 'cone_memory.yaml']),
             {
                 'use_sim_time': ParameterValue(
-                    LaunchConfiguration('use_sim_time'),
+                    DEFAULT_USE_SIM_TIME,
                     value_type=bool,
                 ),
                 'topics.lidar_cones_topic': PythonExpression(["'", topic_prefix, "' + '/lidar/perception/cones_3d'"]),
@@ -1021,7 +953,7 @@ def generate_launch_description():
             PathJoinSubstitution([sim_car_share, 'config', 'skidpad', 'skidpad_router.yaml']),
             {
                 'use_sim_time': ParameterValue(
-                    LaunchConfiguration('use_sim_time'),
+                    DEFAULT_USE_SIM_TIME,
                     value_type=bool,
                 ),
                 'topics.input_topic': router_input_topic,
@@ -1077,7 +1009,7 @@ def generate_launch_description():
             resolved_speed_control_config,
             {
                 'use_sim_time': ParameterValue(
-                    LaunchConfiguration('use_sim_time'),
+                    DEFAULT_USE_SIM_TIME,
                     value_type=bool,
                 ),
                 'topics.tracked_cones_topic': planner_input_topic,
@@ -1107,7 +1039,7 @@ def generate_launch_description():
             resolved_speed_control_config,
             {
                 'use_sim_time': ParameterValue(
-                    LaunchConfiguration('use_sim_time'),
+                    DEFAULT_USE_SIM_TIME,
                     value_type=bool,
                 ),
                 'topics.tracked_cones_topic': planner_input_topic,
@@ -1137,7 +1069,7 @@ def generate_launch_description():
             resolved_speed_control_config,
             {
                 'use_sim_time': ParameterValue(
-                    LaunchConfiguration('use_sim_time'),
+                    DEFAULT_USE_SIM_TIME,
                     value_type=bool,
                 ),
                 'topics.tracked_cones_topic': planner_input_topic,
@@ -1167,7 +1099,7 @@ def generate_launch_description():
             resolved_speed_control_config,
             {
                 'use_sim_time': ParameterValue(
-                    LaunchConfiguration('use_sim_time'),
+                    DEFAULT_USE_SIM_TIME,
                     value_type=bool,
                 ),
                 'topics.odom_topic': planner_odom_topic,
@@ -1202,7 +1134,7 @@ def generate_launch_description():
         output='screen',
         parameters=[{
                 'use_sim_time': ParameterValue(
-                    LaunchConfiguration('use_sim_time'),
+                    DEFAULT_USE_SIM_TIME,
                     value_type=bool,
                 ),
                 'odom_topic': planner_odom_topic,
@@ -1220,13 +1152,12 @@ def generate_launch_description():
         arguments=['-d', resolved_rviz_config],
         parameters=[{
             'use_sim_time': ParameterValue(
-                LaunchConfiguration('use_sim_time'),
+                DEFAULT_USE_SIM_TIME,
                 value_type=bool,
             ),
         }],
         condition=IfCondition(PythonExpression([
-            "'", LaunchConfiguration('use_rviz'), "'.lower() == 'true' and '",
-            LaunchConfiguration('rviz'), "'.lower() == 'true' and '",
+            "'", LaunchConfiguration('rviz'), "'.lower() == 'true' and '",
             LaunchConfiguration('headless'), "'.lower() != 'true'"
         ])),
     )
@@ -1261,20 +1192,13 @@ def generate_launch_description():
         spawn_y_arg,
         spawn_z_arg,
         spawn_yaw_arg,
-        path_tracking_eval_arg,
-        logging_arg,
         steering_arg,
-        control_bridge_arg,
-        ackermann_steering_sign_arg,
         physics_model_arg,
-        use_sim_time_arg,
         sensor_pipeline_arg,
         measure_arg,
-        sensor_nodes_arg,
         planner_arg,
         controller_arg,
         rviz_arg,
-        use_rviz_arg,
         rviz_profile_arg,
         rviz_config_arg,
         corridor_debug_arg,
@@ -1635,18 +1559,10 @@ def _configure_rviz_config(context, *_args, **_kwargs):
 
 
 def _validate_planner_and_controller_args(context, *_args, **_kwargs):
-    bridge = LaunchConfiguration('bridge').perform(context).strip().lower()
     track = LaunchConfiguration('track').perform(context).strip().lower()
     planner = LaunchConfiguration('planner').perform(context).strip().lower()
     controller = LaunchConfiguration('controller').perform(context).strip().lower() or 'stanley'
 
-    supported_bridges = {'ackermann'}
-
-    if bridge not in supported_bridges:
-        raise RuntimeError(
-            "Unsupported launch argument bridge='%s'. Supported value today: ackermann"
-            % bridge
-        )
     if track not in SUPPORTED_TRACKS:
         raise RuntimeError(
             "Unsupported launch argument track='%s'. Supported values: acceleration, skidpad, smalltrack"
