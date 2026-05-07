@@ -1,6 +1,10 @@
-"""Shared constants for planner runtime and node modules."""
+"""Shared constants, pipeline defaults, runtime types, and planner registry."""
 
 from __future__ import annotations
+
+from dataclasses import dataclass
+
+import numpy as np
 
 from vehicle_plotter_msgs.msg import ConeDetection
 
@@ -47,3 +51,123 @@ OPERATOR_REASON_CODES = {
     "controller_disabled": 14,
     "missing_gt_midline": 15,
 }
+
+# --- Pipeline Defaults ---
+
+ODOM_FRAME_DEFAULT = "odom"  # Shared odometry frame used by simulation and planners.
+BASE_FRAME_DEFAULT = "front_axle"  # Controller geometry is referenced at the front axle.
+TRACKED_CONES_TOPIC_DEFAULT = "/tracked_cones"  # Cone memory publishes the planner input here.
+ODOM_TOPIC_DEFAULT = "/sim/odom"  # Simulation odometry topic used by cone memory and planners.
+WHEELBASE_M_DEFAULT = 1.65  # Meters; matches the EUFS vehicle kinematic wheelbase.
+TF_TIMEOUT_S_DEFAULT = 0.03  # Seconds; short enough for realtime planning without hiding TF issues.
+PLANNER_MAX_RANGE_M_DEFAULT = 25.0  # Meters; matches useful lidar range in the default sim setup.
+PLANNER_MIN_CONFIDENCE_DEFAULT = 0.3  # Unitless; filters noisy tracks while keeping sparse layouts.
+
+# --- Runtime Types ---
+
+
+@dataclass(frozen=True)
+class PlannerIdentity:
+    node_name: str
+    planner_mode: str
+    diagnostics_prefix: str
+    diagnostics_topic: str
+
+    @property
+    def hardware_id(self) -> str:
+        return f"sim_car.{self.diagnostics_prefix}"
+
+
+@dataclass(frozen=True)
+class TrackedConePlanningMetadata:
+    track_ids: np.ndarray
+    track_states: np.ndarray
+    track_confidences: np.ndarray
+
+
+@dataclass(frozen=True)
+class TrackedConePlanningFrame:
+    points_xy: np.ndarray
+    colors: list[str]
+    raw_confidences: np.ndarray
+    planner_confidences: np.ndarray
+    raw_colors: list[str]
+    boundary_hints: list[str]
+    metadata: TrackedConePlanningMetadata
+
+    @property
+    def track_ids(self) -> np.ndarray:
+        return self.metadata.track_ids
+
+    @property
+    def track_states(self) -> np.ndarray:
+        return self.metadata.track_states
+
+    @property
+    def track_confidences(self) -> np.ndarray:
+        return self.metadata.track_confidences
+
+# --- Planner Registry ---
+
+
+@dataclass(frozen=True)
+class PlannerLaunchSpec:
+    name: str
+    executable: str
+    diagnostics_topic: str
+    default_rviz_profile: str
+    allowed_tracks: frozenset[str] | None = None
+
+
+MIGRATED_PLANNERS = frozenset({'midpoint', 'single_boundary', 'corridor'})
+CONFIGURED_PLANNERS = frozenset(set(MIGRATED_PLANNERS) | {'linetest'})
+SUPPORTED_PLANNERS = frozenset(set(CONFIGURED_PLANNERS) | {'none'})
+SUPPORTED_CONTROLLERS = frozenset({'stanley', 'pure_pursuit', 'none'})
+
+PLANNER_REGISTRY: dict[str, PlannerLaunchSpec] = {
+    'midpoint': PlannerLaunchSpec(
+        name='midpoint',
+        executable='midpoint_planner_node',
+        diagnostics_topic='/midpoint_planner/diagnostics',
+        default_rviz_profile='midpoint',
+    ),
+    'single_boundary': PlannerLaunchSpec(
+        name='single_boundary',
+        executable='single_boundary_planner_node',
+        diagnostics_topic='/single_boundary_planner/diagnostics',
+        default_rviz_profile='single_boundary',
+    ),
+    'corridor': PlannerLaunchSpec(
+        name='corridor',
+        executable='corridor_planner_node',
+        diagnostics_topic='/corridor_planner/diagnostics',
+        default_rviz_profile='corridor',
+    ),
+    'linetest': PlannerLaunchSpec(
+        name='linetest',
+        executable='linetest_planner_node',
+        diagnostics_topic='/linetest_planner/diagnostics',
+        default_rviz_profile='linetest',
+        allowed_tracks=frozenset({'acceleration', 'smalltrack'}),
+    ),
+    'none': PlannerLaunchSpec(
+        name='none',
+        executable='',
+        diagnostics_topic='/midpoint_planner/diagnostics',
+        default_rviz_profile='clean',
+    ),
+}
+
+
+def get_planner_spec(planner_name: str) -> PlannerLaunchSpec:
+    normalized_name = str(planner_name).strip().lower()
+    if normalized_name not in SUPPORTED_PLANNERS:
+        raise KeyError(normalized_name)
+    return PLANNER_REGISTRY[normalized_name]
+
+
+def planner_allowed_for_track(*, planner_name: str, track_name: str) -> bool:
+    spec = get_planner_spec(planner_name)
+    if spec.allowed_tracks is None:
+        return True
+    return str(track_name).strip().lower() in spec.allowed_tracks

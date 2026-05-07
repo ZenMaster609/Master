@@ -2,16 +2,15 @@
 
 This folder maps the behavior-oriented docs in `documentation/` to the source files, classes, and helper functions that implement them.
 
-Use these pages as companions to the main docs:
+Use these pages as companions to the concept docs:
 
-- `documentation/*.md`: what the system does
+- `documentation/concepts/*.md`: what the system does
 - `documentation/code/*.md`: where that behavior lives in code
 
 Most pages focus on runtime symbols, but some topics are mainly implemented through launch/config/scripts instead of one core algorithm. In those cases the companion page points to launch entry points, parameter loaders, and setup scripts.
 
 ## Runtime
 
-- [Refactored Architecture](refactored_architecture.md)
 - [Vehicle Plotter](vehicle_plotter.md)
 - [Sensors](sensors.md)
 - [Perception](perception.md)
@@ -20,15 +19,8 @@ Most pages focus on runtime symbols, but some topics are mainly implemented thro
 
 ## Planning And Control
 
-- [Planner Tuning](planner_tuning.md)
-- [Tracked-Cone Planner Geometry](tracked_cone_planner_geometry.md)
-- [Midpoint Planner](midpoint_planner.md)
-- [Single-Boundary Planner](single_boundary_planner.md)
-- [Corridor Planner](corridor_planner.md)
-- [Line Test Planner](linetest_planner.md)
-- [Skidpad Routing](skidpad_routing.md)
-- [Stanley Controller](stanley_controller.md)
-- [Pure Pursuit Controller](pure_pursuit_controller.md)
+- [Planning System](planning_system.md)
+- [Steering Controllers](steering_controllers.md)
 
 ## Environment
 

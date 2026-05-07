@@ -1,6 +1,6 @@
 # Cones Code Map
 
-This page maps the `documentation/cones.md` behavior to the cone memory node, evaluator node, tracker, fusion helpers, visualization builders, and CSV export logic.
+This page maps the `documentation/concepts/cones.md` behavior to the cone memory node, evaluator node, tracker, fusion helpers, visualization builders, and CSV export logic.
 
 ## Primary Files
 

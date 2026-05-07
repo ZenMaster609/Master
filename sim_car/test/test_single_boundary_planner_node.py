@@ -14,7 +14,7 @@ if str(PACKAGE_ROOT) not in sys.path:
 
 try:
     from vehicle_plotter_msgs.msg import ConeDetection, ConeDetectionArray  # noqa: E402
-    from sim_car.planning.planner_runtime_types import PlannerIdentity  # noqa: E402
+    from sim_car.planning.planner_constants import PlannerIdentity  # noqa: E402
     from sim_car.planning.single_boundary_planner_core import SingleBoundaryPlannerResult  # noqa: E402
     from sim_car.planning.planner_constants import MSG_TRACK_STATE_TENTATIVE  # noqa: E402
     from sim_car.planning.tracked_cone_planner_node import SingleBoundaryPlannerNode  # noqa: E402

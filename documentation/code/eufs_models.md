@@ -1,6 +1,6 @@
 # EUFS Models Code Map
 
-This page maps the `documentation/eufs_models.md` behavior to the vehicle dynamics model library headers and source files.
+This page maps the `documentation/concepts/eufs_models.md` behavior to the vehicle dynamics model library headers and source files.
 
 ## Primary Files
 

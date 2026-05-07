@@ -1,6 +1,6 @@
 # Reproducible Environment Code Map
 
-This page maps the `documentation/reproducible_environment.md` behavior to the launch files and setup scripts that define the current runtime environment.
+This page maps the `documentation/concepts/reproducible_environment.md` behavior to the launch files and setup scripts that define the current runtime environment.
 
 ## Primary Files
 

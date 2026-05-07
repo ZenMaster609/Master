@@ -46,7 +46,7 @@ from sim_car.cones.tracking.tracker import (
     LocalConeTracker,
     TrackUpdate,
 )
-from sim_car.planning.pipeline_defaults import (
+from sim_car.planning.planner_constants import (
     BASE_FRAME_DEFAULT,
     ODOM_FRAME_DEFAULT,
     ODOM_TOPIC_DEFAULT,

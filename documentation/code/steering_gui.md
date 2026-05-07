@@ -1,6 +1,6 @@
 # Steering GUI Code Map
 
-This page maps the `documentation/steering_gui.md` behavior to the RQT plugin implementation.
+This page maps the `documentation/concepts/steering_gui.md` behavior to the RQT plugin implementation.
 
 ## Primary Files
 

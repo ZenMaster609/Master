@@ -36,7 +36,7 @@ from sim_car.planning.planner_constants import (
     VALIDATED_JUMP_ACCEPT_LATERAL_MAX_M as _VALIDATED_JUMP_ACCEPT_LATERAL_MAX_M,
     VALIDATED_JUMP_ACCEPT_LATERAL_MEAN_M as _VALIDATED_JUMP_ACCEPT_LATERAL_MEAN_M,
 )
-from sim_car.planning.planner_runtime_types import PlannerIdentity
+from sim_car.planning.planner_constants import PlannerIdentity
 from sim_car.planning.single_boundary_planner_core import (
     SingleBoundaryPlannerConfig,
     SingleBoundaryPlannerPrior,

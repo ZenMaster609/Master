@@ -38,7 +38,7 @@ from ament_index_python.packages import get_package_share_directory
 import yaml
 
 try:
-    from sim_car.planning.planner_registry import (
+    from sim_car.planning.planner_constants import (
         CONFIGURED_PLANNERS,
         MIGRATED_PLANNERS,
         SUPPORTED_CONTROLLERS,
@@ -50,7 +50,7 @@ except ModuleNotFoundError:
     source_package_root = Path(__file__).resolve().parents[1]
     if str(source_package_root) not in sys.path:
         sys.path.insert(0, str(source_package_root))
-    from sim_car.planning.planner_registry import (
+    from sim_car.planning.planner_constants import (
         CONFIGURED_PLANNERS,
         MIGRATED_PLANNERS,
         SUPPORTED_CONTROLLERS,

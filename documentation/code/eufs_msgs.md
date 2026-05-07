@@ -1,6 +1,6 @@
 # EUFS Messages Code Map
 
-This page maps the `documentation/eufs_msgs.md` behavior to the message definition files in the `eufs_msgs` package.
+This page maps the `documentation/concepts/eufs_msgs.md` behavior to the message definition files in the `eufs_msgs` package.
 
 ## Primary Files
 

@@ -1,6 +1,6 @@
 # EUFS Gazebo Dynamics Code Map
 
-This page maps the `documentation/eufs_gz_dynamics.md` behavior to the Gazebo system plugin implementation.
+This page maps the `documentation/concepts/eufs_gz_dynamics.md` behavior to the Gazebo system plugin implementation.
 
 ## Primary Files
 

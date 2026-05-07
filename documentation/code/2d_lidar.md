@@ -1,6 +1,6 @@
 # 2D LiDAR Code Map
 
-This page maps the `documentation/2d_lidar.md` behavior to the scan-processing symbols that implement it.
+This page maps the `documentation/concepts/2d_lidar.md` behavior to the scan-processing symbols that implement it.
 
 ## Primary Files
 

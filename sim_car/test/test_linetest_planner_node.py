@@ -24,7 +24,7 @@ try:
         build_gt_midline_from_cones,
     )
     from sim_car.planning.linetest_planner_node import LineTestPlannerNode  # noqa: E402
-    from sim_car.planning.planner_runtime_types import PlannerIdentity  # noqa: E402
+    from sim_car.planning.planner_constants import PlannerIdentity  # noqa: E402
 except ImportError as exc:  # pragma: no cover - depends on generated ROS interfaces
     pytest.skip(f"ROS planner node imports unavailable: {exc}", allow_module_level=True)
 

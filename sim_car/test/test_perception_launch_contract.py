@@ -221,7 +221,7 @@ def test_full_launch_supports_only_migrated_planners():
     content = FULL_LAUNCH.read_text(encoding='utf-8')
 
     assert "Planner to launch: 'midpoint', 'single_boundary', 'corridor', 'linetest', or 'none'" in content
-    assert "from sim_car.planning.planner_registry import (" in content
+    assert "from sim_car.planning.planner_constants import (" in content
     assert "get_planner_spec('midpoint').executable" in content
     assert "get_planner_spec('single_boundary').executable" in content
     assert "get_planner_spec('corridor').executable" in content

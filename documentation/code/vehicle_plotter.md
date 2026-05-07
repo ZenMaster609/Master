@@ -1,6 +1,6 @@
 # Vehicle Plotter Code Map
 
-This page maps the `documentation/vehicle_plotter.md` behavior to the nodes and helpers that create run sessions, aggregate vehicle state, and write logs.
+This page maps the `documentation/concepts/vehicle_plotter.md` behavior to the nodes and helpers that create run sessions, aggregate vehicle state, and write logs.
 
 ## Primary Files
 

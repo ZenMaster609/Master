@@ -1,6 +1,6 @@
 # Sensors Code Map
 
-This page maps the `documentation/sensors.md` behavior to the raw sensor nodes, measurement layer, and launch/config wiring.
+This page maps the `documentation/concepts/sensors.md` behavior to the raw sensor nodes, measurement layer, and launch/config wiring.
 
 ## Primary Files
 
