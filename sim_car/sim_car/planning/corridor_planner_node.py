@@ -11,15 +11,11 @@ import numpy as np
 import rclpy
 from rclpy.executors import ExternalShutdownException
 from rclpy.node import Node
-from vehicle_plotter_msgs.msg import ConeDetectionArray
-from visualization_msgs.msg import Marker, MarkerArray
 
 from sim_car.cones.tracking.fusion import normalize_color
 from sim_car.planning.planner_runtime_types import PlannerIdentity
 from sim_car.planning.planner_constants import (
-    MSG_TRACK_STATE_CONFIRMED,
     MSG_TRACK_STATE_STALE,
-    MSG_TRACK_STATE_TENTATIVE,
     PAIR_PASSED_MARGIN_M as _PAIR_PASSED_MARGIN_M,
     VALIDATED_JUMP_ACCEPT_HEADING_DELTA_RAD as _VALIDATED_JUMP_ACCEPT_HEADING_DELTA_RAD,
     VALIDATED_JUMP_ACCEPT_HORIZON_M as _VALIDATED_JUMP_ACCEPT_HORIZON_M,
@@ -38,7 +34,6 @@ from sim_car.planning.corridor_planner_core import (
     compute_corridor_centerline,
     update_track_width_estimate,
 )
-from sim_car.planning.planning_visualization import CORRIDOR_PAIR_AUDIT_REASONS
 from sim_car.planning.tracked_cone_planner_base import TrackedConePlannerBase
 from sim_car.planning.tracked_cone_planner_geometry import (
     _base_point_to_odom,
@@ -69,62 +64,6 @@ _PAIR_SORT_MIN_STEP_M = 1e-6  # Avoids unstable ordering from duplicate midpoint
 _PAIR_SORT_RANGE_REGRESSION_TOLERANCE_M = 0.20  # Allows small range regressions on curved paths.
 _PAIR_SORT_BACKWARD_GATE_M = 0.75  # Strongly penalizes steps that move behind the vehicle.
 _PAIR_SORT_INITIAL_HEADING = np.asarray([1.0, 0.0], dtype=np.float64)
-_CONE_AUDIT_MARKER_START_ID = 1  # ID zero is reserved for the DELETEALL marker.
-_CONE_AUDIT_MAIN_Z_M = 0.18  # Raises cone markers above ground enough to remain visible.
-_CONE_AUDIT_HALO_Z_M = 0.03  # Keeps stale halos flat against the ground plane.
-_CONE_AUDIT_HALO_DIAMETER_M = 0.55  # Halo is wider than a cone marker so stale tracks stand out.
-_CONE_AUDIT_HALO_HEIGHT_M = 0.03  # Thin cylinder reads as a ground ring in RViz.
-_CONE_AUDIT_LABEL_Z_M = 0.75  # Labels sit above cones to reduce overlap with markers.
-_CONE_AUDIT_LABEL_HEIGHT_M = 0.16  # Label text remains readable without dominating the view.
-_CONE_AUDIT_HALO_RGBA = (0.1, 0.95, 1.0, 0.55)
-_CONE_AUDIT_LABEL_RGBA = (1.0, 1.0, 1.0, 0.95)
-_CONE_AUDIT_REASONS = (
-    "used_left_chain",
-    "used_right_chain",
-    "chain_step_too_close",
-    "chain_step_too_far",
-    "chain_no_forward_progress",
-    "chain_radial_regression",
-    "chain_forward_projection",
-    "chain_heading_change",
-    "chain_shadowed",
-    "chain_not_best_next_step",
-    "chain_no_forward_seed",
-    "chain_unreached",
-    "rejected_geometry_range",
-    "rejected_geometry_behind",
-    "rejected_geometry_horizon",
-    "rejected_geometry_lateral",
-    "rejected_confidence",
-    "rejected_tentative",
-    "rejected_color",
-    "rejected_nonfinite",
-)
-@dataclass
-class _ConeAuditEntry:
-    track_id: int
-    reason: str
-    point_xy: np.ndarray
-    local_x_m: float
-    local_y_m: float
-    raw_color: str
-    resolved_color: str
-    track_state: int
-    confidence: float
-    track_confidence: float
-    color_confidence: float
-    missed_count: int
-    last_seen_age_sec: float
-    memory_only: bool
-
-
-@dataclass
-class _ConeAuditContext:
-    points: np.ndarray
-    local_points: np.ndarray
-    used_left: set[int]
-    used_right: set[int]
-    chain_rejection_reasons_by_track_id: dict[int, str]
 
 
 @dataclass
@@ -196,10 +135,8 @@ class CorridorPlannerNode(TrackedConePlannerBase):
 
         self._init_common_planner_state()
         self._pair_memory: list[_PairMemoryEntry] = []
-        self._active_cone_audit_counts = self._empty_cone_audit_counts()
 
         self._init_common_ros_interfaces()
-        self._cone_audit_viz_pub = self.create_publisher(MarkerArray, self.cone_audit_viz_topic, 10)
 
     def _declare_parameters(self) -> None:
         declare_tracked_cone_planner_parameters(
@@ -224,13 +161,6 @@ class CorridorPlannerNode(TrackedConePlannerBase):
             "validation.max_heading_delta_rad": 0.75,
             "validation.max_initial_heading_error_rad": 3.0 * math.pi / 4.0,
             "validation.max_curvature": 0.45,
-            "debug.enable_cone_audit_markers": False,
-            "debug.cone_audit_viz_topic": "/corridor_planner/cone_audit_viz",
-            "debug.cone_audit_show_labels": True,
-            "debug.cone_audit_max_labels": 80,
-            "debug.show_corridor_pair_audit": False,
-            "debug.corridor_pair_audit_show_labels": True,
-            "debug.corridor_pair_audit_max_labels": 80,
         })
         for name, value in defaults.items():
             self.declare_parameter(name, value)
@@ -250,21 +180,6 @@ class CorridorPlannerNode(TrackedConePlannerBase):
         self.pair_memory_retention_s = max(
             self.midline_hold_last_valid_duration_s,
             float(self.get_parameter("midline_memory.pair_memory_retention_s").value),
-        )
-        self.enable_cone_audit_markers = bool(self.get_parameter("debug.enable_cone_audit_markers").value)
-        self.cone_audit_viz_topic = (
-            str(self.get_parameter("debug.cone_audit_viz_topic").value).strip()
-            or "/corridor_planner/cone_audit_viz"
-        )
-        self.cone_audit_show_labels = bool(self.get_parameter("debug.cone_audit_show_labels").value)
-        self.cone_audit_max_labels = max(0, int(self.get_parameter("debug.cone_audit_max_labels").value))
-        self.show_corridor_pair_audit = bool(self.get_parameter("debug.show_corridor_pair_audit").value)
-        self.corridor_pair_audit_show_labels = bool(
-            self.get_parameter("debug.corridor_pair_audit_show_labels").value
-        )
-        self.corridor_pair_audit_max_labels = max(
-            0,
-            int(self.get_parameter("debug.corridor_pair_audit_max_labels").value),
         )
 
     def _build_core_config(self) -> CorridorPlannerConfig:
@@ -344,10 +259,6 @@ class CorridorPlannerNode(TrackedConePlannerBase):
         self._update_remembered_cone_viz(points_xy=points_xy, colors=colors)
         input_metrics = self._collect_input_metrics(cones_msg, points_xy, colors, confidences)
         result = self._run_corridor_planner(input_metrics.planning_frame, vehicle_x, vehicle_y, vehicle_yaw)
-        cone_audit_entries = self._process_cone_audit(
-            cones_msg, input_metrics.planning_frame, result,
-            target_frame, vehicle_x, vehicle_y, vehicle_yaw, now_sec,
-        )
         pair_segs_viz, raw_midpoint_chain, combined_midpoint_chain = self._resolve_pair_geometry(
             result, target_frame, vehicle_x, vehicle_y, vehicle_yaw, now_sec,
         )
@@ -376,7 +287,7 @@ class CorridorPlannerNode(TrackedConePlannerBase):
         self._log_cycle_state(operator_state, operator_reason, hold_remaining_s, result)
         diag_metrics = self._build_diagnostics_metrics(
             result, midline, ctrl, input_metrics, operator_state, operator_reason,
-            hold_remaining_s, cone_audit_entries,
+            hold_remaining_s,
         )
         self._publish_cycle_results(
             target_frame, raw_centerline, result, midline, ctrl,
@@ -455,27 +366,6 @@ class CorridorPlannerNode(TrackedConePlannerBase):
             )
         result.filtered_track_width_m = float(self._filtered_track_width_m)
         return result
-
-    def _process_cone_audit(
-        self,
-        cones_msg,
-        planning_frame,
-        result,
-        target_frame: str,
-        vehicle_x: float,
-        vehicle_y: float,
-        vehicle_yaw: float,
-        now_sec: float,
-    ) -> list:
-        cone_audit_entries = self._build_cone_audit_entries(
-            msg=cones_msg, planning_frame=planning_frame, result=result,
-            vehicle_xy=(vehicle_x, vehicle_y), vehicle_yaw=vehicle_yaw, now_sec=now_sec,
-        )
-        self._active_cone_audit_counts = self._cone_audit_counts(cone_audit_entries)
-        self._publish_cone_audit_markers(
-            frame_id=target_frame, stamp=self.get_clock().now().to_msg(), entries=cone_audit_entries,
-        )
-        return cone_audit_entries
 
     def _resolve_pair_geometry(
         self,
@@ -727,7 +617,6 @@ class CorridorPlannerNode(TrackedConePlannerBase):
         operator_state: str,
         operator_reason: str,
         hold_remaining_s: float,
-        cone_audit_entries: list,
     ) -> dict:
         corridor_analysis_metrics = getattr(self, "_last_corridor_analysis_metrics", {})
         return {
@@ -735,8 +624,6 @@ class CorridorPlannerNode(TrackedConePlannerBase):
             **self._build_operator_control_metrics(
                 result, midline, ctrl, operator_state, operator_reason, hold_remaining_s,
             ),
-            **self._active_cone_audit_counts,
-            **self._corridor_pair_audit_counts(result),
             **corridor_analysis_metrics,
         }
 
@@ -863,389 +750,6 @@ class CorridorPlannerNode(TrackedConePlannerBase):
             seed_midpoint_distance_m=float(result.seed_midpoint_distance_m),
             near_field_lateral_max_m=float(result.near_field_lateral_max_m),
             near_field_midpoint_kink_max_rad=float(result.near_field_kink_max_rad),
-        )
-
-    def _build_cone_audit_entries(
-        self,
-        *,
-        msg: ConeDetectionArray,
-        planning_frame,
-        result: CorridorPlannerResult,
-        vehicle_xy: tuple[float, float],
-        vehicle_yaw: float,
-        now_sec: float,
-    ) -> list[_ConeAuditEntry]:
-        context = self._build_cone_audit_context(
-            planning_frame=planning_frame, result=result,
-            vehicle_xy=vehicle_xy, vehicle_yaw=vehicle_yaw,
-        )
-        return [
-            self._build_single_cone_audit_entry(
-                idx=idx, cone=cone, planning_frame=planning_frame,
-                context=context, now_sec=now_sec,
-            )
-            for idx, cone in enumerate(msg.cones)
-        ]
-
-    def _build_cone_audit_context(
-        self,
-        *,
-        planning_frame,
-        result: CorridorPlannerResult,
-        vehicle_xy: tuple[float, float],
-        vehicle_yaw: float,
-    ) -> _ConeAuditContext:
-        points = np.asarray(planning_frame.points_xy, dtype=np.float64)
-        if points.ndim != 2 or points.shape[1] != 2:
-            points = np.empty((0, 2), dtype=np.float64)
-        return _ConeAuditContext(
-            points=points,
-            local_points=self._audit_points_to_vehicle_frame(points, vehicle_xy, vehicle_yaw),
-            used_left={int(track_id) for track_id in np.asarray(result.used_left_track_ids, dtype=np.int64)},
-            used_right={int(track_id) for track_id in np.asarray(result.used_right_track_ids, dtype=np.int64)},
-            chain_rejection_reasons_by_track_id=result.chain_rejection_reasons_by_track_id,
-        )
-
-    def _build_single_cone_audit_entry(
-        self, *,
-        idx: int,
-        cone,
-        planning_frame,
-        context: _ConeAuditContext,
-        now_sec: float,
-    ) -> _ConeAuditEntry:
-        point_xy = self._audit_point_at(context.points, idx)
-        local_xy = self._audit_point_at(context.local_points, idx)
-        track_id = self._audit_array_int(planning_frame.track_ids, idx, idx)
-        track_state = self._audit_array_int(planning_frame.track_states, idx, MSG_TRACK_STATE_CONFIRMED)
-        confidence = self._audit_array_float(
-            planning_frame.raw_confidences, idx, float(getattr(cone, "confidence", 0.0)),
-        )
-        planner_confidence = self._audit_array_float(planning_frame.planner_confidences, idx, confidence)
-        track_confidence = self._audit_array_float(
-            planning_frame.track_confidences, idx, float(getattr(cone, "track_confidence", confidence)),
-        )
-        raw_color = self._audit_color(planning_frame.raw_colors, idx, getattr(cone, "color", ""))
-        resolved_color = self._audit_color(
-            planning_frame.colors, idx, getattr(cone, "boundary_color", ""),
-        )
-        missed_count = int(getattr(cone, "missed_count", 0))
-        reason = self._classify_cone_audit_reason(
-            track_id=track_id, local_xy=local_xy, resolved_color=resolved_color,
-            track_state=track_state, planner_confidence=planner_confidence,
-            used_left=context.used_left, used_right=context.used_right,
-            chain_rejection_reasons_by_track_id=context.chain_rejection_reasons_by_track_id,
-        )
-        return _ConeAuditEntry(
-            track_id=int(track_id), reason=reason, point_xy=np.asarray(point_xy, dtype=np.float64),
-            local_x_m=float(local_xy[0]), local_y_m=float(local_xy[1]), raw_color=str(raw_color),
-            resolved_color=str(resolved_color), track_state=int(track_state),
-            confidence=float(confidence), track_confidence=float(track_confidence),
-            color_confidence=float(getattr(cone, "color_confidence", float("nan"))),
-            missed_count=missed_count,
-            last_seen_age_sec=float(self._stamp_age_sec(getattr(cone, "last_seen", None), now_sec)),
-            memory_only=bool(track_state == MSG_TRACK_STATE_STALE or missed_count > 0),
-        )
-
-    @staticmethod
-    def _audit_point_at(points: np.ndarray, idx: int) -> np.ndarray:
-        if idx < points.shape[0]:
-            return points[idx]
-        return np.asarray([float("nan"), float("nan")], dtype=np.float64)
-
-    @staticmethod
-    def _audit_color(values: list, idx: int, fallback: str) -> str:
-        if idx < len(values):
-            return str(values[idx])
-        return normalize_color(fallback)
-
-    def _classify_cone_audit_reason(
-        self,
-        *,
-        track_id: int,
-        local_xy: np.ndarray,
-        resolved_color: str,
-        track_state: int,
-        planner_confidence: float,
-        used_left: set[int],
-        used_right: set[int],
-        chain_rejection_reasons_by_track_id: dict[int, str],
-    ) -> str:
-        if not np.all(np.isfinite(local_xy)):
-            return "rejected_nonfinite"
-        if int(track_state) == MSG_TRACK_STATE_TENTATIVE:
-            return "rejected_tentative"
-        x_m = float(local_xy[0])
-        y_m = float(local_xy[1])
-        distance_m = float(math.hypot(x_m, y_m))
-        if x_m < -float(self._core_config.behind_drop_m):
-            return "rejected_geometry_behind"
-        if x_m > float(self._core_config.planning_horizon_m):
-            return "rejected_geometry_horizon"
-        if abs(y_m) > float(self._core_config.max_lateral_range_m):
-            return "rejected_geometry_lateral"
-        if distance_m > float(self._core_config.max_cone_range_m):
-            return "rejected_geometry_range"
-        if (
-            not math.isfinite(float(planner_confidence))
-            or planner_confidence < float(self._core_config.min_confidence)
-        ):
-            return "rejected_confidence"
-        if normalize_color(resolved_color) not in {"blue", "yellow"}:
-            return "rejected_color"
-        if int(track_id) in used_left:
-            return "used_left_chain"
-        if int(track_id) in used_right:
-            return "used_right_chain"
-        chain_reason = chain_rejection_reasons_by_track_id.get(int(track_id), "")
-        return str(chain_reason) if chain_reason else "chain_unreached"
-
-    @staticmethod
-    def _audit_points_to_vehicle_frame(
-        points_xy: np.ndarray,
-        vehicle_xy: tuple[float, float],
-        vehicle_yaw: float,
-    ) -> np.ndarray:
-        points = np.asarray(points_xy, dtype=np.float64)
-        if points.ndim != 2 or points.shape[1] != 2 or points.shape[0] == 0:
-            return np.empty((0, 2), dtype=np.float64)
-        shifted = points - np.asarray(vehicle_xy, dtype=np.float64).reshape(1, 2)
-        cos_yaw = math.cos(float(vehicle_yaw))
-        sin_yaw = math.sin(float(vehicle_yaw))
-        return np.column_stack(
-            (
-                (cos_yaw * shifted[:, 0]) + (sin_yaw * shifted[:, 1]),
-                (-sin_yaw * shifted[:, 0]) + (cos_yaw * shifted[:, 1]),
-            )
-        ).astype(np.float64)
-
-    @staticmethod
-    def _audit_array_int(values: np.ndarray, idx: int, default: int) -> int:
-        arr = np.asarray(values, dtype=np.int64)
-        if idx < 0 or idx >= arr.size:
-            return int(default)
-        return int(arr[idx])
-
-    @staticmethod
-    def _audit_array_float(values: np.ndarray, idx: int, default: float) -> float:
-        arr = np.asarray(values, dtype=np.float64)
-        if idx < 0 or idx >= arr.size:
-            return float(default)
-        return float(arr[idx])
-
-    @staticmethod
-    def _stamp_age_sec(stamp, now_sec: float) -> float:
-        if stamp is None:
-            return float("nan")
-        stamp_sec = float(getattr(stamp, "sec", 0)) + (float(getattr(stamp, "nanosec", 0)) * 1e-9)
-        if stamp_sec <= 0.0:
-            return float("nan")
-        return max(0.0, float(now_sec) - stamp_sec)
-
-    @staticmethod
-    def _empty_cone_audit_counts() -> dict[str, int]:
-        counts = {
-            "cone_audit_received_count": 0,
-            "cone_audit_used_left_count": 0,
-            "cone_audit_used_right_count": 0,
-            "cone_audit_stale_count": 0,
-            "cone_audit_live_count": 0,
-        }
-        for reason in _CONE_AUDIT_REASONS:
-            counts[f"cone_audit_{reason}_count"] = 0
-        return counts
-
-    def _cone_audit_counts(self, entries: list[_ConeAuditEntry]) -> dict[str, int]:
-        counts = self._empty_cone_audit_counts()
-        counts["cone_audit_received_count"] = int(len(entries))
-        for entry in entries:
-            counts[f"cone_audit_{entry.reason}_count"] = counts.get(
-                f"cone_audit_{entry.reason}_count",
-                0,
-            ) + 1
-            if entry.reason == "used_left_chain":
-                counts["cone_audit_used_left_count"] += 1
-            elif entry.reason == "used_right_chain":
-                counts["cone_audit_used_right_count"] += 1
-            if entry.memory_only:
-                counts["cone_audit_stale_count"] += 1
-            else:
-                counts["cone_audit_live_count"] += 1
-        return counts
-
-    @staticmethod
-    def _corridor_pair_audit_counts(result: CorridorPlannerResult) -> dict[str, int]:
-        counts = {
-            "corridor_pair_audit_total_count": 0,
-            "corridor_pair_audit_rejected_count": 0,
-        }
-        for reason in CORRIDOR_PAIR_AUDIT_REASONS:
-            counts[f"corridor_pair_audit_{reason}_count"] = 0
-        for reason in result.corridor_pair_audit_reasons:
-            key = f"corridor_pair_audit_{reason}_count"
-            counts[key] = counts.get(key, 0) + 1
-            counts["corridor_pair_audit_total_count"] += 1
-            if reason != "pair_valid":
-                counts["corridor_pair_audit_rejected_count"] += 1
-        return counts
-
-    def _publish_cone_audit_markers(
-        self,
-        *,
-        frame_id: str,
-        stamp,
-        entries: list[_ConeAuditEntry],
-    ) -> None:
-        if not self.enable_cone_audit_markers:
-            return
-        markers = self._build_cone_audit_markers(frame_id=frame_id, stamp=stamp, entries=entries)
-        self._cone_audit_viz_pub.publish(markers)
-
-    def _build_cone_audit_markers(
-        self,
-        *,
-        frame_id: str,
-        stamp,
-        entries: list[_ConeAuditEntry],
-    ) -> MarkerArray:
-        arr = MarkerArray()
-        arr.markers.append(self._cone_audit_clear_marker(frame_id=frame_id, stamp=stamp))
-        label_count = 0
-        for entry in entries:
-            if not np.all(np.isfinite(entry.point_xy)):
-                continue
-            arr.markers.append(self._build_cone_audit_main_marker(
-                frame_id=frame_id, stamp=stamp, entry=entry, marker_id=len(arr.markers),
-            ))
-            if entry.memory_only:
-                arr.markers.append(self._build_cone_audit_halo_marker(
-                    frame_id=frame_id, stamp=stamp, entry=entry, marker_id=len(arr.markers),
-                ))
-            if self.cone_audit_show_labels and label_count < self.cone_audit_max_labels:
-                arr.markers.append(self._build_cone_audit_label_marker(
-                    frame_id=frame_id, stamp=stamp, entry=entry, marker_id=len(arr.markers),
-                ))
-                label_count += 1
-        return arr
-
-    @staticmethod
-    def _cone_audit_clear_marker(*, frame_id: str, stamp) -> Marker:
-        marker = Marker()
-        marker.header.frame_id = frame_id
-        marker.header.stamp = stamp
-        marker.action = Marker.DELETEALL
-        return marker
-
-    def _build_cone_audit_main_marker(
-        self, *, frame_id: str, stamp, entry: _ConeAuditEntry, marker_id: int,
-    ) -> Marker:
-        marker = self._cone_audit_base_marker(frame_id, stamp, entry, marker_id)
-        marker.ns = self._cone_audit_marker_namespace(entry.reason)
-        marker.type = Marker.CUBE if entry.reason.startswith("rejected_geometry") else Marker.SPHERE
-        marker.pose.position.z = _CONE_AUDIT_MAIN_Z_M
-        scale = self._cone_audit_marker_scale(entry.reason)
-        marker.scale.x = scale
-        marker.scale.y = scale
-        marker.scale.z = scale
-        self._apply_marker_rgba(marker, self._cone_audit_marker_rgba(entry))
-        return marker
-
-    def _build_cone_audit_halo_marker(
-        self, *, frame_id: str, stamp, entry: _ConeAuditEntry, marker_id: int,
-    ) -> Marker:
-        marker = self._cone_audit_base_marker(frame_id, stamp, entry, marker_id)
-        marker.ns = "cone_audit_stale_halo"
-        marker.type = Marker.CYLINDER
-        marker.pose.position.z = _CONE_AUDIT_HALO_Z_M
-        marker.scale.x = _CONE_AUDIT_HALO_DIAMETER_M
-        marker.scale.y = _CONE_AUDIT_HALO_DIAMETER_M
-        marker.scale.z = _CONE_AUDIT_HALO_HEIGHT_M
-        self._apply_marker_rgba(marker, _CONE_AUDIT_HALO_RGBA)
-        return marker
-
-    def _build_cone_audit_label_marker(
-        self, *, frame_id: str, stamp, entry: _ConeAuditEntry, marker_id: int,
-    ) -> Marker:
-        marker = self._cone_audit_base_marker(frame_id, stamp, entry, marker_id)
-        marker.ns = "cone_audit_labels"
-        marker.type = Marker.TEXT_VIEW_FACING
-        marker.pose.position.z = _CONE_AUDIT_LABEL_Z_M
-        marker.scale.z = _CONE_AUDIT_LABEL_HEIGHT_M
-        marker.text = self._cone_audit_label(entry)
-        self._apply_marker_rgba(marker, _CONE_AUDIT_LABEL_RGBA)
-        return marker
-
-    @staticmethod
-    def _cone_audit_base_marker(frame_id: str, stamp, entry: _ConeAuditEntry, marker_id: int) -> Marker:
-        marker = Marker()
-        marker.header.frame_id = frame_id
-        marker.header.stamp = stamp
-        marker.id = _CONE_AUDIT_MARKER_START_ID if marker_id < 1 else marker_id
-        marker.action = Marker.ADD
-        marker.pose.position.x = float(entry.point_xy[0])
-        marker.pose.position.y = float(entry.point_xy[1])
-        marker.pose.orientation.w = 1.0
-        return marker
-
-    @staticmethod
-    def _apply_marker_rgba(marker: Marker, rgba: tuple[float, float, float, float]) -> None:
-        marker.color.r, marker.color.g, marker.color.b, marker.color.a = rgba
-
-    @staticmethod
-    def _cone_audit_marker_namespace(reason: str) -> str:
-        if reason in {"used_left_chain", "used_right_chain"}:
-            return f"cone_audit_{reason}"
-        if reason.startswith("chain_"):
-            return "cone_audit_chain_rejected"
-        if reason.startswith("rejected_geometry"):
-            return "cone_audit_rejected_geometry"
-        if reason in {"rejected_confidence", "rejected_tentative"}:
-            return "cone_audit_rejected_confidence"
-        if reason == "rejected_color":
-            return "cone_audit_rejected_color"
-        return "cone_audit_rejected_other"
-
-    @staticmethod
-    def _cone_audit_marker_scale(reason: str) -> float:
-        if reason in {"used_left_chain", "used_right_chain"}:
-            return 0.32
-        if reason.startswith("chain_"):
-            return 0.22
-        return 0.25
-
-    @staticmethod
-    def _cone_audit_marker_rgba(entry: _ConeAuditEntry) -> tuple[float, float, float, float]:
-        if entry.reason == "used_left_chain":
-            return 0.2, 0.55, 1.0, 0.95
-        if entry.reason == "used_right_chain":
-            return 1.0, 0.9, 0.2, 0.95
-        if entry.reason.startswith("chain_"):
-            return 0.92, 0.92, 0.92, 0.82
-        if entry.reason.startswith("rejected_geometry"):
-            return 1.0, 0.05, 0.05, 0.9
-        if entry.reason in {"rejected_confidence", "rejected_tentative"}:
-            return 1.0, 0.0, 0.85, 0.9
-        if entry.reason == "rejected_color":
-            return 1.0, 0.45, 0.05, 0.9
-        return 0.95, 0.95, 0.95, 0.65
-
-    @staticmethod
-    def _cone_audit_state_label(track_state: int) -> str:
-        if int(track_state) == MSG_TRACK_STATE_TENTATIVE:
-            return "tentative"
-        if int(track_state) == MSG_TRACK_STATE_STALE:
-            return "stale"
-        return "confirmed"
-
-    def _cone_audit_label(self, entry: _ConeAuditEntry) -> str:
-        age_text = "nan" if not math.isfinite(entry.last_seen_age_sec) else f"{entry.last_seen_age_sec:.2f}s"
-        suffix = " memory" if entry.memory_only else ""
-        return (
-            f"id={entry.track_id} {self._cone_audit_state_label(entry.track_state)}{suffix}\n"
-            f"raw={entry.raw_color} side={entry.resolved_color} "
-            f"conf={entry.track_confidence:.2f}/{entry.confidence:.2f}\n"
-            f"local=({entry.local_x_m:.1f},{entry.local_y_m:.1f}) age={age_text}\n"
-            f"{entry.reason}"
         )
 
     def _active_pair_memory_entries(
@@ -2053,12 +1557,6 @@ class CorridorPlannerNode(TrackedConePlannerBase):
         self._active_unknown_pair_count = 0
         self._active_filtered_track_width_m = float(self._filtered_track_width_m)
         self._active_held_path_flag = 0
-        self._active_cone_audit_counts = self._empty_cone_audit_counts()
-        self._publish_cone_audit_markers(
-            frame_id=frame_id,
-            stamp=self.get_clock().now().to_msg(),
-            entries=[],
-        )
         super()._publish_empty_cycle(
             frame_id=frame_id,
             status=status,

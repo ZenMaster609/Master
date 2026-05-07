@@ -287,38 +287,6 @@ def test_deeper_turn_keeps_extending_both_boundary_chains():
     assert result.centerline.shape[0] >= 5
 
 
-def test_corridor_pair_audit_explains_where_green_rungs_stop():
-    points = np.array(
-        [
-            [2.0, 1.8], [2.0, -1.8],
-            [4.0, 1.8], [4.0, -1.8],
-            [6.0, 1.8], [6.0, -1.8],
-            [8.0, 1.8], [8.0, -5.2],
-            [10.0, 1.8], [10.0, -5.2],
-        ],
-        dtype=np.float64,
-    )
-    colors = ["blue", "yellow"] * 5
-    conf = np.ones((10,), dtype=np.float64)
-
-    result = compute_corridor_centerline(
-        points,
-        colors,
-        conf,
-        (0.0, 0.0),
-        0.0,
-        _cfg(min_required_corridor_samples=3, max_corridor_width_m=5.0),
-        CorridorPlannerPrior(previous_width_m=3.6),
-    )
-
-    assert result.status == "ok"
-    assert result.raw_left_chain_points.shape[0] == 5
-    assert result.raw_right_chain_points.shape[0] >= 4
-    assert result.corridor_pair_audit_segments.shape[0] > result.pair_segments.shape[0]
-    assert "pair_width_too_wide" in result.corridor_pair_audit_reasons
-    assert result.corridor_pair_audit_reasons.count("pair_valid") == result.pair_segments.shape[0]
-
-
 def test_prevalidation_centerline_is_preserved_when_validation_rejects_corridor_path():
     points = np.array(
         [[2.0, 1.8], [2.0, -1.8], [4.0, 1.8], [4.0, -1.8], [6.0, 1.8], [6.0, -1.8], [8.0, 1.8], [8.0, -1.8]],

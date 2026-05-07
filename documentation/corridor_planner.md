@@ -39,8 +39,6 @@ Chain construction checks:
 - heading change
 - shadowing by better candidates
 
-The corridor planner can publish cone-audit markers that explain why each cone was used or rejected. This is useful when debugging why a boundary chain stops early.
-
 ## Corridor Sampling
 
 Once both chains are long enough, the planner samples possible corridor cross-sections. A valid cross-section connects the left and right boundary at a reasonable width and forward position.
@@ -84,18 +82,6 @@ Validation checks include:
 - self-intersection
 
 If the path exits the corridor or bends too sharply, it is rejected instead of being handed directly to the controller.
-
-## Audit And Debug Rationale
-
-The corridor planner has extra debug machinery because failures can come from multiple stages:
-
-- cone rejected before chaining
-- cone not reached by a chain
-- chain accepted but corridor pair rejected
-- corridor valid but centerline validation failed
-- midline memory held a previous path
-
-Cone-audit and corridor-pair-audit markers expose these reasons in RViz. Raw cones, boundary chains, and accepted rungs are visible by default; the heavier audit-label views are controlled by planner debug parameters.
 
 ## Path Stabilization
 

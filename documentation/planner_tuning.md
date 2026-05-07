@@ -264,7 +264,7 @@ The migrated tracked-cone planners default to visible RViz debug output for the 
 - `debug.show_pair_lines: true`
 - `debug.show_raw_midpoint_chain: true`
 
-This means accepted midpoint pairs and corridor rungs should be visible without adding launch-time debug flags. More expensive or noisy overlays, such as candidate/selected graph edges and corridor cone/pair audit labels, remain opt-in.
+This means accepted midpoint pairs and corridor rungs should be visible without adding launch-time debug flags. More expensive or noisy overlays, such as candidate/selected graph edges, remain opt-in.
 
 ## Useful Commands
 

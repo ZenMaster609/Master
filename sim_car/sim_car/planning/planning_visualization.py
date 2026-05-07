@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
 import math
 from typing import Any, Optional
 
@@ -15,43 +14,12 @@ from sim_car.cones.tracking.fusion import normalize_color
 from sim_car.planning.planning_state_machine import _OPERATOR_STATE_COLORS
 
 
-CORRIDOR_PAIR_AUDIT_REASONS = (
-    "pair_valid",
-    "pair_width_too_narrow",
-    "pair_width_too_wide",
-    "pair_left_behind",
-    "pair_right_behind",
-    "pair_left_beyond_horizon",
-    "pair_right_beyond_horizon",
-    "pair_not_in_longest_valid_slice",
-    "pair_nonfinite",
-    "pair_rejected_unknown",
-)
 # Width matches the accepted-pair marker while using the corridor-specific namespace.
 _CORRIDOR_RUNG_MARKER_WIDTH_M = 0.07
 # Raw chain lines sit above the boundary lines so both can be inspected in RViz.
 _CORRIDOR_RAW_CHAIN_LINE_WIDTH_M = 0.06
 # Raw chain points are larger than fitted boundary points to show input samples.
 _CORRIDOR_RAW_CHAIN_POINT_DIAMETER_M = 0.34
-# Audit lines are intentionally slimmer than accepted-pair lines to read as diagnostics.
-_CORRIDOR_AUDIT_MARKER_WIDTH_M = 0.05
-# Audit labels float above cones so they do not cover the pair segment line.
-_CORRIDOR_AUDIT_LABEL_Z_M = 0.85
-# Audit label text is small enough to keep dense rejection labels readable.
-_CORRIDOR_AUDIT_LABEL_TEXT_HEIGHT_M = 0.14
-# Label color stays slightly transparent so overlapping labels remain distinguishable.
-_CORRIDOR_AUDIT_LABEL_ALPHA = 0.95
-# Segment midpoint is the average of its two endpoints.
-_SEGMENT_MIDPOINT_WEIGHT = 0.5
-
-
-@dataclass(frozen=True)
-class _CorridorPairAuditVizData:
-    segments: np.ndarray
-    reasons: list[str]
-    widths_m: np.ndarray
-    anchors_local: np.ndarray
-    count: int
 
 
 class VisualizationMixin:
@@ -85,7 +53,6 @@ class VisualizationMixin:
         )
         marker_id = self._append_single_boundary_marker(arr, marker_id, frame_id, now, result, left_boundary, right_boundary)
         marker_id = self._append_pair_markers(arr, marker_id, frame_id, now, result)
-        marker_id = self._append_corridor_pair_audit_markers(arr, marker_id, frame_id, now, result)
         marker_id = self._append_raw_path_markers(arr, marker_id, frame_id, now, result, raw_centerline, raw_midpoint_chain)
         marker_id = self._append_centerline_marker(arr, marker_id, frame_id, now, centerline)
         marker_id = self._append_lookahead_marker(arr, marker_id, frame_id, now, control_target_frame)
@@ -318,7 +285,7 @@ class VisualizationMixin:
             self._last_viz_pair_segments = np.array(pair_segments, copy=True)
         elif getattr(self, '_last_viz_pair_segments', None) is not None:
             pair_segments = self._last_viz_pair_segments
-        namespace = 'corridor_rungs' if self._has_corridor_pair_audit(result) else 'accepted_pairs'
+        namespace = 'corridor_rungs' if self._is_corridor_result(result) else 'accepted_pairs'
         markers.markers.append(
             self._make_pair_segment_marker(
                 frame_id=frame_id, stamp=stamp, marker_id=marker_id,
@@ -329,158 +296,8 @@ class VisualizationMixin:
         return marker_id + 1
 
     @staticmethod
-    def _has_corridor_pair_audit(result: Any) -> bool:
-        return hasattr(result, 'corridor_pair_audit_segments')
-
-    def _append_corridor_pair_audit_markers(
-        self,
-        markers: MarkerArray,
-        marker_id: int,
-        frame_id: str,
-        stamp,
-        result: Any,
-    ) -> int:
-        if not getattr(self, 'show_corridor_pair_audit', False):
-            return marker_id
-        if not self._has_corridor_pair_audit(result):
-            return marker_id
-        audit = self._corridor_pair_audit_data(result)
-        if audit.count <= 0:
-            return marker_id
-        marker_id = self._append_corridor_pair_audit_segments(
-            markers, marker_id, frame_id, stamp, audit,
-        )
-        return self._append_corridor_pair_audit_labels(
-            markers, marker_id, frame_id, stamp, audit,
-        )
-
-    @staticmethod
-    def _corridor_pair_audit_data(result: Any) -> _CorridorPairAuditVizData:
-        segments = np.asarray(result.corridor_pair_audit_segments, dtype=np.float64)
-        reasons = list(result.corridor_pair_audit_reasons)
-        widths_m = np.asarray(result.corridor_pair_audit_widths_m, dtype=np.float64)
-        anchors_local = np.asarray(result.corridor_pair_audit_anchors_local, dtype=np.float64)
-        count = min(len(reasons), segments.shape[0], widths_m.size, anchors_local.shape[0])
-        return _CorridorPairAuditVizData(segments, reasons, widths_m, anchors_local, count)
-
-    def _append_corridor_pair_audit_segments(
-        self,
-        markers: MarkerArray,
-        marker_id: int,
-        frame_id: str,
-        stamp,
-        audit: _CorridorPairAuditVizData,
-    ) -> int:
-        for reason in CORRIDOR_PAIR_AUDIT_REASONS:
-            if reason == 'pair_valid':
-                continue
-            indices = self._corridor_pair_audit_indices(audit, reason)
-            if not indices:
-                continue
-            markers.markers.append(
-                self._make_pair_segment_marker(
-                    frame_id=frame_id, stamp=stamp, marker_id=marker_id,
-                    ns=f'corridor_pair_audit_{reason}',
-                    pair_segments=audit.segments[indices],
-                    color=self._corridor_pair_audit_rgba(reason),
-                    width=_CORRIDOR_AUDIT_MARKER_WIDTH_M,
-                )
-            )
-            marker_id += 1
-        return marker_id
-
-    @staticmethod
-    def _corridor_pair_audit_indices(
-        audit: _CorridorPairAuditVizData,
-        reason: str,
-    ) -> list[int]:
-        return [
-            idx for idx in range(audit.count)
-            if audit.reasons[idx] == reason and np.all(np.isfinite(audit.segments[idx]))
-        ]
-
-    def _append_corridor_pair_audit_labels(
-        self,
-        markers: MarkerArray,
-        marker_id: int,
-        frame_id: str,
-        stamp,
-        audit: _CorridorPairAuditVizData,
-    ) -> int:
-        if not getattr(self, 'corridor_pair_audit_show_labels', False):
-            return marker_id
-        label_count = 0
-        max_labels = int(getattr(self, 'corridor_pair_audit_max_labels', 0))
-        for idx in range(audit.count):
-            label = self._corridor_pair_audit_label(frame_id, stamp, marker_id, audit, idx)
-            if label is None:
-                continue
-            markers.markers.append(label)
-            marker_id += 1
-            label_count += 1
-            if label_count >= max_labels:
-                break
-        return marker_id
-
-    def _corridor_pair_audit_label(
-        self,
-        frame_id: str,
-        stamp,
-        marker_id: int,
-        audit: _CorridorPairAuditVizData,
-        idx: int,
-    ) -> Optional[Marker]:
-        reason = audit.reasons[idx]
-        if reason == 'pair_valid' or not np.all(np.isfinite(audit.segments[idx])):
-            return None
-        midpoint = _SEGMENT_MIDPOINT_WEIGHT * (audit.segments[idx, 0, :] + audit.segments[idx, 1, :])
-        if not np.all(np.isfinite(midpoint)):
-            return None
-        label = self._base_corridor_pair_audit_label(frame_id, stamp, marker_id, midpoint)
-        label.text = (
-            f'pair[{idx}] {reason}\n'
-            f'w={float(audit.widths_m[idx]):.2f}m '
-            f'local=({float(audit.anchors_local[idx, 0]):.1f},'
-            f'{float(audit.anchors_local[idx, 1]):.1f})'
-        )
-        return label
-
-    @staticmethod
-    def _base_corridor_pair_audit_label(
-        frame_id: str,
-        stamp,
-        marker_id: int,
-        midpoint: np.ndarray,
-    ) -> Marker:
-        label = Marker()
-        label.header.frame_id = frame_id
-        label.header.stamp = stamp
-        label.ns = 'corridor_pair_audit_labels'
-        label.id = marker_id
-        label.type = Marker.TEXT_VIEW_FACING
-        label.action = Marker.ADD
-        label.pose.position.x = float(midpoint[0])
-        label.pose.position.y = float(midpoint[1])
-        label.pose.position.z = _CORRIDOR_AUDIT_LABEL_Z_M
-        label.pose.orientation.w = 1.0
-        label.scale.z = _CORRIDOR_AUDIT_LABEL_TEXT_HEIGHT_M
-        label.color.r = label.color.g = label.color.b = 1.0
-        label.color.a = _CORRIDOR_AUDIT_LABEL_ALPHA
-        return label
-
-    @staticmethod
-    def _corridor_pair_audit_rgba(reason: str) -> tuple[float, float, float, float]:
-        if reason == 'pair_width_too_narrow':
-            return 1.0, 0.05, 0.05, 0.9
-        if reason == 'pair_width_too_wide':
-            return 1.0, 0.45, 0.05, 0.9
-        if reason in {'pair_left_beyond_horizon', 'pair_right_beyond_horizon'}:
-            return 0.0, 0.85, 1.0, 0.9
-        if reason in {'pair_left_behind', 'pair_right_behind'}:
-            return 1.0, 0.0, 0.85, 0.9
-        if reason == 'pair_not_in_longest_valid_slice':
-            return 0.85, 0.85, 0.85, 0.75
-        return 0.65, 0.2, 1.0, 0.9
+    def _is_corridor_result(result: Any) -> bool:
+        return getattr(result, 'planner_mode', '') == 'corridor'
 
     def _append_raw_path_markers(
         self,
@@ -512,7 +329,7 @@ class VisualizationMixin:
         midpoint_chain = raw_midpoint_chain
         if hasattr(self, '_last_viz_raw_midpoint_chain'):
             midpoint_chain = self._cached_raw_midpoint_chain(raw_midpoint_chain)
-        namespace = 'corridor_center_anchors' if self._has_corridor_pair_audit(result) else 'raw_midpoint_chain'
+        namespace = 'corridor_center_anchors' if self._is_corridor_result(result) else 'raw_midpoint_chain'
         markers.markers.append(
             self._make_line_strip_marker(
                 frame_id=frame_id, stamp=stamp, marker_id=marker_id,

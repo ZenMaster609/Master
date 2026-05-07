@@ -311,12 +311,6 @@ def generate_launch_description():
         description='Explicit path to RViz display config file (overrides rviz_profile when set)'
     )
 
-    corridor_debug_arg = DeclareLaunchArgument(
-        'corridor_debug',
-        default_value='false',
-        description='Enable corridor planner cone-audit markers and cone-memory debug aids'
-    )
-
     perception_queue_size_arg = DeclareLaunchArgument(
         'perception_queue_size',
         default_value='8',
@@ -476,7 +470,6 @@ def generate_launch_description():
         'rviz',
         'rviz_profile',
         'rviz_config',
-        'corridor_debug',
         'perception_queue_size',
         'cuda',
         'stereo',
@@ -899,22 +892,6 @@ def generate_launch_description():
                     LaunchConfiguration('perception_rate_hz'),
                     value_type=float,
                 ),
-                'debug.enable_id_text': ParameterValue(
-                    LaunchConfiguration('corridor_debug'),
-                    value_type=bool,
-                ),
-                'debug.enable_tentative_viz': ParameterValue(
-                    LaunchConfiguration('corridor_debug'),
-                    value_type=bool,
-                ),
-                'debug.enable_raw_debug_viz': ParameterValue(
-                    LaunchConfiguration('corridor_debug'),
-                    value_type=bool,
-                ),
-                'debug.believed_track_viz_show_cones': ParameterValue(
-                    LaunchConfiguration('corridor_debug'),
-                    value_type=bool,
-                ),
             },
         ],
     )
@@ -1201,7 +1178,6 @@ def generate_launch_description():
         rviz_arg,
         rviz_profile_arg,
         rviz_config_arg,
-        corridor_debug_arg,
         perception_queue_size_arg,
         cuda_arg,
         stereo_arg,

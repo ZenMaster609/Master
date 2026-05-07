@@ -141,16 +141,6 @@ class CorridorPlannerResult:
     raw_right_chain_points: np.ndarray = field(
         default_factory=lambda: np.empty((0, 2), dtype=np.float64)
     )
-    corridor_pair_audit_segments: np.ndarray = field(
-        default_factory=lambda: np.empty((0, 2, 2), dtype=np.float64)
-    )
-    corridor_pair_audit_anchors_local: np.ndarray = field(
-        default_factory=lambda: np.empty((0, 2), dtype=np.float64)
-    )
-    corridor_pair_audit_widths_m: np.ndarray = field(
-        default_factory=lambda: np.empty((0,), dtype=np.float64)
-    )
-    corridor_pair_audit_reasons: list[str] = field(default_factory=list)
     used_left_track_ids: np.ndarray = field(
         default_factory=lambda: np.empty((0,), dtype=np.int64)
     )
@@ -207,11 +197,6 @@ class _CorridorCandidate:
     prior_lateral_mean_m: float
     prior_lateral_max_m: float
     prior_heading_delta_rad: float
-    audit_left_local: np.ndarray
-    audit_right_local: np.ndarray
-    audit_anchors_local: np.ndarray
-    audit_widths_m: np.ndarray
-    audit_reasons: list[str]
 
 
 @dataclass
@@ -221,10 +206,6 @@ class _CorridorCandidateParts:
     widths_valid: np.ndarray
     anchors_local: np.ndarray
     centerline_local: np.ndarray
-    audit_left_local: np.ndarray
-    audit_right_local: np.ndarray
-    audit_widths_m: np.ndarray
-    audit_reasons: list[str]
 
 
 @dataclass
@@ -236,10 +217,6 @@ class _BuiltCorridor:
     anchors_global: np.ndarray
     centerline_global: np.ndarray
     rungs_global: np.ndarray
-    audit_anchors_local: np.ndarray
-    audit_widths_m: np.ndarray
-    audit_reasons: list[str]
-    audit_rungs_global: np.ndarray
 
 
 @dataclass
@@ -816,10 +793,6 @@ def _apply_corridor_array_metadata(
     result.pair_segments = corridor.rungs_global
     result.raw_left_chain_points = chains.left.global_points
     result.raw_right_chain_points = chains.right.global_points
-    result.corridor_pair_audit_segments = corridor.audit_rungs_global
-    result.corridor_pair_audit_anchors_local = corridor.audit_anchors_local
-    result.corridor_pair_audit_widths_m = corridor.audit_widths_m
-    result.corridor_pair_audit_reasons = list(corridor.audit_reasons)
     result.used_left_track_ids = np.asarray(
         cones.track_ids[chains.left.filtered_indices], dtype=np.int64,
     )
@@ -916,8 +889,6 @@ def _materialize_built_corridor(
     centerline_local = _fit_centerline_from_anchors(candidate.anchors_local, config)
     left_global = _from_vehicle_frame(candidate.left_local, vehicle_xy, vehicle_yaw)
     right_global = _from_vehicle_frame(candidate.right_local, vehicle_xy, vehicle_yaw)
-    audit_left_global = _from_vehicle_frame(candidate.audit_left_local, vehicle_xy, vehicle_yaw)
-    audit_right_global = _from_vehicle_frame(candidate.audit_right_local, vehicle_xy, vehicle_yaw)
     return _BuiltCorridor(
         anchors_local=candidate.anchors_local,
         widths_m=candidate.widths_m,
@@ -926,10 +897,6 @@ def _materialize_built_corridor(
         anchors_global=_from_vehicle_frame(candidate.anchors_local, vehicle_xy, vehicle_yaw),
         centerline_global=_from_vehicle_frame(centerline_local, vehicle_xy, vehicle_yaw),
         rungs_global=_rungs_from_boundaries(left_global, right_global),
-        audit_anchors_local=candidate.audit_anchors_local,
-        audit_widths_m=candidate.audit_widths_m,
-        audit_reasons=list(candidate.audit_reasons),
-        audit_rungs_global=_rungs_from_boundaries(audit_left_global, audit_right_global),
     )
 
 
@@ -953,7 +920,7 @@ def _build_corridor_candidate(
     ):
         return None, "too few boundary samples"
 
-    valid_slice, widths, raw_valid_mask, reason = _corridor_candidate_slice(
+    valid_slice, widths, reason = _corridor_candidate_slice(
         left_local, right_local, config,
     )
     if valid_slice is None:
@@ -962,7 +929,6 @@ def _build_corridor_candidate(
         left_local=left_local,
         right_local=right_local,
         widths=widths,
-        raw_valid_mask=raw_valid_mask,
         valid_slice=valid_slice,
         config=config,
         prior_centerline_local=prior_centerline_local,
@@ -973,7 +939,7 @@ def _corridor_candidate_slice(
     left_local: np.ndarray,
     right_local: np.ndarray,
     config: CorridorPlannerConfig,
-) -> tuple[Optional[slice], np.ndarray, np.ndarray, str]:
+) -> tuple[Optional[slice], np.ndarray, str]:
     widths = np.hypot(left_local[:, 0] - right_local[:, 0], left_local[:, 1] - right_local[:, 1])
     raw_valid_mask = _corridor_valid_mask(
         left_local=left_local,
@@ -986,7 +952,7 @@ def _corridor_candidate_slice(
     )
     valid_slice = _longest_valid_slice(valid_mask)
     reason = "" if valid_slice is not None else "no valid corridor slice"
-    return valid_slice, widths, raw_valid_mask, reason
+    return valid_slice, widths, reason
 
 
 def _corridor_candidate_from_slice(
@@ -994,21 +960,12 @@ def _corridor_candidate_from_slice(
     left_local: np.ndarray,
     right_local: np.ndarray,
     widths: np.ndarray,
-    raw_valid_mask: np.ndarray,
     valid_slice: slice,
     config: CorridorPlannerConfig,
     prior_centerline_local: Optional[np.ndarray],
 ) -> tuple[Optional[_CorridorCandidate], str]:
-    audit_reasons = _corridor_pair_audit_reasons(
-        left_local=left_local,
-        right_local=right_local,
-        widths=widths,
-        raw_valid_mask=raw_valid_mask,
-        accepted_slice=valid_slice,
-        config=config,
-    )
     parts = _corridor_candidate_parts(
-        left_local, right_local, widths, valid_slice, audit_reasons, config,
+        left_local, right_local, widths, valid_slice, config,
     )
     if parts is None:
         return None, "too few valid corridor samples"
@@ -1020,7 +977,6 @@ def _corridor_candidate_parts(
     right_local: np.ndarray,
     widths: np.ndarray,
     valid_slice: slice,
-    audit_reasons: list[str],
     config: CorridorPlannerConfig,
 ) -> Optional[_CorridorCandidateParts]:
     left_valid = np.asarray(left_local[valid_slice], dtype=np.float64)
@@ -1036,10 +992,6 @@ def _corridor_candidate_parts(
         widths_valid=widths_valid,
         anchors_local=anchors_local,
         centerline_local=centerline_local,
-        audit_left_local=np.asarray(left_local, dtype=np.float64),
-        audit_right_local=np.asarray(right_local, dtype=np.float64),
-        audit_widths_m=np.asarray(widths, dtype=np.float64),
-        audit_reasons=audit_reasons,
     )
 
 
@@ -1066,11 +1018,6 @@ def _new_corridor_candidate(
         prior_lateral_mean_m=float(prior_alignment.lateral_mean_m),
         prior_lateral_max_m=float(prior_alignment.lateral_max_m),
         prior_heading_delta_rad=float(prior_alignment.heading_delta_rad),
-        audit_left_local=parts.audit_left_local,
-        audit_right_local=parts.audit_right_local,
-        audit_anchors_local=0.5 * (parts.audit_left_local + parts.audit_right_local),
-        audit_widths_m=parts.audit_widths_m,
-        audit_reasons=parts.audit_reasons,
     )
 
 
@@ -1169,65 +1116,6 @@ def _corridor_valid_mask(
     valid_mask &= left_local[:, 0] <= float(config.planning_horizon_m)
     valid_mask &= right_local[:, 0] <= float(config.planning_horizon_m)
     return valid_mask
-
-
-def _corridor_pair_audit_reasons(
-    *,
-    left_local: np.ndarray,
-    right_local: np.ndarray,
-    widths: np.ndarray,
-    raw_valid_mask: np.ndarray,
-    accepted_slice: slice,
-    config: CorridorPlannerConfig,
-) -> list[str]:
-    accepted = np.zeros((len(widths),), dtype=bool)
-    accepted[accepted_slice] = True
-    reasons: list[str] = []
-    for idx in range(len(widths)):
-        if bool(accepted[idx]):
-            reasons.append("pair_valid")
-            continue
-        reasons.append(
-            _corridor_pair_audit_reason(
-                left=np.asarray(left_local[idx], dtype=np.float64),
-                right=np.asarray(right_local[idx], dtype=np.float64),
-                width_m=float(widths[idx]),
-                is_raw_valid=bool(raw_valid_mask[idx]),
-                config=config,
-            )
-        )
-    return reasons
-
-
-def _corridor_pair_audit_reason(
-    *,
-    left: np.ndarray,
-    right: np.ndarray,
-    width_m: float,
-    is_raw_valid: bool,
-    config: CorridorPlannerConfig,
-) -> str:
-    if (
-        not math.isfinite(width_m)
-        or not np.all(np.isfinite(left))
-        or not np.all(np.isfinite(right))
-    ):
-        return "pair_nonfinite"
-    if width_m < float(config.min_corridor_width_m):
-        return "pair_width_too_narrow"
-    if width_m > float(config.max_corridor_width_m):
-        return "pair_width_too_wide"
-    if float(left[0]) < -float(config.behind_drop_m):
-        return "pair_left_behind"
-    if float(right[0]) < -float(config.behind_drop_m):
-        return "pair_right_behind"
-    if float(left[0]) > float(config.planning_horizon_m):
-        return "pair_left_beyond_horizon"
-    if float(right[0]) > float(config.planning_horizon_m):
-        return "pair_right_beyond_horizon"
-    if is_raw_valid:
-        return "pair_not_in_longest_valid_slice"
-    return "pair_rejected_unknown"
 
 
 def _fill_small_invalid_gaps(valid_mask: np.ndarray, max_gap: int) -> np.ndarray:

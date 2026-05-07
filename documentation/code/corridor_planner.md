@@ -34,14 +34,12 @@ This page maps the `documentation/corridor_planner.md` behavior to the corridor 
 - `_deterministic_order` in `sim_car/sim_car/planning/planner_utils.py`: creates a stable cone ordering before chain construction.
 - `_build_boundary_chain` in `sim_car/sim_car/planning/planner_utils.py`: shared wrapper around boundary-chain construction.
 - `build_boundary_chain_data`, `grow_boundary_chain_positions`, and `candidate_is_shadowed` in `sim_car/sim_car/planning/tracked_cone_planner_geometry.py`: implement the shared chain-growth, chain-heading progress, and shadowing rules.
-- `CorridorPlannerNode._build_cone_audit_entries` in `sim_car/sim_car/planning/corridor_planner_node.py`: builds debug explanations for why cones were used or rejected.
 
 ### Corridor Sampling
 
 - `_build_corridor` in `sim_car/sim_car/planning/corridor_planner_core.py`: samples overlapping left/right boundary geometry into corridor cross-sections.
 - `_build_corridor_candidate` in `sim_car/sim_car/planning/corridor_planner_core.py`: evaluates one candidate cross-section series.
 - `_corridor_valid_mask`, `_corridor_candidate_score`, and `_longest_valid_slice` in `sim_car/sim_car/planning/corridor_planner_core.py`: keep only the best valid overlapping corridor.
-- `_corridor_pair_audit_reasons` in `sim_car/sim_car/planning/corridor_planner_core.py`: assigns the pair-audit reject reasons surfaced by the debug markers.
 
 ### Centerline Fitting
 
@@ -55,10 +53,9 @@ This page maps the `documentation/corridor_planner.md` behavior to the corridor 
 - `_near_field_delta_metrics` and `_path_alignment_metrics` in `sim_car/sim_car/planning/corridor_planner_core.py`, plus `path_heading_delta_max` and `path_self_intersects` in `tracked_cone_planner_geometry.py`: implement the main path validation checks.
 - `CorridorPlannerNode._candidate_path_is_updateable` and `_candidate_transition_metrics` in `sim_car/sim_car/planning/corridor_planner_node.py`: decide whether a fresh corridor path can replace the stored path.
 
-### Debug Output
+### Visualization Output
 
-- `VisualizationMixin._build_markers` and `_append_corridor_pair_audit_markers` in `sim_car/sim_car/planning/planning_visualization.py`: publish corridor anchors, rungs, and pair-audit debug markers.
-- `CorridorPlannerNode._publish_cone_audit_markers` in `sim_car/sim_car/planning/corridor_planner_node.py`: publishes the cone-audit view of boundary usage.
+- `VisualizationMixin._build_markers` in `sim_car/sim_car/planning/planning_visualization.py`: publishes corridor boundaries, center anchors, rungs, centerline, lookahead, and status markers.
 
 ## Related Entry Points
 
