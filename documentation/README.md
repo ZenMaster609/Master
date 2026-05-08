@@ -16,6 +16,10 @@ This folder documents the current `sim_car`, `vehicle_plotter`, and `vehicle_plo
 - [Planning System](concepts/planning_system.md): tracked-cone planners, linetest, skidpad routing, runtime states, diagnostics, and tuning model.
 - [Steering Controllers](concepts/steering_controllers.md): Stanley and pure-pursuit steering behavior and tuning.
 
+## Simulation Infrastructure
+
+- [EUFS Simulation Infrastructure And Steering GUI](concepts/eufs_and_steering_gui.md): vehicle models, Gazebo dynamics, EUFS messages, and the RQT steering panel.
+
 ## Code Reference
 
 - [Code Reference Index](code/README.md): companion pages that map each documentation topic to the source files, classes, and helper functions that implement it.

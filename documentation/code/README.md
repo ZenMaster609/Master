@@ -28,8 +28,5 @@ Most pages focus on runtime symbols, but some topics are mainly implemented thro
 
 ## Simulation Infrastructure (eufs_remastered)
 
-- [EUFS Vehicle Models](eufs_models.md)
-- [EUFS Gazebo Dynamics Plugin](eufs_gz_dynamics.md)
-- [EUFS Messages](eufs_msgs.md)
+- [EUFS Simulation Infrastructure And Steering GUI](eufs_and_steering_gui.md)
 - [Gazebo Cone Plugins](gazebo_cone_plugins.md)
-- [Steering GUI](steering_gui.md)
