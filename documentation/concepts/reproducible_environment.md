@@ -1,6 +1,6 @@
 # Reproducible Thesis Environment
 
-This repository currently runs from a mixed native ROS 2 environment, not from one self-contained virtualenv or container. Reproducing it means aligning the OS/ROS install, this repository commit, Python packages, and local runtime overlays used by perception.
+This repository can run either from the native ROS 2 environment or from the Docker image defined in `docker/Dockerfile`. Reproducing it means aligning the OS/ROS install, this repository commit, Python packages, and local runtime overlays used by perception.
 
 ## Reference Shape
 
@@ -19,6 +19,40 @@ The important local runtime overlays are:
 - `~/ros2_ws/yolo_pt_venv`
 
 The launch file injects these paths into `perception_node`, so a plain `pip install -r requirements.txt` is not enough to reproduce camera perception.
+
+## Docker Setup
+
+The Docker path is the preferred handoff for Linux users with Docker, Docker Compose v2, NVIDIA Container Toolkit, and an NVIDIA driver that supports the CUDA runtimes used by OpenCV and PyTorch.
+
+Package the binary overlays into the Docker build context:
+
+```bash
+cd ~/ros2_ws && ./src/Master/scripts/package-runtime-overlays.sh src/Master/docker/runtime-overlays
+```
+
+Build the image:
+
+```bash
+cd ~/ros2_ws && docker compose -f src/Master/compose.yaml build planner
+```
+
+Allow X11 windows from the container:
+
+```bash
+cd ~/ros2_ws && xhost +local:docker
+```
+
+Run the simulator:
+
+```bash
+cd ~/ros2_ws && docker compose -f src/Master/compose.yaml run --rm planner ros2 launch sim_car full_sim_launch.launch.py
+```
+
+For live development with the host source tree mounted into the container, rebuild the mounted workspace first:
+
+```bash
+cd ~/ros2_ws && docker compose -f src/Master/compose.yaml -f src/Master/compose.dev.yaml run --rm planner colcon build --symlink-install
+```
 
 ## Runtime Overlay Injection
 
