@@ -24,6 +24,15 @@ This folder documents the current `sim_car`, `vehicle_plotter`, and `vehicle_plo
 
 - [Code Reference Index](code/README.md): companion pages that map each documentation topic to the source files, classes, and helper functions that implement it.
 
+## Math Reference
+
+- [Cones Math](math/cones.md): frame transforms, detection pairing, track updates, color belief, and boundary-color inference.
+- [Controllers Math](math/controllers.md): control-path projection, lookahead selection, Stanley control, pure pursuit, and steering filtering.
+- [2D LiDAR Math](math/lidar.md): polar projection, scan-order clustering, and cone-candidate geometry filters.
+- [Perception Math](math/perception.md): monocular/stereo depth, camera reconstruction, TF transforms, and candidate deduplication.
+- [Planning Math](math/planning.md): boundary chains, cone pairing, centerline construction, path validation, midline memory, and skidpad geometry.
+- [Sensors Math](math/sensors.md): measurement corruption, virtual sensor models, wheel/steering conversions, suspension proxies, and odometry delay.
+
 ## Common Launch Recipes
 
 Build the current packages:
