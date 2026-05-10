@@ -84,21 +84,22 @@ COPY --chown=${USERNAME}:${USER_GID} requirements.user.lock.txt requirements-yol
 USER ${USERNAME}
 
 RUN --mount=type=cache,target=/home/${USERNAME}/.cache/pip,uid=${USER_UID},gid=${USER_GID} \
-    python3 -m pip install --user --upgrade pip setuptools wheel \
-    && python3 -m pip install --user -r /tmp/planner-requirements/requirements.user.lock.txt
+    python3 -m pip install --user --upgrade pip \
+    && python3 -m pip install --user --no-deps -r /tmp/planner-requirements/requirements.user.lock.txt
 
 RUN --mount=type=cache,target=/home/${USERNAME}/.cache/pip,uid=${USER_UID},gid=${USER_GID} \
     python3 -m venv --system-site-packages "${ROS_WS}/yolo_pt_venv" \
     && "${ROS_WS}/yolo_pt_venv/bin/python" -m pip install --upgrade pip setuptools wheel \
-    && "${ROS_WS}/yolo_pt_venv/bin/python" -m pip install -r /tmp/planner-requirements/requirements-yolo-pt.lock.txt
+    && "${ROS_WS}/yolo_pt_venv/bin/python" -m pip install --no-deps -r /tmp/planner-requirements/requirements-yolo-pt.lock.txt
 
 USER root
 
-COPY docker/runtime-overlays/opencv_local.tar.gz docker/runtime-overlays/cudnn_py.tar.gz /tmp/runtime-overlays/
+COPY docker/runtime-overlays/opencv_local.tar.gz docker/runtime-overlays/cudnn_py.tar.gz docker/runtime-overlays/cuda_runtime.tar.gz /tmp/runtime-overlays/
 
 RUN tar -C "${ROS_WS}" -xzf /tmp/runtime-overlays/opencv_local.tar.gz \
     && tar -C "${ROS_WS}" -xzf /tmp/runtime-overlays/cudnn_py.tar.gz \
-    && chown -R "${USERNAME}:${USER_GID}" "${ROS_WS}/opencv_local" "${ROS_WS}/cudnn_py" \
+    && tar -C "${ROS_WS}" -xzf /tmp/runtime-overlays/cuda_runtime.tar.gz \
+    && chown -R "${USERNAME}:${USER_GID}" "${ROS_WS}/opencv_local" "${ROS_WS}/cudnn_py" "${ROS_WS}/cuda_runtime" \
     && rm -rf /tmp/runtime-overlays
 
 COPY --chown=${USERNAME}:${USER_GID} \
@@ -138,7 +139,9 @@ RUN echo "source /opt/ros/${ROS_DISTRO}/setup.bash" >>"/home/${USERNAME}/.bashrc
 COPY --chown=${USERNAME}:${USER_GID} docker/entrypoint.sh /usr/local/bin/ros2-planner-entrypoint
 
 USER root
-RUN chmod +x /usr/local/bin/ros2-planner-entrypoint
+RUN chmod +x /usr/local/bin/ros2-planner-entrypoint \
+    && mkdir -p "/home/${USERNAME}/.ros/log" \
+    && chown -R "${USERNAME}:${USER_GID}" "/home/${USERNAME}/.ros"
 USER ${USERNAME}
 
 WORKDIR ${ROS_WS}

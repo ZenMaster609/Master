@@ -2,7 +2,7 @@
 
 This setup builds a Docker image for Linux users with NVIDIA GPU and X11 GUI support. The Dockerfile recreates the ROS 2 Humble / Gazebo Fortress workspace and keeps the existing perception layout: custom OpenCV and cuDNN overlays under `~/ros2_ws`, plus the separate YOLO `.pt` virtualenv.
 
-The image bundles `opencv_local` and `cudnn_py` from runtime overlay tarballs. It recreates `yolo_pt_venv` from `requirements-yolo-pt.lock.txt` during the image build.
+The image bundles `opencv_local`, `cudnn_py`, and `cuda_runtime` from runtime overlay tarballs. It recreates `yolo_pt_venv` from `requirements-yolo-pt.lock.txt` during the image build. The lockfiles are installed with pip dependency resolution disabled because they are snapshots of an already-working environment. The main ROS Python environment keeps Ubuntu's patched `setuptools`, which ROS Humble's `colcon --symlink-install` expects.
 
 ## Build
 
@@ -69,7 +69,7 @@ cd ~/ros2_ws && docker compose -f src/Master/compose.yaml run --rm planner bash 
 Check the custom OpenCV overlay:
 
 ```bash
-cd ~/ros2_ws && docker compose -f src/Master/compose.yaml run --rm planner bash -lc 'PYTHONPATH=/home/ros/ros2_ws/opencv_local/lib/python3.10/dist-packages LD_LIBRARY_PATH=/home/ros/ros2_ws/opencv_local/lib:/home/ros/ros2_ws/cudnn_py/nvidia/cudnn/lib python3 -c "import cv2; print(cv2.__version__, cv2.cuda.getCudaEnabledDeviceCount())"'
+cd ~/ros2_ws && docker compose -f src/Master/compose.yaml run --rm planner bash -lc 'PYTHONPATH=/home/ros/ros2_ws/opencv_local/lib/python3.10/dist-packages LD_LIBRARY_PATH=/home/ros/ros2_ws/opencv_local/lib:/home/ros/ros2_ws/cudnn_py/nvidia/cudnn/lib:/home/ros/ros2_ws/cuda_runtime/lib python3 -c "import cv2; print(cv2.__version__, cv2.cuda.getCudaEnabledDeviceCount())"'
 ```
 
 Check the YOLO `.pt` virtualenv:

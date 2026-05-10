@@ -433,6 +433,12 @@ def generate_launch_description():
         description='cuDNN shared library path prepended for perception_node'
     )
 
+    cuda_runtime_ld_library_path_arg = DeclareLaunchArgument(
+        'cuda_runtime_ld_library_path',
+        default_value=PathJoinSubstitution([EnvironmentVariable('HOME'), 'ros2_ws', 'cuda_runtime', 'lib']),
+        description='CUDA runtime shared library path prepended for perception_node'
+    )
+
     yolo_ultralytics_pythonpath_arg = DeclareLaunchArgument(
         'yolo_ultralytics_pythonpath',
         default_value=PathJoinSubstitution(
@@ -490,6 +496,7 @@ def generate_launch_description():
         'opencv_pythonpath',
         'opencv_ld_library_path',
         'cudnn_ld_library_path',
+        'cuda_runtime_ld_library_path',
         'yolo_ultralytics_pythonpath',
         'measurement_config',
     ]
@@ -734,6 +741,8 @@ def generate_launch_description():
                 LaunchConfiguration('opencv_ld_library_path'),
                 ':',
                 LaunchConfiguration('cudnn_ld_library_path'),
+                ':',
+                LaunchConfiguration('cuda_runtime_ld_library_path'),
                 ':',
                 EnvironmentVariable('LD_LIBRARY_PATH', default_value=''),
             ],
@@ -1198,6 +1207,7 @@ def generate_launch_description():
         opencv_pythonpath_arg,
         opencv_ld_library_path_arg,
         cudnn_ld_library_path_arg,
+        cuda_runtime_ld_library_path_arg,
         yolo_ultralytics_pythonpath_arg,
         measurement_config_arg,
         launch_args_validation,

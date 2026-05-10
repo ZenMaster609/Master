@@ -10,6 +10,8 @@ import numpy as np
 
 from sim_car.planning.planner_config_base import BasePlannerConfig
 from sim_car.planning.tracked_cone_planner_geometry import (
+    BoundaryChainData,
+    FilteredCones,
     _build_boundary_chain,
     _clamp,
     _default_reject_counts,
@@ -21,6 +23,9 @@ from sim_car.planning.tracked_cone_planner_geometry import (
     _path_start_heading_error,
     _resample_path,
     estimate_tangents as _estimate_tangents,
+    expected_width_m as _expected_width_m,
+    geometry_filter,
+    local_forward_prefix as _local_forward_prefix,
     moving_average as _moving_average_points,
     pair_width_in_range,
     path_cumulative_lengths as _path_cumulative_lengths,
@@ -156,29 +161,9 @@ class CorridorPlannerResult:
 
 
 @dataclass
-class _BoundaryChain:
-    filtered_indices: np.ndarray
-    global_points: np.ndarray
-    local_points: np.ndarray
-    tangents_local: np.ndarray
-    mean_heading_change_rad: float
-    forward_extent_m: float
-    rejected_reasons_by_filtered_index: dict[int, str] = field(default_factory=dict)
-
-
-@dataclass
-class _FilteredCones:
-    points: np.ndarray
-    local: np.ndarray
-    track_ids: np.ndarray
-    colors: list[str]
-    colored_count: int
-
-
-@dataclass
 class _BoundaryChains:
-    left: _BoundaryChain
-    right: _BoundaryChain
+    left: BoundaryChainData
+    right: BoundaryChainData
 
 
 @dataclass
@@ -239,7 +224,7 @@ class _CorridorPathMetrics:
 
 @dataclass
 class _CorridorInputs:
-    cones: _FilteredCones
+    cones: FilteredCones
     chains: _BoundaryChains
     reject_counts: dict[str, int]
     expected_width_m: float
@@ -461,8 +446,12 @@ def _prepare_corridor_inputs(
         vehicle_xy=vehicle_xy,
         vehicle_yaw=vehicle_yaw,
         config=config,
-        filtered_cones_type=_FilteredCones,
-        geometry_filter=_geometry_filter,
+        filtered_cones_type=FilteredCones,
+        geometry_filter=lambda lp, cfg: geometry_filter(
+            lp, cfg,
+            planning_horizon_m=float(cfg.planning_horizon_m),
+            max_lateral_range_m=float(cfg.max_lateral_range_m),
+        ),
         include_unknown=False,
     )
     cone_failure = _cone_filter_failure_result(cones, config)
@@ -523,7 +512,7 @@ def _normalize_track_ids(
 
 
 def _cone_filter_failure_result(
-    cones: _FilteredCones,
+    cones: FilteredCones,
     config: CorridorPlannerConfig,
 ) -> Optional[CorridorPlannerResult]:
     if cones.colored_count == 0:
@@ -542,7 +531,7 @@ def _cone_filter_failure_result(
 
 
 def _make_boundary_chains(
-    cones: _FilteredCones,
+    cones: FilteredCones,
     config: CorridorPlannerConfig,
 ) -> _BoundaryChains:
     left_indices = np.flatnonzero(np.array([c == "blue" for c in cones.colors], dtype=bool))
@@ -553,7 +542,7 @@ def _make_boundary_chains(
             filtered_local=cones.local,
             side_indices=left_indices,
             config=config,
-            boundary_chain_type=_BoundaryChain,
+            boundary_chain_type=BoundaryChainData,
             collect_rejection_reasons=True,
             min_step_m=min(float(config.min_step_m), CORRIDOR_CHAIN_MIN_STEP_M),
         ),
@@ -562,28 +551,16 @@ def _make_boundary_chains(
             filtered_local=cones.local,
             side_indices=right_indices,
             config=config,
-            boundary_chain_type=_BoundaryChain,
+            boundary_chain_type=BoundaryChainData,
             collect_rejection_reasons=True,
             min_step_m=min(float(config.min_step_m), CORRIDOR_CHAIN_MIN_STEP_M),
         ),
     )
 
 
-def _expected_width_m(
-    prior: Optional[CorridorPlannerPrior],
-    config: CorridorPlannerConfig,
-) -> float:
-    prior_width_m = (
-        prior.previous_width_m
-        if prior is not None and prior.previous_width_m is not None
-        else config.initial_width_m
-    )
-    return _clamp(prior_width_m, config.min_width_m, config.max_width_m)
-
-
 def _boundary_chain_failure_result(
     *,
-    cones: _FilteredCones,
+    cones: FilteredCones,
     chains: _BoundaryChains,
     reject_counts: dict[str, int],
     expected_width_m: float,
@@ -606,7 +583,7 @@ def _boundary_chain_failure_result(
 def _failure_result_with_chains(
     *,
     status: str,
-    cones: _FilteredCones,
+    cones: FilteredCones,
     chains: _BoundaryChains,
     reject_counts: dict[str, int],
     expected_width_m: float,
@@ -706,7 +683,7 @@ def _centerline_for_status(centerline: np.ndarray, status: str) -> np.ndarray:
 
 def _assemble_corridor_result(
     *,
-    cones: _FilteredCones,
+    cones: FilteredCones,
     chains: _BoundaryChains,
     corridor: _BuiltCorridor,
     metrics: _CorridorPathMetrics,
@@ -727,7 +704,7 @@ def _assemble_corridor_result(
 
 
 def _new_corridor_result(
-    cones: _FilteredCones,
+    cones: FilteredCones,
     corridor: _BuiltCorridor,
     metrics: _CorridorPathMetrics,
     centerline: np.ndarray,
@@ -784,7 +761,7 @@ def _apply_corridor_scalar_metadata(
 
 def _apply_corridor_array_metadata(
     result: CorridorPlannerResult,
-    cones: _FilteredCones,
+    cones: FilteredCones,
     chains: _BoundaryChains,
     corridor: _BuiltCorridor,
 ) -> None:
@@ -834,22 +811,10 @@ def _corridor_width_median(widths_m: np.ndarray) -> float:
     return float(np.median(widths_m)) if widths_m.size else float("nan")
 
 
-def _geometry_filter(local_points: np.ndarray, config: CorridorPlannerConfig) -> np.ndarray:
-    distance = np.hypot(local_points[:, 0], local_points[:, 1])
-    return (
-        np.isfinite(local_points[:, 0])
-        & np.isfinite(local_points[:, 1])
-        & (distance <= float(config.max_cone_range_m))
-        & (local_points[:, 0] >= -float(config.behind_drop_m))
-        & (local_points[:, 0] <= float(config.planning_horizon_m))
-        & (np.abs(local_points[:, 1]) <= float(config.max_lateral_range_m))
-    )
-
-
 def _build_corridor(
     *,
-    left_chain: _BoundaryChain,
-    right_chain: _BoundaryChain,
+    left_chain: BoundaryChainData,
+    right_chain: BoundaryChainData,
     vehicle_xy: tuple[float, float],
     vehicle_yaw: float,
     config: CorridorPlannerConfig,
@@ -1413,26 +1378,6 @@ def _zero_path_delta_metrics() -> _PathDeltaMetrics:
     )
 
 
-def _local_forward_prefix(path_local: np.ndarray, *, horizon_m: float) -> np.ndarray:
-    pts = np.asarray(path_local, dtype=np.float64)
-    if pts.shape[0] < 2:
-        return np.empty((0, 2), dtype=np.float64)
-    valid_mask = np.isfinite(pts[:, 0]) & np.isfinite(pts[:, 1]) & (pts[:, 0] >= -0.1)
-    pts = pts[valid_mask]
-    if pts.shape[0] < 2:
-        return np.empty((0, 2), dtype=np.float64)
-    cumulative = _path_cumulative_lengths(pts)
-    total = min(float(cumulative[-1]), max(0.25, float(horizon_m)))
-    if total <= 1e-6:
-        return np.asarray(pts[:1], dtype=np.float64)
-    samples = np.arange(0.0, total + 1e-9, 0.25, dtype=np.float64)
-    if samples.size == 0 or samples[-1] < total:
-        samples = np.concatenate((samples, [total]))
-    x = np.interp(samples, cumulative, pts[:, 0])
-    y = np.interp(samples, cumulative, pts[:, 1])
-    return np.column_stack((x, y)).astype(np.float64)
-
-
 def _from_vehicle_frame(
     local_points: np.ndarray,
     vehicle_xy: tuple[float, float],
@@ -1480,8 +1425,8 @@ def _empty_result(
 def _result_with_metadata(
     *,
     result: CorridorPlannerResult,
-    left_chain: _BoundaryChain,
-    right_chain: _BoundaryChain,
+    left_chain: BoundaryChainData,
+    right_chain: BoundaryChainData,
     filtered_track_ids: Optional[np.ndarray] = None,
     planner_mode: str,
     filtered_track_width_m: float,
@@ -1519,8 +1464,8 @@ def _result_with_metadata(
 def _chain_rejection_reasons_by_track_id(
     *,
     filtered_track_ids: np.ndarray,
-    left_chain: _BoundaryChain,
-    right_chain: _BoundaryChain,
+    left_chain: BoundaryChainData,
+    right_chain: BoundaryChainData,
 ) -> dict[int, str]:
     track_ids = np.asarray(filtered_track_ids, dtype=np.int64)
     out: dict[int, str] = {}

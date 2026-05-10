@@ -36,6 +36,7 @@ fi
 
 restore_archive_if_needed "opencv_local.tar.gz" "opencv_local"
 restore_archive_if_needed "cudnn_py.tar.gz" "cudnn_py"
+restore_archive_if_needed "cuda_runtime.tar.gz" "cuda_runtime"
 
 if [[ ! -d "${WS_ROOT}/opencv_local" ]]; then
     echo "Warning: ${WS_ROOT}/opencv_local is missing."
@@ -45,6 +46,11 @@ fi
 if [[ ! -d "${WS_ROOT}/cudnn_py" ]]; then
     echo "Warning: ${WS_ROOT}/cudnn_py is missing."
     echo "Custom OpenCV CUDA/cuDNN loading will not match the reference machine."
+fi
+
+if [[ ! -d "${WS_ROOT}/cuda_runtime" ]]; then
+    echo "Warning: ${WS_ROOT}/cuda_runtime is missing."
+    echo "Custom OpenCV CUDA runtime loading will not match the reference machine."
 fi
 
 "${PYTHON_BIN}" -m pip install --user -r "${REPO_ROOT}/requirements.user.lock.txt"

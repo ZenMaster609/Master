@@ -10,28 +10,32 @@ import numpy as np
 
 from sim_car.planning.planner_config_base import BasePlannerConfig
 from sim_car.planning.tracked_cone_planner_geometry import (
+    BoundaryChainData,
+    BoundaryPair,
+    FilteredCones,
+    NearFieldMetrics,
     _build_boundary_chain,
-    _clamp,
     _default_reject_counts,
     _empty_result_fields,
     _filter_and_order_cones,
     _finalize_path,
     _first_point_distance,
-    _forward_extent_m,
     _merge_reject_counts,
-    _path_start_heading_error,
-    _resample_path,
     estimate_tangents as _estimate_tangents,
+    expected_width_m as _expected_width_m,
+    geometry_filter as _geometry_filter,
     inward_distance,
     inward_normal as _inward_normal,
+    local_forward_prefix as _local_forward_prefix,
+    near_field_delta_metrics as _near_field_delta_metrics,
+    pair_segments as _pair_segments,
     pair_width_in_range,
-    path_cumulative_lengths as _path_cumulative_lengths,
     path_heading_delta_max as _path_heading_delta_max,
-    path_self_intersects as _path_self_intersects,
     to_vehicle_frame as _to_vehicle_frame,
     UnknownPartnerCheck,
     unknown_partner_check,
     unknown_partner_within_limits,
+    validate_path as _validate_path,
     width_jump_exceeds,
 )
 
@@ -142,53 +146,17 @@ class SingleBoundaryPlannerResult:
     unknown_pair_count: int = 0
 
 
-@dataclass
-class _BoundaryChain:
-    filtered_indices: np.ndarray
-    global_points: np.ndarray
-    local_points: np.ndarray
-    tangents_local: np.ndarray
-    mean_heading_change_rad: float
-    forward_extent_m: float
-
-
-@dataclass
-class _BoundaryPair:
-    left_filtered_idx: int
-    right_filtered_idx: int
-    left_track_id: int
-    right_track_id: int
-    left_global: np.ndarray
-    right_global: np.ndarray
-    left_local: np.ndarray
-    right_local: np.ndarray
-    width_m: float
-
-    @property
-    def midpoint_global(self) -> np.ndarray:
-        return _MIDPOINT_ENDPOINT_WEIGHT * (self.left_global + self.right_global)
-
-
-@dataclass
-class _FilteredCones:
-    points: np.ndarray
-    local: np.ndarray
-    track_ids: np.ndarray
-    colors: list[str]
-    colored_count: int
-
-
 @dataclass(frozen=True)
 class _BoundaryChains:
-    left: _BoundaryChain
-    right: _BoundaryChain
+    left: BoundaryChainData
+    right: BoundaryChainData
     unknown_indices: np.ndarray
 
 
 @dataclass(frozen=True)
 class _PairingAnchor:
-    anchor_chain: _BoundaryChain
-    other_chain: _BoundaryChain
+    anchor_chain: BoundaryChainData
+    other_chain: BoundaryChainData
     anchor_side: str
 
 
@@ -217,7 +185,7 @@ class _PartnerOption:
 
 @dataclass
 class _PairingState:
-    pairs: list[_BoundaryPair] = field(default_factory=list)
+    pairs: list[BoundaryPair] = field(default_factory=list)
     next_other_start: int = 0
     last_width: Optional[float] = None
     last_partner_progress: float = float("-inf")
@@ -229,7 +197,7 @@ class _PairingState:
 
 @dataclass(frozen=True)
 class _PairingResult:
-    pairs: list[_BoundaryPair]
+    pairs: list[BoundaryPair]
     candidate_count: int
     unknown_pair_count: int
     measured_width_m: float
@@ -241,7 +209,7 @@ class _PairingSearch:
     anchor: _PairingAnchor
     state: _PairingState
     previous_partner_by_anchor: dict[int, int]
-    cones: _FilteredCones
+    cones: FilteredCones
     unknown_indices: np.ndarray
     expected_width_m: float
     reject_counts: dict[str, int]
@@ -250,28 +218,9 @@ class _PairingSearch:
 
 @dataclass(frozen=True)
 class _FallbackSelection:
-    chain: _BoundaryChain
+    chain: BoundaryChainData
     side: str
     raw_offset_path: np.ndarray
-
-
-@dataclass(frozen=True)
-class _NearFieldMetrics:
-    lateral_max_m: float = 0.0
-    lateral_mean_m: float = 0.0
-    displacement_max_m: float = 0.0
-    displacement_mean_m: float = 0.0
-
-    def __getitem__(self, key: str) -> float:
-        try:
-            return float(getattr(self, key))
-        except AttributeError as exc:
-            raise KeyError(key) from exc
-
-
-@dataclass(frozen=True)
-class _PathAlignmentMetrics(_NearFieldMetrics):
-    heading_delta_rad: float = 0.0
 
 
 @dataclass(frozen=True)
@@ -279,7 +228,7 @@ class _CandidatePath:
     centerline: np.ndarray
     centerline_local: np.ndarray
     seed_distance_m: float
-    near_field: _NearFieldMetrics
+    near_field: NearFieldMetrics
     heading_delta_max: float
     continuity_threshold_m: float
 
@@ -298,42 +247,11 @@ class _PlannerRequest:
 
 @dataclass(frozen=True)
 class _PreparedPlanning:
-    cones: _FilteredCones
+    cones: FilteredCones
     chains: _BoundaryChains
     reject_counts: dict[str, int]
     expected_width_m: float
     pairing: _PairingResult
-
-
-def _validate_path(
-    centerline: np.ndarray,
-    centerline_local: np.ndarray,
-    near_field: _NearFieldMetrics,
-    heading_delta_max: float,
-    continuity_threshold_m: float,
-    reject_counts: dict[str, int],
-    config: SingleBoundaryPlannerConfig,
-) -> str:
-    """Run path quality checks. Returns reject reason (empty string means ok). Mutates reject_counts."""
-    if centerline.shape[0] < int(config.min_path_points):
-        return "path has too few points"
-    if not np.all(np.isfinite(centerline)):
-        return "path contains non-finite geometry"
-    if _forward_extent_m(centerline_local) < float(config.min_forward_extent_m):
-        return "path forward extent too short"
-    start_heading_error = abs(_path_start_heading_error(centerline_local))
-    if start_heading_error > float(config.max_start_heading_error_rad):
-        reject_counts["midpoint_kink"] += 1
-        return "path heading flip near vehicle"
-    if near_field.lateral_max_m > continuity_threshold_m:
-        reject_counts["near_field_continuity"] += 1
-        return "near-field continuity rejected fresh path"
-    if heading_delta_max > float(config.max_heading_delta_rad):
-        reject_counts["midpoint_kink"] += 1
-        return "path heading delta exceeded limit"
-    if _path_self_intersects(centerline):
-        return "path self-crossing detected"
-    return ""
 
 
 def compute_single_boundary_centerline(
@@ -416,7 +334,7 @@ def _prepare_planning(
         vehicle_xy=request.vehicle_xy,
         vehicle_yaw=request.vehicle_yaw,
         config=request.config,
-        filtered_cones_type=_FilteredCones,
+        filtered_cones_type=FilteredCones,
         geometry_filter=_geometry_filter,
         include_unknown=True,
     )
@@ -445,7 +363,7 @@ def _coerce_track_ids(track_ids: Optional[np.ndarray], point_count: int) -> np.n
 
 
 def _reject_insufficient_colored_cones(
-    cones: _FilteredCones,
+    cones: FilteredCones,
     config: SingleBoundaryPlannerConfig,
 ) -> Optional[SingleBoundaryPlannerResult]:
     if cones.colored_count == 0:
@@ -464,7 +382,7 @@ def _reject_insufficient_colored_cones(
 
 
 def _make_boundary_chains(
-    cones: _FilteredCones,
+    cones: FilteredCones,
     config: SingleBoundaryPlannerConfig,
 ) -> _BoundaryChains:
     left_indices = np.flatnonzero(np.array([c == "blue" for c in cones.colors], dtype=bool))
@@ -476,34 +394,22 @@ def _make_boundary_chains(
             filtered_local=cones.local,
             side_indices=left_indices,
             config=config,
-            boundary_chain_type=_BoundaryChain,
+            boundary_chain_type=BoundaryChainData,
         ),
         right=_build_boundary_chain(
             filtered_points=cones.points,
             filtered_local=cones.local,
             side_indices=right_indices,
             config=config,
-            boundary_chain_type=_BoundaryChain,
+            boundary_chain_type=BoundaryChainData,
         ),
         unknown_indices=unknown_indices,
     )
 
 
-def _expected_width_m(
-    prior: Optional[SingleBoundaryPlannerPrior],
-    config: SingleBoundaryPlannerConfig,
-) -> float:
-    prior_width = (
-        prior.previous_width_m
-        if prior is not None and prior.previous_width_m is not None
-        else config.initial_width_m
-    )
-    return _clamp(prior_width, config.min_width_m, config.max_width_m)
-
-
 def _attempt_pairing(
     *,
-    cones: _FilteredCones,
+    cones: FilteredCones,
     chains: _BoundaryChains,
     expected_width_m: float,
     config: SingleBoundaryPlannerConfig,
@@ -608,7 +514,7 @@ def _candidate_path_metrics(
         previous=None if prior is None else prior.previous_centerline,
         vehicle_xy=vehicle_xy,
         vehicle_yaw=vehicle_yaw,
-        horizon_m=config.jump_check_horizon_m,
+        horizon_m=min(float(config.jump_check_horizon_m), _MAX_NEAR_FIELD_ALIGNMENT_HORIZON_M),
     )
     return _CandidatePath(
         centerline=centerline,
@@ -738,33 +644,14 @@ def _apply_single_boundary_pair_metadata(
     result.unknown_pair_count = int(prepared.pairing.unknown_pair_count)
 
 
-def _pair_segments(pairs: list[_BoundaryPair]) -> np.ndarray:
-    if not pairs:
-        return np.empty((0, 2, 2), dtype=np.float64)
-    return np.asarray(
-        [[pair.left_global, pair.right_global] for pair in pairs],
-        dtype=np.float64,
-    )
-
-
-def _geometry_filter(local_points: np.ndarray, config: SingleBoundaryPlannerConfig) -> np.ndarray:
-    distance = np.hypot(local_points[:, 0], local_points[:, 1])
-    return (
-        np.isfinite(local_points[:, 0])
-        & np.isfinite(local_points[:, 1])
-        & (distance <= float(config.max_cone_range_m))
-        & (local_points[:, 0] >= -float(config.behind_drop_m))
-    )
-
-
 def _pair_boundary_chains(
     *,
-    cones: _FilteredCones,
+    cones: FilteredCones,
     chains: _BoundaryChains,
     expected_width_m: float,
     config: SingleBoundaryPlannerConfig,
     prior: Optional[SingleBoundaryPlannerPrior],
-) -> tuple[list[_BoundaryPair], int, int, dict[str, int]]:
+) -> tuple[list[BoundaryPair], int, int, dict[str, int]]:
     reject_counts = _default_reject_counts(_REJECT_COUNT_KEYS)
     anchor = _select_pairing_anchor(chains.left, chains.right)
     state = _PairingState()
@@ -821,8 +708,8 @@ def _process_pairing_anchor(anchor_pos: int, search: _PairingSearch) -> None:
 
 
 def _select_pairing_anchor(
-    left_chain: _BoundaryChain,
-    right_chain: _BoundaryChain,
+    left_chain: BoundaryChainData,
+    right_chain: BoundaryChainData,
 ) -> _PairingAnchor:
     if left_chain.filtered_indices.size >= right_chain.filtered_indices.size:
         return _PairingAnchor(left_chain, right_chain, "blue")
@@ -1096,7 +983,7 @@ def _prefer_previous_partner_option(
 def _real_partner_option(
     *,
     context: _AnchorContext,
-    other_chain: _BoundaryChain,
+    other_chain: BoundaryChainData,
     other_pos: int,
     filtered_track_ids: np.ndarray,
     expected_width_m: float,
@@ -1238,14 +1125,14 @@ def _boundary_pair_from_option(
     anchor_global: np.ndarray,
     anchor_local: np.ndarray,
     width_m: float,
-) -> _BoundaryPair:
+) -> BoundaryPair:
     partner_filtered_idx = int(chosen.partner_filtered_idx)
     partner_track_id = int(chosen.partner_track_id)
     partner_global = np.asarray(chosen.partner_global, dtype=np.float64)
     partner_local = np.asarray(chosen.partner_local, dtype=np.float64)
 
     if anchor_side == "blue":
-        return _BoundaryPair(
+        return BoundaryPair(
             left_filtered_idx=anchor_filtered_idx,
             right_filtered_idx=partner_filtered_idx,
             left_track_id=anchor_track_id,
@@ -1257,7 +1144,7 @@ def _boundary_pair_from_option(
             width_m=float(width_m),
         )
 
-    return _BoundaryPair(
+    return BoundaryPair(
         left_filtered_idx=partner_filtered_idx,
         right_filtered_idx=anchor_filtered_idx,
         left_track_id=partner_track_id,
@@ -1271,11 +1158,11 @@ def _boundary_pair_from_option(
 
 
 def _select_fallback_chain(
-    left_chain: _BoundaryChain,
-    right_chain: _BoundaryChain,
+    left_chain: BoundaryChainData,
+    right_chain: BoundaryChainData,
     config: SingleBoundaryPlannerConfig,
-) -> tuple[Optional[_BoundaryChain], str]:
-    candidates: list[tuple[tuple[float, float, float, int], _BoundaryChain, str]] = []
+) -> tuple[Optional[BoundaryChainData], str]:
+    candidates: list[tuple[tuple[float, float, float, int], BoundaryChainData, str]] = []
     min_chain_length = int(config.min_chain_length)
 
     if left_chain.filtered_indices.size >= min_chain_length:
@@ -1313,7 +1200,7 @@ def _select_fallback_chain(
 
 def _offset_boundary_chain(
     *,
-    chain: _BoundaryChain,
+    chain: BoundaryChainData,
     side: str,
     width_m: float,
 ) -> np.ndarray:
@@ -1327,115 +1214,6 @@ def _offset_boundary_chain(
         normal = _inward_normal(tangents_global[idx], side)
         offset.append(point + (offset_distance * normal))
     return np.asarray(offset, dtype=np.float64)
-
-
-def _near_field_delta_metrics(
-    *,
-    current: np.ndarray,
-    previous: Optional[np.ndarray],
-    vehicle_xy: tuple[float, float],
-    vehicle_yaw: float,
-    horizon_m: float,
-) -> _NearFieldMetrics:
-    if previous is None or previous.shape[0] < 2 or current.shape[0] < 2:
-        return _NearFieldMetrics()
-
-    current_local = _to_vehicle_frame(current, vehicle_xy, vehicle_yaw)
-    previous_local = _to_vehicle_frame(previous, vehicle_xy, vehicle_yaw)
-    alignment = _path_alignment_metrics(
-        current_local=current_local,
-        previous_local=previous_local,
-        horizon_m=min(float(horizon_m), _MAX_NEAR_FIELD_ALIGNMENT_HORIZON_M),
-    )
-    return _NearFieldMetrics(
-        lateral_max_m=float(alignment.lateral_max_m),
-        lateral_mean_m=float(alignment.lateral_mean_m),
-        displacement_max_m=float(alignment.displacement_max_m),
-        displacement_mean_m=float(alignment.displacement_mean_m),
-    )
-
-
-def _path_alignment_metrics(
-    *,
-    current_local: Optional[np.ndarray],
-    previous_local: Optional[np.ndarray],
-    horizon_m: float,
-) -> _PathAlignmentMetrics:
-    empty = _PathAlignmentMetrics()
-    prefixes = _alignment_prefixes(current_local, previous_local, horizon_m)
-    if prefixes is None:
-        return empty
-
-    current_prefix, previous_prefix = prefixes
-    count = min(current_prefix.shape[0], previous_prefix.shape[0])
-    if count < 2:
-        return empty
-    delta = current_prefix[:count] - previous_prefix[:count]
-    lateral = np.abs(delta[:, 1])
-    displacement = np.hypot(delta[:, 0], delta[:, 1])
-    return _PathAlignmentMetrics(
-        lateral_max_m=float(np.max(lateral)) if lateral.size else 0.0,
-        lateral_mean_m=float(np.mean(lateral)) if lateral.size else 0.0,
-        displacement_max_m=float(np.max(displacement)) if displacement.size else 0.0,
-        displacement_mean_m=float(np.mean(displacement)) if displacement.size else 0.0,
-        heading_delta_rad=_alignment_heading_delta_rad(current_prefix, previous_prefix, count),
-    )
-
-
-def _alignment_prefixes(
-    current_local: Optional[np.ndarray],
-    previous_local: Optional[np.ndarray],
-    horizon_m: float,
-) -> Optional[tuple[np.ndarray, np.ndarray]]:
-    if current_local is None or previous_local is None:
-        return None
-    current_prefix = _local_forward_prefix(
-        np.asarray(current_local, dtype=np.float64),
-        horizon_m=float(horizon_m),
-    )
-    previous_prefix = _local_forward_prefix(
-        np.asarray(previous_local, dtype=np.float64),
-        horizon_m=float(horizon_m),
-    )
-    if current_prefix.shape[0] < 2 or previous_prefix.shape[0] < 2:
-        return None
-    return current_prefix, previous_prefix
-
-
-def _alignment_heading_delta_rad(
-    current_prefix: np.ndarray,
-    previous_prefix: np.ndarray,
-    count: int,
-) -> float:
-    current_heading = _path_start_heading_error(current_prefix[:count])
-    previous_heading = _path_start_heading_error(previous_prefix[:count])
-    return abs(
-        float(
-            math.atan2(
-                math.sin(current_heading - previous_heading),
-                math.cos(current_heading - previous_heading),
-            )
-        )
-    )
-
-
-def _local_forward_prefix(path_local: np.ndarray, *, horizon_m: float) -> np.ndarray:
-    pts = np.asarray(path_local, dtype=np.float64)
-    if pts.shape[0] < 2:
-        return np.empty((0, 2), dtype=np.float64)
-    valid_mask = (
-        np.isfinite(pts[:, 0])
-        & np.isfinite(pts[:, 1])
-        & (pts[:, 0] >= -_LOCAL_FORWARD_BACKTRACK_MARGIN_M)
-    )
-    pts = pts[valid_mask]
-    if pts.shape[0] < 2:
-        return np.empty((0, 2), dtype=np.float64)
-    cumulative = _path_cumulative_lengths(pts)
-    total = min(float(cumulative[-1]), max(_MIN_LOCAL_PREFIX_LENGTH_M, float(horizon_m)))
-    if total <= _MIN_PATH_LENGTH_M:
-        return np.asarray(pts[:1], dtype=np.float64)
-    return _resample_path(pts, _MIN_LOCAL_PREFIX_LENGTH_M, total)
 
 
 def _empty_result(
@@ -1464,8 +1242,8 @@ def _empty_result(
 def _result_with_metadata(
     *,
     result: SingleBoundaryPlannerResult,
-    left_chain: _BoundaryChain,
-    right_chain: _BoundaryChain,
+    left_chain: BoundaryChainData,
+    right_chain: BoundaryChainData,
     planner_mode: str,
     filtered_track_width_m: float,
 ) -> SingleBoundaryPlannerResult:

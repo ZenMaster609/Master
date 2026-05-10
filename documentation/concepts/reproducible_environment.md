@@ -16,6 +16,7 @@ The important local runtime overlays are:
 
 - `~/ros2_ws/opencv_local`
 - `~/ros2_ws/cudnn_py`
+- `~/ros2_ws/cuda_runtime`
 - `~/ros2_ws/yolo_pt_venv`
 
 The launch file injects these paths into `perception_node`, so a plain `pip install -r requirements.txt` is not enough to reproduce camera perception.
@@ -61,6 +62,7 @@ cd ~/ros2_ws && docker compose -f src/Master/compose.yaml -f src/Master/compose.
 - `~/ros2_ws/opencv_local/lib/python3.10/dist-packages`
 - `~/ros2_ws/opencv_local/lib`
 - `~/ros2_ws/cudnn_py/nvidia/cudnn/lib`
+- `~/ros2_ws/cuda_runtime/lib`
 - `~/ros2_ws/yolo_pt_venv/lib/python3.10/site-packages`
 
 This lets the perception node use the custom OpenCV, CUDA/cuDNN runtime pieces, and the YOLO `.pt` Python environment while the rest of the workspace stays in the normal ROS 2 environment.

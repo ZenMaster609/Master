@@ -1059,3 +1059,173 @@ def path_forward_extent_local(path_local: np.ndarray) -> float:
     path_length = float(np.sum(np.hypot(diffs[:, 0], diffs[:, 1])))
     x_span = float(np.max(path_local[:, 0]) - np.min(path_local[:, 0]))
     return max(path_length, x_span)
+
+
+# --- Shared Planner Primitives ---
+
+
+@dataclass
+class FilteredCones:
+    points: np.ndarray
+    local: np.ndarray
+    track_ids: np.ndarray
+    colors: list[str]
+    colored_count: int
+    raw_colors: list[str] = field(default_factory=list)
+
+
+@dataclass
+class BoundaryPair:
+    left_filtered_idx: int
+    right_filtered_idx: int
+    left_track_id: int
+    right_track_id: int
+    left_global: np.ndarray
+    right_global: np.ndarray
+    left_local: np.ndarray
+    right_local: np.ndarray
+    width_m: float
+
+    @property
+    def midpoint_global(self) -> np.ndarray:
+        return 0.5 * (self.left_global + self.right_global)
+
+    @property
+    def midpoint_local(self) -> np.ndarray:
+        return 0.5 * (self.left_local + self.right_local)
+
+
+@dataclass(frozen=True)
+class NearFieldMetrics:
+    lateral_max_m: float = 0.0
+    lateral_mean_m: float = 0.0
+    displacement_max_m: float = 0.0
+    displacement_mean_m: float = 0.0
+
+    def __getitem__(self, key: str) -> float:
+        try:
+            return float(getattr(self, key))
+        except AttributeError as exc:
+            raise KeyError(key) from exc
+
+
+def geometry_filter(
+    local_points: np.ndarray,
+    config: Any,
+    *,
+    planning_horizon_m: Optional[float] = None,
+    max_lateral_range_m: Optional[float] = None,
+) -> np.ndarray:
+    distance = np.hypot(local_points[:, 0], local_points[:, 1])
+    mask = (
+        np.isfinite(local_points[:, 0])
+        & np.isfinite(local_points[:, 1])
+        & (distance <= float(config.max_cone_range_m))
+        & (local_points[:, 0] >= -float(config.behind_drop_m))
+    )
+    if planning_horizon_m is not None:
+        mask = mask & (local_points[:, 0] <= float(planning_horizon_m))
+    if max_lateral_range_m is not None:
+        mask = mask & (np.abs(local_points[:, 1]) <= float(max_lateral_range_m))
+    return mask
+
+
+def expected_width_m(prior: Any, config: Any) -> float:
+    prior_width = (
+        prior.previous_width_m
+        if prior is not None and prior.previous_width_m is not None
+        else config.initial_width_m
+    )
+    return _clamp(prior_width, config.min_width_m, config.max_width_m)
+
+
+def near_field_delta_metrics(
+    *,
+    current: np.ndarray,
+    previous: Optional[np.ndarray],
+    vehicle_xy: tuple[float, float],
+    vehicle_yaw: float,
+    horizon_m: float,
+) -> NearFieldMetrics:
+    if previous is None or previous.shape[0] < 2 or current.shape[0] < 2:
+        return NearFieldMetrics()
+    current_local = to_vehicle_frame(current, vehicle_xy, vehicle_yaw)
+    previous_local = to_vehicle_frame(previous, vehicle_xy, vehicle_yaw)
+    current_rs = _resample_path(current_local, 0.25, float(horizon_m))
+    previous_rs = _resample_path(previous_local, 0.25, float(horizon_m))
+    count = min(current_rs.shape[0], previous_rs.shape[0])
+    if count <= 0:
+        return NearFieldMetrics()
+    delta = current_rs[:count] - previous_rs[:count]
+    lateral = np.abs(delta[:, 1])
+    displacement = np.hypot(delta[:, 0], delta[:, 1])
+    return NearFieldMetrics(
+        lateral_max_m=float(np.max(lateral)) if lateral.size else 0.0,
+        lateral_mean_m=float(np.mean(lateral)) if lateral.size else 0.0,
+        displacement_max_m=float(np.max(displacement)) if displacement.size else 0.0,
+        displacement_mean_m=float(np.mean(displacement)) if displacement.size else 0.0,
+    )
+
+
+# Meters; small behind-vehicle slack lets the prefix include the first path point.
+_LOCAL_FORWARD_BACKTRACK_M = 0.1
+# Meters; minimum resampling step for near-field prefix extraction.
+_LOCAL_PREFIX_STEP_M = 0.25
+
+
+def local_forward_prefix(path_local: np.ndarray, *, horizon_m: float) -> np.ndarray:
+    pts = np.asarray(path_local, dtype=np.float64)
+    if pts.shape[0] < 2:
+        return np.empty((0, 2), dtype=np.float64)
+    valid_mask = (
+        np.isfinite(pts[:, 0])
+        & np.isfinite(pts[:, 1])
+        & (pts[:, 0] >= -_LOCAL_FORWARD_BACKTRACK_M)
+    )
+    pts = pts[valid_mask]
+    if pts.shape[0] < 2:
+        return np.empty((0, 2), dtype=np.float64)
+    cumulative = path_cumulative_lengths(pts)
+    total = min(float(cumulative[-1]), max(_LOCAL_PREFIX_STEP_M, float(horizon_m)))
+    if total <= 1e-6:
+        return np.asarray(pts[:1], dtype=np.float64)
+    return _resample_path(pts, _LOCAL_PREFIX_STEP_M, total)
+
+
+def validate_path(
+    centerline: np.ndarray,
+    centerline_local: np.ndarray,
+    near_field: Any,
+    heading_delta_max: float,
+    continuity_threshold_m: float,
+    reject_counts: dict[str, int],
+    config: Any,
+) -> str:
+    if centerline.shape[0] < int(config.min_path_points):
+        return "path has too few points"
+    if not np.all(np.isfinite(centerline)):
+        return "path contains non-finite geometry"
+    if _forward_extent_m(centerline_local) < float(config.min_forward_extent_m):
+        return "path forward extent too short"
+    start_heading_error = abs(_path_start_heading_error(centerline_local))
+    if start_heading_error > float(config.max_start_heading_error_rad):
+        reject_counts["midpoint_kink"] += 1
+        return "path heading flip near vehicle"
+    if near_field.lateral_max_m > continuity_threshold_m:
+        reject_counts["near_field_continuity"] += 1
+        return "near-field continuity rejected fresh path"
+    if heading_delta_max > float(config.max_heading_delta_rad):
+        reject_counts["midpoint_kink"] += 1
+        return "path heading delta exceeded limit"
+    if path_self_intersects(centerline):
+        return "path self-crossing detected"
+    return ""
+
+
+def pair_segments(pairs: list[Any]) -> np.ndarray:
+    if not pairs:
+        return np.empty((0, 2, 2), dtype=np.float64)
+    return np.asarray(
+        [[pair.left_global, pair.right_global] for pair in pairs],
+        dtype=np.float64,
+    )

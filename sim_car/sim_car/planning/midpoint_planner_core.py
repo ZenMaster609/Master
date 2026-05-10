@@ -11,28 +11,32 @@ import numpy as np
 from sim_car.cones.tracking.fusion import normalize_color
 from sim_car.planning.planner_config_base import BasePlannerConfig
 from sim_car.planning.tracked_cone_planner_geometry import (
+    BoundaryChainData,
+    BoundaryPair,
+    FilteredCones,
+    NearFieldMetrics,
     _build_boundary_chain,
-    _clamp,
     _default_reject_counts,
     _empty_result_fields,
     _filter_and_order_cones,
     _finalize_path,
     _first_point_distance,
-    _forward_extent_m,
     _merge_reject_counts,
-    _path_start_heading_error,
-    _resample_path,
     estimate_tangents as _estimate_tangents,
+    expected_width_m as _expected_width_m,
+    geometry_filter as _geometry_filter,
     inward_distance,
     inward_normal as _inward_normal,
     midpoint_outside_pair_span,
+    near_field_delta_metrics as _near_field_delta_metrics,
+    pair_segments as _pair_segments,
     pair_width_in_range,
     path_heading_delta_max as _path_heading_delta_max,
-    path_self_intersects as _path_self_intersects,
     to_vehicle_frame as _to_vehicle_frame,
     unknown_partner_check,
     unknown_partner_within_limits,
     update_track_width_estimate,
+    validate_path as _validate_path,
 )
 
 _MIDPOINT_CHAIN_BACKTRACK_TOLERANCE_M = 0.25
@@ -136,47 +140,6 @@ class MidpointPlannerResult:
 
 
 @dataclass
-class _BoundaryChain:
-    filtered_indices: np.ndarray
-    global_points: np.ndarray
-    local_points: np.ndarray
-    tangents_local: np.ndarray
-    mean_heading_change_rad: float
-    forward_extent_m: float
-
-
-@dataclass
-class _BoundaryPair:
-    left_filtered_idx: int
-    right_filtered_idx: int
-    left_track_id: int
-    right_track_id: int
-    left_global: np.ndarray
-    right_global: np.ndarray
-    left_local: np.ndarray
-    right_local: np.ndarray
-    width_m: float
-
-    @property
-    def midpoint_global(self) -> np.ndarray:
-        return 0.5 * (self.left_global + self.right_global)
-
-    @property
-    def midpoint_local(self) -> np.ndarray:
-        return 0.5 * (self.left_local + self.right_local)
-
-
-@dataclass
-class _FilteredCones:
-    points: np.ndarray
-    local: np.ndarray
-    track_ids: np.ndarray
-    colors: list[str]
-    raw_colors: list[str]
-    colored_count: int
-
-
-@dataclass
 class _BoundaryIndices:
     left: np.ndarray
     right: np.ndarray
@@ -220,7 +183,7 @@ class _PairCandidate:
 
 @dataclass
 class _PairingOutcome:
-    pairs: list[_BoundaryPair]
+    pairs: list[BoundaryPair]
     candidate_count: int
     unknown_pair_count: int
     reject_counts: dict[str, int]
@@ -229,7 +192,7 @@ class _PairingOutcome:
 @dataclass
 class _MidpointPairingResult:
     candidate_edges: np.ndarray
-    pairs: list[_BoundaryPair]
+    pairs: list[BoundaryPair]
     midpoint_chain: np.ndarray
     selected_edges: np.ndarray
     selected_pair_track_ids: np.ndarray
@@ -240,18 +203,10 @@ class _MidpointPairingResult:
 
 
 @dataclass
-class _NearFieldMetrics:
-    lateral_max_m: float = 0.0
-    lateral_mean_m: float = 0.0
-    displacement_max_m: float = 0.0
-    displacement_mean_m: float = 0.0
-
-
-@dataclass
 class _ValidatedMidpointPath:
     centerline: np.ndarray
     prevalidation_centerline: np.ndarray
-    near_field: _NearFieldMetrics
+    near_field: NearFieldMetrics
     heading_delta_max: float
     seed_distance_m: float
     reject_reason: str
@@ -260,45 +215,14 @@ class _ValidatedMidpointPath:
 
 @dataclass
 class _MidpointComputationContext:
-    cones: _FilteredCones
-    left_chain: _BoundaryChain
-    right_chain: _BoundaryChain
+    cones: FilteredCones
+    left_chain: BoundaryChainData
+    right_chain: BoundaryChainData
     pairing: _MidpointPairingResult
     expected_width_m: float
     reject_counts: dict[str, int]
     left_boundary_count: int
     right_boundary_count: int
-
-
-def _validate_path(
-    centerline: np.ndarray,
-    centerline_local: np.ndarray,
-    near_field: _NearFieldMetrics,
-    heading_delta_max: float,
-    continuity_threshold_m: float,
-    reject_counts: dict[str, int],
-    config: MidpointPlannerConfig,
-) -> str:
-    """Run path quality checks. Returns reject reason (empty string means ok). Mutates reject_counts."""
-    if centerline.shape[0] < int(config.min_path_points):
-        return "path has too few points"
-    if not np.all(np.isfinite(centerline)):
-        return "path contains non-finite geometry"
-    if _forward_extent_m(centerline_local) < float(config.min_forward_extent_m):
-        return "path forward extent too short"
-    start_heading_error = abs(_path_start_heading_error(centerline_local))
-    if start_heading_error > float(config.max_start_heading_error_rad):
-        reject_counts["midpoint_kink"] += 1
-        return "path heading flip near vehicle"
-    if near_field.lateral_max_m > continuity_threshold_m:
-        reject_counts["near_field_continuity"] += 1
-        return "near-field continuity rejected fresh path"
-    if heading_delta_max > float(config.max_heading_delta_rad):
-        reject_counts["midpoint_kink"] += 1
-        return "path heading delta exceeded limit"
-    if _path_self_intersects(centerline):
-        return "path self-crossing detected"
-    return ""
 
 
 def compute_midpoint_centerline(
@@ -325,7 +249,7 @@ def compute_midpoint_centerline(
         vehicle_xy=vehicle_xy,
         vehicle_yaw=vehicle_yaw,
         config=config,
-        filtered_cones_type=_FilteredCones,
+        filtered_cones_type=FilteredCones,
         geometry_filter=_geometry_filter,
         include_unknown=True,
         raw_colors=raw_colors,
@@ -338,7 +262,7 @@ def compute_midpoint_centerline(
 
 
 def _compute_midpoint_from_cones(
-    cones: _FilteredCones,
+    cones: FilteredCones,
     vehicle_xy: tuple[float, float],
     vehicle_yaw: float,
     config: MidpointPlannerConfig,
@@ -355,7 +279,7 @@ def _compute_midpoint_from_cones(
 
 
 def _midpoint_computation_context(
-    cones: _FilteredCones,
+    cones: FilteredCones,
     config: MidpointPlannerConfig,
     prior: Optional[MidpointPlannerPrior],
 ) -> _MidpointComputationContext:
@@ -396,7 +320,7 @@ def _normalized_track_ids(
 
 
 def _filtered_cones_failure_result(
-    cones: _FilteredCones,
+    cones: FilteredCones,
     config: MidpointPlannerConfig,
 ) -> Optional[MidpointPlannerResult]:
     if cones.colored_count == 0:
@@ -425,49 +349,37 @@ def _boundary_indices_from_colors(colors: list[str]) -> _BoundaryIndices:
 
 
 def _build_midpoint_boundary_chains(
-    cones: _FilteredCones,
+    cones: FilteredCones,
     boundary_indices: _BoundaryIndices,
     config: MidpointPlannerConfig,
-) -> tuple[_BoundaryChain, _BoundaryChain]:
+) -> tuple[BoundaryChainData, BoundaryChainData]:
     return (
         _build_boundary_chain(
             filtered_points=cones.points,
             filtered_local=cones.local,
             side_indices=boundary_indices.left,
             config=config,
-            boundary_chain_type=_BoundaryChain,
+            boundary_chain_type=BoundaryChainData,
         ),
         _build_boundary_chain(
             filtered_points=cones.points,
             filtered_local=cones.local,
             side_indices=boundary_indices.right,
             config=config,
-            boundary_chain_type=_BoundaryChain,
+            boundary_chain_type=BoundaryChainData,
         ),
     )
 
 
-def _expected_width_m(
-    prior: Optional[MidpointPlannerPrior],
-    config: MidpointPlannerConfig,
-) -> float:
-    prior_width = (
-        prior.previous_width_m
-        if prior is not None and prior.previous_width_m is not None
-        else config.initial_width_m
-    )
-    return _clamp(prior_width, config.min_width_m, config.max_width_m)
-
-
 def _compute_midpoint_pairing(
     *,
-    cones: _FilteredCones,
+    cones: FilteredCones,
     boundary_indices: _BoundaryIndices,
     expected_width_m: float,
     config: MidpointPlannerConfig,
     prior: Optional[MidpointPlannerPrior],
-    left_chain: _BoundaryChain,
-    right_chain: _BoundaryChain,
+    left_chain: BoundaryChainData,
+    right_chain: BoundaryChainData,
     reject_counts: dict[str, int],
 ) -> _MidpointPairingResult:
     pairing = _build_boundary_pairing(
@@ -483,13 +395,13 @@ def _compute_midpoint_pairing(
 
 
 def _build_boundary_pairing(
-    cones: _FilteredCones,
+    cones: FilteredCones,
     boundary_indices: _BoundaryIndices,
     expected_width_m: float,
     config: MidpointPlannerConfig,
     prior: Optional[MidpointPlannerPrior],
-    left_chain: _BoundaryChain,
-    right_chain: _BoundaryChain,
+    left_chain: BoundaryChainData,
+    right_chain: BoundaryChainData,
 ) -> _PairingOutcome:
     if not _has_pairing_inputs(boundary_indices):
         return _PairingOutcome([], 0, 0, _default_reject_counts(_REJECT_COUNT_KEYS))
@@ -517,9 +429,9 @@ def _has_pairing_inputs(boundary_indices: _BoundaryIndices) -> bool:
 
 
 def _ordered_midpoint_pairs(
-    pairs: list[_BoundaryPair],
+    pairs: list[BoundaryPair],
     config: MidpointPlannerConfig,
-) -> list[_BoundaryPair]:
+) -> list[BoundaryPair]:
     ordered = _order_pairs_into_midpoint_chain(pairs, config=config)
     return _trim_pairs_by_midpoint_step_length(
         ordered,
@@ -528,7 +440,7 @@ def _ordered_midpoint_pairs(
 
 
 def _midpoint_pairing_result(
-    pairs: list[_BoundaryPair],
+    pairs: list[BoundaryPair],
     candidate_count: int,
     unknown_pair_count: int,
     config: MidpointPlannerConfig,
@@ -549,7 +461,7 @@ def _midpoint_pairing_result(
     )
 
 
-def _median_pair_width_m(pairs: list[_BoundaryPair]) -> float:
+def _median_pair_width_m(pairs: list[BoundaryPair]) -> float:
     if not pairs:
         return float("nan")
     return float(np.median([pair.width_m for pair in pairs]))
@@ -572,14 +484,14 @@ def _empty_midpoint_pairing(
     )
 
 
-def _selected_pair_edges(pairs: list[_BoundaryPair]) -> np.ndarray:
+def _selected_pair_edges(pairs: list[BoundaryPair]) -> np.ndarray:
     return np.asarray(
         [[pair.left_filtered_idx, pair.right_filtered_idx] for pair in pairs],
         dtype=np.int64,
     )
 
 
-def _selected_pair_track_ids(pairs: list[_BoundaryPair]) -> np.ndarray:
+def _selected_pair_track_ids(pairs: list[BoundaryPair]) -> np.ndarray:
     return np.asarray(
         [[pair.left_track_id, pair.right_track_id] for pair in pairs],
         dtype=np.int64,
@@ -645,7 +557,7 @@ def _validate_midpoint_centerline(
 
 
 def _continuity_threshold_m(
-    pairs: list[_BoundaryPair],
+    pairs: list[BoundaryPair],
     config: MidpointPlannerConfig,
 ) -> float:
     threshold_m = float(config.max_near_field_lateral_jump_m)
@@ -712,25 +624,6 @@ def _apply_midpoint_result_metrics(
     result.unknown_pair_count = int(context.pairing.unknown_pair_count)
 
 
-def _pair_segments(pairs: list[_BoundaryPair]) -> np.ndarray:
-    if not pairs:
-        return np.empty((0, 2, 2), dtype=np.float64)
-    return np.asarray(
-        [[pair.left_global, pair.right_global] for pair in pairs],
-        dtype=np.float64,
-    )
-
-
-def _geometry_filter(local_points: np.ndarray, config: MidpointPlannerConfig) -> np.ndarray:
-    distance = np.hypot(local_points[:, 0], local_points[:, 1])
-    return (
-        np.isfinite(local_points[:, 0])
-        & np.isfinite(local_points[:, 1])
-        & (distance <= float(config.max_cone_range_m))
-        & (local_points[:, 0] >= -float(config.behind_drop_m))
-    )
-
-
 def _pair_boundary_chains(
     *,
     filtered_points: np.ndarray,
@@ -743,9 +636,9 @@ def _pair_boundary_chains(
     expected_width_m: float,
     config: MidpointPlannerConfig,
     prior: Optional[MidpointPlannerPrior],
-    left_chain: Optional[_BoundaryChain] = None,
-    right_chain: Optional[_BoundaryChain] = None,
-) -> tuple[list[_BoundaryPair], int, int, dict[str, int]]:
+    left_chain: Optional[BoundaryChainData] = None,
+    right_chain: Optional[BoundaryChainData] = None,
+) -> tuple[list[BoundaryPair], int, int, dict[str, int]]:
     reject_counts = _default_reject_counts(_REJECT_COUNT_KEYS)
     pairing_indices = _resolve_pairing_indices(left_indices, right_indices, left_chain, right_chain)
     if _pairing_indices_empty(pairing_indices, unknown_indices):
@@ -776,8 +669,8 @@ def _pair_boundary_chains(
 def _resolve_pairing_indices(
     left_indices: Optional[np.ndarray],
     right_indices: Optional[np.ndarray],
-    left_chain: Optional[_BoundaryChain],
-    right_chain: Optional[_BoundaryChain],
+    left_chain: Optional[BoundaryChainData],
+    right_chain: Optional[BoundaryChainData],
 ) -> _PairingIndices:
     return _PairingIndices(
         left=_chain_or_explicit_indices(left_indices, left_chain),
@@ -788,7 +681,7 @@ def _resolve_pairing_indices(
 
 def _chain_or_explicit_indices(
     indices: Optional[np.ndarray],
-    chain: Optional[_BoundaryChain],
+    chain: Optional[BoundaryChainData],
 ) -> np.ndarray:
     if indices is not None:
         return np.asarray(indices, dtype=np.int64)
@@ -810,7 +703,7 @@ def _left_pairing_tangents(
     *,
     filtered_local: np.ndarray,
     pairing_indices: _PairingIndices,
-    left_chain: Optional[_BoundaryChain],
+    left_chain: Optional[BoundaryChainData],
     config: MidpointPlannerConfig,
 ) -> np.ndarray:
     if _can_use_chain_tangents(pairing_indices, left_chain):
@@ -824,7 +717,7 @@ def _left_pairing_tangents(
 
 def _can_use_chain_tangents(
     pairing_indices: _PairingIndices,
-    left_chain: Optional[_BoundaryChain],
+    left_chain: Optional[BoundaryChainData],
 ) -> bool:
     return (
         pairing_indices.use_legacy_side_gate
@@ -1240,8 +1133,8 @@ def _pair_candidate_selection_key(
 
 def _select_boundary_pairs(
     candidate_options: list[_PairCandidate],
-) -> tuple[list[_BoundaryPair], int]:
-    pairs: list[_BoundaryPair] = []
+) -> tuple[list[BoundaryPair], int]:
+    pairs: list[BoundaryPair] = []
     used_left_indices: set[int] = set()
     used_partner_indices: set[int] = set()
     used_unknown_indices: set[int] = set()
@@ -1271,8 +1164,8 @@ def _candidate_already_used(
     return chosen.use_unknown and chosen.partner_filtered_idx in used_unknown_indices
 
 
-def _boundary_pair_from_candidate(chosen: _PairCandidate) -> _BoundaryPair:
-    return _BoundaryPair(
+def _boundary_pair_from_candidate(chosen: _PairCandidate) -> BoundaryPair:
+    return BoundaryPair(
         left_filtered_idx=int(chosen.anchor_filtered_idx),
         right_filtered_idx=int(chosen.partner_filtered_idx),
         left_track_id=int(chosen.anchor_track_id),
@@ -1286,17 +1179,17 @@ def _boundary_pair_from_candidate(chosen: _PairCandidate) -> _BoundaryPair:
 
 
 def _trim_pairs_by_midpoint_step_length(
-    pairs: list[_BoundaryPair],
+    pairs: list[BoundaryPair],
     *,
     max_segment_length_m: float,
-) -> list[_BoundaryPair]:
+) -> list[BoundaryPair]:
     if len(pairs) <= 1:
         return list(pairs)
     limit_m = float(max_segment_length_m)
     if not math.isfinite(limit_m) or limit_m <= 0.0:
         return list(pairs)
 
-    trimmed: list[_BoundaryPair] = [pairs[0]]
+    trimmed: list[BoundaryPair] = [pairs[0]]
     previous_midpoint = np.asarray(pairs[0].midpoint_global, dtype=np.float64)
     for pair in pairs[1:]:
         midpoint = np.asarray(pair.midpoint_global, dtype=np.float64)
@@ -1308,11 +1201,11 @@ def _trim_pairs_by_midpoint_step_length(
 
 
 def _order_pairs_into_midpoint_chain(
-    pairs: list[_BoundaryPair],
+    pairs: list[BoundaryPair],
     *,
     config: Optional[MidpointPlannerConfig] = None,
     max_segment_length_m: Optional[float] = None,
-) -> list[_BoundaryPair]:
+) -> list[BoundaryPair]:
     if len(pairs) <= 1:
         return list(pairs)
 
@@ -1323,7 +1216,7 @@ def _order_pairs_into_midpoint_chain(
 
     local_midpoints = _local_pair_midpoints(pairs)
     start_idx = _midpoint_chain_start_idx(local_midpoints)
-    ordered: list[_BoundaryPair] = [pairs[start_idx]]
+    ordered: list[BoundaryPair] = [pairs[start_idx]]
     used_indices: set[int] = {start_idx}
     current_midpoint = np.asarray(local_midpoints[start_idx], dtype=np.float64)
     return _extend_midpoint_chain(
@@ -1349,7 +1242,7 @@ def _midpoint_order_config(
     return resolved
 
 
-def _local_pair_midpoints(pairs: list[_BoundaryPair]) -> list[np.ndarray]:
+def _local_pair_midpoints(pairs: list[BoundaryPair]) -> list[np.ndarray]:
     return [np.asarray(pair.midpoint_local, dtype=np.float64) for pair in pairs]
 
 
@@ -1376,14 +1269,14 @@ def _midpoint_start_key(
 
 def _extend_midpoint_chain(
     *,
-    pairs: list[_BoundaryPair],
+    pairs: list[BoundaryPair],
     local_midpoints: list[np.ndarray],
-    ordered: list[_BoundaryPair],
+    ordered: list[BoundaryPair],
     used_indices: set[int],
     current_midpoint: np.ndarray,
     limit_m: float,
     config: MidpointPlannerConfig,
-) -> list[_BoundaryPair]:
+) -> list[BoundaryPair]:
     ordered_path_length_m = 0.0
     while len(ordered) < len(pairs):
         best_idx = _next_midpoint_pair_index(
@@ -1409,9 +1302,9 @@ def _extend_midpoint_chain(
 
 def _next_midpoint_pair_index(
     *,
-    pairs: list[_BoundaryPair],
+    pairs: list[BoundaryPair],
     local_midpoints: list[np.ndarray],
-    ordered: list[_BoundaryPair],
+    ordered: list[BoundaryPair],
     used_indices: set[int],
     current_midpoint: np.ndarray,
     ordered_path_length_m: float,
@@ -1440,8 +1333,8 @@ def _next_midpoint_pair_index(
 def _midpoint_candidate_cost(
     idx: int,
     midpoint: np.ndarray,
-    pairs: list[_BoundaryPair],
-    ordered: list[_BoundaryPair],
+    pairs: list[BoundaryPair],
+    ordered: list[BoundaryPair],
     used_indices: set[int],
     current_midpoint: np.ndarray,
     reference_direction: np.ndarray,
@@ -1467,8 +1360,8 @@ def _midpoint_candidate_cost(
 
 
 def _midpoint_width_jump_penalty(
-    candidate: _BoundaryPair,
-    previous: _BoundaryPair,
+    candidate: BoundaryPair,
+    previous: BoundaryPair,
     config: MidpointPlannerConfig,
 ) -> float:
     return max(
@@ -1480,7 +1373,7 @@ def _midpoint_width_jump_penalty(
 
 def _midpoint_progress_reference(
     *,
-    ordered_pairs: list[_BoundaryPair],
+    ordered_pairs: list[BoundaryPair],
     handoff_distance_m: float,
     history_size: int,
     ordered_path_length_m: float,
@@ -1500,7 +1393,7 @@ def _midpoint_progress_reference(
 
 
 def _initial_midpoint_reference(
-    ordered_pairs: list[_BoundaryPair],
+    ordered_pairs: list[BoundaryPair],
     vehicle_forward: np.ndarray,
 ) -> tuple[np.ndarray, bool]:
     # Use direction from vehicle toward the first pair as the initial
@@ -1514,7 +1407,7 @@ def _initial_midpoint_reference(
 
 
 def _midpoint_trend_direction(
-    ordered_pairs: list[_BoundaryPair],
+    ordered_pairs: list[BoundaryPair],
     history_size: int,
 ) -> Optional[np.ndarray]:
     midpoint_history = np.asarray(
@@ -1607,11 +1500,11 @@ def _orient_tangent_for_side(
 
 
 def _select_fallback_chain(
-    left_chain: _BoundaryChain,
-    right_chain: _BoundaryChain,
+    left_chain: BoundaryChainData,
+    right_chain: BoundaryChainData,
     config: MidpointPlannerConfig,
-) -> tuple[Optional[_BoundaryChain], str]:
-    candidates: list[tuple[tuple[float, float, float, int], _BoundaryChain, str]] = []
+) -> tuple[Optional[BoundaryChainData], str]:
+    candidates: list[tuple[tuple[float, float, float, int], BoundaryChainData, str]] = []
     min_chain_length = int(config.min_chain_length)
 
     if left_chain.filtered_indices.size >= min_chain_length:
@@ -1649,7 +1542,7 @@ def _select_fallback_chain(
 
 def _offset_boundary_chain(
     *,
-    chain: _BoundaryChain,
+    chain: BoundaryChainData,
     side: str,
     width_m: float,
 ) -> np.ndarray:
@@ -1663,36 +1556,6 @@ def _offset_boundary_chain(
         normal = _inward_normal(tangents_global[idx], side)
         offset.append(point + (offset_distance * normal))
     return np.asarray(offset, dtype=np.float64)
-
-
-def _near_field_delta_metrics(
-    *,
-    current: np.ndarray,
-    previous: Optional[np.ndarray],
-    vehicle_xy: tuple[float, float],
-    vehicle_yaw: float,
-    horizon_m: float,
-) -> _NearFieldMetrics:
-    if previous is None or previous.shape[0] < 2 or current.shape[0] < 2:
-        return _NearFieldMetrics()
-
-    current_local = _to_vehicle_frame(current, vehicle_xy, vehicle_yaw)
-    previous_local = _to_vehicle_frame(previous, vehicle_xy, vehicle_yaw)
-    current_rs = _resample_path(current_local, 0.25, horizon_m)
-    previous_rs = _resample_path(previous_local, 0.25, horizon_m)
-    count = min(current_rs.shape[0], previous_rs.shape[0])
-    if count <= 0:
-        return _NearFieldMetrics()
-
-    delta = current_rs[:count] - previous_rs[:count]
-    lateral = np.abs(delta[:, 1])
-    displacement = np.hypot(delta[:, 0], delta[:, 1])
-    return _NearFieldMetrics(
-        lateral_max_m=float(np.max(lateral)) if lateral.size else 0.0,
-        lateral_mean_m=float(np.mean(lateral)) if lateral.size else 0.0,
-        displacement_max_m=float(np.max(displacement)) if displacement.size else 0.0,
-        displacement_mean_m=float(np.mean(displacement)) if displacement.size else 0.0,
-    )
 
 
 def _empty_result(
@@ -1722,8 +1585,8 @@ def _empty_result(
 def _result_with_metadata(
     *,
     result: MidpointPlannerResult,
-    left_chain: _BoundaryChain,
-    right_chain: _BoundaryChain,
+    left_chain: BoundaryChainData,
+    right_chain: BoundaryChainData,
     planner_mode: str,
     filtered_track_width_m: float,
     left_boundary_count: Optional[int] = None,
