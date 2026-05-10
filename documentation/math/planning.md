@@ -35,6 +35,10 @@ Most planner tests are easier in this frame: forward extent is `x`, boundary sid
 
 `_filter_and_order_cones` applies geometric range gates, confidence gates, and color/unknown selection. `_deterministic_order` then sorts by color rank, forward distance, lateral placement, and global coordinates.
 
+The geometric gate is `geometry_filter(local_points, config, *, planning_horizon_m, max_lateral_range_m)` in `tracked_cone_planner_geometry.py`. Midpoint and single-boundary call it with no extra kwargs (base mask: finiteness, max range, behind-drop). Corridor adds two optional keyword arguments — `planning_horizon_m` and `max_lateral_range_m` — to enforce its tighter field-of-view constraints.
+
+The result of filtering is a `FilteredCones` dataclass (`points`, `local`, `track_ids`, `colors`, `colored_count`, `raw_colors`). All three planner cores use this as the starting point for their algorithm.
+
 The goal is not mathematical optimality. The goal is repeatable candidate generation so identical cone inputs produce identical pair and path selection, which makes tuning and debugging possible.
 
 ### Boundary Chain Growth
@@ -69,6 +73,26 @@ These tests reject centerlines that are geometrically plausible point averages b
 ### Track Width Estimate
 
 `update_track_width_estimate` clamps the previous width prior, clamps the measured width, limits per-update width delta, blends by `width_filter_alpha`, and clamps again. Midpoint, single-boundary, and corridor planners use this to keep expected track width stable when pair observations are temporarily sparse.
+
+`expected_width_m(prior, config)` reads `prior.previous_width_m`, falls back to `config.initial_width_m` when None, and clamps to `[config.min_width_m, config.max_width_m]`. It is the width value passed into each planner cycle before a fresh measurement is available.
+
+### Near-Field Metrics
+
+`near_field_delta_metrics(*, current, previous, vehicle_xy, vehicle_yaw, horizon_m)` → `NearFieldMetrics` compares two global-frame paths over the near-field window. Both paths are converted to vehicle frame with `to_vehicle_frame`, resampled at 0.25 m up to `horizon_m`, aligned by sample index, and compared element-wise. The result carries `lateral_max_m`, `lateral_mean_m`, `displacement_max_m`, and `displacement_mean_m`.
+
+Midpoint and single-boundary use `NearFieldMetrics` directly. Corridor has a private `_PathDeltaMetrics` that adds `heading_delta_rad` for prior-alignment scoring — that extra field drives the corridor's candidate selection and is not needed by the other planners.
+
+Single-boundary caps `horizon_m` to `_MAX_NEAR_FIELD_ALIGNMENT_HORIZON_M = 3.0 m` at the call site regardless of the `jump_check_horizon_m` parameter, keeping the near-field comparison tight to the immediate path segment.
+
+### Path Validation
+
+`validate_path(centerline, centerline_local, near_field, heading_delta_max, continuity_threshold_m, reject_counts, config)` → `str` is the shared validation sequence for midpoint and single-boundary. Checks in order: minimum point count, finite geometry, forward extent, start-heading error, near-field lateral jump against `continuity_threshold_m`, heading delta, and self-intersection. Returns the rejection reason string or `""` on success.
+
+Corridor runs `_validate_corridor_path` instead, which adds corridor-specific checks: minimum sample count, corridor membership (`_path_violates_corridor`), and separate curvature gate.
+
+### Local Forward Prefix
+
+`local_forward_prefix(path_local, *, horizon_m)` → `np.ndarray` extracts and resamples the forward part of an already-local-frame path. Points with `x < -0.1 m` are dropped. The remainder is resampled at 0.25 m up to `horizon_m`. Used by corridor's `_path_alignment_metrics` and single-boundary's offset path comparison to get a consistent near-field segment for both paths.
 
 ## Midpoint Planner
 
@@ -153,10 +177,16 @@ This memory layer makes path publication less sensitive to one-frame cone-pair c
 | Math operation | Function | Runtime use |
 | --- | --- | --- |
 | Vehicle-frame transform | `sim_car/sim_car/planning/tracked_cone_planner_geometry.py::to_vehicle_frame` | Converts global cone/path geometry into planner-local coordinates. |
-| Boundary chain growth | `sim_car/sim_car/planning/tracked_cone_planner_geometry.py::build_boundary_chain_data` | Builds ordered left/right side chains. |
+| Cone range filter | `sim_car/sim_car/planning/tracked_cone_planner_geometry.py::geometry_filter` | Range/finiteness gate; corridor adds horizon and lateral-range kwargs. |
+| Expected track width | `sim_car/sim_car/planning/tracked_cone_planner_geometry.py::expected_width_m` | Reads prior width and clamps to configured bounds each cycle. |
+| Boundary chain growth | `sim_car/sim_car/planning/tracked_cone_planner_geometry.py::build_boundary_chain_data` | Builds ordered left/right side chains; returns `BoundaryChainData`. |
 | Tangent estimation | `sim_car/sim_car/planning/tracked_cone_planner_geometry.py::estimate_tangents` | Supplies normals and heading continuity checks. |
 | Inward normal | `sim_car/sim_car/planning/tracked_cone_planner_geometry.py::inward_normal` | Defines expected opposite boundary and single-boundary offset direction. |
 | Width prior update | `sim_car/sim_car/planning/tracked_cone_planner_geometry.py::update_track_width_estimate` | Stabilizes expected track width across planner cycles. |
+| Near-field metrics | `sim_car/sim_car/planning/tracked_cone_planner_geometry.py::near_field_delta_metrics` | Lateral and displacement delta between current and previous path in vehicle frame. |
+| Local forward prefix | `sim_car/sim_car/planning/tracked_cone_planner_geometry.py::local_forward_prefix` | Extracts and resamples the forward near-field segment of a local-frame path. |
+| Path validation | `sim_car/sim_car/planning/tracked_cone_planner_geometry.py::validate_path` | Shared validation sequence for midpoint and single-boundary paths. |
+| Pair segment array | `sim_car/sim_car/planning/tracked_cone_planner_geometry.py::pair_segments` | Builds `(N, 2, 2)` endpoint array from a list of `BoundaryPair` for visualization. |
 | Path resampling | `sim_car/sim_car/planning/tracked_cone_planner_geometry.py::_resample_path` | Produces uniform path stations for validation/control. |
 | Heading check | `sim_car/sim_car/planning/tracked_cone_planner_geometry.py::path_heading_delta_max` | Rejects abrupt heading changes. |
 | Curvature check | `sim_car/sim_car/planning/tracked_cone_planner_geometry.py::path_curvature_abs_max` | Rejects overly sharp discretized paths. |

@@ -3,6 +3,6 @@
     control:
       controller_type: pure_pursuit
     pure_pursuit:
-      lookahead_m: 4.3
+      lookahead_m: 4.7
       min_lookahead_m: 0.5
       max_lookahead_m: 10.0

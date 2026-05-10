@@ -29,6 +29,8 @@ Each tracked-cone planner timer does the same high-level work:
 
 The shared runtime owns the mechanics around transforms, hold behavior, controller invocation, diagnostics, and visualization. The individual algorithms own only the geometric decision of how to build a candidate path from cones.
 
+All pure geometry and algorithm helpers that are common across two or more planner algorithms live in `tracked_cone_planner_geometry.py`. This includes the canonical `BoundaryChainData`, `FilteredCones`, `BoundaryPair`, and `NearFieldMetrics` dataclasses, and functions like `geometry_filter`, `expected_width_m`, `near_field_delta_metrics`, `validate_path`, `pair_segments`, and `local_forward_prefix`. None of these exist in more than one file.
+
 ## Cone Meaning
 
 The planner sees two color layers:

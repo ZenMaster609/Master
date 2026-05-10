@@ -2,7 +2,7 @@
 
 This setup builds a Docker image for Linux users with NVIDIA GPU and X11 GUI support. The Dockerfile recreates the ROS 2 Humble / Gazebo Fortress workspace and keeps the existing perception layout: custom OpenCV and cuDNN overlays under `~/ros2_ws`, plus the separate YOLO `.pt` virtualenv.
 
-The image bundles `opencv_local`, `cudnn_py`, and `cuda_runtime` from runtime overlay tarballs. It recreates `yolo_pt_venv` from `requirements-yolo-pt.lock.txt` during the image build. The lockfiles are installed with pip dependency resolution disabled because they are snapshots of an already-working environment. The main ROS Python environment keeps Ubuntu's patched `setuptools`, which ROS Humble's `colcon --symlink-install` expects.
+The image bundles `opencv_local`, `cudnn_py`, and `cuda_runtime` from runtime overlay tarballs. It recreates `yolo_pt_venv` from `requirements-yolo-pt.lock.txt` during the image build. The lockfiles are installed with pip dependency resolution disabled because they are snapshots of an already-working environment. The YOLO venv forces those pinned packages into the venv even when a package is also visible from the system site, because `perception_node` runs with user site packages disabled. The main ROS Python environment keeps Ubuntu's patched `setuptools`, which ROS Humble's `colcon --symlink-install` expects.
 
 ## Build
 

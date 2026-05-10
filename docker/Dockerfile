@@ -90,7 +90,7 @@ RUN --mount=type=cache,target=/home/${USERNAME}/.cache/pip,uid=${USER_UID},gid=$
 RUN --mount=type=cache,target=/home/${USERNAME}/.cache/pip,uid=${USER_UID},gid=${USER_GID} \
     python3 -m venv --system-site-packages "${ROS_WS}/yolo_pt_venv" \
     && "${ROS_WS}/yolo_pt_venv/bin/python" -m pip install --upgrade pip setuptools wheel \
-    && "${ROS_WS}/yolo_pt_venv/bin/python" -m pip install --no-deps -r /tmp/planner-requirements/requirements-yolo-pt.lock.txt
+    && "${ROS_WS}/yolo_pt_venv/bin/python" -m pip install --ignore-installed --no-deps -r /tmp/planner-requirements/requirements-yolo-pt.lock.txt
 
 USER root
 

@@ -3570,8 +3570,6 @@ class CorridorPlannerNode(GenericTrackedConePlannerNode):
 class SingleBoundaryPlannerNode(GenericTrackedConePlannerNode):
     """Tracked-cone single-boundary planner with shared path-memory stabilization."""
 
-    _centerline_marker_width_m: float = 0.09
-
     def __init__(self) -> None:
         super().__init__(PlannerIdentity(
             node_name="single_boundary_planner_node",
@@ -3579,6 +3577,9 @@ class SingleBoundaryPlannerNode(GenericTrackedConePlannerNode):
             diagnostics_prefix="single_boundary_planner",
             diagnostics_topic="/single_boundary_planner/diagnostics",
         ))
+
+    def _declare_parameter_overrides(self) -> dict:
+        return {"defaults_override": {"debug.show_boundary_chains": False}}
 
     def _planner_label(self) -> str:
         return 'single-boundary planner'
