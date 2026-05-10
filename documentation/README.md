@@ -4,28 +4,34 @@ This folder documents the current `sim_car`, `vehicle_plotter`, and `vehicle_plo
 
 ## Main Runtime
 
-- [Vehicle Plotter](vehicle_plotter.md): run sessions, `/vehicle_plotter/state`, logging, rosbagging, diagnostics, and generated artifacts.
-- [Sensors](sensors.md): raw `/sim/raw/...` virtual sensors, `measurement_node`, measured `/sim/...` topics, and plot-only signals.
-- [Perception](perception.md): camera perception, YOLO, monocular/stereo ranging, cone evaluation, and cone memory.
-- [2D LiDAR](2d_lidar.md): `LaserScan` cone clustering.
-- [3D LiDAR](3d_lidar.md): `PointCloud2` cone clustering and debug outputs.
-- [Reproducible Environment](reproducible_environment.md): native ROS 2/Gazebo/perception runtime assumptions.
+- [Autonomous Stack Flowcharts](flowcharts/README.md): layered Draw.io system diagrams and thesis-ready exports.
+- [Vehicle Plotter](concepts/vehicle_plotter.md): run sessions, `/vehicle_plotter/state`, logging, diagnostics, and generated artifacts.
+- [Sensors](concepts/sensors.md): raw `/sim/raw/...` virtual sensors, `measurement_node`, measured `/sim/...` topics, and plot-only signals.
+- [Perception](concepts/perception.md): camera perception, YOLO, monocular/stereo ranging, cone evaluation, and cone memory.
+- [2D LiDAR](concepts/2d_lidar.md): `LaserScan` cone clustering.
+- [Reproducible Environment](concepts/reproducible_environment.md): native ROS 2/Gazebo/perception runtime assumptions.
 
 ## Planning And Control
 
-- [Planner Tuning](planner_tuning.md): launch selections, config overlays, shared planner groups, and controller groups.
-- [Planner Geometry Comparison](planner_geometry_comparison.md): shared and planner-specific geometry for midpoint, single-boundary, and corridor centerline construction.
-- [Midpoint Planner](midpoint_planner.md): left/right pairing and midpoint centerline generation.
-- [Single-Boundary Planner](single_boundary_planner.md): one-boundary fallback planning through inward offsets.
-- [Corridor Planner](corridor_planner.md): strict two-boundary corridor sampling.
-- [Line Test Planner](linetest_planner.md): fixed straight-line controller test planner.
-- [Skidpad Routing](skidpad_routing.md): skidpad/acceleration cone filtering, route state, and parking stop behavior.
-- [Stanley Controller](stanley_controller.md): heading/cross-track controller behavior.
-- [Pure Pursuit Controller](pure_pursuit_controller.md): lookahead target controller behavior.
+- [Planning System](concepts/planning_system.md): tracked-cone planners, linetest, skidpad routing, runtime states, diagnostics, and tuning model.
+- [Steering Controllers](concepts/steering_controllers.md): Stanley and pure-pursuit steering behavior and tuning.
+
+## Simulation Infrastructure
+
+- [EUFS Simulation Infrastructure And Steering GUI](concepts/eufs_and_steering_gui.md): vehicle models, Gazebo dynamics, EUFS messages, and the RQT steering panel.
 
 ## Code Reference
 
 - [Code Reference Index](code/README.md): companion pages that map each documentation topic to the source files, classes, and helper functions that implement it.
+
+## Math Reference
+
+- [Cones Math](math/cones.md): frame transforms, detection pairing, track updates, color belief, and boundary-color inference.
+- [Controllers Math](math/controllers.md): control-path projection, lookahead selection, Stanley control, pure pursuit, and steering filtering.
+- [2D LiDAR Math](math/lidar.md): polar projection, scan-order clustering, and cone-candidate geometry filters.
+- [Perception Math](math/perception.md): monocular/stereo depth, camera reconstruction, TF transforms, and candidate deduplication.
+- [Planning Math](math/planning.md): boundary chains, cone pairing, centerline construction, path validation, midline memory, and skidpad geometry.
+- [Sensors Math](math/sensors.md): measurement corruption, virtual sensor models, wheel/steering conversions, suspension proxies, and odometry delay.
 
 ## Common Launch Recipes
 
@@ -53,16 +59,16 @@ Run with the full measured sensor pipeline and live state dashboard:
 cd ~/ros2_ws && ros2 launch sim_car full_sim_launch.launch.py sensor_pipeline:=true
 ```
 
-Run with explicit logging and rosbag recording:
+Run with explicit logging:
 
 ```bash
-cd ~/ros2_ws && ros2 launch sim_car full_sim_launch.launch.py logging:=true rosbagging:=true
+cd ~/ros2_ws && ros2 launch sim_car full_sim_launch.launch.py logging:=true
 ```
 
 Run a planner/controller combination:
 
 ```bash
-cd ~/ros2_ws && ros2 launch sim_car full_sim_launch.launch.py track:=smalltrack planner:=corridor controller:=stanley lidar_pipeline:=pointcloud3d
+cd ~/ros2_ws && ros2 launch sim_car full_sim_launch.launch.py track:=smalltrack planner:=corridor controller:=stanley
 ```
 
 Run focused package tests:

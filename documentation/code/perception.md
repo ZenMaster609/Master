@@ -1,6 +1,6 @@
 # Perception Code Map
 
-This page maps the `documentation/perception.md` behavior to the camera perception node, depth helpers, and YOLO backend adapters.
+This page maps the `documentation/concepts/perception.md` behavior to the camera perception node, depth helpers, and YOLO backend adapters.
 
 ## Primary Files
 

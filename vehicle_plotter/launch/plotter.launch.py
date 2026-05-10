@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Launch the vehicle_plotter logger, session manager, and rosbag controller."""
+"""Launch the vehicle_plotter logger and session manager."""
 
 from launch import LaunchDescription
 from launch.actions import DeclareLaunchArgument, EmitEvent
@@ -11,16 +11,6 @@ from launch_ros.parameter_descriptions import ParameterValue
 
 
 def generate_launch_description():
-    controller_diagnostics_enabled_arg = DeclareLaunchArgument(
-        "controller_diagnostics_enabled",
-        default_value="false",
-        description="Enable controller diagnostics CSV and summaries in the logger",
-    )
-    thesis_controller_diagnostics_enabled_arg = DeclareLaunchArgument(
-        "thesis_controller_diagnostics_enabled",
-        default_value="false",
-        description="Enable thesis controller diagnostics CSV and summaries in the logger",
-    )
     path_tracking_eval_enabled_arg = DeclareLaunchArgument(
         "path_tracking_eval_enabled",
         default_value="false",
@@ -51,45 +41,15 @@ def generate_launch_description():
         default_value="0",
         description="Automatically end the run after this many counted laps (0 disables)",
     )
+    off_track_autostop_planner_diag_topic_arg = DeclareLaunchArgument(
+        "off_track_autostop_planner_diag_topic",
+        default_value="/midpoint_planner/diagnostics",
+        description="Planner diagnostics topic used by off-track autostop",
+    )
     shutdown_on_logger_exit_arg = DeclareLaunchArgument(
         "shutdown_on_logger_exit",
         default_value="false",
         description="Shut down the launch when the logger process exits",
-    )
-    controller_diagnostics_rate_hz_arg = DeclareLaunchArgument(
-        "controller_diagnostics_rate_hz",
-        default_value="50.0",
-        description="Controller diagnostics sampling rate in Hz",
-    )
-    controller_diagnostics_cmd_topic_arg = DeclareLaunchArgument(
-        "controller_diagnostics_cmd_topic",
-        default_value="/cmd",
-        description="Ackermann command topic for controller diagnostics",
-    )
-    controller_diagnostics_steering_topic_arg = DeclareLaunchArgument(
-        "controller_diagnostics_steering_topic",
-        default_value="/sim/steering_angle",
-        description="Measured steering angle topic for controller diagnostics",
-    )
-    controller_diagnostics_joint_states_topic_arg = DeclareLaunchArgument(
-        "controller_diagnostics_joint_states_topic",
-        default_value="/sim/raw/joint_states",
-        description="Joint states topic used as fallback steering source",
-    )
-    controller_diagnostics_odom_topic_arg = DeclareLaunchArgument(
-        "controller_diagnostics_odom_topic",
-        default_value="/sim/odom",
-        description="Odometry topic for controller diagnostics",
-    )
-    controller_diagnostics_path_topic_arg = DeclareLaunchArgument(
-        "controller_diagnostics_path_topic",
-        default_value="/planned_centerline",
-        description="Reference path topic for controller diagnostics",
-    )
-    controller_diagnostics_planner_diag_topic_arg = DeclareLaunchArgument(
-        "controller_diagnostics_planner_diag_topic",
-        default_value="/midpoint_planner/diagnostics",
-        description="Planner diagnostics topic for controller diagnostics",
     )
     enable_log_arg = DeclareLaunchArgument(
         "enable_log",
@@ -125,11 +85,6 @@ def generate_launch_description():
         "use_sim_time",
         default_value="true",
         description="Use simulation time from /clock topic",
-    )
-    enable_rosbag_arg = DeclareLaunchArgument(
-        "enable_rosbag",
-        default_value="true",
-        description="Enable rosbag recording",
     )
     camera_cone_eval_topic_arg = DeclareLaunchArgument(
         "camera_cone_eval_topic",
@@ -192,14 +147,6 @@ def generate_launch_description():
             "auto_plot_on_shutdown": True,
             "camera_cone_eval_topic": LaunchConfiguration("camera_cone_eval_topic"),
             "lidar_cone_eval_topic": LaunchConfiguration("lidar_cone_eval_topic"),
-            "controller_diagnostics_enabled": ParameterValue(
-                LaunchConfiguration("controller_diagnostics_enabled"),
-                value_type=bool,
-            ),
-            "thesis_controller_diagnostics_enabled": ParameterValue(
-                LaunchConfiguration("thesis_controller_diagnostics_enabled"),
-                value_type=bool,
-            ),
             "path_tracking_eval_enabled": ParameterValue(
                 LaunchConfiguration("path_tracking_eval_enabled"),
                 value_type=bool,
@@ -220,27 +167,8 @@ def generate_launch_description():
                 LaunchConfiguration("path_tracking_eval_autostop_laps"),
                 value_type=int,
             ),
-            "controller_diagnostics_rate_hz": ParameterValue(
-                LaunchConfiguration("controller_diagnostics_rate_hz"),
-                value_type=float,
-            ),
-            "controller_diagnostics_cmd_topic": LaunchConfiguration(
-                "controller_diagnostics_cmd_topic"
-            ),
-            "controller_diagnostics_steering_topic": LaunchConfiguration(
-                "controller_diagnostics_steering_topic"
-            ),
-            "controller_diagnostics_joint_states_topic": LaunchConfiguration(
-                "controller_diagnostics_joint_states_topic"
-            ),
-            "controller_diagnostics_odom_topic": LaunchConfiguration(
-                "controller_diagnostics_odom_topic"
-            ),
-            "controller_diagnostics_path_topic": LaunchConfiguration(
-                "controller_diagnostics_path_topic"
-            ),
-            "controller_diagnostics_planner_diag_topic": LaunchConfiguration(
-                "controller_diagnostics_planner_diag_topic"
+            "off_track_autostop_planner_diag_topic": LaunchConfiguration(
+                "off_track_autostop_planner_diag_topic"
             ),
             "use_sim_time": False,
         }],
@@ -252,37 +180,15 @@ def generate_launch_description():
         ],
     )
 
-    rosbag_controller_node = Node(
-        package="vehicle_plotter",
-        executable="rosbag_controller_node",
-        name="rosbag_controller",
-        output="screen",
-        condition=IfCondition(LaunchConfiguration("enable_rosbag")),
-        parameters=[{
-            "mode": "simulation",
-            "compression": "zstd",
-            "wait_for_session": True,
-            "session_timeout_sec": 5.0,
-        }],
-    )
-
     return LaunchDescription([
-        controller_diagnostics_enabled_arg,
-        thesis_controller_diagnostics_enabled_arg,
         path_tracking_eval_enabled_arg,
         path_tracking_eval_gt_track_topic_arg,
         path_tracking_eval_odom_topic_arg,
         path_tracking_eval_planner_path_topic_arg,
         path_tracking_eval_track_name_arg,
         path_tracking_eval_autostop_laps_arg,
+        off_track_autostop_planner_diag_topic_arg,
         shutdown_on_logger_exit_arg,
-        controller_diagnostics_rate_hz_arg,
-        controller_diagnostics_cmd_topic_arg,
-        controller_diagnostics_steering_topic_arg,
-        controller_diagnostics_joint_states_topic_arg,
-        controller_diagnostics_odom_topic_arg,
-        controller_diagnostics_path_topic_arg,
-        controller_diagnostics_planner_diag_topic_arg,
         enable_log_arg,
         enable_state_logging_arg,
         state_topic_arg,
@@ -290,11 +196,9 @@ def generate_launch_description():
         log_path_arg,
         run_id_prefix_arg,
         use_sim_time_arg,
-        enable_rosbag_arg,
         camera_cone_eval_topic_arg,
         lidar_cone_eval_topic_arg,
         session_manager_node,
         plotter_node,
         logger_node,
-        rosbag_controller_node,
     ])

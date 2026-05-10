@@ -11,6 +11,13 @@ from typing import Iterable
 
 import numpy as np
 
+from vehicle_plotter.analysis.analysis_utils import (
+    nearest_point_on_polyline,
+    nearest_point_on_polyline_with_progress,
+    path_cumulative_lengths,
+    signed_cross_track_error,
+)
+
 
 PATH_TRACKING_EVAL_FIELDNAMES = [
     "timestamp_sec",
@@ -394,15 +401,6 @@ def order_boundary_points(
     return _dedupe_points(np.asarray(ordered, dtype=np.float64))
 
 
-def path_cumulative_lengths(points_xy: np.ndarray) -> np.ndarray:
-    points_xy = _as_xy(points_xy)
-    if points_xy.shape[0] <= 1:
-        return np.asarray([0.0], dtype=np.float64)
-    diffs = points_xy[1:] - points_xy[:-1]
-    seg_len = np.hypot(diffs[:, 0], diffs[:, 1])
-    return np.concatenate(([0.0], np.cumsum(seg_len))).astype(np.float64)
-
-
 def sample_path_at_lengths(points_xy: np.ndarray, cum_lengths: np.ndarray, samples: np.ndarray) -> np.ndarray:
     if points_xy.shape[0] == 0:
         return np.empty((0, 2), dtype=np.float64)
@@ -607,52 +605,6 @@ def build_gt_midline_from_cones(
     )
 
 
-def nearest_point_on_polyline(x: float, y: float, path_xy: np.ndarray) -> tuple[int, np.ndarray]:
-    seg_idx, nearest, _progress_m = nearest_point_on_polyline_with_progress(x, y, path_xy)
-    return seg_idx, nearest
-
-
-def nearest_point_on_polyline_with_progress(
-    x: float,
-    y: float,
-    path_xy: np.ndarray,
-) -> tuple[int, np.ndarray, float]:
-    path_xy = _as_xy(path_xy)
-    if path_xy.shape[0] == 0:
-        return -1, np.asarray([float("nan"), float("nan")], dtype=np.float64), float("nan")
-    if path_xy.shape[0] == 1:
-        return 0, np.asarray(path_xy[0], dtype=np.float64), 0.0
-
-    p = np.asarray([float(x), float(y)], dtype=np.float64)
-    cumulative = path_cumulative_lengths(path_xy)
-    best_idx = -1
-    best_point = np.asarray([float("nan"), float("nan")], dtype=np.float64)
-    best_dist_sq = float("inf")
-    best_progress_m = float("nan")
-
-    for idx in range(path_xy.shape[0] - 1):
-        a = path_xy[idx]
-        b = path_xy[idx + 1]
-        ab = b - a
-        denom = float(np.dot(ab, ab))
-        if denom <= 1e-12:
-            t = 0.0
-            cand = np.asarray(a, dtype=np.float64)
-        else:
-            t = float(np.clip(np.dot(p - a, ab) / denom, 0.0, 1.0))
-            cand = a + (t * ab)
-        delta = p - cand
-        dist_sq = float(np.dot(delta, delta))
-        if dist_sq < best_dist_sq:
-            best_dist_sq = dist_sq
-            best_idx = idx
-            best_point = cand
-            seg_len = float(np.hypot(*(b - a)))
-            best_progress_m = float(cumulative[idx] + (t * seg_len))
-
-    return best_idx, best_point, best_progress_m
-
-
 def normalize_angle(angle_rad: float) -> float:
     out = float(angle_rad)
     while out > math.pi:
@@ -660,30 +612,6 @@ def normalize_angle(angle_rad: float) -> float:
     while out < -math.pi:
         out += 2.0 * math.pi
     return out
-
-
-def signed_cross_track_error(x: float, y: float, path_xy: np.ndarray) -> tuple[float, float]:
-    path_xy = _as_xy(path_xy)
-    seg_idx, nearest = nearest_point_on_polyline(x, y, path_xy)
-    if seg_idx < 0 or path_xy.shape[0] < 2:
-        return float("nan"), float("nan")
-
-    a = path_xy[seg_idx]
-    b = path_xy[min(seg_idx + 1, path_xy.shape[0] - 1)]
-    tangent = b - a
-    tan_norm = float(np.hypot(tangent[0], tangent[1]))
-    if tan_norm <= 1e-9:
-        return float("nan"), float("nan")
-
-    tx = float(tangent[0] / tan_norm)
-    ty = float(tangent[1] / tan_norm)
-    nx = -ty
-    ny = tx
-    dx = float(x) - float(nearest[0])
-    dy = float(y) - float(nearest[1])
-    cte = (dx * nx) + (dy * ny)
-    tangent_yaw = math.atan2(ty, tx)
-    return float(cte), float(tangent_yaw)
 
 
 def project_point_to_path_s(path_xy: np.ndarray, cum_lengths: np.ndarray, point_xy: np.ndarray) -> float:

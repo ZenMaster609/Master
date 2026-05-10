@@ -1,6 +1,6 @@
 # Gazebo Cone Plugins Code Map
 
-This page maps the `documentation/gazebo_cone_plugins.md` behavior to the Gazebo ground-truth cone plugin implementation.
+This page maps the `documentation/concepts/gazebo_cone_plugins.md` behavior to the Gazebo ground-truth cone plugin implementation.
 
 ## Primary Files
 

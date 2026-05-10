@@ -288,10 +288,10 @@ def test_track_metrics_report_writes_appends_and_replaces_run(tmp_path):
     run1 = _write_track_metrics_fixture_run(tmp_path, 'small_mid_pp_2d_2026-04-13_16-12-04')
     run2 = _write_track_metrics_fixture_run(
         tmp_path,
-        'small_cor_stan_3d_2026-04-13_16-20-00',
+        'small_cor_stan_2d_2026-04-13_16-20-00',
         planner='corridor',
         controller='stanley',
-        lidar_pipeline='pointcloud3d',
+        lidar_pipeline='scan2d',
         stereo=True,
         speed_max_mps=5.5,
     )
@@ -354,7 +354,7 @@ def test_track_metrics_report_writes_appends_and_replaces_run(tmp_path):
     assert row1['status_count_ok'] == '8'
     assert row2['planner'] == 'corridor'
     assert row2['controller'] == 'stanley'
-    assert row2['lidar_pipeline'] == 'pointcloud3d'
+    assert row2['lidar_pipeline'] == 'scan2d'
     assert row2['camera_mode'] == 'stereo'
     assert row2['desired_speed_mps'] == '5.5'
 

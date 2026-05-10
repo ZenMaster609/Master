@@ -1,0 +1,12 @@
+services:
+  planner:
+    volumes:
+      - .:/home/ros/ros2_ws/src/Master:rw
+      - planner-build:/home/ros/ros2_ws/build
+      - planner-install:/home/ros/ros2_ws/install
+      - planner-log:/home/ros/ros2_ws/log
+
+volumes:
+  planner-build:
+  planner-install:
+  planner-log:

@@ -1,0 +1,40 @@
+services:
+  planner:
+    image: master-planner:humble
+    build:
+      context: .
+      dockerfile: docker/Dockerfile
+      args:
+        USER_UID: ${UID:-1000}
+        USER_GID: ${GID:-1000}
+    network_mode: host
+    ipc: host
+    stdin_open: true
+    tty: true
+    working_dir: /home/ros/ros2_ws
+    environment:
+      DISPLAY: ${DISPLAY}
+      QT_X11_NO_MITSHM: "1"
+      NVIDIA_VISIBLE_DEVICES: all
+      NVIDIA_DRIVER_CAPABILITIES: all
+      ROS_DOMAIN_ID: ${ROS_DOMAIN_ID:-0}
+      ROS_LOCALHOST_ONLY: ${ROS_LOCALHOST_ONLY:-0}
+    volumes:
+      - /tmp/.X11-unix:/tmp/.X11-unix:rw
+      - ./multidata:/home/ros/ros2_ws/src/Master/multidata:rw
+      - ./test_runs:/home/ros/ros2_ws/src/Master/test_runs:rw
+      - planner-ros-log:/home/ros/.ros/log
+      - planner-ws-log:/home/ros/ros2_ws/log
+    devices:
+      - /dev/dri:/dev/dri
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+
+volumes:
+  planner-ros-log:
+  planner-ws-log:

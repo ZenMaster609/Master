@@ -14,10 +14,10 @@ if str(PACKAGE_ROOT) not in sys.path:
 
 try:
     from vehicle_plotter_msgs.msg import ConeDetection, ConeDetectionArray  # noqa: E402
-    from sim_car.planning.planner_runtime_types import PlannerIdentity  # noqa: E402
+    from sim_car.planning.planner_constants import PlannerIdentity  # noqa: E402
     from sim_car.planning.single_boundary_planner_core import SingleBoundaryPlannerResult  # noqa: E402
-    from sim_car.planning.single_boundary_planner_node import MSG_TRACK_STATE_TENTATIVE  # noqa: E402
-    from sim_car.planning.single_boundary_planner_node import SingleBoundaryPlannerNode  # noqa: E402
+    from sim_car.planning.planner_constants import MSG_TRACK_STATE_TENTATIVE  # noqa: E402
+    from sim_car.planning.tracked_cone_planner_node import SingleBoundaryPlannerNode  # noqa: E402
 except ImportError as exc:  # pragma: no cover - depends on generated ROS interfaces
     pytest.skip(f"ROS planner node imports unavailable: {exc}", allow_module_level=True)
 
@@ -57,7 +57,6 @@ def _make_node() -> SingleBoundaryPlannerNode:
     )
     node._diag_pub = _FakePublisher()
     node.publish_control_debug = False
-    node.publish_thesis_context = False
     node._hold_mode_active = False
     node._hold_clean_frame_count = 0
     node._active_planner_mode = "single_boundary"
@@ -104,7 +103,6 @@ def _sample_result() -> SingleBoundaryPlannerResult:
     return SingleBoundaryPlannerResult(
         filtered_points=np.empty((0, 2), dtype=np.float64),
         filtered_colors=[],
-        triangulation_edges=np.empty((0, 2), dtype=np.int64),
         candidate_edges=np.empty((0, 2), dtype=np.int64),
         selected_edges=np.empty((0, 2), dtype=np.int64),
         selected_pair_track_ids=np.empty((0, 2), dtype=np.int64),
@@ -136,9 +134,6 @@ def test_publish_diagnostics_uses_single_boundary_identity():
     node = _make_node()
     node._publish_diagnostics(
         frame_id="odom",
-        centerline_jump_max_m=0.1,
-        selected_edge_churn_ratio=0.2,
-        tracked_cones_frame_delta_p95_m=0.3,
         centerline_point_count=2,
         selected_edge_count=0,
         status="ok",

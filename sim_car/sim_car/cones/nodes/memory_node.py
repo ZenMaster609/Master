@@ -5,6 +5,7 @@ from __future__ import annotations
 
 from collections import deque
 from builtin_interfaces.msg import Time as TimeMsg
+from dataclasses import dataclass
 import math
 import time
 from typing import Optional
@@ -45,6 +46,118 @@ from sim_car.cones.tracking.tracker import (
     LocalConeTracker,
     TrackUpdate,
 )
+from sim_car.planning.planner_constants import (
+    BASE_FRAME_DEFAULT,
+    ODOM_FRAME_DEFAULT,
+    ODOM_TOPIC_DEFAULT,
+    TF_TIMEOUT_S_DEFAULT,
+    TRACKED_CONES_TOPIC_DEFAULT,
+    WHEELBASE_M_DEFAULT,
+)
+
+
+@dataclass(frozen=True)
+class ConeMemoryInternalDefaults:
+    odom_pose_sync_tolerance_sec: float = 0.15
+    base_pose_latest_fallback_tolerance_sec: float = 0.10
+    ttl_sec: float = 3.0
+    tentative_ttl_sec: float = 1.0
+    confirmed_prune_after_sec: float = 3.0
+    unknown_drop_frames: int = 15
+    gate_radius_m: float = 0.5
+    spawn_radius_m: float = 0.85
+    dedup_radius_m: float = 0.85
+    track_merge_radius_m: float = 0.85
+    track_merge_longitudinal_tolerance_m: float = 2.50
+    track_merge_lateral_tolerance_m: float = 0.55
+    alpha_lidar: float = 0.25
+    alpha_camera: float = 0.15
+    track_confidence_gain: float = 0.25
+    track_confidence_decay: float = 0.10
+    color_decay: float = 0.05
+    color_switch_margin: float = 0.20
+    believed_track_viz_min_hits: int = 3
+    believed_track_viz_min_confidence: float = 0.45
+    believed_track_viz_max_gap_m: float = 6.0
+    save_track_plot_on_shutdown: bool = True
+    track_plot_data_filename: str = "cone_memory_track_data.csv"
+
+
+@dataclass(frozen=True)
+class ConeMemoryConfig:
+    odom_frame: str = ODOM_FRAME_DEFAULT
+    base_frame: str = BASE_FRAME_DEFAULT
+    tf_timeout_s: float = TF_TIMEOUT_S_DEFAULT
+    wheelbase_m: float = WHEELBASE_M_DEFAULT
+
+    max_range_m: float = 25.0
+    behind_drop_m: float = 8.0
+    stale_after_sec: float = 0.6
+    min_seen_count: int = 3
+    confirm_hits: int = 3
+    publish_stale_tracks: bool = True
+    stale_planner_ttl_sec: float = 1.5
+
+    camera_range_m: float = 10.0
+    prefer_lidar_if_camera_missing_far: bool = True
+    allow_camera_fallback_near: bool = False
+
+    publish_rate_hz: float = 60.0
+    enable_id_text: bool = False
+    enable_tentative_viz: bool = False
+    enable_raw_debug_viz: bool = False
+    believed_track_viz_show_center: bool = False
+    believed_track_viz_show_cones: bool = False
+
+    enable_permanent_cone_memory: bool = False
+    permanent_harvest_m: float = 2.0
+    permanent_min_confidence: float = 0.1
+    permanent_min_seen: int = 3
+    permanent_dedup_radius_m: float = 0.7
+
+    lidar_cones_topic: str = "/sim/lidar/perception/cones_3d"
+    camera_cones_topic: str = "/sim/stereo/perception/cones_3d"
+    tracked_cones_topic: str = TRACKED_CONES_TOPIC_DEFAULT
+    viz_topic: str = "/local_cone_map_viz"
+    believed_track_viz_topic: str = "/cone_memory/believed_track_viz"
+    run_session_topic: str = "/run_session"
+    odom_topic: str = ODOM_TOPIC_DEFAULT
+
+
+CONE_MEMORY_PUBLIC_DEFAULTS: dict[str, object] = {
+    "frames.odom_frame": ConeMemoryConfig.odom_frame,
+    "frames.base_frame": ConeMemoryConfig.base_frame,
+    "frames.tf_timeout_s": ConeMemoryConfig.tf_timeout_s,
+    "vehicle.wheelbase_m": ConeMemoryConfig.wheelbase_m,
+    "memory.max_range_m": ConeMemoryConfig.max_range_m,
+    "memory.behind_drop_m": ConeMemoryConfig.behind_drop_m,
+    "memory.stale_after_sec": ConeMemoryConfig.stale_after_sec,
+    "memory.min_seen_count": ConeMemoryConfig.min_seen_count,
+    "memory.confirm_hits": ConeMemoryConfig.confirm_hits,
+    "memory.publish_stale_tracks": ConeMemoryConfig.publish_stale_tracks,
+    "memory.stale_planner_ttl_sec": ConeMemoryConfig.stale_planner_ttl_sec,
+    "fusion.camera_range_m": ConeMemoryConfig.camera_range_m,
+    "fusion.prefer_lidar_if_camera_missing_far": ConeMemoryConfig.prefer_lidar_if_camera_missing_far,
+    "fusion.allow_camera_fallback_near": ConeMemoryConfig.allow_camera_fallback_near,
+    "runtime.publish_rate_hz": ConeMemoryConfig.publish_rate_hz,
+    "debug.enable_id_text": ConeMemoryConfig.enable_id_text,
+    "debug.enable_tentative_viz": ConeMemoryConfig.enable_tentative_viz,
+    "debug.enable_raw_debug_viz": ConeMemoryConfig.enable_raw_debug_viz,
+    "debug.believed_track_viz_show_center": ConeMemoryConfig.believed_track_viz_show_center,
+    "debug.believed_track_viz_show_cones": ConeMemoryConfig.believed_track_viz_show_cones,
+    "permanent_memory.enabled": ConeMemoryConfig.enable_permanent_cone_memory,
+    "permanent_memory.harvest_m": ConeMemoryConfig.permanent_harvest_m,
+    "permanent_memory.min_confidence": ConeMemoryConfig.permanent_min_confidence,
+    "permanent_memory.min_seen": ConeMemoryConfig.permanent_min_seen,
+    "permanent_memory.dedup_radius_m": ConeMemoryConfig.permanent_dedup_radius_m,
+    "topics.lidar_cones_topic": ConeMemoryConfig.lidar_cones_topic,
+    "topics.camera_cones_topic": ConeMemoryConfig.camera_cones_topic,
+    "topics.tracked_cones_topic": ConeMemoryConfig.tracked_cones_topic,
+    "topics.viz_topic": ConeMemoryConfig.viz_topic,
+    "topics.believed_track_viz_topic": ConeMemoryConfig.believed_track_viz_topic,
+    "topics.run_session_topic": ConeMemoryConfig.run_session_topic,
+    "topics.odom_topic": ConeMemoryConfig.odom_topic,
+}
 
 
 class ConeMemoryNode(Node):
@@ -110,152 +223,140 @@ class ConeMemoryNode(Node):
     # ------------------------------------------------------------------
 
     def _declare_parameters(self) -> None:
-        self.declare_parameter('odom_frame', 'odom')
-        self.declare_parameter('base_frame', 'front_axle')
-        self.declare_parameter('tf_timeout_s', 0.03)
-        self.declare_parameter('odom_pose_sync_tolerance_sec', 0.05)
-        self.declare_parameter('base_pose_latest_fallback_tolerance_sec', 0.02)
-        self.declare_parameter('wheelbase_m', 1.65)
-
-        self.declare_parameter('max_range_m', 25.0)
-        self.declare_parameter('behind_drop_m', 8.0)
-        self.declare_parameter('ttl_sec', 2.0)
-        self.declare_parameter('tentative_ttl_sec', 1.0)
-        self.declare_parameter('stale_after_sec', 0.6)
-        self.declare_parameter('confirmed_prune_after_sec', 3.0)
-        self.declare_parameter('unknown_drop_frames', 15)
-        self.declare_parameter('gate_radius_m', 0.5)
-        self.declare_parameter('spawn_radius_m', 0.85)
-        self.declare_parameter('dedup_radius_m', 0.85)
-        self.declare_parameter('track_merge_radius_m', 0.85)
-        self.declare_parameter('track_merge_longitudinal_tolerance_m', 2.50)
-        self.declare_parameter('track_merge_lateral_tolerance_m', 0.55)
-        self.declare_parameter('min_seen_count', 2)
-        self.declare_parameter('confirm_hits', 0)
-        self.declare_parameter('alpha_lidar', 0.4)
-        self.declare_parameter('alpha_camera', 0.2)
-        self.declare_parameter('track_confidence_gain', 0.25)
-        self.declare_parameter('track_confidence_decay', 0.10)
-        self.declare_parameter('color_decay', 0.05)
-        self.declare_parameter('color_switch_margin', 0.20)
-        self.declare_parameter('publish_stale_tracks', True)
-        self.declare_parameter('stale_planner_ttl_sec', 1.5)
-
-        self.declare_parameter('camera_range_m', 0.0)
-        self.declare_parameter('prefer_lidar_if_camera_missing_far', True)
-        self.declare_parameter('allow_camera_fallback_near', False)
-
-        self.declare_parameter('publish_rate_hz', 60.0)
-        self.declare_parameter('enable_id_text', False)
-        self.declare_parameter('enable_tentative_viz', False)
-        self.declare_parameter('enable_raw_debug_viz', False)
-
-        self.declare_parameter('believed_track_viz_min_hits', 3)
-        self.declare_parameter('believed_track_viz_min_confidence', 0.45)
-        self.declare_parameter('believed_track_viz_max_gap_m', 6.0)
-        self.declare_parameter('believed_track_viz_show_center', False)
-        self.declare_parameter('believed_track_viz_show_cones', False)
-
-        self.declare_parameter('save_track_plot_on_shutdown', True)
-        self.declare_parameter('track_plot_data_filename', 'cone_memory_track_data.csv')
-
-        self.declare_parameter('enable_permanent_cone_memory', True)
-        self.declare_parameter('permanent_harvest_m', 2.0)
-        self.declare_parameter('permanent_min_confidence', 0.65)
-        self.declare_parameter('permanent_min_seen', 5)
-        self.declare_parameter('permanent_dedup_radius_m', 0.7)
-
-        self.declare_parameter('lidar_cones_topic', '/sim/lidar/perception/cones_3d')
-        self.declare_parameter('camera_cones_topic', '/sim/stereo/perception/cones_3d')
-        self.declare_parameter('tracked_cones_topic', '/tracked_cones')
-        self.declare_parameter('viz_topic', '/local_cone_map_viz')
-        self.declare_parameter('believed_track_viz_topic', '/cone_memory/believed_track_viz')
-        self.declare_parameter('run_session_topic', '/run_session')
-        self.declare_parameter('odom_topic', '/sim/odom')
+        for name, value in CONE_MEMORY_PUBLIC_DEFAULTS.items():
+            self.declare_parameter(name, value)
 
     def _read_parameters(self) -> None:
-        self.odom_frame = str(self.get_parameter('odom_frame').value).strip() or 'odom'
-        self.base_frame = str(self.get_parameter('base_frame').value).strip() or 'front_axle'
-        self.tf_timeout_s = max(0.0, float(self.get_parameter('tf_timeout_s').value))
-        self.odom_pose_sync_tolerance_sec = max(
-            0.0, float(self.get_parameter('odom_pose_sync_tolerance_sec').value)
-        )
-        self.base_pose_latest_fallback_tolerance_sec = max(
-            0.0, float(self.get_parameter('base_pose_latest_fallback_tolerance_sec').value)
-        )
-        self.wheelbase_m = max(0.1, float(self.get_parameter('wheelbase_m').value))
+        cfg = self._load_config()
+        internal = ConeMemoryInternalDefaults()
 
-        self.max_range_m = max(1.0, float(self.get_parameter('max_range_m').value))
-        self.behind_drop_m = max(0.0, float(self.get_parameter('behind_drop_m').value))
-        self.ttl_sec = max(0.05, float(self.get_parameter('ttl_sec').value))
-        self.tentative_ttl_sec = max(0.05, float(self.get_parameter('tentative_ttl_sec').value))
-        self.stale_after_sec = max(0.0, float(self.get_parameter('stale_after_sec').value))
-        self.confirmed_prune_after_sec = max(
-            self.ttl_sec, float(self.get_parameter('confirmed_prune_after_sec').value)
+        self.odom_frame = cfg.odom_frame
+        self.base_frame = cfg.base_frame
+        self.tf_timeout_s = cfg.tf_timeout_s
+        self.odom_pose_sync_tolerance_sec = internal.odom_pose_sync_tolerance_sec
+        self.base_pose_latest_fallback_tolerance_sec = (
+            internal.base_pose_latest_fallback_tolerance_sec
         )
-        self.unknown_drop_frames = max(0, int(self.get_parameter('unknown_drop_frames').value))
-        self.gate_radius_m = max(0.05, float(self.get_parameter('gate_radius_m').value))
-        self.spawn_radius_m = max(self.gate_radius_m, float(self.get_parameter('spawn_radius_m').value))
-        self.dedup_radius_m = max(0.01, float(self.get_parameter('dedup_radius_m').value))
-        self.track_merge_radius_m = max(0.01, float(self.get_parameter('track_merge_radius_m').value))
+        self.wheelbase_m = cfg.wheelbase_m
+
+        self.max_range_m = cfg.max_range_m
+        self.behind_drop_m = cfg.behind_drop_m
+        self.ttl_sec = internal.ttl_sec
+        self.tentative_ttl_sec = internal.tentative_ttl_sec
+        self.stale_after_sec = cfg.stale_after_sec
+        self.confirmed_prune_after_sec = max(self.ttl_sec, internal.confirmed_prune_after_sec)
+        self.unknown_drop_frames = internal.unknown_drop_frames
+        self.gate_radius_m = internal.gate_radius_m
+        self.spawn_radius_m = max(self.gate_radius_m, internal.spawn_radius_m)
+        self.dedup_radius_m = internal.dedup_radius_m
+        self.track_merge_radius_m = internal.track_merge_radius_m
         self.track_merge_longitudinal_tolerance_m = max(
             self.track_merge_radius_m,
-            float(self.get_parameter('track_merge_longitudinal_tolerance_m').value),
+            internal.track_merge_longitudinal_tolerance_m,
         )
-        self.track_merge_lateral_tolerance_m = max(
-            0.01, float(self.get_parameter('track_merge_lateral_tolerance_m').value)
+        self.track_merge_lateral_tolerance_m = internal.track_merge_lateral_tolerance_m
+        self.min_seen_count = cfg.min_seen_count
+        self.confirm_hits = max(1, cfg.confirm_hits if cfg.confirm_hits > 0 else self.min_seen_count)
+        self.alpha_lidar = internal.alpha_lidar
+        self.alpha_camera = internal.alpha_camera
+        self.track_confidence_gain = internal.track_confidence_gain
+        self.track_confidence_decay = internal.track_confidence_decay
+        self.color_decay = internal.color_decay
+        self.color_switch_margin = internal.color_switch_margin
+        self.publish_stale_tracks = cfg.publish_stale_tracks
+        self.stale_planner_ttl_sec = cfg.stale_planner_ttl_sec
+
+        self.camera_range_m = cfg.camera_range_m
+        self.prefer_lidar_if_camera_missing_far = cfg.prefer_lidar_if_camera_missing_far
+        self.allow_camera_fallback_near = cfg.allow_camera_fallback_near
+
+        self.publish_rate_hz = cfg.publish_rate_hz
+        self.enable_id_text = cfg.enable_id_text
+        self.enable_tentative_viz = cfg.enable_tentative_viz
+        self.enable_raw_debug_viz = cfg.enable_raw_debug_viz
+
+        self.believed_track_viz_min_hits = internal.believed_track_viz_min_hits
+        self.believed_track_viz_min_confidence = internal.believed_track_viz_min_confidence
+        self.believed_track_viz_max_gap_m = internal.believed_track_viz_max_gap_m
+        self.believed_track_viz_show_center = cfg.believed_track_viz_show_center
+        self.believed_track_viz_show_cones = cfg.believed_track_viz_show_cones
+
+        self.save_track_plot_on_shutdown = internal.save_track_plot_on_shutdown
+        self.track_plot_data_filename = internal.track_plot_data_filename
+
+        self.enable_permanent_cone_memory = cfg.enable_permanent_cone_memory
+        self.permanent_harvest_m = cfg.permanent_harvest_m
+        self.permanent_min_confidence = cfg.permanent_min_confidence
+        self.permanent_min_seen = cfg.permanent_min_seen
+        self.permanent_dedup_radius_m = cfg.permanent_dedup_radius_m
+
+        self.lidar_cones_topic = cfg.lidar_cones_topic
+        self.camera_cones_topic = cfg.camera_cones_topic
+        self.tracked_cones_topic = cfg.tracked_cones_topic
+        self.viz_topic = cfg.viz_topic
+        self.believed_track_viz_topic = cfg.believed_track_viz_topic
+        self.run_session_topic = cfg.run_session_topic
+        self.odom_topic = cfg.odom_topic
+
+    def _load_config(self) -> ConeMemoryConfig:
+        return ConeMemoryConfig(
+            odom_frame=str(self.get_parameter('frames.odom_frame').value).strip() or ODOM_FRAME_DEFAULT,
+            base_frame=str(self.get_parameter('frames.base_frame').value).strip() or BASE_FRAME_DEFAULT,
+            tf_timeout_s=max(0.0, float(self.get_parameter('frames.tf_timeout_s').value)),
+            wheelbase_m=max(0.1, float(self.get_parameter('vehicle.wheelbase_m').value)),
+            max_range_m=max(1.0, float(self.get_parameter('memory.max_range_m').value)),
+            behind_drop_m=max(0.0, float(self.get_parameter('memory.behind_drop_m').value)),
+            stale_after_sec=max(0.0, float(self.get_parameter('memory.stale_after_sec').value)),
+            min_seen_count=max(1, int(self.get_parameter('memory.min_seen_count').value)),
+            confirm_hits=int(self.get_parameter('memory.confirm_hits').value),
+            publish_stale_tracks=bool(self.get_parameter('memory.publish_stale_tracks').value),
+            stale_planner_ttl_sec=max(
+                0.0,
+                float(self.get_parameter('memory.stale_planner_ttl_sec').value),
+            ),
+            camera_range_m=clamp_camera_range(float(self.get_parameter('fusion.camera_range_m').value)),
+            prefer_lidar_if_camera_missing_far=bool(
+                self.get_parameter('fusion.prefer_lidar_if_camera_missing_far').value
+            ),
+            allow_camera_fallback_near=bool(
+                self.get_parameter('fusion.allow_camera_fallback_near').value
+            ),
+            publish_rate_hz=max(1.0, float(self.get_parameter('runtime.publish_rate_hz').value)),
+            enable_id_text=bool(self.get_parameter('debug.enable_id_text').value),
+            enable_tentative_viz=bool(self.get_parameter('debug.enable_tentative_viz').value),
+            enable_raw_debug_viz=bool(self.get_parameter('debug.enable_raw_debug_viz').value),
+            believed_track_viz_show_center=bool(
+                self.get_parameter('debug.believed_track_viz_show_center').value
+            ),
+            believed_track_viz_show_cones=bool(
+                self.get_parameter('debug.believed_track_viz_show_cones').value
+            ),
+            enable_permanent_cone_memory=bool(
+                self.get_parameter('permanent_memory.enabled').value
+            ),
+            permanent_harvest_m=max(
+                0.0,
+                float(self.get_parameter('permanent_memory.harvest_m').value),
+            ),
+            permanent_min_confidence=max(
+                0.0,
+                min(1.0, float(self.get_parameter('permanent_memory.min_confidence').value)),
+            ),
+            permanent_min_seen=max(1, int(self.get_parameter('permanent_memory.min_seen').value)),
+            permanent_dedup_radius_m=max(
+                0.1,
+                float(self.get_parameter('permanent_memory.dedup_radius_m').value),
+            ),
+            lidar_cones_topic=str(self.get_parameter('topics.lidar_cones_topic').value),
+            camera_cones_topic=str(self.get_parameter('topics.camera_cones_topic').value),
+            tracked_cones_topic=str(self.get_parameter('topics.tracked_cones_topic').value),
+            viz_topic=str(self.get_parameter('topics.viz_topic').value),
+            believed_track_viz_topic=str(
+                self.get_parameter('topics.believed_track_viz_topic').value
+            ),
+            run_session_topic=str(self.get_parameter('topics.run_session_topic').value),
+            odom_topic=str(self.get_parameter('topics.odom_topic').value),
         )
-        self.min_seen_count = max(1, int(self.get_parameter('min_seen_count').value))
-        configured_confirm_hits = int(self.get_parameter('confirm_hits').value)
-        self.confirm_hits = max(1, configured_confirm_hits if configured_confirm_hits > 0 else self.min_seen_count)
-        self.alpha_lidar = max(0.0, min(1.0, float(self.get_parameter('alpha_lidar').value)))
-        self.alpha_camera = max(0.0, min(1.0, float(self.get_parameter('alpha_camera').value)))
-        self.track_confidence_gain = max(0.0, float(self.get_parameter('track_confidence_gain').value))
-        self.track_confidence_decay = max(
-            0.0, min(1.0, float(self.get_parameter('track_confidence_decay').value))
-        )
-        self.color_decay = max(0.0, min(0.99, float(self.get_parameter('color_decay').value)))
-        self.color_switch_margin = max(0.0, float(self.get_parameter('color_switch_margin').value))
-        self.publish_stale_tracks = bool(self.get_parameter('publish_stale_tracks').value)
-        self.stale_planner_ttl_sec = max(0.0, float(self.get_parameter('stale_planner_ttl_sec').value))
-
-        self.camera_range_m = clamp_camera_range(float(self.get_parameter('camera_range_m').value))
-        self.prefer_lidar_if_camera_missing_far = bool(
-            self.get_parameter('prefer_lidar_if_camera_missing_far').value
-        )
-        self.allow_camera_fallback_near = bool(self.get_parameter('allow_camera_fallback_near').value)
-
-        self.publish_rate_hz = max(1.0, float(self.get_parameter('publish_rate_hz').value))
-        self.enable_id_text = bool(self.get_parameter('enable_id_text').value)
-        self.enable_tentative_viz = bool(self.get_parameter('enable_tentative_viz').value)
-        self.enable_raw_debug_viz = bool(self.get_parameter('enable_raw_debug_viz').value)
-
-        self.believed_track_viz_min_hits = max(1, int(self.get_parameter('believed_track_viz_min_hits').value))
-        self.believed_track_viz_min_confidence = max(
-            0.0, min(1.0, float(self.get_parameter('believed_track_viz_min_confidence').value))
-        )
-        self.believed_track_viz_max_gap_m = max(
-            0.0, float(self.get_parameter('believed_track_viz_max_gap_m').value)
-        )
-        self.believed_track_viz_show_center = bool(self.get_parameter('believed_track_viz_show_center').value)
-        self.believed_track_viz_show_cones = bool(self.get_parameter('believed_track_viz_show_cones').value)
-
-        self.save_track_plot_on_shutdown = bool(self.get_parameter('save_track_plot_on_shutdown').value)
-        self.track_plot_data_filename = str(self.get_parameter('track_plot_data_filename').value).strip()
-
-        self.enable_permanent_cone_memory = bool(self.get_parameter('enable_permanent_cone_memory').value)
-        self.permanent_harvest_m = max(0.0, float(self.get_parameter('permanent_harvest_m').value))
-        self.permanent_min_confidence = max(0.0, min(1.0, float(self.get_parameter('permanent_min_confidence').value)))
-        self.permanent_min_seen = max(1, int(self.get_parameter('permanent_min_seen').value))
-        self.permanent_dedup_radius_m = max(0.1, float(self.get_parameter('permanent_dedup_radius_m').value))
-
-        self.lidar_cones_topic = str(self.get_parameter('lidar_cones_topic').value)
-        self.camera_cones_topic = str(self.get_parameter('camera_cones_topic').value)
-        self.tracked_cones_topic = str(self.get_parameter('tracked_cones_topic').value)
-        self.viz_topic = str(self.get_parameter('viz_topic').value)
-        self.believed_track_viz_topic = str(self.get_parameter('believed_track_viz_topic').value)
-        self.run_session_topic = str(self.get_parameter('run_session_topic').value)
-        self.odom_topic = str(self.get_parameter('odom_topic').value)
 
     # ------------------------------------------------------------------
     # Callbacks

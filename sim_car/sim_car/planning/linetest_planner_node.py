@@ -26,34 +26,27 @@ from sim_car.cones.tracking.pose import (
     convert_odom_child_pose_to_base_frame,
     project_planar_pose_constant_twist,
 )
-from sim_car.planning.controller_config import build_steering_controller
+from sim_car.planning.tracked_cone_planner_contract import build_steering_controller
 from sim_car.planning.ground_truth_midline import (
     GroundTruthMidline,
     build_forward_path_from_loop,
     build_gt_midline_from_cones,
 )
-from sim_car.planning.planner_runtime_types import PlannerIdentity
+from sim_car.planning.planner_constants import (
+    OPERATOR_REASON_CODES as _OPERATOR_REASON_CODES,
+    OPERATOR_STATE_CODES as _OPERATOR_STATE_CODES,
+)
+from sim_car.planning.planner_constants import PlannerIdentity
 from sim_car.planning.tracked_cone_planner_contract import (
     log_tracked_cone_controller_mode,
     normalize_tracked_cone_controller_type,
 )
-
-_OPERATOR_STATE_CODES = {
-    'waiting': 0,
-    'fresh': 1,
-    'held': 2,
-    'stopped': 3,
-}
-
-_OPERATOR_REASON_CODES = {
-    'none': 0,
-    'missing_vehicle_pose': 2,
-    'no_control_path': 11,
-    'controller_compute_failed': 12,
-    'stop_if_no_path': 13,
-    'controller_disabled': 14,
-    'missing_gt_midline': 15,
-}
+from sim_car.planning.tracked_cone_planner_base import PlannerNodeUtilitiesMixin
+from sim_car.planning.tracked_cone_planner_geometry import (
+    _base_point_to_odom,
+    _odom_point_to_base,
+    _yaw_from_quat,
+)
 
 _OPERATOR_REASON_LABELS = {
     'none': 'path active',
@@ -73,7 +66,7 @@ _OPERATOR_STATE_COLORS = {
 }
 
 
-class LineTestPlannerNode(Node):
+class LineTestPlannerNode(PlannerNodeUtilitiesMixin, Node):
     """Publishes a fixed straight centerline and optional steering commands."""
 
     def __init__(self) -> None:
@@ -197,8 +190,7 @@ class LineTestPlannerNode(Node):
             'parking.brake_command': 1.0,
             'diagnostics.topic': '/linetest_planner/diagnostics',
             'diagnostics.publish_control_debug': True,
-            'diagnostics.publish_thesis_context': False,
-            'debug.enable_markers': True,
+                    'debug.enable_markers': True,
             'debug.publish_points_topic': False,
             'debug.show_lookahead_point': True,
             'line.start_x_m': -38.5,
@@ -273,7 +265,6 @@ class LineTestPlannerNode(Node):
             or self._planner_identity.diagnostics_topic
         )
         self.publish_control_debug = bool(self.get_parameter('diagnostics.publish_control_debug').value)
-        self.publish_thesis_context = bool(self.get_parameter('diagnostics.publish_thesis_context').value)
 
         self.enable_debug_markers = bool(self.get_parameter('debug.enable_markers').value)
         self.publish_points_topic = bool(self.get_parameter('debug.publish_points_topic').value)
@@ -437,7 +428,7 @@ class LineTestPlannerNode(Node):
                     lookahead = float(controller_output.lookahead_m)
                     control_target_base = np.asarray(controller_output.target_point_base, dtype=np.float64)
                     control_target_world = np.asarray(
-                        self._base_point_to_odom(
+                        _base_point_to_odom(
                             float(control_target_base[0]),
                             float(control_target_base[1]),
                             vehicle_x,
@@ -489,13 +480,6 @@ class LineTestPlannerNode(Node):
             operator_reason=operator_reason,
             zero_cmd_sent_flag=zero_cmd_sent_flag,
             control_debug_metrics=control_debug_metrics,
-            thesis_context_metrics={
-                'plan_valid_flag': 1.0 if centerline.shape[0] > 0 else 0.0,
-                'plan_hold_active_flag': 0.0,
-                'plan_fallback_flag': 0.0,
-                'path_length_m': self._path_length_m(centerline),
-                'path_curvature_abs_p95_1pm': self._path_curvature_abs_p95(centerline),
-            },
         )
 
     def _resolve_vehicle_pose(self) -> Optional[tuple[float, float, float]]:
@@ -509,7 +493,7 @@ class LineTestPlannerNode(Node):
         tx = float(pose.position.x)
         ty = float(pose.position.y)
         q = pose.orientation
-        yaw = self._yaw_from_quat(float(q.x), float(q.y), float(q.z), float(q.w))
+        yaw = _yaw_from_quat(float(q.x), float(q.y), float(q.z), float(q.w))
         child_frame = str(odom.child_frame_id).strip()
         base_pose = self._convert_odom_child_pose_to_base_frame(
             child_frame=child_frame,
@@ -655,7 +639,7 @@ class LineTestPlannerNode(Node):
             return centerline
         out = np.empty_like(centerline)
         for idx in range(centerline.shape[0]):
-            out[idx, 0], out[idx, 1] = self._odom_point_to_base(
+            out[idx, 0], out[idx, 1] = _odom_point_to_base(
                 float(centerline[idx, 0]),
                 float(centerline[idx, 1]),
                 vehicle_x,
@@ -797,7 +781,6 @@ class LineTestPlannerNode(Node):
         operator_reason: str,
         zero_cmd_sent_flag: int,
         control_debug_metrics: Optional[dict[str, float]] = None,
-        thesis_context_metrics: Optional[dict[str, float]] = None,
     ) -> None:
         msg = DiagnosticArray()
         msg.header.stamp = self.get_clock().now().to_msg()
@@ -810,7 +793,7 @@ class LineTestPlannerNode(Node):
         stability.message = _OPERATOR_REASON_LABELS.get(operator_reason, operator_reason)
 
         planner_metrics = {
-            'path_length_m': self._path_length_m(centerline),
+            'path_length_m': self._linetest_path_length_m(centerline),
             'path_curvature_abs_p95_1pm': self._path_curvature_abs_p95(centerline),
             'planner_state_code': self._operator_state_code(operator_state),
             'fresh_publish_flag': 1 if operator_state == 'fresh' else 0,
@@ -824,9 +807,6 @@ class LineTestPlannerNode(Node):
             'planner_mode': self._planner_identity.planner_mode,
         }
         stability.values = [
-            KeyValue(key='centerline_jump_max_m', value='0.000000'),
-            KeyValue(key='selected_edge_churn_ratio', value='0.000000'),
-            KeyValue(key='tracked_cones_frame_delta_p95_m', value='nan'),
             KeyValue(key='centerline_point_count', value=str(int(centerline.shape[0]))),
             KeyValue(key='selected_edge_count', value='0'),
         ]
@@ -876,33 +856,6 @@ class LineTestPlannerNode(Node):
             ]
             msg.status.append(control_diag)
 
-        if self.publish_thesis_context:
-            merged_thesis = self._default_thesis_context_metrics()
-            if thesis_context_metrics is not None:
-                merged_thesis.update(thesis_context_metrics)
-            thesis_diag = DiagnosticStatus()
-            thesis_diag.name = f'{self._planner_identity.diagnostics_prefix}/thesis_context'
-            thesis_diag.hardware_id = self._planner_identity.hardware_id
-            thesis_diag.level = DiagnosticStatus.OK
-            thesis_diag.message = 'planner context for controller thesis diagnostics'
-            thesis_diag.values = [
-                KeyValue(key='plan_valid_flag', value=str(int(round(merged_thesis['plan_valid_flag'])))),
-                KeyValue(
-                    key='plan_hold_active_flag',
-                    value=str(int(round(merged_thesis['plan_hold_active_flag']))),
-                ),
-                KeyValue(key='plan_fallback_flag', value=str(int(round(merged_thesis['plan_fallback_flag'])))),
-                KeyValue(key='centerline_point_count', value=str(int(centerline.shape[0]))),
-                KeyValue(key='selected_edge_count', value='0'),
-                KeyValue(key='centerline_jump_max_m', value='0.000000'),
-                KeyValue(key='selected_edge_churn_ratio', value='0.000000'),
-                KeyValue(key='path_length_m', value=f"{merged_thesis['path_length_m']:.6f}"),
-                KeyValue(
-                    key='path_curvature_abs_p95_1pm',
-                    value=f"{merged_thesis['path_curvature_abs_p95_1pm']:.6f}",
-                ),
-            ]
-            msg.status.append(thesis_diag)
 
         self._diag_pub.publish(msg)
 
@@ -1056,16 +1009,6 @@ class LineTestPlannerNode(Node):
             'target_point_y_frame_m': nan,
         }
 
-    @staticmethod
-    def _default_thesis_context_metrics() -> dict[str, float]:
-        nan = float('nan')
-        return {
-            'plan_valid_flag': 0.0,
-            'plan_hold_active_flag': 0.0,
-            'plan_fallback_flag': 0.0,
-            'path_length_m': nan,
-            'path_curvature_abs_p95_1pm': nan,
-        }
 
     @staticmethod
     def _diag_value_string(value: object) -> str:
@@ -1120,7 +1063,7 @@ class LineTestPlannerNode(Node):
         return float(math.atan2(float(vec[1]), float(vec[0])))
 
     @staticmethod
-    def _path_length_m(centerline: np.ndarray) -> float:
+    def _linetest_path_length_m(centerline: np.ndarray) -> float:
         if centerline.shape[0] < 2:
             return float('nan')
         diffs = np.diff(centerline, axis=0)
@@ -1153,52 +1096,6 @@ class LineTestPlannerNode(Node):
         if curvature.size == 0:
             return float('nan')
         return float(np.percentile(curvature, 95.0))
-
-    @staticmethod
-    def _frame_aliases(frame: str) -> set[str]:
-        out: set[str] = set()
-
-        def add(token: str) -> None:
-            normalized = str(token).strip().strip('/')
-            if normalized:
-                out.add(normalized)
-
-        add(frame)
-        normalized = str(frame).strip().strip('/').lower()
-        if normalized == 'odom':
-            add('odom')
-        if normalized in {'front_axle', 'base_link', 'base_footprint'}:
-            add('front_axle')
-            add('base_link')
-            add('base_footprint')
-        return out
-
-    def _is_alias(self, frame_a: str, frame_b: str) -> bool:
-        return bool(self._frame_aliases(frame_a).intersection(self._frame_aliases(frame_b)))
-
-    @staticmethod
-    def _yaw_from_quat(qx: float, qy: float, qz: float, qw: float) -> float:
-        siny_cosp = 2.0 * (qw * qz + qx * qy)
-        cosy_cosp = 1.0 - 2.0 * (qy * qy + qz * qz)
-        return math.atan2(siny_cosp, cosy_cosp)
-
-    @staticmethod
-    def _odom_point_to_base(x_odom: float, y_odom: float, tx: float, ty: float, yaw: float) -> tuple[float, float]:
-        dx = x_odom - tx
-        dy = y_odom - ty
-        cos_y = math.cos(yaw)
-        sin_y = math.sin(yaw)
-        x_base = cos_y * dx + sin_y * dy
-        y_base = -sin_y * dx + cos_y * dy
-        return x_base, y_base
-
-    @staticmethod
-    def _base_point_to_odom(x_base: float, y_base: float, tx: float, ty: float, yaw: float) -> tuple[float, float]:
-        cos_y = math.cos(yaw)
-        sin_y = math.sin(yaw)
-        x_odom = tx + (cos_y * x_base) - (sin_y * y_base)
-        y_odom = ty + (sin_y * x_base) + (cos_y * y_base)
-        return x_odom, y_odom
 
     @staticmethod
     def _make_line_strip_marker(

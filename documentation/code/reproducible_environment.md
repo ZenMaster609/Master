@@ -1,12 +1,15 @@
 # Reproducible Environment Code Map
 
-This page maps the `documentation/reproducible_environment.md` behavior to the launch files and setup scripts that define the current runtime environment.
+This page maps the `documentation/concepts/reproducible_environment.md` behavior to the launch files and setup scripts that define the current runtime environment.
 
 ## Primary Files
 
 - `sim_car/launch/full_sim_launch.launch.py`
 - `scripts/package-runtime-overlays.sh`
 - `scripts/setup-partner-environment.sh`
+- `docker/Dockerfile`
+- `compose.yaml`
+- `compose.dev.yaml`
 - `requirements*.txt`
 
 ## Function Map
@@ -21,6 +24,9 @@ This page maps the `documentation/reproducible_environment.md` behavior to the l
 
 - `package-runtime-overlays.sh` in `scripts/package-runtime-overlays.sh`: packages the local runtime overlays that are not fully represented in repo-tracked Python requirements.
 - `setup-partner-environment.sh` in `scripts/setup-partner-environment.sh`: installs the packaged overlays and partner-machine environment pieces.
+- `docker/Dockerfile`: builds the ROS 2 Humble image, restores the runtime overlays, creates the YOLO virtualenv, and builds the workspace.
+- `compose.yaml`: defines the Linux/NVIDIA/X11 runtime container.
+- `compose.dev.yaml`: bind-mounts the host source tree and keeps build/install/log output in container-local volumes for development.
 
 ### Reproducibility Boundaries
 
@@ -29,6 +35,7 @@ This page maps the `documentation/reproducible_environment.md` behavior to the l
   - `sim_car/launch/full_sim_launch.launch.py`
   - repo-tracked requirements files
   - overlay packaging/setup scripts
+  - Docker/Compose runtime files
   - the selected YOLO weights and local runtime overlay directories
 
 ## Related Entry Points

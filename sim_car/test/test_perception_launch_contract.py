@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import ast
 import importlib.util
+import math
 import pathlib
 import sys
 
@@ -57,17 +58,58 @@ def _flatten(data, prefix: str = '') -> dict[str, object]:
 
 
 def _planner_node_contract(planner: str) -> tuple[set[str], set[str]]:
+    def _literal_eval_parameter_default(node: ast.AST) -> object:
+        if isinstance(node, ast.Dict):
+            return {
+                _literal_eval_parameter_default(key): _literal_eval_parameter_default(value)
+                for key, value in zip(node.keys, node.values)
+            }
+        if isinstance(node, ast.UnaryOp):
+            value = _literal_eval_parameter_default(node.operand)
+            if isinstance(node.op, ast.USub):
+                return -value
+            if isinstance(node.op, ast.UAdd):
+                return value
+        if isinstance(node, ast.BinOp):
+            left = _literal_eval_parameter_default(node.left)
+            right = _literal_eval_parameter_default(node.right)
+            if isinstance(node.op, ast.Add):
+                return left + right
+            if isinstance(node.op, ast.Sub):
+                return left - right
+            if isinstance(node.op, ast.Mult):
+                return left * right
+            if isinstance(node.op, ast.Div):
+                return left / right
+        if (
+            isinstance(node, ast.Attribute)
+            and isinstance(node.value, ast.Name)
+            and node.value.id == 'math'
+            and node.attr == 'pi'
+        ):
+            return math.pi
+        return ast.literal_eval(node)
+
     def _parameter_reads(module: ast.AST) -> set[str]:
         read_parameters: set[str] = set()
         for node in ast.walk(module):
             if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute) and node.func.attr == 'get_parameter':
                 if node.args and isinstance(node.args[0], ast.Constant) and isinstance(node.args[0].value, str):
                     read_parameters.add(node.args[0].value)
+            if isinstance(node, ast.Call) and isinstance(node.func, ast.Name):
+                if node.func.id in {'_read_float_parameter', '_read_int_parameter', '_read_bool_parameter'}:
+                    if len(node.args) >= 2 and isinstance(node.args[1], ast.Constant):
+                        if isinstance(node.args[1].value, str):
+                            read_parameters.add(node.args[1].value)
+                if node.func.id == '_read_param':
+                    if len(node.args) >= 2 and isinstance(node.args[1], ast.Constant):
+                        if isinstance(node.args[1].value, str):
+                            read_parameters.add(node.args[1].value)
         return read_parameters
 
     def _merge_declared_defaults(module: ast.AST, planner_name: str) -> dict[str, object]:
         defaults = (
-            dict(tracked_cone_planner_contract.COMMON_MIGRATED_TRACKED_CONE_PLANNER_DEFAULTS)
+            dict(tracked_cone_planner_contract.PUBLIC_TRACKED_CONE_PLANNER_DEFAULTS)
             if planner_name in MIGRATED_PLANNERS
             else {}
         )
@@ -82,11 +124,11 @@ def _planner_node_contract(planner: str) -> tuple[set[str], set[str]]:
                         if not isinstance(target, ast.Name) or target.id != 'defaults':
                             continue
                         if isinstance(stmt.value, ast.Dict):
-                            defaults.update(ast.literal_eval(stmt.value))
+                            defaults.update(_literal_eval_parameter_default(stmt.value))
                             found_defaults_assignment = True
                             break
                         if planner_name not in MIGRATED_PLANNERS:
-                            defaults.update(ast.literal_eval(stmt.value))
+                            defaults.update(_literal_eval_parameter_default(stmt.value))
                             found_defaults_assignment = True
                             break
                     if found_defaults_assignment and planner_name not in MIGRATED_PLANNERS:
@@ -101,11 +143,12 @@ def _planner_node_contract(planner: str) -> tuple[set[str], set[str]]:
                     and stmt.value.func.attr == 'update'
                     and stmt.value.args
                 ):
-                    defaults.update(ast.literal_eval(stmt.value.args[0]))
+                    defaults.update(_literal_eval_parameter_default(stmt.value.args[0]))
                     found_defaults_assignment = True
             break
 
-        assert found_defaults_assignment, planner_name
+        if planner_name not in MIGRATED_PLANNERS:
+            assert found_defaults_assignment, planner_name
         return defaults
 
     planner_path = SIM_CAR_SHARE / 'sim_car' / 'planning' / f'{planner}_planner_node.py'
@@ -136,25 +179,13 @@ def test_full_launch_uses_single_perception_node_with_stereo_toggle():
     assert "stereo_perception_node" not in content
 
 
-def test_full_launch_declares_and_passes_thesis_controller_diagnostics():
+def test_full_launch_always_enables_path_tracking_eval():
     content = FULL_LAUNCH.read_text(encoding='utf-8')
 
-    assert "DeclareLaunchArgument(\n        'thesis_controller_diagnostics'" in content
-    assert "thesis_controller_diagnostics_live_plot_enabled" not in content
-    assert "'thesis_controller_diagnostics'" in content
-    assert "'thesis_controller_diagnostics_enabled': ParameterValue(" in content
-    assert "LaunchConfiguration('thesis_controller_diagnostics')" in content
-    assert "'diagnostics.publish_thesis_context': ParameterValue(" in content
-
-
-def test_full_launch_declares_and_passes_path_tracking_eval():
-    content = FULL_LAUNCH.read_text(encoding='utf-8')
-
-    assert "DeclareLaunchArgument(\n        'path_tracking_eval'" in content
-    assert "'path_tracking_eval'" in content
     assert "logger_node = Node(" in content
-    assert "'path_tracking_eval_enabled': ParameterValue(" in content
-    assert "LaunchConfiguration('path_tracking_eval')" in content
+    assert "DeclareLaunchArgument(\n        'path_tracking_eval'" not in content
+    assert "LaunchConfiguration('path_tracking_eval')" not in content
+    assert "'path_tracking_eval_enabled': True" in content
     assert "'path_tracking_eval_gt_track_topic': '/ground_truth/track'" in content
     assert "'path_tracking_eval_odom_topic': '/sim/odom'" in content
     assert "'path_tracking_eval_planner_path_topic': '/planned_centerline'" in content
@@ -190,7 +221,7 @@ def test_full_launch_supports_only_migrated_planners():
     content = FULL_LAUNCH.read_text(encoding='utf-8')
 
     assert "Planner to launch: 'midpoint', 'single_boundary', 'corridor', 'linetest', or 'none'" in content
-    assert "from sim_car.planning.planner_registry import (" in content
+    assert "from sim_car.planning.planner_constants import (" in content
     assert "get_planner_spec('midpoint').executable" in content
     assert "get_planner_spec('single_boundary').executable" in content
     assert "get_planner_spec('corridor').executable" in content
@@ -414,27 +445,25 @@ def test_track_bundle_supports_controller_none_without_controller_config_file():
         'track',
         'planner',
         'controller',
-        'lidar_pipeline',
         'speed_max_mps',
         'expected_prefix',
     ),
     [
-        ('smalltrack', 'midpoint', 'stanley', 'pointcloud3d', 7.0, 'small_7_mid_stan_3d'),
-        ('smalltrack', 'linetest', 'stanley', 'pointcloud3d', 7.0, 'small_7_line_stan_3d'),
-        ('acceleration', 'single_boundary', 'pure_pursuit', 'scan2d', 6.17, 'acc_6_SB_pp_2d'),
-        ('skidpad', 'corridor', 'stanley', 'pointcloud3d', 7.0, 'skid_7_cor_stan_3d'),
+        ('smalltrack', 'midpoint', 'stanley', 7.0, 'small_7_mid_stan_2d'),
+        ('smalltrack', 'linetest', 'stanley', 7.0, 'small_7_line_stan_2d'),
+        ('acceleration', 'single_boundary', 'pure_pursuit', 6.17, 'acc_6_SB_pp_2d'),
+        ('skidpad', 'corridor', 'stanley', 7.0, 'skid_7_cor_stan_2d'),
     ],
 )
 def test_run_id_prefix_uses_abbreviated_launch_selection(
     track: str,
     planner: str,
     controller: str,
-    lidar_pipeline: str,
     speed_max_mps: float,
     expected_prefix: str,
 ):
     assert (
-        full_sim_launch._abbreviated_run_id_prefix(track, planner, controller, lidar_pipeline, speed_max_mps)
+        full_sim_launch._abbreviated_run_id_prefix(track, planner, controller, speed_max_mps)
         == expected_prefix
     )
 
@@ -608,15 +637,46 @@ def test_planner_limit_spawn_configs_only_use_declared_and_read_parameters():
 
     for planner in MIGRATED_PLANNERS:
         declared, read_params = _planner_node_contract(planner)
-        if planner == 'corridor':
-            expected_keys = set(params)
-        else:
-            expected_keys = {
-                'filtering.max_cone_range_m',
-                'centerline.max_path_length_m',
-            }
+        expected_keys = set(params)
         assert expected_keys.issubset(declared)
         assert expected_keys.issubset(read_params)
+
+
+def test_migrated_planners_expose_restored_low_level_algorithm_parameters():
+    expected_shared = {
+        'filtering.max_cone_range_m',
+        'filtering.min_confidence',
+        'boundary_chain.min_step_m',
+        'boundary_chain.max_step_m',
+        'width_estimation.initial_width_m',
+        'centerline.max_path_length_m',
+        'validation.hold_last_valid_s',
+        'midline_memory.horizon_m',
+        'debug.show_pair_lines',
+    }
+    for planner in MIGRATED_PLANNERS:
+        declared, read_params = _planner_node_contract(planner)
+        assert expected_shared.issubset(declared)
+        assert expected_shared.issubset(read_params)
+
+
+def test_cone_memory_config_uses_namespaced_public_parameters():
+    config = _load_yaml(SIM_CAR_SHARE / 'config' / 'cone_memory.yaml')
+    params = _flatten(config['cone_memory_node']['ros__parameters'])
+    allowed_prefixes = (
+        'frames.',
+        'vehicle.',
+        'memory.',
+        'fusion.',
+        'runtime.',
+        'debug.',
+        'permanent_memory.',
+        'topics.',
+    )
+
+    assert all(name.startswith(allowed_prefixes) for name in params)
+    assert 'memory.confirm_hits' in params
+    assert 'memory.min_seen_count' in params
 
 
 def test_smalltrack_spawn_config_keeps_lap_tracking():

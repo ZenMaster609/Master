@@ -22,7 +22,7 @@ class SessionManagerNode(Node):
     Manages run session lifecycle and broadcasts run_id.
 
     This node should run on the primary machine (e.g., Jetson) to
-    establish a session that other nodes (logger, plotter, rosbag)
+    establish a session that other nodes (logger, plotter)
     can synchronize with.
 
     Parameters:

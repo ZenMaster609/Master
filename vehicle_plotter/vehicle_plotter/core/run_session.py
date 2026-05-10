@@ -6,7 +6,6 @@ Handles run ID generation, storage layout, and session synchronization.
 Storage Layout:
     ./multidata/<run_id>/
       logs/             # Parquet/CSV and other text artifacts
-      rosbags/          # ros2 bag recordings
       plots/            # Exported plot artifacts
       configs/          # Run config snapshot (YAMLs + launch parameters)
 """
@@ -89,12 +88,11 @@ class RunSession:
     Manages a data collection run session.
 
     Handles run ID generation, directory creation, and path management
-    for logs, rosbags, plots, and ground truth files.
+    for logs, plots, and ground truth files.
 
     Directory Structure:
         ./multidata/<prefix>_<timestamp>/
             logs/           # Parquet/CSV and other text artifacts
-            rosbags/        # ros2 bag recordings
             plots/          # Exported plot artifacts
             configs/        # Run config snapshot (YAMLs + launch parameters)
 
@@ -189,11 +187,6 @@ class RunSession:
         return self.session_path / 'logs'
 
     @property
-    def rosbags_path(self) -> Path:
-        """Path for rosbag recordings."""
-        return self.session_path / 'rosbags'
-
-    @property
     def plots_path(self) -> Path:
         """Path for plot PNG exports."""
         return self.session_path / 'plots'
@@ -217,7 +210,6 @@ class RunSession:
         """Create all session directories if they don't exist."""
         for path in [
             self.logs_path,
-            self.rosbags_path,
             self.plots_path,
             self.configs_path,
         ]:
@@ -249,7 +241,6 @@ class RunSession:
                 'base_path': str(self.base_path),
                 'session_path': str(self.session_path),
                 'logs_path': str(self.logs_path),
-                'rosbags_path': str(self.rosbags_path),
                 'plots_path': str(self.plots_path),
                 'configs_path': str(self.configs_path),
                 'legacy_plot_data_path': str(self.plot_data_path),

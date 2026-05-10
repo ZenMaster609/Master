@@ -5,7 +5,7 @@ import math
 
 import numpy as np
 
-from sim_car.planning.path_stability import (
+from sim_car.planning.tracked_cone_planner_geometry import (
     extract_forward_path_from_pose,
     path_cumulative_lengths,
     sample_path_at_lengths,
