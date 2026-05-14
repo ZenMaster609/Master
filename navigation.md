@@ -51,8 +51,7 @@ Master/
 ├── documentation/
 │   ├── code/                         # Implementation docs (← you are here)
 │   ├── concepts/                     # High-level concept explanations
-│   ├── math/                         # Mathematical derivations
-│   └── flowcharts/                   # Draw.io diagrams + exports
+│   └── math/                         # Mathematical derivations
 │
 ├── tools/                            # Standalone scripts (plot_parquet.py, etc.)
 ├── utilities/                        # plot_logs.py
