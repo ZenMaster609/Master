@@ -82,8 +82,21 @@ RUN_ID_CONTROLLER_ABBREVIATIONS = {
     'stanley': 'stan',
     'none': 'none',
 }
-SCAN2D_LIDAR_PIPELINE_NAME = 'scan2d'
-SCAN2D_RUN_ID_SUFFIX = '2d'
+RUN_ID_LIDAR_PIPELINE_ABBREVIATIONS = {
+    'scan2d': '2d',
+    'pointcloud3d': '3d',
+}
+DEFAULT_LIDAR_PIPELINE = 'scan2d'
+
+POINTCLOUD3D_LIDAR_PARAMS = {
+    'max_detection_range_m': 25.0,
+    'thinning_start_range_m': 12.0,
+    'thinning_keep_ratio_at_max_range': 1.0,
+    'ground_base_cutoff_m': 0.035,
+    'ground_range_bias_m': 0.01,
+    'ground_range_slope_m_per_m': 0.004,
+    'downsample_stride': 1,
+}
 DEFAULT_ACKERMANN_STEERING_SIGN = 1.0  # Existing default preserves the configured steering direction.
 DEFAULT_USE_SIM_TIME = True  # Full sim nodes use the Gazebo /clock timeline by default.
 DEFAULT_USE_SIM_TIME_LAUNCH = 'true'  # Included launch files receive launch arguments as strings.
@@ -139,13 +152,23 @@ class LaunchSelection:
         }
 
 
-def _lidar_enabled_condition():
+def _lidar_pipeline_match_expr(pipeline: str):
+    return PythonExpression([
+        "'",
+        LaunchConfiguration('lidar_pipeline'),
+        f"'.lower() == '{pipeline}'",
+    ])
+
+
+def _lidar_pipeline_enabled_condition(pipeline: str):
     return IfCondition(PythonExpression([
         "(('",
         LaunchConfiguration('lidar_enabled'),
         "'.lower() == 'true') or ('",
         LaunchConfiguration('cone_memory_enabled'),
-        "'.lower() == 'true'))",
+        "'.lower() == 'true')) and (",
+        _lidar_pipeline_match_expr(pipeline),
+        ")",
     ]))
 
 
@@ -163,6 +186,18 @@ def _planner_odom_delay_enabled_expr():
         LaunchConfiguration('planner_odom_delay_ms'),
         "') > 0.0",
     ])
+
+
+def _pointcloud3d_lidar_parameters(topic_prefix):
+    parameters = {
+        'pointcloud_topic': PythonExpression(["'", topic_prefix, "' + '/lidar/points'"]),
+        'filtered_pointcloud_topic': PythonExpression(["'", topic_prefix, "' + '/lidar/points_filtered'"]),
+        'cone_detections_topic': PythonExpression(["'", topic_prefix, "' + '/lidar/perception/cones_3d'"]),
+        'lidar_frame': 'lidar_os1_link',
+        'cone_detections_frame': 'base_footprint',
+    }
+    parameters.update(POINTCLOUD3D_LIDAR_PARAMS)
+    return parameters
 
 
 def generate_launch_description():
@@ -335,6 +370,12 @@ def generate_launch_description():
         description='Enable LiDAR cone detection/evaluation node'
     )
 
+    lidar_pipeline_arg = DeclareLaunchArgument(
+        'lidar_pipeline',
+        default_value=DEFAULT_LIDAR_PIPELINE,
+        description="LiDAR perception path: 'scan2d' or 'pointcloud3d'"
+    )
+
     cone_memory_enabled_arg = DeclareLaunchArgument(
         'cone_memory_enabled',
         default_value='true',
@@ -480,6 +521,7 @@ def generate_launch_description():
         'cuda',
         'stereo',
         'lidar_enabled',
+        'lidar_pipeline',
         'cone_memory_enabled',
         'camera_range_m',
         'prefer_lidar_if_camera_missing_far',
@@ -503,7 +545,6 @@ def generate_launch_description():
     launch_parameters_snapshot = {
         name: LaunchConfiguration(name) for name in launch_argument_names
     }
-    launch_parameters_snapshot['lidar_pipeline'] = SCAN2D_LIDAR_PIPELINE_NAME
 
     resolved_measurement_config = LaunchConfiguration('resolved_measurement_config')
     resolved_rviz_config = LaunchConfiguration('resolved_rviz_config')
@@ -567,6 +608,7 @@ def generate_launch_description():
             'perception_rate_hz': LaunchConfiguration('perception_rate_hz'),
             'planner_rate_hz': LaunchConfiguration('planner_rate_hz'),
             'physics_model': LaunchConfiguration('physics_model'),
+            'lidar_pipeline': LaunchConfiguration('lidar_pipeline'),
             'sensors_render_engine': LaunchConfiguration('sensors_render_engine'),
             'topic_prefix': topic_prefix,
             'spawn_x': resolved_spawn_x,
@@ -838,7 +880,7 @@ def generate_launch_description():
         executable='lidar_node',
         name='lidar_node',
         output='screen',
-        condition=_lidar_enabled_condition(),
+        condition=_lidar_pipeline_enabled_condition('scan2d'),
         parameters=[{
             'use_sim_time': ParameterValue(
                 DEFAULT_USE_SIM_TIME,
@@ -848,6 +890,21 @@ def generate_launch_description():
             'cone_detections_topic': PythonExpression(["'", topic_prefix, "' + '/lidar/perception/cones_3d'"]),
             'lidar_frame': 'lidar_scan_link',
             'cone_detections_frame': 'front_axle',
+        }],
+    )
+
+    pointcloud_lidar_node = Node(
+        package='sim_car',
+        executable='pointcloud_lidar_node',
+        name='pointcloud_lidar_node',
+        output='screen',
+        condition=_lidar_pipeline_enabled_condition('pointcloud3d'),
+        parameters=[{
+            'use_sim_time': ParameterValue(
+                DEFAULT_USE_SIM_TIME,
+                value_type=bool,
+            ),
+            **_pointcloud3d_lidar_parameters(topic_prefix),
         }],
     )
 
@@ -1130,6 +1187,20 @@ def generate_launch_description():
         condition=IfCondition(_planner_odom_delay_enabled_expr()),
     )
 
+    pointcloud_sensor_frame_tf_node = Node(
+        package='tf2_ros',
+        executable='static_transform_publisher',
+        name='pointcloud_lidar_sensor_frame_tf',
+        output='screen',
+        arguments=[
+            '0', '0', '0',
+            '0', '0', '0',
+            'lidar_os1_link',
+            'sim_car/base_footprint/front_lidar',
+        ],
+        condition=IfCondition(_lidar_pipeline_match_expr('pointcloud3d')),
+    )
+
     rviz_node = Node(
         package='rviz2',
         executable='rviz2',
@@ -1191,6 +1262,7 @@ def generate_launch_description():
         cuda_arg,
         stereo_arg,
         lidar_enabled_arg,
+        lidar_pipeline_arg,
         cone_memory_enabled_arg,
         camera_range_arg,
         prefer_lidar_if_camera_missing_far_arg,
@@ -1225,6 +1297,7 @@ def generate_launch_description():
         perception_node,
         camera_cone_evaluator_node,
         lidar_node,
+        pointcloud_lidar_node,
         lidar_cone_evaluator_node,
         cone_memory_node,
         skidpad_router_node,
@@ -1235,6 +1308,7 @@ def generate_launch_description():
         linetest_planner_node,
         camera_debug_viewer_node,
         odom_tf_broadcaster_node,
+        pointcloud_sensor_frame_tf_node,
         rviz_node,
         steering_gui_node,
         run_artifacts_node,
@@ -1390,17 +1464,24 @@ def _load_yaml_file(config_path: str) -> dict:
     return config
 
 
-def _abbreviated_run_id_prefix(track: str, planner: str, controller: str, speed_max_mps: float) -> str:
+def _abbreviated_run_id_prefix(
+    track: str,
+    planner: str,
+    controller: str,
+    speed_max_mps: float,
+    lidar_pipeline: str,
+) -> str:
     normalized_track = str(track).strip().lower() or 'smalltrack'
     normalized_planner = str(planner).strip().lower() or 'midpoint'
     normalized_controller = str(controller).strip().lower() or 'stanley'
+    normalized_lidar_pipeline = str(lidar_pipeline).strip().lower() or DEFAULT_LIDAR_PIPELINE
 
     return '_'.join([
         RUN_ID_TRACK_ABBREVIATIONS.get(normalized_track, normalized_track),
         str(int(round(float(speed_max_mps)))),
         RUN_ID_PLANNER_ABBREVIATIONS.get(normalized_planner, normalized_planner),
         RUN_ID_CONTROLLER_ABBREVIATIONS.get(normalized_controller, normalized_controller),
-        SCAN2D_RUN_ID_SUFFIX,
+        RUN_ID_LIDAR_PIPELINE_ABBREVIATIONS.get(normalized_lidar_pipeline, normalized_lidar_pipeline),
     ])
 
 
@@ -1466,6 +1547,7 @@ def _configure_track_selection(context, *_args, **_kwargs):
         selection.planner,
         selection.controller,
         selection.speed_control['speed_max_mps'],
+        LaunchConfiguration('lidar_pipeline').perform(context),
     )
 
     planner_config_path = selection.planner_config if selection.planner == 'linetest' else _write_parameter_overlay({})
@@ -1548,6 +1630,7 @@ def _validate_planner_and_controller_args(context, *_args, **_kwargs):
     track = LaunchConfiguration('track').perform(context).strip().lower()
     planner = LaunchConfiguration('planner').perform(context).strip().lower()
     controller = LaunchConfiguration('controller').perform(context).strip().lower() or 'stanley'
+    lidar_pipeline = LaunchConfiguration('lidar_pipeline').perform(context).strip().lower()
 
     if track not in SUPPORTED_TRACKS:
         raise RuntimeError(
@@ -1568,6 +1651,11 @@ def _validate_planner_and_controller_args(context, *_args, **_kwargs):
         raise RuntimeError(
             "Unsupported launch argument controller='%s'. Supported values: stanley, pure_pursuit, none"
             % controller
+        )
+    if lidar_pipeline not in RUN_ID_LIDAR_PIPELINE_ABBREVIATIONS:
+        raise RuntimeError(
+            "Unsupported launch argument lidar_pipeline='%s'. Supported values: scan2d, pointcloud3d"
+            % lidar_pipeline
         )
     return []
 

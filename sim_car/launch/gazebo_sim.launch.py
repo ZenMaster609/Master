@@ -113,6 +113,11 @@ def generate_launch_description():
             description="Physics model for Gazebo dynamics: 'pointmass' or 'bicycle'"
         ),
         DeclareLaunchArgument(
+            'lidar_pipeline',
+            default_value='scan2d',
+            description="LiDAR pipeline to expose from Gazebo: 'scan2d' or 'pointcloud3d'"
+        ),
+        DeclareLaunchArgument(
             'topic_prefix',
             default_value='/sim/raw',
             description='Topic prefix for sim sensors (/sim or /sim/raw)'
@@ -170,6 +175,7 @@ def _launch_simulation(context, *args, **kwargs):
     perception_rate_value = float(LaunchConfiguration('perception_rate_hz').perform(context))
     planner_rate_value = float(LaunchConfiguration('planner_rate_hz').perform(context))
     physics_model_value = LaunchConfiguration('physics_model').perform(context)
+    lidar_pipeline_value = LaunchConfiguration('lidar_pipeline').perform(context).strip().lower()
     vehicle_model_value = _resolve_vehicle_model(physics_model_value)
     updated_eufs_config = _write_updated_eufs_config(eufs_config_path, update_rate_value)
     spawn_x = LaunchConfiguration('spawn_x').perform(context)
@@ -186,6 +192,7 @@ def _launch_simulation(context, *args, **kwargs):
         vehicle_model_value,
         updated_eufs_config,
         topic_prefix,
+        lidar_pipeline_value,
         spawn_x,
         spawn_y,
         spawn_z,
@@ -259,8 +266,11 @@ def _launch_simulation(context, *args, **kwargs):
         sensor_config,
         topics=[
             f'{topic_prefix}/lidar',
+            f'{topic_prefix}/lidar/points',
             '/sim/lidar',
             '/sim/raw/lidar',
+            '/sim/lidar/points',
+            '/sim/raw/lidar/points',
         ],
     )
 
@@ -279,7 +289,10 @@ def _launch_simulation(context, *args, **kwargs):
     if navsat_enabled:
         bridge_args.append(f'{topic_prefix}/navsat@sensor_msgs/msg/NavSatFix[gz.msgs.NavSat')
     if lidar_enabled:
-        bridge_args.append(f'{topic_prefix}/lidar@sensor_msgs/msg/LaserScan[gz.msgs.LaserScan')
+        if lidar_pipeline_value == 'scan2d':
+            bridge_args.append(f'{topic_prefix}/lidar@sensor_msgs/msg/LaserScan[gz.msgs.LaserScan')
+        else:
+            bridge_args.append(f'{topic_prefix}/lidar/points@sensor_msgs/msg/PointCloud2[gz.msgs.PointCloudPacked')
 
     bridge = Node(
         package='ros_gz_bridge',
@@ -437,6 +450,7 @@ def _build_robot_description(
     vehicle_model,
     eufs_config_path,
     topic_prefix,
+    lidar_pipeline,
     spawn_x,
     spawn_y,
     spawn_z,
@@ -449,6 +463,7 @@ def _build_robot_description(
         camera_rate_hz,
         perception_rate_hz,
         planner_rate_hz,
+        lidar_pipeline,
     )
     try:
         root = ET.fromstring(robot_xml)
@@ -492,6 +507,7 @@ def _load_robot_xml(
     camera_rate_hz,
     perception_rate_hz,
     planner_rate_hz,
+    lidar_pipeline,
 ):
     if urdf_path.endswith('.xacro'):
         return _run_xacro(
@@ -501,6 +517,7 @@ def _load_robot_xml(
             camera_rate_hz,
             perception_rate_hz,
             planner_rate_hz,
+            lidar_pipeline,
         )
     with open(urdf_path, 'r') as urdf_file:
         return urdf_file.read()
@@ -513,6 +530,7 @@ def _run_xacro(
     camera_rate_hz,
     perception_rate_hz,
     planner_rate_hz,
+    lidar_pipeline,
 ):
     cmd = [
         'xacro',
@@ -522,6 +540,7 @@ def _run_xacro(
         f'camera_rate_hz:={camera_rate_hz}',
         f'perception_rate_hz:={perception_rate_hz}',
         f'planner_rate_hz:={planner_rate_hz}',
+        f'lidar_pipeline:={lidar_pipeline}',
     ]
     result = subprocess.run(cmd, capture_output=True, text=True, check=False)
     if result.returncode != 0:
