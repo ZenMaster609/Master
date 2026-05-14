@@ -4,7 +4,7 @@ This folder documents the current `sim_car`, `vehicle_plotter`, and `vehicle_plo
 
 ## Main Runtime
 
-- [Autonomous Stack Flowcharts](flowcharts/README.md): layered Draw.io system diagrams and thesis-ready exports.
+
 - [Vehicle Plotter](concepts/vehicle_plotter.md): run sessions, `/vehicle_plotter/state`, logging, diagnostics, and generated artifacts.
 - [Sensors](concepts/sensors.md): raw `/sim/raw/...` virtual sensors, `measurement_node`, measured `/sim/...` topics, and plot-only signals.
 - [Perception](concepts/perception.md): camera perception, YOLO, monocular/stereo ranging, cone evaluation, and cone memory.

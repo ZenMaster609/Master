@@ -16,6 +16,7 @@ from dataclasses import dataclass, field
 from typing import List, Tuple, Optional
 import numpy as np
 
+from .plot_config import VELOCITY_AXIS_LIMITS_MPS
 from .matplotlib_fonts import (
     DEFAULT_TITLE_FONTSIZE,
     LEGEND_FONTSIZE,
@@ -129,6 +130,7 @@ class TimeSeriesPlotDefinition(PlotDefinition):
     series: List[Tuple[str, str, str]] = field(default_factory=list)  # [(column, label, color), ...]
     y_label: str = "Value"
     time_column: str = "timestamp"
+    y_limits: Optional[Tuple[float, float]] = None
 
     def create_plot(self, df, source_label: str) -> Tuple:
         import matplotlib.pyplot as plt
@@ -150,6 +152,8 @@ class TimeSeriesPlotDefinition(PlotDefinition):
         apply_axis_label_fontsize(ax)
         apply_tick_label_fontsize(ax)
         _add_legend_if_labeled(ax)
+        if self.y_limits is not None:
+            ax.set_ylim(*self.y_limits)
         ax.grid(True, alpha=0.3)
 
         fig.tight_layout()
@@ -283,13 +287,13 @@ def get_all_plot_definitions() -> List[PlotDefinition]:
             name="Velocity",
             filename="velocity",
             title_template="Velocity ({source})",
-            required_columns=['vx', 'vy', 'speed'],
+            required_columns=['vx', 'vy'],
             series=[
                 ('vx', 'Vx (forward)', '#1f77b4'),
                 ('vy', 'Vy (lateral)', '#ff7f0e'),
-                ('speed', 'Speed', '#2ca02c'),
             ],
             y_label='Velocity (m/s)',
+            y_limits=VELOCITY_AXIS_LIMITS_MPS,
         ),
 
         # Heading (yaw) time series

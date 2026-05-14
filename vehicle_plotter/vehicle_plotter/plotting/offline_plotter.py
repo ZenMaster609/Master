@@ -27,11 +27,30 @@ from typing import Dict, List, Optional, Any
 import pandas as pd
 
 from ..core.vehicle_state import VehicleState
-from .plot_config import PlotLayoutConfig, get_all_plots
+from .plot_config import (
+    AxisConfig,
+    PlotConfig,
+    PlotLayoutConfig,
+    VELOCITY_AXIS_LIMITS_MPS,
+    get_all_plots,
+)
 from .plot_manager import PlotManager
 from .plot_definitions import (
     PlotDefinition,
     get_all_plot_definitions,
+)
+
+
+WHEEL_SPEED_MIN_MPS = 0.0  # Wheel linear speed is shown as a non-negative magnitude in exports.
+WHEEL_SPEED_MAX_MPS = 8.0  # Matches the current simulated dashboard range for wheel speed inspection.
+MILLIMETERS_PER_SECOND_TO_METERS_PER_SECOND_SCALE = (
+    0.001  # Converts logged wheel speed to meters per second.
+)
+MOVEMENT_DASHBOARD_PLOT_INDICES = [0, 1, 2, 3]  # Selects movement plots from the live dashboard layout.
+MECHANICAL_DASHBOARD_PLOT_INDICES = [4, 5, 6, 7]  # Selects mechanical plots from the live dashboard layout.
+MOVEMENT_VELOCITY_PLOT_INDEX = 1  # Velocity is the top-right movement subplot in the 2x2 export layout.
+MOVEMENT_WHEEL_SPEED_PLOT_INDEX = (
+    3  # Wheel speed is the bottom-right movement subplot in the 2x2 export layout.
 )
 
 
@@ -269,6 +288,7 @@ class OfflinePlotter:
         if self.data is None:
             self.load_data()
 
+        self._expand_dashboard_buffers(layout_config)
         plot_manager = PlotManager(
             layout_config=layout_config,
             enable_gui=False,
@@ -284,19 +304,46 @@ class OfflinePlotter:
 
     def _build_movement_layout(self) -> PlotLayoutConfig:
         """Build the movement dashboard with wheel speed shown in m/s."""
-        layout = self._build_dashboard_layout([0, 1, 2, 3], window_title="Movement")
-        wheel_speed_plot = layout.plots[3]
+        layout = self._build_dashboard_layout(
+            MOVEMENT_DASHBOARD_PLOT_INDICES,
+            window_title="Movement",
+        )
+        self._configure_velocity_components_plot(layout.plots[MOVEMENT_VELOCITY_PLOT_INDEX])
+        wheel_speed_plot = layout.plots[MOVEMENT_WHEEL_SPEED_PLOT_INDEX]
         wheel_speed_plot.name = "Wheel Speed (m/s)"
         wheel_speed_plot.y_axis.label = "Wheel Speed"
         wheel_speed_plot.y_axis.unit = "m/s"
-        wheel_speed_plot.y_axis.limits = (0.0, 8.0)
+        wheel_speed_plot.y_axis.limits = (WHEEL_SPEED_MIN_MPS, WHEEL_SPEED_MAX_MPS)
         for series in wheel_speed_plot.series:
-            series.scale = 0.001
+            series.scale = MILLIMETERS_PER_SECOND_TO_METERS_PER_SECOND_SCALE
         return layout
 
     def _build_mechanical_layout(self) -> PlotLayoutConfig:
         """Build the mechanical dashboard."""
-        return self._build_dashboard_layout([4, 5, 6, 7], window_title="Mechanical")
+        return self._build_dashboard_layout(
+            MECHANICAL_DASHBOARD_PLOT_INDICES,
+            window_title="Mechanical",
+        )
+
+    def _expand_dashboard_buffers(self, layout_config: PlotLayoutConfig) -> None:
+        """Resize offline buffers so PDF exports include the full session."""
+        row_count = len(self.data) if self.data is not None else 0
+        for plot_config in layout_config.plots:
+            plot_config.buffer_size = max(plot_config.buffer_size, row_count)
+
+    def _configure_velocity_components_plot(self, plot_config: PlotConfig) -> None:
+        """Show body-frame velocity components in the movement dashboard export."""
+        plot_config.name = "Velocity"
+        plot_config.series = [
+            series for series in plot_config.series
+            if series.variable in {"vx", "vy"}
+        ]
+        plot_config.y_axis = AxisConfig(
+            label="Velocity",
+            unit="m/s",
+            limits=VELOCITY_AXIS_LIMITS_MPS,
+            auto_scale=False,
+        )
 
     def _build_dashboard_layout(
         self,

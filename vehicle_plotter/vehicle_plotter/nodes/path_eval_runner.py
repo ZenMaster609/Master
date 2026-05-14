@@ -42,6 +42,14 @@ from ..logging.track_metrics_report import write_track_metrics_report
 from ..utils.transforms import quaternion_to_yaw
 
 
+GT_OVERLAY_MIN_MIDLINE_POINTS = (
+    2  # A polyline needs at least one segment to be a usable GT reference.
+)
+GT_OVERLAY_MIN_BORDER_POINTS = (
+    1  # Each GT border must contain at least one cone before freezing the overlay.
+)
+
+
 class PathEvalRunner:
 
     def _init_path_eval_state(self) -> None:
@@ -52,6 +60,10 @@ class PathEvalRunner:
         self._path_eval_last_gt_midline_xy = np.empty((0, 2), dtype=np.float64)
         self._path_eval_last_gt_left_xy = np.empty((0, 2), dtype=np.float64)
         self._path_eval_last_gt_right_xy = np.empty((0, 2), dtype=np.float64)
+        self._path_eval_static_overlay_gt_midline_xy = np.empty((0, 2), dtype=np.float64)
+        self._path_eval_static_overlay_gt_left_xy = np.empty((0, 2), dtype=np.float64)
+        self._path_eval_static_overlay_gt_right_xy = np.empty((0, 2), dtype=np.float64)
+        self._path_eval_static_overlay_target_frame = ''
         self._path_eval_last_target_frame = ''
         self._path_eval_start_xy = None
         self._path_eval_start_heading_xy = None
@@ -228,6 +240,64 @@ class PathEvalRunner:
             if rclpy.ok():
                 rclpy.shutdown()
 
+    def _path_tracking_eval_capture_static_overlay_gt(
+        self,
+        *,
+        target_frame: str,
+        gt_midline_xy: np.ndarray,
+        gt_left_xy: np.ndarray,
+        gt_right_xy: np.ndarray,
+    ) -> None:
+        if self._path_eval_static_overlay_gt_midline_xy.shape[0] >= GT_OVERLAY_MIN_MIDLINE_POINTS:
+            return
+
+        midline_xy = np.asarray(gt_midline_xy, dtype=np.float64)
+        left_xy = np.asarray(gt_left_xy, dtype=np.float64)
+        right_xy = np.asarray(gt_right_xy, dtype=np.float64)
+        if not self._path_tracking_eval_has_complete_overlay_gt(midline_xy, left_xy, right_xy):
+            return
+
+        self._path_eval_static_overlay_gt_midline_xy = np.array(midline_xy, copy=True)
+        self._path_eval_static_overlay_gt_left_xy = np.array(left_xy, copy=True)
+        self._path_eval_static_overlay_gt_right_xy = np.array(right_xy, copy=True)
+        self._path_eval_static_overlay_target_frame = str(target_frame).strip()
+
+    def _path_tracking_eval_overlay_gt_reference(
+        self,
+    ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+        if (
+            self._path_eval_static_overlay_gt_midline_xy.shape[0]
+            >= GT_OVERLAY_MIN_MIDLINE_POINTS
+        ):
+            return (
+                np.asarray(self._path_eval_static_overlay_gt_midline_xy, dtype=np.float64),
+                np.asarray(self._path_eval_static_overlay_gt_left_xy, dtype=np.float64),
+                np.asarray(self._path_eval_static_overlay_gt_right_xy, dtype=np.float64),
+            )
+        return (
+            np.asarray(self._path_eval_last_gt_midline_xy, dtype=np.float64),
+            np.asarray(self._path_eval_last_gt_left_xy, dtype=np.float64),
+            np.asarray(self._path_eval_last_gt_right_xy, dtype=np.float64),
+        )
+
+    @staticmethod
+    def _path_tracking_eval_has_complete_overlay_gt(
+        gt_midline_xy: np.ndarray,
+        gt_left_xy: np.ndarray,
+        gt_right_xy: np.ndarray,
+    ) -> bool:
+        return (
+            gt_midline_xy.ndim == 2
+            and gt_midline_xy.shape[0] >= GT_OVERLAY_MIN_MIDLINE_POINTS
+            and gt_midline_xy.shape[1] == 2
+            and gt_left_xy.ndim == 2
+            and gt_left_xy.shape[0] >= GT_OVERLAY_MIN_BORDER_POINTS
+            and gt_left_xy.shape[1] == 2
+            and gt_right_xy.ndim == 2
+            and gt_right_xy.shape[0] >= GT_OVERLAY_MIN_BORDER_POINTS
+            and gt_right_xy.shape[1] == 2
+        )
+
     def _compute_average_lap_time_sec(self) -> Optional[float]:
         if self._path_tracking_eval_track_name == 'smalltrack':
             if self._path_eval_smalltrack_lap_times_sec:
@@ -381,6 +451,12 @@ class PathEvalRunner:
             else np.empty((0, 2), dtype=np.float64)
         )
         self._path_eval_last_target_frame = target_frame
+        self._path_tracking_eval_capture_static_overlay_gt(
+            target_frame=target_frame,
+            gt_midline_xy=gt_midline_target,
+            gt_left_xy=self._path_eval_last_gt_left_xy,
+            gt_right_xy=self._path_eval_last_gt_right_xy,
+        )
 
         gt_nearest_idx, gt_nearest_point, gt_nearest_progress_m = eval_nearest_point_on_polyline_with_progress(
             float(body_center_xy_target[0]),
@@ -543,9 +619,11 @@ class PathEvalRunner:
         try:
             overlay_path = self._run_session.plots_path / 'path_tracking_eval_overlay.pdf'
             overlay_segments_xy = None
-            overlay_midline_xy = self._path_eval_last_gt_midline_xy
-            overlay_blue_xy = self._path_eval_last_gt_left_xy
-            overlay_yellow_xy = self._path_eval_last_gt_right_xy
+            (
+                overlay_midline_xy,
+                overlay_blue_xy,
+                overlay_yellow_xy,
+            ) = self._path_tracking_eval_overlay_gt_reference()
             if self._path_tracking_eval_track_name == 'skidpad':
                 overlay_segments_xy = build_skidpad_gt_overlay_segments()
                 overlay_midline_xy = np.empty((0, 2), dtype=np.float64)

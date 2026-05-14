@@ -10,6 +10,11 @@ from typing import Optional, List, Callable, Literal
 from enum import Enum
 
 
+VELOCITY_AXIS_MIN_MPS = -5.0  # Allows small reverse/lateral startup values without plot autoscale spikes.
+VELOCITY_AXIS_MAX_MPS = 20.0  # Keeps startup velocity spikes from dominating normal driving plots.
+VELOCITY_AXIS_LIMITS_MPS = (VELOCITY_AXIS_MIN_MPS, VELOCITY_AXIS_MAX_MPS)
+
+
 class XAxisType(Enum):
     """Supported X-axis types for plots."""
     TIME = "time"                    # Elapsed time in seconds
@@ -144,7 +149,12 @@ def get_default_plots() -> PlotLayoutConfig:
                     SeriesConfig(name="Vy", variable="vy", color="#ff7f0e"),
                     SeriesConfig(name="Speed", variable="speed", color="#2ca02c"),
                 ],
-                y_axis=AxisConfig(label="Velocity", unit="m/s"),
+                y_axis=AxisConfig(
+                    label="Velocity",
+                    unit="m/s",
+                    limits=VELOCITY_AXIS_LIMITS_MPS,
+                    auto_scale=False,
+                ),
                 row=0, col=1,
                 buffer_size=1000,
             ),
@@ -319,7 +329,12 @@ def get_all_plots() -> PlotLayoutConfig:
                     SeriesConfig(name="Vy", variable="vy", color="#ff7f0e"),
                     SeriesConfig(name="Speed", variable="speed", color="#2ca02c"),
                 ],
-                y_axis=AxisConfig(label="Velocity", unit="m/s"),
+                y_axis=AxisConfig(
+                    label="Velocity",
+                    unit="m/s",
+                    limits=VELOCITY_AXIS_LIMITS_MPS,
+                    auto_scale=False,
+                ),
                 row=0, col=1,
                 buffer_size=1000,
             ),
