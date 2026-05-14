@@ -63,16 +63,27 @@ The simulator camera uses square pixels, so:
 fy = fx = 448.141402 px
 ```
 
-## Step 3: Choose The Principal Point
+## Step 3: Choose The Principal Point And Assemble K
 
-The image center is used as the principal point:
+The intrinsic matrix `K` is made from four values:
+
+```text
+K = [fx,  0, cx,
+      0, fy, cy,
+      0,  0,  1]
+```
+
+`fx` and `fy` come from Step 2. `cx` and `cy` are the principal point, which is
+the pixel coordinate where the optical axis intersects the image plane. For
+this simulator setup, the image center is used as the principal point:
 
 ```text
 cx = (width_px - 1) / 2 = 639.5 px
 cy = (height_px - 1) / 2 = 359.5 px
 ```
 
-That gives this intrinsic matrix for both cameras:
+Combining those principal-point values with the focal lengths from Step 2 gives
+this intrinsic matrix for both cameras:
 
 ```text
 K = [448.141402,   0.0,      639.5,
