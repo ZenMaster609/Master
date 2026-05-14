@@ -19,7 +19,7 @@ from nav_msgs.msg import Odometry
 from rclpy.executors import ExternalShutdownException
 from rclpy.node import Node
 from rclpy.qos import qos_profile_sensor_data
-from std_msgs.msg import Float32
+from std_msgs.msg import Bool, Float32
 from vehicle_plotter_msgs.msg import ConeDetection, ConeDetectionArray
 from visualization_msgs.msg import Marker, MarkerArray
 
@@ -59,18 +59,23 @@ class SkidpadRouterNode(Node):
         self._acceleration_parked_since_sec: Optional[float] = None
         self._stop_line_forward_distance_m: float = float("nan")
         self._stop_line_marker_points_odom: Optional[tuple[tuple[float, float], tuple[float, float]]] = None
+        self._spawn_pose_xy: Optional[tuple[float, float]] = None
+        self._approach_distance_from_spawn_m: float = 0.0
 
         self._cones_pub = self.create_publisher(ConeDetectionArray, self.output_topic, 10)
+        self._steering_lock_pub = self.create_publisher(Bool, '/steering_lock', 10)
         self._diag_pub = self.create_publisher(DiagnosticArray, self.diagnostics_topic, 10)
         self._viz_pub = self.create_publisher(MarkerArray, self.viz_topic, 10)
         self._cmd_pub = self.create_publisher(AckermannDriveStamped, self.cmd_topic, 10)
         self._brake_pub = self.create_publisher(Float32, self.brake_cmd_topic, 10)
         self._stop_override_timer = None
-        if self.stop_override_publish_period_s > 0.0:
-            self._stop_override_timer = self.create_timer(
-                self.stop_override_publish_period_s,
-                self._stop_override_timer_cb,
-            )
+        _timer_period = (
+            self.stop_override_publish_period_s
+            if self.stop_override_publish_period_s > 0.0
+            else (1.0 / 120.0)
+        )
+        if self.stop_override_publish_period_s > 0.0 or self._approach_lock_active:
+            self._stop_override_timer = self.create_timer(_timer_period, self._stop_override_timer_cb)
 
         self.create_subscription(
             ConeDetectionArray,
@@ -132,6 +137,7 @@ class SkidpadRouterNode(Node):
             "parking.stop_line_pair_max_distance_m": 1.0,
             "parking.stop_override_publish_rate_hz": 120.0,
             "parking.stop_approach_speed_gain": 1.5,
+            "routing.approach_straight_lock_distance_m": 12.0,
             "parking.brake_activation_margin_m": 1.0,
             "parking.brake_command": 1.0,
         }
@@ -180,6 +186,10 @@ class SkidpadRouterNode(Node):
         self.stop_approach_speed_gain = float(self.get_parameter("parking.stop_approach_speed_gain").value)
         self.brake_activation_margin_m = float(self.get_parameter("parking.brake_activation_margin_m").value)
         self.brake_command = float(np.clip(float(self.get_parameter("parking.brake_command").value), 0.0, 1.0))
+        self.approach_straight_lock_distance_m = float(
+            self.get_parameter("routing.approach_straight_lock_distance_m").value
+        )
+        self._approach_lock_active: bool = self.approach_straight_lock_distance_m > 0.0
 
         self._state_machine = SkidpadStateMachine(
             config_from_parameters(
@@ -239,6 +249,20 @@ class SkidpadRouterNode(Node):
         self._latest_yaw_rad = yaw_rad
         self._latest_speed_mps = speed_mps
         self._latest_odom_stamp = msg.header.stamp
+
+        if self._spawn_pose_xy is None:
+            self._spawn_pose_xy = (x_m, y_m)
+        if self._approach_lock_active:
+            self._approach_distance_from_spawn_m = math.hypot(
+                x_m - self._spawn_pose_xy[0], y_m - self._spawn_pose_xy[1]
+            )
+            if self._approach_distance_from_spawn_m >= self.approach_straight_lock_distance_m:
+                self._approach_lock_active = False
+                self._publish_steering_lock(False)
+                self.get_logger().info(
+                    f"Approach straight lock released at {self._approach_distance_from_spawn_m:.1f} m from spawn."
+                )
+
         self._latest_snapshot = self._state_machine.update(
             x_m=x_m,
             y_m=y_m,
@@ -633,13 +657,20 @@ class SkidpadRouterNode(Node):
         )
 
     def _stop_override_timer_cb(self) -> None:
-        if not self._stop_override_active:
-            return
-
         stamp = self._latest_odom_stamp
         if stamp is None:
             stamp = self.get_clock().now().to_msg()
+        if self._approach_lock_active:
+            self._publish_steering_lock(True)
+            return
+        if not self._stop_override_active:
+            return
         self._publish_parking_override_cmd(stamp)
+
+    def _publish_steering_lock(self, locked: bool) -> None:
+        msg = Bool()
+        msg.data = locked
+        self._steering_lock_pub.publish(msg)
 
     def _publish_parking_override_cmd(self, stamp) -> None:
         msg = AckermannDriveStamped()
@@ -1010,6 +1041,8 @@ class SkidpadRouterNode(Node):
             KeyValue(key="stop_line_forward_distance_m", value=f"{self._stop_line_forward_distance_m:.6f}"),
             KeyValue(key="target_forward_distance_m", value=f"{self._target_forward_distance_m():.6f}"),
             KeyValue(key="vehicle_speed_mps", value=f"{self._latest_speed_mps:.6f}"),
+            KeyValue(key="approach_lock_active", value=str(int(self._approach_lock_active))),
+            KeyValue(key="approach_distance_from_spawn_m", value=f"{self._approach_distance_from_spawn_m:.2f}"),
         ]
 
     def _maybe_shutdown_after_route_complete(self) -> None:

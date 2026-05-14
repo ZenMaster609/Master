@@ -8,7 +8,7 @@ from rclpy.node import Node
 
 from ackermann_msgs.msg import AckermannDriveStamped
 from geometry_msgs.msg import Twist
-from std_msgs.msg import Float32
+from std_msgs.msg import Bool, Float32
 from std_srvs.srv import Trigger
 
 
@@ -28,6 +28,7 @@ class AckermannCmdBridge(Node):
         self.declare_parameter('steering_from_desired_speed', False)
         self.declare_parameter('steering_speed_floor', 0.2)
         self.declare_parameter('steering_sign', 1.0)
+        self.declare_parameter('steering_lock_topic', '/steering_lock')
 
         input_topic = self.get_parameter('input_topic').get_parameter_value().string_value
         output_topic = self.get_parameter('output_topic').get_parameter_value().string_value
@@ -71,6 +72,10 @@ class AckermannCmdBridge(Node):
         self.desired_steering = 0.0
         self.current_speed = 0.0
         self.brake_cmd = 0.0
+        self._steering_locked = False
+        steering_lock_topic = self.get_parameter('steering_lock_topic').get_parameter_value().string_value
+        if steering_lock_topic:
+            self.create_subscription(Bool, steering_lock_topic, self._on_steering_lock, 10)
         self.last_update_time = None
         self.last_wall_time = None
 
@@ -87,13 +92,19 @@ class AckermannCmdBridge(Node):
         response.message = self.command_mode
         return response
 
+    def _on_steering_lock(self, msg: Bool) -> None:
+        self._steering_locked = bool(msg.data)
+        if self._steering_locked:
+            self.desired_steering = 0.0
+
     def _on_cmd(self, msg):
         if self.command_mode == 'acceleration':
             self.desired_accel = float(msg.drive.acceleration)
         else:
             self.desired_speed = float(msg.drive.speed)
         self.desired_speed = max(-self.max_speed, min(self.max_speed, self.desired_speed))
-        self.desired_steering = float(msg.drive.steering_angle)
+        if not self._steering_locked:
+            self.desired_steering = float(msg.drive.steering_angle)
 
     def _on_brake_cmd(self, msg):
         self.brake_cmd = max(0.0, min(1.0, float(msg.data)))
