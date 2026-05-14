@@ -48,10 +48,23 @@ MILLIMETERS_PER_SECOND_TO_METERS_PER_SECOND_SCALE = (
 )
 MOVEMENT_DASHBOARD_PLOT_INDICES = [0, 1, 2, 3]  # Selects movement plots from the live dashboard layout.
 MECHANICAL_DASHBOARD_PLOT_INDICES = [4, 5, 6, 7]  # Selects mechanical plots from the live dashboard layout.
+MOVEMENT_POSITION_PLOT_INDEX = 0  # Position trajectory is the top-left movement subplot.
 MOVEMENT_VELOCITY_PLOT_INDEX = 1  # Velocity is the top-right movement subplot in the 2x2 export layout.
+MOVEMENT_HEADING_PLOT_INDEX = 2  # Heading is the bottom-left movement subplot.
 MOVEMENT_WHEEL_SPEED_PLOT_INDEX = (
     3  # Wheel speed is the bottom-right movement subplot in the 2x2 export layout.
 )
+POSITION_TRAJECTORY_Y_UNIT = "m"  # Position is logged in meters in the vehicle state.
+VELOCITY_Y_UNIT = "m/s"  # Velocity components are logged in meters per second.
+HEADING_Y_UNIT = "degrees"  # Exported heading is converted from radians for readability.
+WHEEL_SPEED_Y_UNIT = (
+    "m/s"  # Wheel speed exports convert logged millimeters per second to meters per second.
+)
+COOLING_Y_UNIT = (
+    "L/min | bar"  # Cooling flow and pressure share one axis in the mechanical overview.
+)
+TEMPERATURE_Y_UNIT = "°C"  # Logged cooling and brake temperatures are Celsius values.
+SUSPENSION_Y_UNIT = "mm"  # Suspension travel exports scale logged meters to millimeters.
 
 
 class OfflinePlotter:
@@ -308,11 +321,15 @@ class OfflinePlotter:
             MOVEMENT_DASHBOARD_PLOT_INDICES,
             window_title="Movement",
         )
+        self._set_y_axis_unit_only(
+            layout.plots[MOVEMENT_POSITION_PLOT_INDEX],
+            POSITION_TRAJECTORY_Y_UNIT,
+        )
         self._configure_velocity_components_plot(layout.plots[MOVEMENT_VELOCITY_PLOT_INDEX])
+        self._set_y_axis_unit_only(layout.plots[MOVEMENT_HEADING_PLOT_INDEX], HEADING_Y_UNIT)
         wheel_speed_plot = layout.plots[MOVEMENT_WHEEL_SPEED_PLOT_INDEX]
         wheel_speed_plot.name = "Wheel Speed (m/s)"
-        wheel_speed_plot.y_axis.label = "Wheel Speed"
-        wheel_speed_plot.y_axis.unit = "m/s"
+        self._set_y_axis_unit_only(wheel_speed_plot, WHEEL_SPEED_Y_UNIT)
         wheel_speed_plot.y_axis.limits = (WHEEL_SPEED_MIN_MPS, WHEEL_SPEED_MAX_MPS)
         for series in wheel_speed_plot.series:
             series.scale = MILLIMETERS_PER_SECOND_TO_METERS_PER_SECOND_SCALE
@@ -320,10 +337,19 @@ class OfflinePlotter:
 
     def _build_mechanical_layout(self) -> PlotLayoutConfig:
         """Build the mechanical dashboard."""
-        return self._build_dashboard_layout(
+        layout = self._build_dashboard_layout(
             MECHANICAL_DASHBOARD_PLOT_INDICES,
             window_title="Mechanical",
         )
+        unit_by_plot_name = {
+            "Water Flow + Pressure": COOLING_Y_UNIT,
+            "Water Temp In/Out": TEMPERATURE_Y_UNIT,
+            "Suspensions": SUSPENSION_Y_UNIT,
+            "Brake Temps": TEMPERATURE_Y_UNIT,
+        }
+        for plot_config in layout.plots:
+            self._set_y_axis_unit_only(plot_config, unit_by_plot_name[plot_config.name])
+        return layout
 
     def _expand_dashboard_buffers(self, layout_config: PlotLayoutConfig) -> None:
         """Resize offline buffers so PDF exports include the full session."""
@@ -339,11 +365,20 @@ class OfflinePlotter:
             if series.variable in {"vx", "vy"}
         ]
         plot_config.y_axis = AxisConfig(
-            label="Velocity",
-            unit="m/s",
+            label="",
+            unit=VELOCITY_Y_UNIT,
             limits=VELOCITY_AXIS_LIMITS_MPS,
             auto_scale=False,
         )
+
+    @staticmethod
+    def _set_y_axis_unit_only(plot_config: PlotConfig, unit: str) -> None:
+        """Use only the unit string for split-dashboard Y axis labels."""
+        if plot_config.y_axis is None:
+            plot_config.y_axis = AxisConfig(label="", unit=unit)
+            return
+        plot_config.y_axis.label = ""
+        plot_config.y_axis.unit = unit
 
     def _build_dashboard_layout(
         self,

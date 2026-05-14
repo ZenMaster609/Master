@@ -15,12 +15,21 @@ if str(PACKAGE_ROOT) not in sys.path:
 
 from vehicle_plotter.plotting import offline_plotter as offline_plotter_module
 from vehicle_plotter.plotting.offline_plotter import (
+    COOLING_Y_UNIT,
+    HEADING_Y_UNIT,
     MILLIMETERS_PER_SECOND_TO_METERS_PER_SECOND_SCALE,
+    MOVEMENT_HEADING_PLOT_INDEX,
+    MOVEMENT_POSITION_PLOT_INDEX,
     MOVEMENT_VELOCITY_PLOT_INDEX,
     MOVEMENT_WHEEL_SPEED_PLOT_INDEX,
     OfflinePlotter,
+    POSITION_TRAJECTORY_Y_UNIT,
+    SUSPENSION_Y_UNIT,
+    TEMPERATURE_Y_UNIT,
+    VELOCITY_Y_UNIT,
     WHEEL_SPEED_MAX_MPS,
     WHEEL_SPEED_MIN_MPS,
+    WHEEL_SPEED_Y_UNIT,
 )
 from vehicle_plotter.plotting.plot_definitions import get_all_plot_definitions
 from vehicle_plotter.plotting.plot_config import VELOCITY_AXIS_LIMITS_MPS, get_all_plots, get_default_plots
@@ -44,17 +53,43 @@ def test_movement_layout_uses_velocity_components_with_export_limits(tmp_path):
     assert velocity_plot.name == "Velocity"
     assert len(velocity_plot.series) == EXPECTED_VELOCITY_SERIES_COUNT
     assert [series.variable for series in velocity_plot.series] == ["vx", "vy"]
-    assert velocity_plot.y_axis.label == "Velocity"
-    assert velocity_plot.y_axis.unit == "m/s"
+    assert velocity_plot.y_axis.label == ""
+    assert velocity_plot.y_axis.unit == VELOCITY_Y_UNIT
     assert velocity_plot.y_axis.limits == VELOCITY_AXIS_LIMITS_MPS
     assert velocity_plot.y_axis.auto_scale is False
 
+    position_plot = layout.plots[MOVEMENT_POSITION_PLOT_INDEX]
+    assert position_plot.y_axis.label == ""
+    assert position_plot.y_axis.unit == POSITION_TRAJECTORY_Y_UNIT
+
+    heading_plot = layout.plots[MOVEMENT_HEADING_PLOT_INDEX]
+    assert heading_plot.y_axis.label == ""
+    assert heading_plot.y_axis.unit == HEADING_Y_UNIT
+
     wheel_speed_plot = layout.plots[MOVEMENT_WHEEL_SPEED_PLOT_INDEX]
+    assert wheel_speed_plot.y_axis.label == ""
+    assert wheel_speed_plot.y_axis.unit == WHEEL_SPEED_Y_UNIT
     assert wheel_speed_plot.y_axis.limits == (WHEEL_SPEED_MIN_MPS, WHEEL_SPEED_MAX_MPS)
     assert all(
         series.scale == MILLIMETERS_PER_SECOND_TO_METERS_PER_SECOND_SCALE
         for series in wheel_speed_plot.series
     )
+
+
+def test_mechanical_layout_uses_unit_only_y_axis_labels(tmp_path):
+    plotter = OfflinePlotter(tmp_path)
+
+    layout = plotter._build_mechanical_layout()
+
+    expected_units_by_name = {
+        "Water Flow + Pressure": COOLING_Y_UNIT,
+        "Water Temp In/Out": TEMPERATURE_Y_UNIT,
+        "Suspensions": SUSPENSION_Y_UNIT,
+        "Brake Temps": TEMPERATURE_Y_UNIT,
+    }
+    for plot_config in layout.plots:
+        assert plot_config.y_axis.label == ""
+        assert plot_config.y_axis.unit == expected_units_by_name[plot_config.name]
 
 
 def test_live_dashboard_velocity_axis_is_permanently_clamped():
