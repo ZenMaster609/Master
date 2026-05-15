@@ -446,13 +446,28 @@ def test_track_bundle_supports_controller_none_without_controller_config_file():
         'planner',
         'controller',
         'speed_max_mps',
+        'lidar_pipeline',
+        'stereo_enabled',
+        'camera_range_m',
         'expected_prefix',
     ),
     [
-        ('smalltrack', 'midpoint', 'stanley', 7.0, 'small_7_mid_stan_2d'),
-        ('smalltrack', 'linetest', 'stanley', 7.0, 'small_7_line_stan_2d'),
-        ('acceleration', 'single_boundary', 'pure_pursuit', 6.17, 'acc_6_SB_pp_2d'),
-        ('skidpad', 'corridor', 'stanley', 7.0, 'skid_7_cor_stan_2d'),
+        (
+            'smalltrack', 'midpoint', 'stanley', 7.0, 'scan2d', 'false', '20.0',
+            'mono_20_small_7_mid_stan_2d',
+        ),
+        (
+            'smalltrack', 'linetest', 'stanley', 7.0, 'scan2d', 'true', '10',
+            'stereo_10_small_7_line_stan_2d',
+        ),
+        (
+            'acceleration', 'single_boundary', 'pure_pursuit', 6.17, 'scan2d', 'false', '7.5',
+            'mono_7p5_acc_6_SB_pp_2d',
+        ),
+        (
+            'skidpad', 'corridor', 'stanley', 7.0, 'pointcloud3d', 'true', '0.0',
+            'stereo_0_skid_7_cor_stan_3d',
+        ),
     ],
 )
 def test_run_id_prefix_uses_abbreviated_launch_selection(
@@ -460,10 +475,21 @@ def test_run_id_prefix_uses_abbreviated_launch_selection(
     planner: str,
     controller: str,
     speed_max_mps: float,
+    lidar_pipeline: str,
+    stereo_enabled: str,
+    camera_range_m: str,
     expected_prefix: str,
 ):
     assert (
-        full_sim_launch._abbreviated_run_id_prefix(track, planner, controller, speed_max_mps)
+        full_sim_launch._abbreviated_run_id_prefix(
+            track,
+            planner,
+            controller,
+            speed_max_mps,
+            lidar_pipeline,
+            stereo_enabled,
+            camera_range_m,
+        )
         == expected_prefix
     )
 

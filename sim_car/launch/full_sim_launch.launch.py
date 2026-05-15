@@ -87,6 +87,9 @@ RUN_ID_LIDAR_PIPELINE_ABBREVIATIONS = {
     'pointcloud3d': '3d',
 }
 DEFAULT_LIDAR_PIPELINE = 'scan2d'
+DEFAULT_CAMERA_RANGE_M = 0.0  # Zero means the camera does not override lidar by default.
+RUN_ID_CAMERA_RANGE_DECIMAL_PLACES = 3  # Millimeter precision avoids noisy float spellings in run IDs.
+RUN_ID_TRUE_STRINGS = {'true', '1', 'on', 'yes'}
 
 POINTCLOUD3D_LIDAR_PARAMS = {
     'max_detection_range_m': 25.0,
@@ -1470,19 +1473,31 @@ def _abbreviated_run_id_prefix(
     controller: str,
     speed_max_mps: float,
     lidar_pipeline: str,
+    stereo_enabled: str,
+    camera_range_m: str,
 ) -> str:
     normalized_track = str(track).strip().lower() or 'smalltrack'
     normalized_planner = str(planner).strip().lower() or 'midpoint'
     normalized_controller = str(controller).strip().lower() or 'stanley'
     normalized_lidar_pipeline = str(lidar_pipeline).strip().lower() or DEFAULT_LIDAR_PIPELINE
+    normalized_stereo_enabled = str(stereo_enabled).strip().lower()
+    camera_type = 'stereo' if normalized_stereo_enabled in RUN_ID_TRUE_STRINGS else 'mono'
 
     return '_'.join([
+        camera_type,
+        _format_camera_range_for_run_id(camera_range_m),
         RUN_ID_TRACK_ABBREVIATIONS.get(normalized_track, normalized_track),
         str(int(round(float(speed_max_mps)))),
         RUN_ID_PLANNER_ABBREVIATIONS.get(normalized_planner, normalized_planner),
         RUN_ID_CONTROLLER_ABBREVIATIONS.get(normalized_controller, normalized_controller),
         RUN_ID_LIDAR_PIPELINE_ABBREVIATIONS.get(normalized_lidar_pipeline, normalized_lidar_pipeline),
     ])
+
+
+def _format_camera_range_for_run_id(camera_range_m: str) -> str:
+    value_m = float(str(camera_range_m).strip() or DEFAULT_CAMERA_RANGE_M)
+    formatted = f'{value_m:.{RUN_ID_CAMERA_RANGE_DECIMAL_PLACES}f}'.rstrip('0').rstrip('.')
+    return formatted.replace('-', 'neg').replace('.', 'p')
 
 
 def _resolve_launch_selection(
@@ -1548,6 +1563,8 @@ def _configure_track_selection(context, *_args, **_kwargs):
         selection.controller,
         selection.speed_control['speed_max_mps'],
         LaunchConfiguration('lidar_pipeline').perform(context),
+        LaunchConfiguration('stereo').perform(context),
+        LaunchConfiguration('camera_range_m').perform(context),
     )
 
     planner_config_path = selection.planner_config if selection.planner == 'linetest' else _write_parameter_overlay({})

@@ -1,0 +1,13 @@
+spawn:
+  spawn_x: -12.6758
+  spawn_y: 10.3753
+  spawn_yaw: 0
+
+speed_control:
+  speed_min_mps: 1.0
+  speed_max_mps: 7.0
+  curvature_speed_gain: 4.0
+  lowpass_speed_alpha: 0.15
+
+lap_tracking:
+  auto_suspend_after_laps: 5

@@ -1,0 +1,44 @@
+cone_memory_node:
+  ros__parameters:
+    frames:
+      odom_frame: "odom"
+      base_frame: "front_axle"
+      tf_timeout_s: 0.03
+
+    vehicle:
+      wheelbase_m: 1.65
+
+    memory:
+      max_range_m: 25.0
+      behind_drop_m: 8.0
+      min_seen_count: 3
+      confirm_hits: 3
+      publish_stale_tracks: true
+      stale_planner_ttl_sec: 1.5
+
+    fusion:
+      camera_range_m: 10.0
+      prefer_lidar_if_camera_missing_far: true
+      allow_camera_fallback_near: false
+
+    runtime:
+      publish_rate_hz: 60.0
+
+    debug:
+      enable_id_text: false
+      enable_tentative_viz: false
+      enable_raw_debug_viz: false
+      believed_track_viz_show_center: false
+      believed_track_viz_show_cones: false
+
+    permanent_memory:
+      enabled: false
+
+    topics:
+      lidar_cones_topic: "/sim/lidar/perception/cones_3d"
+      camera_cones_topic: "/sim/stereo/perception/cones_3d"
+      tracked_cones_topic: "/tracked_cones"
+      viz_topic: "/local_cone_map_viz"
+      believed_track_viz_topic: "/cone_memory/believed_track_viz"
+      run_session_topic: "/run_session"
+      odom_topic: "/sim/odom"

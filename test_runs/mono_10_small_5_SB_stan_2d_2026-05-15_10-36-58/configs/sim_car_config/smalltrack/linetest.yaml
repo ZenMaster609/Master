@@ -1,0 +1,20 @@
+linetest_planner_node:
+  ros__parameters:
+    topics:
+      centerline_topic: /planned_centerline
+      cmd_topic: /cmd
+      brake_cmd_topic: /sim/brake_cmd
+      odom_topic: /sim/odom
+      gt_track_topic: /ground_truth/track
+    runtime:
+      publish_rate_hz: 60.0
+    diagnostics:
+      topic: /linetest_planner/diagnostics
+      publish_control_debug: true
+    path:
+      source: ground_truth_midline
+      gt_midline_resolution_m: 0.5
+      gt_control_horizon_m: 30.0
+    parking:
+      brake_activation_distance_m: 1.0
+      brake_command: 1.0
