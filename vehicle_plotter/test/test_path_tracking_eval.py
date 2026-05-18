@@ -404,6 +404,107 @@ def test_track_metrics_report_tolerates_missing_optional_files(tmp_path):
     assert records[0]['status_counts'] == {}
 
 
+def test_track_metrics_report_recomputes_skidpad_gt_metrics_from_valid_rows(tmp_path):
+    session_path = _write_track_metrics_fixture_run(
+        tmp_path,
+        'skid_metrics_fix_2026-05-16_10-00-00',
+        track='skidpad',
+    )
+    csv_path = session_path / 'logs' / 'path_tracking_eval.csv'
+    summary_path = session_path / 'logs' / 'path_tracking_eval_summary.json'
+    summary_path.write_text(
+        json.dumps({
+            'sample_count': 4.0,
+            'valid_sample_count': 3.0,
+            'duration_sec': 3.0,
+            'planner_reference_vs_gt_cte_rms_m': 9.0,
+            'planner_vs_gt_cte_rms_m': 9.0,
+            'front_axle_vs_gt_cte_rms_m': 9.0,
+            'front_axle_vs_planner_cte_rms_m': 9.0,
+            'status_count::ok': 3.0,
+            'status_count::waiting_for_planner_path': 1.0,
+        }),
+        encoding='utf-8',
+    )
+
+    with open(csv_path, 'w', newline='', encoding='utf-8') as handle:
+        writer = csv.DictWriter(
+            handle,
+            fieldnames=[
+                'timestamp_sec',
+                'sample_valid_flag',
+                'status',
+                'resolved_control_frame',
+                'body_center_x_m',
+                'body_center_y_m',
+                'front_axle_x_m',
+                'front_axle_y_m',
+                'planner_reference_x_m',
+                'planner_reference_y_m',
+                'body_center_vs_planner_cte_m',
+                'front_axle_vs_planner_cte_m',
+                'controller_vs_planner_cte_m',
+            ],
+        )
+        writer.writeheader()
+        for idx, front_axle_error_m in enumerate((0.10, 0.20, 0.30)):
+            writer.writerow({
+                'timestamp_sec': float(idx),
+                'sample_valid_flag': 1.0,
+                'status': 'ok',
+                'resolved_control_frame': 'front_axle',
+                'body_center_x_m': 0.0,
+                'body_center_y_m': -10.0 + idx,
+                'front_axle_x_m': 0.0,
+                'front_axle_y_m': -10.0 + idx,
+                'planner_reference_x_m': 0.0,
+                'planner_reference_y_m': -10.0 + idx,
+                'body_center_vs_planner_cte_m': 0.40,
+                'front_axle_vs_planner_cte_m': front_axle_error_m,
+                'controller_vs_planner_cte_m': 1.50,
+            })
+        writer.writerow({
+            'timestamp_sec': 4.0,
+            'sample_valid_flag': 0.0,
+            'status': 'waiting_for_planner_path',
+            'resolved_control_frame': 'front_axle',
+            'body_center_x_m': 20.0,
+            'body_center_y_m': 20.0,
+            'front_axle_x_m': 20.0,
+            'front_axle_y_m': 20.0,
+            'planner_reference_x_m': 20.0,
+            'planner_reference_y_m': 20.0,
+            'body_center_vs_planner_cte_m': 50.0,
+            'front_axle_vs_planner_cte_m': 50.0,
+            'controller_vs_planner_cte_m': 50.0,
+        })
+
+    record = build_track_metrics_record(
+        session_path=session_path,
+        completed_laps=4,
+        lap_target=4,
+        overlay_average_distances={
+            'planner_vs_gt_avg_dist_m': 7.0,
+            'controller_vs_gt_avg_dist_m': 8.0,
+            'controller_vs_planner_avg_dist_m': 9.0,
+        },
+        avg_track_width_m=18.0,
+    )
+
+    assert record['sample_count'] == pytest.approx(4.0)
+    assert record['valid_sample_count'] == pytest.approx(3.0)
+    assert record['planner_vs_gt_avg_dist_m'] == pytest.approx(0.0)
+    assert record['front_axle_vs_gt_avg_dist_m'] == pytest.approx(0.0)
+    assert record['planner_reference_vs_gt_cte_rms_m'] == pytest.approx(0.0)
+    assert record['planner_vs_gt_cte_rms_m'] == pytest.approx(0.0)
+    assert record['front_axle_vs_gt_cte_rms_m'] == pytest.approx(0.0)
+    assert record['front_axle_vs_planner_avg_dist_m'] == pytest.approx(0.2)
+    assert record['front_axle_vs_planner_cte_rms_m'] == pytest.approx(np.sqrt((0.01 + 0.04 + 0.09) / 3.0))
+    assert record['controller_vs_planner_cte_rms_m'] == pytest.approx(
+        np.sqrt((0.01 + 0.04 + 0.09) / 3.0)
+    )
+
+
 def test_analyze_path_tracking_csv_and_plot_smoke(tmp_path):
     csv_path = tmp_path / 'path_tracking_eval.csv'
 

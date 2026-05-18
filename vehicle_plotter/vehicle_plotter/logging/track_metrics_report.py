@@ -8,8 +8,47 @@ import math
 from pathlib import Path
 from typing import Any
 
+import numpy as np
 import yaml
 
+from .path_tracking_eval_plots import (
+    _point_to_polyline_set_distance_m,
+    _read_rows,
+    build_skidpad_gt_overlay_segments,
+)
+
+
+TRACK_NAME_SKIDPAD = "skidpad"
+STATUS_OK = "ok"
+# Rows with the valid flag set to 1.0 are treated as evaluation-ready samples.
+VALID_SAMPLE_FLAG_MIN = 0.5
+# P95 is the thesis-facing tail metric already used elsewhere in the evaluator.
+PERCENTILE_P95 = 95.0
+
+PATH_TRACKING_ROW_COLUMNS = {
+    "timestamp_sec",
+    "sample_valid_flag",
+    "status",
+    "resolved_control_frame",
+    "vehicle_x_m",
+    "vehicle_y_m",
+    "body_center_x_m",
+    "body_center_y_m",
+    "front_axle_x_m",
+    "front_axle_y_m",
+    "planner_reference_x_m",
+    "planner_reference_y_m",
+    "planner_reference_vs_gt_cte_m",
+    "body_center_vs_planner_cte_m",
+    "front_axle_vs_planner_cte_m",
+    "controller_vs_planner_cte_m",
+    "body_center_vs_gt_cte_m",
+    "front_axle_vs_gt_cte_m",
+    "controller_vs_gt_cte_m",
+    "planner_vs_gt_cte_rms_m",
+    "planner_vs_gt_cte_p95_m",
+    "planner_vs_gt_cte_max_m",
+}
 
 SUMMARY_METRIC_KEYS = [
     "sample_count",
@@ -175,6 +214,11 @@ def build_track_metrics_record(
         record[key] = _float_or_none(summary.get(key))
     for status, column in STATUS_COUNT_COLUMNS.items():
         record[column] = _int_or_none(status_counts.get(status))
+    _apply_track_specific_metric_overrides(
+        record=record,
+        session_path=session_path,
+        track=track,
+    )
 
     return record
 
@@ -316,6 +360,161 @@ def _load_cone_memory_float(session_path: Path, key: str) -> float | None:
         if isinstance(ros_params, dict):
             return _float_or_none(ros_params.get(key))
     return None
+
+
+def _apply_track_specific_metric_overrides(
+    *,
+    record: dict[str, Any],
+    session_path: Path,
+    track: str,
+) -> None:
+    if str(track).strip().lower() != TRACK_NAME_SKIDPAD:
+        return
+    rows = _load_path_tracking_rows(session_path)
+    valid_rows = _valid_evaluation_rows(rows)
+    if not valid_rows:
+        return
+    _apply_skidpad_metric_overrides(record=record, valid_rows=valid_rows, sample_count=len(rows))
+
+
+def _load_path_tracking_rows(session_path: Path) -> list[dict[str, float | str]]:
+    csv_path = session_path / "logs" / "path_tracking_eval.csv"
+    return _read_rows(csv_path, PATH_TRACKING_ROW_COLUMNS)
+
+
+def _valid_evaluation_rows(rows: list[dict[str, float | str]]) -> list[dict[str, float | str]]:
+    return [row for row in rows if _is_valid_evaluation_row(row)]
+
+
+def _is_valid_evaluation_row(row: dict[str, float | str]) -> bool:
+    sample_valid_flag = _float_or_none(row.get("sample_valid_flag"))
+    status = str(row.get("status") or "").strip().lower()
+    return bool(sample_valid_flag is not None and sample_valid_flag > VALID_SAMPLE_FLAG_MIN and status == STATUS_OK)
+
+
+def _apply_skidpad_metric_overrides(
+    *,
+    record: dict[str, Any],
+    valid_rows: list[dict[str, float | str]],
+    sample_count: int,
+) -> None:
+    gt_segments_xy = build_skidpad_gt_overlay_segments()
+    planner_vs_gt_stats = _point_distance_stats(valid_rows, gt_segments_xy, _planner_reference_point_xy)
+    body_center_vs_gt_stats = _point_distance_stats(valid_rows, gt_segments_xy, _body_center_point_xy)
+    front_axle_vs_gt_stats = _point_distance_stats(valid_rows, gt_segments_xy, _front_axle_point_xy)
+    controller_vs_gt_stats = _point_distance_stats(valid_rows, gt_segments_xy, _controller_point_xy)
+    body_center_vs_planner_stats = _absolute_series_stats(valid_rows, _body_center_vs_planner_error_m)
+    front_axle_vs_planner_stats = _absolute_series_stats(valid_rows, _front_axle_vs_planner_error_m)
+    controller_vs_planner_stats = _absolute_series_stats(valid_rows, _controller_vs_planner_error_m)
+    record["sample_count"] = float(sample_count)
+    record["valid_sample_count"] = float(len(valid_rows))
+    record["planner_vs_gt_avg_dist_m"] = planner_vs_gt_stats["mean_m"]
+    record["front_axle_vs_gt_avg_dist_m"] = front_axle_vs_gt_stats["mean_m"]
+    record["front_axle_vs_planner_avg_dist_m"] = front_axle_vs_planner_stats["mean_m"]
+    _apply_stats_to_record(record, "planner_reference_vs_gt_cte", planner_vs_gt_stats)
+    _apply_stats_to_record(record, "planner_vs_gt_cte", planner_vs_gt_stats)
+    _apply_stats_to_record(record, "body_center_vs_gt_cte", body_center_vs_gt_stats)
+    _apply_stats_to_record(record, "front_axle_vs_gt_cte", front_axle_vs_gt_stats)
+    _apply_stats_to_record(record, "controller_vs_gt_cte", controller_vs_gt_stats)
+    _apply_stats_to_record(record, "body_center_vs_planner_cte", body_center_vs_planner_stats)
+    _apply_stats_to_record(record, "front_axle_vs_planner_cte", front_axle_vs_planner_stats)
+    _apply_stats_to_record(record, "controller_vs_planner_cte", controller_vs_planner_stats)
+
+
+def _apply_stats_to_record(record: dict[str, Any], metric_prefix: str, stats: dict[str, float | None]) -> None:
+    record[f"{metric_prefix}_rms_m"] = stats["rms_m"]
+    record[f"{metric_prefix}_p95_m"] = stats["p95_m"]
+    record[f"{metric_prefix}_max_m"] = stats["max_m"]
+
+
+def _point_distance_stats(
+    rows: list[dict[str, float | str]],
+    gt_segments_xy: list[np.ndarray],
+    point_getter,
+) -> dict[str, float | None]:
+    distances_m = [
+        _distance_to_polyline_set_m(point_getter(row), gt_segments_xy)
+        for row in rows
+    ]
+    return _finite_distance_stats(distances_m)
+
+
+def _absolute_series_stats(
+    rows: list[dict[str, float | str]],
+    value_getter,
+) -> dict[str, float | None]:
+    values_m = [value_getter(row) for row in rows]
+    return _finite_distance_stats(values_m)
+
+
+def _finite_distance_stats(values_m: list[float]) -> dict[str, float | None]:
+    finite_values_m = np.asarray(
+        [abs(float(value_m)) for value_m in values_m if value_m is not None and math.isfinite(float(value_m))],
+        dtype=np.float64,
+    )
+    if finite_values_m.size == 0:
+        return {"mean_m": None, "rms_m": None, "p95_m": None, "max_m": None}
+    return {
+        "mean_m": float(np.mean(finite_values_m)),
+        "rms_m": float(math.sqrt(float(np.mean(np.square(finite_values_m))))),
+        "p95_m": float(np.percentile(finite_values_m, PERCENTILE_P95)),
+        "max_m": float(np.max(finite_values_m)),
+    }
+
+
+def _distance_to_polyline_set_m(point_xy: np.ndarray | None, gt_segments_xy: list[np.ndarray]) -> float | None:
+    if point_xy is None:
+        return None
+    distance_m = _point_to_polyline_set_distance_m(point_xy, gt_segments_xy)
+    return distance_m if math.isfinite(distance_m) else None
+
+
+def _planner_reference_point_xy(row: dict[str, float | str]) -> np.ndarray | None:
+    return _row_point_xy(row, "planner_reference_x_m", "planner_reference_y_m")
+
+
+def _body_center_point_xy(row: dict[str, float | str]) -> np.ndarray | None:
+    return _row_point_xy(row, "body_center_x_m", "body_center_y_m")
+
+
+def _front_axle_point_xy(row: dict[str, float | str]) -> np.ndarray | None:
+    return _row_point_xy(row, "front_axle_x_m", "front_axle_y_m")
+
+
+def _controller_point_xy(row: dict[str, float | str]) -> np.ndarray | None:
+    if _resolved_control_frame_name(row) == "front_axle":
+        front_axle_xy = _front_axle_point_xy(row)
+        if front_axle_xy is not None:
+            return front_axle_xy
+    return _body_center_point_xy(row)
+
+
+def _row_point_xy(row: dict[str, float | str], x_key: str, y_key: str) -> np.ndarray | None:
+    x_m = _float_or_none(row.get(x_key))
+    y_m = _float_or_none(row.get(y_key))
+    if x_m is None or y_m is None:
+        return None
+    return np.asarray([x_m, y_m], dtype=np.float64)
+
+
+def _body_center_vs_planner_error_m(row: dict[str, float | str]) -> float | None:
+    return _float_or_none(row.get("body_center_vs_planner_cte_m"))
+
+
+def _front_axle_vs_planner_error_m(row: dict[str, float | str]) -> float | None:
+    return _float_or_none(row.get("front_axle_vs_planner_cte_m"))
+
+
+def _controller_vs_planner_error_m(row: dict[str, float | str]) -> float | None:
+    if _resolved_control_frame_name(row) == "front_axle":
+        front_axle_error_m = _front_axle_vs_planner_error_m(row)
+        if front_axle_error_m is not None:
+            return front_axle_error_m
+    return _float_or_none(row.get("controller_vs_planner_cte_m"))
+
+
+def _resolved_control_frame_name(row: dict[str, float | str]) -> str:
+    return str(row.get("resolved_control_frame") or "").strip().lower()
 
 
 def _extract_status_counts(summary: dict[str, Any]) -> dict[str, int]:
