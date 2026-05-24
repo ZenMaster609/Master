@@ -10,11 +10,11 @@ Raw topics are idealized sensor values. Measured topics are the same values afte
 
 The full sim launch has three relevant switches:
 
-- `sensor_nodes:=true`: start the raw virtual sensor nodes.
-- `measure:=true`: start `measurement_node` and make the stack use `/sim/raw` inputs where applicable.
-- `sensor_pipeline:=true`: enable both raw sensor nodes and measurement together, and start the vehicle plotter state dashboard.
+- `sensor_pipeline:=true`: start raw virtual sensor nodes, `measurement_node`, and the vehicle plotter state publisher/dashboard.
+- `measure:=true`: start `measurement_node` and make perception/LiDAR use `/sim/raw` topic prefixes without starting the raw sensor-node include.
+- default launch: the autonomy, perception, cone, planning, session, and artifact logger path can run without vehicle-state dashboard logging.
 
-`sensor_pipeline:=true` is the normal full path. It implies the raw sensor nodes and measurement layer, and it also makes `plotter_node` publish `/vehicle_plotter/state`. `logging:=true` can also enable the state dashboard/logging path, but it does not by itself start the raw sensor nodes or `measurement_node`.
+`sensor_pipeline:=true` is the normal measured-sensor path. It implies the raw sensor nodes and measurement layer, and it also makes `plotter_node` publish `/vehicle_plotter/state`.
 
 In normal sensor-pipeline runs, raw nodes publish under `/sim/raw/...`, `measurement_node` republishes under `/sim/...`, and downstream logging/plotting reads the measured topics.
 
@@ -136,7 +136,7 @@ With `sensor_pipeline:=true`:
 4. `plotter_node` publishes `/vehicle_plotter/state`.
 5. `logger_node` writes enabled run artifacts.
 
-The full launch always starts the main `logger_node` for diagnostics and path evaluation, but vehicle-state log chunks require `/vehicle_plotter/state`, which is produced by `plotter_node` when `sensor_pipeline:=true` or `logging:=true`.
+The full launch always starts the main `logger_node` for diagnostics and path evaluation, but vehicle-state log chunks require `/vehicle_plotter/state`, which is produced by `plotter_node` only when `sensor_pipeline:=true` in the current full-sim launch.
 
 This split is useful for debugging:
 

@@ -1,8 +1,8 @@
 # 2D LiDAR
 
-The LiDAR pipeline consumes `sensor_msgs/LaserScan`, extracts cone-like scan clusters, and publishes planner-facing `ConeDetectionArray` messages with unknown cone color.
+The 2D scan LiDAR pipeline consumes `sensor_msgs/LaserScan`, extracts cone-like scan clusters, and publishes planner-facing `ConeDetectionArray` messages with unknown cone color.
 
-This is the only LiDAR path in the current stack.
+This page covers `lidar_pipeline:=scan2d`. The current launch also supports `lidar_pipeline:=pointcloud3d`, implemented by `pointcloud_lidar_node`.
 
 ## Runtime Flow
 

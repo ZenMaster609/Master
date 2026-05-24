@@ -120,7 +120,7 @@ All three cores share the following from `tracked_cone_planner_geometry.py`:
 - Pair gates: `min_pair_width_m` (2.2 m), `max_pair_width_m` (5.5 m), `max_width_jump_m` (0.8 m), `min_pair_count` (3), `pair_reassignment_margin` (0.25), `pair_inward_projection_tolerance_m` (0.15), `pairing_tangent_neighbor_count` (4), `enforce_opposite_color_pairing`, `enforce_geometry_pairing_gate`
 - Chain ordering: `midpoint_order_reference_handoff_m` (6 m), `midpoint_order_history_size` (3), `midpoint_order_backtrack_tolerance_m` (0.35 m)
 - Validation: `min_path_points` (4), `min_forward_extent_m` (2.0 m), `max_near_field_lateral_jump_m` (0.6 m), `max_near_field_lateral_jump_m_sparse_pairs` (0.9 m), `max_start_heading_error_rad` (1.0 rad), `max_heading_delta_rad` (0.75 rad)
-- Inherited from `BasePlannerConfig`: `max_cone_range_m`, `behind_drop_m`, `min_confidence`, `path_resolution_m`, `max_path_length_m`, `smoothing_window`, `initial_width_m`, `min_width_m`, `max_width_m`, `width_filter_alpha`, `max_width_delta_per_update_m`, `jump_check_horizon_m`
+- Inherited from `BasePlannerConfig`: `max_cone_range_m`, `behind_drop_m`, `min_confidence`, `path_resolution_m`, `max_path_length_m`, `initial_width_m`, `min_width_m`, `max_width_m`, `width_filter_alpha`, `max_width_delta_per_update_m`, `jump_check_horizon_m`. `smoothing_window` is defined on `MidpointPlannerConfig`.
 
 **Internal dataclasses:**
 - `_BoundaryIndices`: `left`, `right`, `unknown` index arrays after cone color separation.
@@ -132,7 +132,7 @@ All three cores share the following from `tracked_cone_planner_geometry.py`:
 
 **Key functions:**
 - `compute_midpoint_centerline(frame, config, prior)` → `MidpointPlannerResult`: top-level entry point. Calls filtering → chain building → pairing → ordering → validation.
-- `_pair_boundary_chains(cones, chains, config, prior_pairs)`: the main pairing loop (~275 lines). For each left-side anchor, generates real and unknown candidate partners, scores them, and calls `_select_boundary_pairs`.
+- `_pair_boundary_chains(...)`: resolves pairing indices, generates real and unknown candidate partners, scores them, and calls `_select_boundary_pairs`.
 - `_real_pair_candidate(anchor, candidate_idx, cones, config, expected_width)` → `_PairCandidate | None`: checks width in range, inward projection, raw color compatibility, midpoint span.
 - `_unknown_pair_candidate(anchor, candidate_idx, cones, config, expected_width)` → `_PairCandidate | None`: compares unknown partner to expected location from inward normal and width using `unknown_partner_check`.
 - `_pair_candidate_selection_key(candidate, anchor_local)` → `tuple`: sorts candidates by cost, unknown penalty, width, range, forward progress, lateral magnitude, track IDs. Deterministic tie-breaking.
@@ -192,7 +192,7 @@ Same shape as `MidpointPlannerResult` plus `active_boundary_side` string (which 
 - `_BoundaryChains`: `left` (`BoundaryChainData`), `right` (`BoundaryChainData`). No unknown_indices; corridor does not do unknown completion.
 - `_CorridorCandidate`: full corridor candidate — `left_local`, `right_local`, `widths_m`, `anchors_local`, `centerline_local`, `width_std_m`, `width_range_m`, `centerline_curvature_abs_max_1pm`, `centerline_heading_delta_max_rad`, `prior_lateral_mean_m`, `prior_lateral_max_m`, `prior_heading_delta_rad`.
 - `_CorridorCandidateParts`: valid-slice geometry — `left_valid`, `right_valid`, `widths_valid`, `anchors_local`, `centerline_local`.
-- `_BuiltCorridor`: global-frame visualization geometry — `anchors_global`, `widths_m`, `left_global`, `right_global`, `anchors_global`, `centerline_global`, `rungs_global`.
+- `_BuiltCorridor`: global-frame visualization geometry — `anchors_global`, `widths_m`, `left_global`, `right_global`, `centerline_global`, `rungs_global`.
 - `_PathDeltaMetrics`: like `NearFieldMetrics` but adds `heading_delta_rad`. Intentionally kept as a private type because `heading_delta_rad` is used in prior-alignment scoring inside corridor and is not needed by midpoint or single-boundary.
 - `_CorridorPathMetrics`: assembled path metrics bundle — `centerline`, `centerline_local`, `prevalidation_centerline`, `near_field` (`_PathDeltaMetrics`), `heading_delta_max_rad`, `curvature_max_1pm`, `seed_distance_m`.
 - `_CorridorInputs`: filtered cones (`FilteredCones`) + chains (`_BoundaryChains`) + `reject_counts`. Passed to the main corridor construction function.
@@ -231,9 +231,9 @@ Same common fields as the other planners plus corridor-specific fields: `prevali
 
 ## Planner Node Classes
 
-- `MidpointPlannerNode` in `tracked_cone_planner_node.py`: declares midpoint-specific filtering, pairing, width, centerline, validation, and debug parameters. Its `_on_timer` builds the planning frame, calls `compute_midpoint_centerline`, updates pair memory and width estimate, updates midline memory, runs control, and publishes outputs.
-- `SingleBoundaryPlannerNode` in `tracked_cone_planner_node.py`: declares one-boundary, pairing, offset, width, centerline, and validation parameters. Its `_on_timer` calls `compute_single_boundary_centerline`, manages one-boundary pair memory, selects fresh or held paths, and publishes debug offset geometry.
-- `CorridorPlannerNode` in `tracked_cone_planner_node.py`: declares corridor width, resampling, membership, fitting, pair-memory, and validation parameters. Its `_on_timer` calls `compute_corridor_centerline`, merges live and remembered corridor pair geometry, selects the publishable path, and publishes corridor audit markers.
+- `MidpointPlannerNode` in `tracked_cone_planner_node.py`: declares midpoint-specific filtering, pairing, width, centerline, validation, and debug parameters. Its `_on_timer` builds the planning frame, calls `compute_midpoint_centerline`, updates pair memory and width estimate, updates midline memory, runs control through `_run_controller_and_state` and `_dispatch_controller`, and publishes outputs.
+- `SingleBoundaryPlannerNode` in `tracked_cone_planner_node.py`: declares one-boundary, pairing, offset, width, centerline, and validation parameters. Its `_on_timer` calls `compute_single_boundary_centerline`, manages one-boundary pair memory, selects fresh or held paths, runs control through `_run_controller` and `_dispatch_controller`, and publishes debug offset geometry.
+- `CorridorPlannerNode` in `tracked_cone_planner_node.py`: declares corridor width, resampling, membership, fitting, pair-memory, and validation parameters. Its `_on_timer` calls `compute_corridor_centerline`, merges live and remembered corridor pair geometry, selects the publishable path, runs control through `_run_controller` and `_dispatch_controller`, and publishes corridor audit markers.
 - `main_midpoint`, `main_single_boundary`, and `main_corridor` in `tracked_cone_planner_node.py`: console-script entry points used by the installed executables.
 
 ## State, Diagnostics, And Visualization

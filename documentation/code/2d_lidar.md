@@ -1,11 +1,12 @@
 # 2D LiDAR Code Map
 
-This page maps the `documentation/concepts/2d_lidar.md` behavior to the scan-processing symbols that implement it.
+This page maps the `documentation/concepts/2d_lidar.md` behavior to the scan-processing symbols that implement `lidar_pipeline:=scan2d`.
 
 ## Primary Files
 
 - `sim_car/sim_car/lidar/lidar_node.py`
 - `sim_car/sim_car/lidar/clustering.py`
+- `sim_car/sim_car/lidar/pointcloud_lidar_node.py`
 - `sim_car/launch/full_sim_launch.launch.py`
 
 ## Function Map
@@ -50,4 +51,4 @@ This page maps the `documentation/concepts/2d_lidar.md` behavior to the scan-pro
 ## Related Entry Points
 
 - `generate_launch_description` in `sim_car/launch/full_sim_launch.launch.py`: launches the scan-based LiDAR node.
-- `_lidar_enabled_condition` in `sim_car/launch/full_sim_launch.launch.py`: enables the LiDAR node when LiDAR or cone memory is enabled.
+- `_lidar_pipeline_enabled_condition` in `sim_car/launch/full_sim_launch.launch.py`: enables `lidar_node` for `lidar_pipeline:=scan2d` and `pointcloud_lidar_node` for `lidar_pipeline:=pointcloud3d` when LiDAR or cone memory is enabled.

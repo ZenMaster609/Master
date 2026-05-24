@@ -13,12 +13,13 @@ At configure time the plugin:
 1. Initializes a ROS 2 node and publisher.
 2. Enumerates all entities in the Gazebo world that match cone name patterns (`blue_cone_*`, `yellow_cone_*`, `orange_cone_*`, `big_cone_*`).
 3. Loads the confusion matrix from `config/cone_confusion_matrix.yaml` if present.
+4. Reads SDF options such as `publishTrack`, `groundTruthTrackTopicName`, `visibleConesTopicName`, and the legacy `groundTruthConesTopicName`.
 
 At each simulation step the plugin:
 
 1. Reads the current world pose of each cone entity.
-2. Optionally applies the cone confusion matrix to simulate misclassification.
-3. Assembles the result into a `ConeArrayWithCovariance` and publishes it.
+2. Publishes the full map-frame track on `/ground_truth/track` when `publishTrack` is enabled.
+3. Filters cones by the simulated LiDAR-visible region, optionally applies the cone confusion matrix to simulate misclassification, and publishes visible cones on `/ground_truth/cones`.
 
 ## Cone Color Detection
 
@@ -26,7 +27,7 @@ Cone color is determined from the entity name prefix. The naming convention in t
 
 ## Cone Confusion Matrix
 
-The confusion matrix (`config/cone_confusion_matrix.yaml`) is a probability table that maps each true cone color to a distribution over output colors. This allows the plugin to simulate realistic sensor color errors, such as occasionally misclassifying a blue cone as yellow or unknown.
+The confusion matrix (`config/cone_confusion_matrix.yaml`) is a probability table that maps each true cone color to a distribution over output colors. This allows the plugin to simulate realistic sensor color errors, such as occasionally misclassifying a blue cone as yellow, unknown, or undetected.
 
 The current configuration is an identity matrix, meaning all cones are published with their true color. Non-identity values can be set to test perception robustness under color noise.
 
@@ -37,7 +38,9 @@ blue:
   blue: 1.0
   yellow: 0.0
   orange: 0.0
-  unknown: 0.0
+  big_orange: 0.0
+  unknown_color: 0.0
+  undetected: 0.0
 yellow:
   blue: 0.0
   yellow: 1.0
@@ -46,7 +49,10 @@ yellow:
 
 ## Output
 
-The plugin publishes to a configurable topic (default: `/ground_truth/cones`) as `eufs_msgs/ConeArrayWithCovariance`. The cone evaluator node (`cone_evaluator_node`) subscribes to this topic to score perception predictions.
+The plugin publishes `eufs_msgs/ConeArrayWithCovariance` on two configurable topics:
+
+- `/ground_truth/track`: the full map-frame track, used by path tracking evaluation and ground-truth midline helpers.
+- `/ground_truth/cones`: visible cones around the vehicle, used by `cone_evaluator_node` to score perception predictions.
 
 ## Useful Commands
 
@@ -65,5 +71,5 @@ cd ~/ros2_ws && source install/setup.bash
 Inspect ground-truth cone output during a simulation run:
 
 ```bash
-ros2 topic echo /ground_truth/cones
+cd ~/ros2_ws && ros2 topic echo /ground_truth/cones
 ```

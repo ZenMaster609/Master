@@ -20,9 +20,9 @@ Session subdirectories:
 - `plots/`: generated plot artifacts
 - `configs/`: copied YAML configs and launch-parameter snapshots
 
-`full_sim_launch.launch.py` passes a compact run-id prefix built from track, planner, controller, and LiDAR/cone-memory selections. Example:
+`full_sim_launch.launch.py` passes a compact run-id prefix built from camera mode, camera range, track, speed limit, planner, controller, and LiDAR pipeline. Example:
 
-`small_mid_pp_lidar_mem_YYYY-MM-DD_HH-MM-SS`
+`mono_0_small_10_mid_pp_2d_YYYY-MM-DD_HH-MM-SS`
 
 ### `plotter_node`
 
@@ -32,7 +32,7 @@ On shutdown it can export:
 
 `plots/virtual_sensors.png`
 
-In the full sim launch, `plotter_node` starts when state logging/dashboard support is enabled. That happens when either `sensor_pipeline:=true` or `logging:=true`.
+In the full sim launch, `plotter_node` starts when `sensor_pipeline:=true`.
 
 ### `logger_node`
 
@@ -40,8 +40,8 @@ Writes run artifacts. In `full_sim_launch.launch.py`, the direct `logger_node` i
 
 State logging is separate from the logger process:
 
-- `sensor_pipeline:=true` or `logging:=true` enables `/vehicle_plotter/state` subscription and vehicle-state chunks.
-- `path_tracking_eval:=true` enables path-vs-ground-truth evaluation and is true by default.
+- `sensor_pipeline:=true` enables `/vehicle_plotter/state` publication and vehicle-state chunks.
+- Path-vs-ground-truth evaluation is enabled by the direct full-sim `logger_node`.
 
 The logger waits for `/run_session` when available. If no session arrives before timeout, it creates its own session.
 
@@ -49,13 +49,12 @@ The refactored logger keeps parameter declaration/loading in `logging/log_config
 
 ## Full Sim Launch Behavior
 
-`sim_car/launch/full_sim_launch.launch.py` includes `vehicle_plotter/launch/plotter.launch.py` every run. The include starts the session manager and can start `plotter_node`.
+`sim_car/launch/full_sim_launch.launch.py` includes `vehicle_plotter/launch/plotter.launch.py` every run with `enable_log=false`. The include starts the session manager and starts `plotter_node` only when `sensor_pipeline:=true`; full sim launches its main `logger_node` separately.
 
 Important launch flags:
 
 - `sensor_pipeline:=true`: starts raw sensor nodes, `measurement_node`, and `plotter_node`.
-- `logging:=true`: enables state logging/dashboard support even without the full sensor pipeline.
-- `path_tracking_eval:=true`: writes path tracking evaluation artifacts; this is the current full-sim default.
+- path tracking evaluation artifacts are written by the direct full-sim logger.
 - off-track autostop uses planner diagnostics and can stop long runs cleanly when no usable cones remain.
 
 The old standalone live cone RMSE and controller-diagnostics windows are not current console scripts. Cone RMSE and path tracking evaluation are now logger outputs and generated plots.
@@ -99,9 +98,9 @@ Cone RMSE logging can write source-specific files:
 - `logs/cone_range_rmse_samples_mono.csv`
 - `logs/cone_range_rmse_samples_stereo.csv`
 - `logs/cone_range_rmse_samples_lidar.csv`
-- `plots/cone_range_rmse_mono.png`
-- `plots/cone_range_rmse_stereo.png`
-- `plots/cone_range_rmse_lidar.png`
+- `plots/cone_range_rmse_mono.pdf`
+- `plots/cone_range_rmse_stereo.pdf`
+- `plots/cone_range_rmse_lidar.pdf`
 
 Only sources with received samples produce files.
 
@@ -135,16 +134,10 @@ Launch the full measured sensor dashboard path:
 cd ~/ros2_ws && ros2 launch sim_car full_sim_launch.launch.py sensor_pipeline:=true
 ```
 
-Launch with state logging:
+Launch with the default artifact logger and path tracking evaluation:
 
 ```bash
-cd ~/ros2_ws && ros2 launch sim_car full_sim_launch.launch.py logging:=true
-```
-
-Launch with path tracking evaluation:
-
-```bash
-cd ~/ros2_ws && ros2 launch sim_car full_sim_launch.launch.py logging:=true path_tracking_eval:=true
+cd ~/ros2_ws && ros2 launch sim_car full_sim_launch.launch.py
 ```
 
 Run vehicle_plotter tests:

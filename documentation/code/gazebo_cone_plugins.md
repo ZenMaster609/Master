@@ -11,9 +11,9 @@ This page maps the `documentation/concepts/gazebo_cone_plugins.md` behavior to t
 
 ### Plugin Lifecycle
 
-- Ground-truth cone plugin class in `eufs_remastered/gazebo_cone_plugins/src/gazebo_ground_truth_cones.cpp`: Gazebo `ISystemConfigure` and `ISystemPreUpdate` implementation; initializes the ROS 2 publisher, enumerates cone entities at configure time, and publishes ground-truth positions every simulation step.
-- Configure implementation in `eufs_remastered/gazebo_cone_plugins/src/gazebo_ground_truth_cones.cpp`: scans the Gazebo `EntityComponentManager` for entities whose names match `blue_cone_*`, `yellow_cone_*`, `orange_cone_*`, and `big_cone_*`; caches entity handles and loads the confusion matrix YAML.
-- PreUpdate implementation in `eufs_remastered/gazebo_cone_plugins/src/gazebo_ground_truth_cones.cpp`: reads the world pose of each cached cone entity, applies the confusion matrix probability distribution, assembles a `ConeArrayWithCovariance`, and publishes it.
+- Ground-truth cone plugin class in `eufs_remastered/gazebo_cone_plugins/src/gazebo_ground_truth_cones.cpp`: Gazebo `ISystemConfigure` and `ISystemPreUpdate` implementation; initializes ROS 2 publishers, enumerates cone entities at configure time, and publishes ground-truth positions every simulation step.
+- Configure implementation in `eufs_remastered/gazebo_cone_plugins/src/gazebo_ground_truth_cones.cpp`: scans the Gazebo `EntityComponentManager` for entities whose names match `blue_cone_*`, `yellow_cone_*`, `orange_cone_*`, and `big_cone_*`; caches entity handles, loads the confusion matrix YAML, and reads SDF knobs including `publishTrack`, `groundTruthTrackTopicName`, `visibleConesTopicName`, and legacy `groundTruthConesTopicName`.
+- PreUpdate implementation in `eufs_remastered/gazebo_cone_plugins/src/gazebo_ground_truth_cones.cpp`: reads the world pose of each cached cone entity, publishes the full map-frame `/ground_truth/track`, filters visible cones around the vehicle, applies the confusion matrix probability distribution, and publishes `/ground_truth/cones`.
 
 ### Cone Classification
 
@@ -22,11 +22,11 @@ This page maps the `documentation/concepts/gazebo_cone_plugins.md` behavior to t
 
 ### Configuration
 
-- `eufs_remastered/gazebo_cone_plugins/config/cone_confusion_matrix.yaml`: color misclassification probability table; currently an identity matrix (all cones published with their true color); modify non-diagonal values to introduce simulated color noise.
+- `eufs_remastered/gazebo_cone_plugins/config/cone_confusion_matrix.yaml`: color misclassification probability table with `blue`, `yellow`, `orange`, `big_orange`, `unknown_color`, and `undetected` outputs; currently an identity matrix.
 
 ## Related Entry Points
 
 - `eufs_remastered/eufs_msgs/msg/ConeArrayWithCovariance.msg`: message type published by the plugin; each of the five color arrays contains `ConeWithCovariance` entries.
 - `eufs_remastered/gazebo_cone_plugins/CMakeLists.txt`: links the plugin against `eufs_msgs`, Gazebo Ignition, and `rclcpp`; registers the plugin with the Gazebo plugin system.
-- Vehicle or world SDF file: contains the `<plugin>` block that loads the ground-truth cone plugin and configures the output topic name and confusion matrix path.
+- Vehicle or world SDF file: contains the `<plugin>` block that loads the ground-truth cone plugin and configures output topic names, visibility limits, publish-track behavior, and confusion matrix path.
 - `sim_car/sim_car/cones/nodes/evaluator_node.py`: subscribes to `/ground_truth/cones` (the plugin's output topic) to score cone perception predictions.

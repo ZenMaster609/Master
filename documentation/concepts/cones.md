@@ -24,7 +24,7 @@ Each cone track progresses through three states:
 - **Confirmed**: seen enough times to be trusted for planning.
 - **Stale**: not recently updated; retained briefly before deletion.
 
-Confirmed tracks publish with their resolved color. Tentative and stale tracks are not forwarded to planners by default.
+Confirmed tracks publish with their resolved color. Tentative tracks are not forwarded to planners. Stale confirmed tracks are forwarded by default while they are within `memory.stale_planner_ttl_sec`, controlled by `memory.publish_stale_tracks`.
 
 ### Sensor Fusion
 
@@ -41,21 +41,21 @@ Orange cones and cones with unknown color are resolved to `blue` or `yellow` bef
 
 - If an orange cone has enough blue or yellow neighbors nearby, the majority neighbor color is inferred.
 - If no neighbors are available, the cone's lateral position relative to the vehicle is used to pick the closer boundary color.
-- This boundary color resolution runs only when enabled via `resolve_boundary_colors` and produces the `/tracked_cones` output used by standard track planners.
+- This boundary color resolution produces the `/tracked_cones` output used by standard track planners.
 
 ### Permanent Cone Memory
 
-An optional permanent cone store can accumulate confirmed tracks across time. This allows the system to remember cones that briefly disappear behind occlusions. Permanent memory is enabled separately from the local tracker and is controlled by the `permanent_cone_memory_enabled` parameter.
+An optional permanent cone store can accumulate confirmed tracks across time. This allows the system to remember cones that briefly disappear behind occlusions. Permanent memory is enabled separately from the local tracker and is controlled by `permanent_memory.enabled`.
 
 ### Visualization
 
-`cone_memory_node` publishes three `MarkerArray` topics for RViz inspection:
+`cone_memory_node` publishes `MarkerArray` topics for RViz inspection:
 
-- **Cone markers** (`/cone_memory/viz`): cylinders at each tracked cone position. Confirmed cones are larger, tentative and stale cones are smaller or dimmed.
+- **Cone markers** (`/local_cone_map_viz`): cylinders at each tracked cone position. Confirmed cones are larger, tentative and stale cones are smaller or dimmed.
 - **ID markers**: floating text labels with track IDs above each cone.
-- **Track polylines** (`/cone_memory/believed_track`): line strips tracing the track path on each boundary.
+- **Track polylines** (`/cone_memory/believed_track_viz`): line strips tracing the track path on each boundary.
 
-Raw sensor inputs are also visualized in both `base_link` and `odom` frames.
+Raw sensor inputs can also be visualized under `/local_cone_map_viz/raw_lidar` and `/local_cone_map_viz/raw_camera`.
 
 ### CSV Export
 
@@ -73,11 +73,11 @@ Both predicted and ground-truth cones are transformed into a common reference fr
 
 ### Output
 
-Matched pairs are published as range-error samples:
+Matched pairs are published as signed range-error samples:
 
 - source name (e.g., `monocular`, `stereo`, `lidar`)
 - ground-truth range from the vehicle
-- Euclidean error between prediction and ground truth
+- `error_m`, the predicted range minus the ground-truth range
 - cone class IDs
 
 These samples feed the logging layer, which writes per-source CSVs such as:
@@ -91,15 +91,16 @@ The evaluator publishes to `{eval_prefix}/cone_depth_samples` as CSV-formatted s
 
 Important `cone_memory_node` parameters:
 
-- `lidar_cones_topic`, `camera_cones_topic`: input detection topics.
-- `tracked_cones_topic`: output topic for planners.
-- `track_confirm_hits`: number of detections required to confirm a track.
-- `track_stale_sec`: time without updates before a track becomes stale.
-- `camera_range_m`: range boundary between near and far fusion bands.
-- `prefer_lidar_if_camera_missing_far`: use LiDAR position in far band when camera is absent.
-- `allow_camera_fallback_near`: allow camera position in near band when LiDAR is absent.
-- `resolve_boundary_colors`: enable blue/yellow color inference for planning.
-- `permanent_cone_memory_enabled`: enable the permanent cone store.
+- `topics.lidar_cones_topic`, `topics.camera_cones_topic`: input detection topics.
+- `topics.tracked_cones_topic`: output topic for planners.
+- `memory.confirm_hits`: number of detections required to confirm a track.
+- `memory.stale_after_sec`: time without updates before a confirmed track becomes stale.
+- `memory.publish_stale_tracks`: whether fresh-enough stale tracks are still planner-forwarded.
+- `memory.stale_planner_ttl_sec`: maximum stale-track age for planner forwarding.
+- `fusion.camera_range_m`: range boundary between near and far fusion bands.
+- `fusion.prefer_lidar_if_camera_missing_far`: use LiDAR position in far band when camera is absent.
+- `fusion.allow_camera_fallback_near`: allow camera position in near band when LiDAR is absent.
+- `permanent_memory.enabled`: enable the permanent cone store.
 
 ## Useful Commands
 
@@ -124,7 +125,7 @@ cd ~/ros2_ws && ros2 launch sim_car full_sim_launch.launch.py cone_memory_enable
 Inspect tracked cones:
 
 ```bash
-ros2 topic echo /tracked_cones
+cd ~/ros2_ws && ros2 topic echo /tracked_cones
 ```
 
-Inspect visualization in RViz by subscribing to `/cone_memory/viz` and `/cone_memory/believed_track`.
+Inspect visualization in RViz by subscribing to `/local_cone_map_viz` and `/cone_memory/believed_track_viz`.

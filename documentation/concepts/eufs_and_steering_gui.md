@@ -49,10 +49,10 @@ Vehicle parameters are loaded from a YAML file using `vehicle_param.hpp`. The lo
 
 By default, Gazebo simulates rigid-body physics. The plugin bypasses this for the vehicle and instead:
 
-1. Receives control commands for throttle, braking, and steering from ROS 2 topics.
+1. Receives velocity and yaw-rate commands from the ROS 2 `/cmd_vel` `geometry_msgs/Twist` topic.
 2. Feeds them into the configured `eufs_models` dynamics model each simulation step.
 3. Sets the resulting vehicle pose and velocity directly on the Gazebo model entity.
-4. Publishes vehicle state and diagnostics back to ROS 2.
+4. Publishes physics diagnostics back to ROS 2 while Gazebo exposes the updated model state through the normal simulation bridges.
 
 This allows the vehicle behavior to be defined entirely by the mathematical model in `eufs_models` rather than by Gazebo's contact dynamics.
 
@@ -69,9 +69,9 @@ At each simulation step, the plugin takes the most recent command from the comma
 
 ### Control Input And State Output
 
-The plugin subscribes to control command topics that carry throttle, steering, and braking values. Commands are timestamped and queued so that the pre-update step always uses the most recently received input.
+The plugin subscribes to `/cmd_vel` by default. In full sim, planners and the steering GUI publish `AckermannDriveStamped` commands on `/cmd`; `ackermann_cmd_bridge` converts those Ackermann commands into `/cmd_vel` before they reach `eufs_gz_dynamics`.
 
-After each integration step the plugin publishes the updated vehicle state. This includes position, velocity, and orientation derived from the dynamics model, not from Gazebo's own physics integration.
+After each integration step the plugin writes the updated pose and velocity back into Gazebo. The resulting simulated state is then available through the normal Gazebo/ROS bridge path.
 
 Diagnostic messages are also published with model health and timing information, compatible with standard ROS 2 diagnostic tooling.
 
@@ -139,12 +139,12 @@ The plugin adds a dockable RQT panel containing:
 
 The GUI publishes two topics:
 
-- **Ackermann drive command** (`AckermannDriveStamped`): the primary steering and speed command. Published to the configured command topic, which defaults to the `eufs_gz_dynamics` subscription.
-- **Brake command** (`Float32`): brake value published to a separate brake topic. Allows the GUI to command braking independently of the drive command.
+- **Ackermann drive command** (`AckermannDriveStamped`): the primary steering and speed command. Published to the configured command topic, which defaults to `/cmd` in this workspace and is converted to `/cmd_vel` by `ackermann_cmd_bridge`.
+- **Brake command** (`Float32`): brake value published to `/sim/brake_cmd` by default. This is a separate GUI output and is not the direct `/cmd_vel` input consumed by `eufs_gz_dynamics`.
 
 ### Feedback
 
-The plugin subscribes to the vehicle state topic to display current speed or steering angle as feedback. This lets the operator confirm that commands are being received and that the vehicle is responding.
+The plugin focuses on command publishing in the current workspace. Vehicle response is usually checked through simulation topics, RViz, or the vehicle plotter dashboard.
 
 ## Useful Commands
 

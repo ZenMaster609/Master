@@ -15,7 +15,7 @@ The cone subsystem receives camera and LiDAR cone detections, expresses them in 
 5. `sim_car/sim_car/cones/tracking/tracker.py::LocalConeTracker.update` associates fused observations with existing tracks, updates position/color/confidence state, and creates new tracks when needed.
 6. `sim_car/sim_car/cones/tracking/fusion.py::resolve_boundary_colors_for_planning` maps raw color labels to planner-side blue/yellow/unknown labels.
 7. `sim_car/sim_car/cones/tracking/global_memory.py::GlobalConeMemory.update_from_tracks` and `PermanentConeStore` keep long-lived global and cross-lap cone estimates.
-8. `sim_car/sim_car/cones/nodes/evaluator_node.py::ConeEvaluatorNode._match_cones` uses the same distance-gated matching idea for prediction-vs-ground-truth evaluation.
+8. `sim_car/sim_car/cones/nodes/evaluator_node.py::ConeEvaluatorNode._match_predictions_to_gt` uses the same distance-gated matching idea for prediction-vs-ground-truth evaluation.
 
 ## Mathematical Building Blocks
 
@@ -38,7 +38,7 @@ This is not a vehicle dynamics model. It is a short-horizon timestamp compensati
 
 ### Greedy Distance-Gated Pairing
 
-`sim_car/sim_car/cones/nodes/memory_node.py::_pair_detections`, `sim_car/sim_car/cones/tracking/tracker.py::LocalConeTracker._associate`, and `sim_car/sim_car/cones/nodes/evaluator_node.py::ConeEvaluatorNode._match_cones` all build candidate pairs whose Euclidean distance is below a gate. Candidates are sorted by distance and accepted greedily while preventing reuse of either endpoint.
+`sim_car/sim_car/cones/nodes/memory_node.py::_pair_detections`, `sim_car/sim_car/cones/tracking/tracker.py::LocalConeTracker._associate`, and `sim_car/sim_car/cones/nodes/evaluator_node.py::ConeEvaluatorNode._match_predictions_to_gt` all build candidate pairs whose Euclidean distance is below a gate. Candidates are sorted by distance and accepted greedily while preventing reuse of either endpoint.
 
 This gives deterministic one-to-one matching without solving a global assignment problem. That is adequate here because the cone spacing and gating radii are chosen so most ambiguous matches are local and sparse.
 
@@ -95,7 +95,7 @@ The output is deliberately limited to planner-facing `blue`, `yellow`, or `unkno
 | Track confidence | `sim_car/sim_car/cones/tracking/fusion.py::blend_track_confidence` | Promotes repeatedly observed tracks and decays missed tracks. |
 | Boundary inference | `sim_car/sim_car/cones/tracking/fusion.py::resolve_boundary_colors_for_planning` | Produces planner-facing side colors for `/tracked_cones`. |
 | Global memory merge | `sim_car/sim_car/cones/tracking/global_memory.py::GlobalConeMemory.update_from_tracks` | Maintains long-lived cone estimates for visualization and belief state. |
-| Evaluation matching | `sim_car/sim_car/cones/nodes/evaluator_node.py::ConeEvaluatorNode._match_cones` | Computes matched prediction/ground-truth cone pairs for error samples. |
+| Evaluation matching | `sim_car/sim_car/cones/nodes/evaluator_node.py::ConeEvaluatorNode._match_predictions_to_gt` | Computes matched prediction/ground-truth cone pairs for signed range-error samples. |
 
 ## Notes / Limits
 

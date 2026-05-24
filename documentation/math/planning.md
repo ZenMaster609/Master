@@ -15,7 +15,7 @@ The planning package receives cone tracks in odom/global coordinates, converts t
    - `single_boundary_planner_core.py::compute_single_boundary_centerline`
    - `corridor_planner_core.py::compute_corridor_centerline`
 4. `sim_car/sim_car/planning/midline_memory.py::CommittedMidlineMemory.update` blends accepted candidates with stored path memory or holds the last valid path.
-5. `sim_car/sim_car/planning/tracked_cone_planner_node.py` selects the path source, runs the controller, and publishes path, diagnostics, and markers.
+5. `sim_car/sim_car/planning/tracked_cone_planner_node.py` selects the path source, runs controller dispatch through `_dispatch_controller` and the planner-specific `_run_controller*` helpers, then publishes path, command, diagnostics, and markers.
 6. Special helpers in `ground_truth_midline.py` and `skidpad_router_core.py` provide debug paths and skidpad mission routing.
 
 ## Mathematical Building Blocks

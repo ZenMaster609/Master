@@ -33,7 +33,7 @@ This page maps `documentation/concepts/steering_controllers.md` to the controlle
 
 - `TrackedConePlannerBase._build_steering_controller` in `tracked_cone_planner_base.py`: creates the selected steering controller for midpoint, single-boundary, and corridor planners.
 - `TrackedConePlannerBase._centerline_to_vehicle_frame`: converts a centerline from planning frame into the controller frame.
-- `TrackedConePlannerBase._build_control_output`: extracts the forward control path, calls the active controller, handles controller failures, and packages command/debug fields.
+- `GenericTrackedConePlannerNode._dispatch_controller` in `tracked_cone_planner_node.py`: calls the active controller for tracked-cone planners after the planner-specific `_run_controller*` method extracts the forward control path.
 - `TrackedConePlannerBase._publish_cmd`: publishes the resulting Ackermann command.
 - `LineTestPlannerNode._build_steering_controller` in `linetest_planner_node.py`: reuses the same controller factory for fixed-line controller tests.
 - `LineTestPlannerNode._on_timer`: runs line projection, controller invocation, command publication, diagnostics, and brake behavior.

@@ -64,7 +64,7 @@ This page maps the `documentation/concepts/cones.md` behavior to the cone memory
 ### Cone Evaluation
 
 - `ConeEvaluatorNode` in `sim_car/sim_car/cones/nodes/evaluator_node.py`: subscribes to predicted and ground-truth cone topics, performs greedy nearest-neighbor matching, and publishes range-error samples.
-- `ConeEvaluatorNode._match_cones` in `sim_car/sim_car/cones/nodes/evaluator_node.py`: implements the distance-threshold greedy matching between predicted and ground-truth cone sets.
+- `ConeEvaluatorNode._match_predictions_to_gt` in `sim_car/sim_car/cones/nodes/evaluator_node.py`: implements the distance-threshold greedy matching between predicted and ground-truth cone sets.
 - `ConeEvaluatorNode._on_prediction` in `sim_car/sim_car/cones/nodes/evaluator_node.py`: handles incoming predicted cone arrays and queues them against the latest ground truth.
 
 ### Evaluation Output

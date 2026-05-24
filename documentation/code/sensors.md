@@ -13,7 +13,7 @@ This page maps the `documentation/concepts/sensors.md` behavior to the raw senso
 
 ### Launch Modes And Enablement
 
-- `generate_launch_description` in `sim_car/launch/nodes.launch.py`: starts the raw sensor nodes and measurement node used by the sensor pipeline.
+- `generate_launch_description` in `sim_car/launch/nodes.launch.py`: starts the raw sensor nodes used by the sensor pipeline.
 - `_build_sensor_nodes` in `sim_car/launch/nodes.launch.py`: decides which raw sensor nodes to launch from `sensor_config.yaml`.
 - `_load_sensor_config`, `_get_signal_rate`, and `_any_signal_enabled` in `sim_car/launch/nodes.launch.py`: read the config and decide whether a given sensor group is active.
 
@@ -53,4 +53,4 @@ This page maps the `documentation/concepts/sensors.md` behavior to the raw senso
 ## Related Entry Points
 
 - `sim_car/config/sensor_config.yaml`: source of truth for enable flags, message types, topic names, and measurement behavior.
-- `generate_launch_description` in `sim_car/launch/full_sim_launch.launch.py`: enables the sensor pipeline with `sensor_nodes:=true`, `measure:=true`, and `sensor_pipeline:=true`.
+- `generate_launch_description` in `sim_car/launch/full_sim_launch.launch.py`: includes `nodes.launch.py` when `sensor_pipeline:=true`, starts `measurement_node` when `sensor_pipeline:=true` or `measure:=true`, and starts `plotter_node` through `vehicle_plotter/launch/plotter.launch.py` when `sensor_pipeline:=true`.

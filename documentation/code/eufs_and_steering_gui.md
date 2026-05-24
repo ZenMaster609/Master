@@ -45,12 +45,11 @@ This page maps the `documentation/concepts/eufs_and_steering_gui.md` behavior to
 - `EufsRaceCarModel` in `eufs_remastered/eufs_gz_dynamics/src/eufs_gz_dynamics.cpp`: top-level Gazebo system plugin class implementing `ISystemConfigure` and `ISystemPreUpdate`; owns the ROS 2 node, executor thread, dynamics model, and command queue.
 - `EufsRaceCarModel::Configure` in `eufs_remastered/eufs_gz_dynamics/src/eufs_gz_dynamics.cpp`: called once at Gazebo startup; calls `InitRos`, `ParseSdf`, and `InitVehicleModel`, then resolves the canonical model link.
 - `EufsRaceCarModel::PreUpdate` in `eufs_remastered/eufs_gz_dynamics/src/eufs_gz_dynamics.cpp`: called every simulation step; dequeues the latest command, advances the dynamics model, and writes the resulting state to the Gazebo entity.
-- `EufsRaceCarModel::InitRos` in `eufs_remastered/eufs_gz_dynamics/src/eufs_gz_dynamics.cpp`: creates the `rclcpp::Node`, sets up the executor, starts the background spin thread, subscribes to control command topics, and sets up state and diagnostic publishers.
+- `EufsRaceCarModel::InitRos` in `eufs_remastered/eufs_gz_dynamics/src/eufs_gz_dynamics.cpp`: creates the `rclcpp::Node`, sets up the executor, starts the background spin thread, subscribes to `/cmd_vel` `geometry_msgs/Twist` input, and sets up diagnostic publishers.
 - `EufsRaceCarModel::ParseSdf` in `eufs_remastered/eufs_gz_dynamics/src/eufs_gz_dynamics.cpp`: reads the `<yaml_config>` SDF element and any other plugin parameters from the model SDF.
 - `EufsRaceCarModel::InitVehicleModel` in `eufs_remastered/eufs_gz_dynamics/src/eufs_gz_dynamics.cpp`: loads the vehicle parameter YAML and instantiates the selected `eufs::models` dynamics model.
-- `EufsRaceCarModel` command callback in `eufs_remastered/eufs_gz_dynamics/src/eufs_gz_dynamics.cpp`: ROS 2 subscription callback that pushes incoming control commands into the internal `Command` queue, stamped with the receive time.
+- `EufsRaceCarModel` command callback in `eufs_remastered/eufs_gz_dynamics/src/eufs_gz_dynamics.cpp`: ROS 2 subscription callback that converts incoming `/cmd_vel` velocity and yaw-rate commands into the internal `Command` queue.
 - `Command` struct in `eufs_remastered/eufs_gz_dynamics/src/eufs_gz_dynamics.cpp`: simple POD holding a `eufs::models::Input` and a timestamp; the `PreUpdate` step pops the most recent command from this queue.
-- State publisher setup in `EufsRaceCarModel::InitRos` in `eufs_remastered/eufs_gz_dynamics/src/eufs_gz_dynamics.cpp`: creates the publisher used to broadcast the post-integration vehicle state each simulation step.
 - Diagnostic publisher in `eufs_remastered/eufs_gz_dynamics/src/eufs_gz_dynamics.cpp`: publishes `diagnostic_msgs/DiagnosticArray` with plugin health and timing data.
 
 ### Related Entry Points
@@ -89,14 +88,13 @@ This page maps the `documentation/concepts/eufs_and_steering_gui.md` behavior to
 
 - `EUFSRobotSteeringGUI` in `eufs_remastered/steering_gui/src/steering_gui/EUFSRobotSteeringGUI.py`: main RQT plugin class; sets up the Qt widget, creates publishers and subscriptions, and wires slider signals to command publishing.
 - `EUFSRobotSteeringGUI.__init__` in `eufs_remastered/steering_gui/src/steering_gui/EUFSRobotSteeringGUI.py`: initializes the plugin, loads the UI, and sets default parameter values for command topic and steering range.
-- `EUFSRobotSteeringGUI._publish_command` in `eufs_remastered/steering_gui/src/steering_gui/EUFSRobotSteeringGUI.py`: builds an `AckermannDriveStamped` message from the current slider value and publishes it to the configured drive command topic.
-- `EUFSRobotSteeringGUI._publish_brake` in `eufs_remastered/steering_gui/src/steering_gui/EUFSRobotSteeringGUI.py`: publishes a `Float32` brake value to the separate brake command topic.
+- `EUFSRobotSteeringGUI._send_ackermann_drive_stamped` in `eufs_remastered/steering_gui/src/steering_gui/EUFSRobotSteeringGUI.py`: builds an `AckermannDriveStamped` message from the current slider value and publishes it to the configured drive command topic.
+- `EUFSRobotSteeringGUI._publish_brake_cmd` in `eufs_remastered/steering_gui/src/steering_gui/EUFSRobotSteeringGUI.py`: publishes a `Float32` brake value to the separate brake command topic.
 - Keyboard event handlers in `eufs_remastered/steering_gui/src/steering_gui/EUFSRobotSteeringGUI.py`: intercept key presses to allow steering adjustment without using the slider directly.
-- State subscription callback in `eufs_remastered/steering_gui/src/steering_gui/EUFSRobotSteeringGUI.py`: subscribes to the vehicle state topic and updates displayed feedback values in the GUI panel.
 - Topic name handling in `eufs_remastered/steering_gui/src/steering_gui/EUFSRobotSteeringGUI.py`: allows the operator to change the drive command topic at runtime so the GUI can target different vehicle namespaces.
 
 ### Related Entry Points
 
 - `eufs_remastered/steering_gui/package.xml` and `setup.py`: register the plugin with the RQT plugin system so it appears in the Plugins menu.
 - `eufs_remastered/steering_gui/plugin.xml`: RQT plugin descriptor file mapping the GUI class to the plugin entry point.
-- `eufs_remastered/eufs_gz_dynamics/src/eufs_gz_dynamics.cpp`: subscribes to the `AckermannDriveStamped` topic published by the GUI; the topic name must match.
+- `eufs_remastered/eufs_gz_dynamics/src/eufs_gz_dynamics.cpp`: subscribes to `/cmd_vel`; use `ackermann_cmd_bridge` when the GUI or planners publish `AckermannDriveStamped` on `/cmd`.
